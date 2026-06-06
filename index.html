@@ -1,0 +1,90 @@
+<!DOCTYPE html>
+<html lang="ar" dir="rtl">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>GCANS — نظام أرشفة الوثائق</title>
+  <link rel="stylesheet" href="/src/styles/main.css" />
+</head>
+<body class="overflow-hidden">
+
+  <div id="login-screen" class="min-h-screen flex items-center justify-center">
+    <div class="card w-full max-w-md mx-4 shadow-2xl">
+      <div class="text-center mb-8">
+        <div class="w-16 h-16 mx-auto mb-4 rounded-full bg-autohr-green/20 flex items-center justify-center">
+          <span class="text-2xl font-bold text-autohr-green">AH</span>
+        </div>
+        <h1 class="text-2xl font-bold">AutoHR</h1>
+        <p class="text-gray-400 mt-1" data-i18n="appSubtitle">نظام إدارة الموارد البشرية</p>
+      </div>
+      <form id="login-form" class="space-y-4">
+        <div>
+          <label class="block text-sm text-gray-400 mb-1" data-i18n="username">اسم المستخدم</label>
+          <input id="login-username" type="text" class="input-field" placeholder="sysadmin" dir="ltr" autocomplete="username" />
+        </div>
+        <div>
+          <label class="block text-sm text-gray-400 mb-1" data-i18n="password">كلمة المرور</label>
+          <input id="login-password" type="password" class="input-field" placeholder="••••••••" dir="ltr" autocomplete="current-password" />
+        </div>
+        <p id="login-error" class="text-autohr-red text-sm hidden"></p>
+        <button type="submit" class="btn-primary w-full py-3" data-i18n="login">تسجيل الدخول</button>
+      </form>
+      <p class="text-center text-xs text-gray-500 mt-4">Eng. Essam Al-Emaraa — v1.0.0</p>
+    </div>
+  </div>
+
+  <div id="app-shell" class="hidden h-screen flex flex-row-reverse">
+
+    <main class="flex-1 flex flex-col min-w-0">
+      <header class="shrink-0 bg-autohr-sidebar border-b border-autohr-border px-6 py-3">
+        <div class="flex items-center justify-between gap-4">
+          <div class="min-w-0">
+            <h2 id="page-title" class="text-lg font-semibold truncate" data-i18n="nav_dashboard">لوحة التحكم العامة</h2>
+            <div id="header-branding" class="text-xs text-gray-400 mt-0.5 truncate"></div>
+          </div>
+          <div class="flex items-center gap-3 shrink-0">
+            <span class="text-sm text-gray-400" data-i18n="user">المستخدم</span>:
+            <span id="current-user" class="text-sm font-medium" dir="ltr">sysadmin</span>
+            <button id="btn-logout-top" class="btn-secondary text-sm px-3 py-1.5" data-i18n="logout">تسجيل الخروج</button>
+          </div>
+        </div>
+      </header>
+      <div id="screen-container" class="flex-1 overflow-y-auto p-6"></div>
+    </main>
+
+    <aside class="w-60 shrink-0 bg-autohr-sidebar border-e border-autohr-border flex flex-col">
+      <div class="p-4 border-b border-autohr-border">
+        <div id="sidebar-brand" class="flex items-center gap-3">
+          <img id="sidebar-logo" class="w-10 h-10 rounded object-cover hidden" alt="logo" />
+          <div id="sidebar-logo-fallback" class="w-10 h-10 rounded bg-autohr-green/20 flex items-center justify-center shrink-0">
+            <span class="text-sm font-bold text-autohr-green">AH</span>
+          </div>
+          <div class="min-w-0">
+            <p id="sidebar-company" class="font-bold text-autohr-green truncate text-sm">الشركة العامة لخدمات الملاحة الجوية</p>
+            <p id="sidebar-dept" class="text-[10px] text-gray-500 truncate"></p>
+          </div>
+        </div>
+      </div>
+
+      <nav id="sidebar-nav" class="flex-1 p-2 space-y-1">
+        <div class="nav-item active" data-screen="dashboard">📊 لوحة التحكم العامة</div>
+        <div class="nav-item" data-screen="employees">👥 دليل الموظفين وإدارتهم</div>
+        <div class="nav-item" data-screen="documents">📁 أرشيف الوثائق</div>
+        <div class="nav-item hidden" data-screen="company" id="nav-company">🏢 إعدادات الهوية والأقسام</div>
+        <div class="nav-item hidden" data-screen="users" id="nav-users">👤 إدارة المستخدمين والصلاحيات</div>
+        <div class="nav-item" data-screen="about">ℹ️ حول النظام</div>
+      </nav>
+
+      <div class="p-3 border-t border-autohr-border">
+        <button id="btn-logout-side" class="w-full btn-secondary text-sm py-2" data-i18n="logout">تسجيل الخروج</button>
+      </div>
+    </aside>
+  </div>
+
+  <div id="toast" class="fixed bottom-6 start-6 card shadow-xl opacity-0 translate-y-4 transition-all duration-300 z-[100] pointer-events-none">
+    <p id="toast-msg" class="text-sm"></p>
+  </div>
+
+  <script type="module" src="/src/main.js"></script>
+</body>
+</html>
