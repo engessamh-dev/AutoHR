@@ -114,6 +114,20 @@ fn session_user(sess: &State<SessionState>) -> Result<String, AppError> {
     log_activity(&conn, &user, "DELETE_PASSPORT_ATTACHMENT", Some("employee"), Some(employee_id), Some(&relative_path), None);
     Ok(())
 }
+#[tauri::command] fn cmd_upload_ration_card_attachment(state: State<DbState>, sess: State<SessionState>, employee_id: i64, source_path: String) -> Result<String, AppError> {
+    let conn = state.0.lock().unwrap();
+    let user = session_user(&sess)?;
+    let rel = files::upload_ration_card_attachment(&conn, employee_id, &source_path)?;
+    log_activity(&conn, &user, "UPLOAD_RATION_CARD_ATTACHMENT", Some("employee"), Some(employee_id), Some(&rel), None);
+    Ok(rel)
+}
+#[tauri::command] fn cmd_delete_ration_card_attachment(state: State<DbState>, sess: State<SessionState>, employee_id: i64, relative_path: String) -> Result<(), AppError> {
+    let conn = state.0.lock().unwrap();
+    let user = session_user(&sess)?;
+    files::delete_ration_card_attachment(&conn, employee_id, &relative_path)?;
+    log_activity(&conn, &user, "DELETE_RATION_CARD_ATTACHMENT", Some("employee"), Some(employee_id), Some(&relative_path), None);
+    Ok(())
+}
 #[tauri::command] fn cmd_delete_attachment(state: State<DbState>, sess: State<SessionState>, employee_id: i64, relative_path: String) -> Result<(), AppError> {
     let conn = state.0.lock().unwrap();
     let user = session_user(&sess)?;
@@ -221,6 +235,7 @@ pub fn run() {
             cmd_upload_national_card_attachment, cmd_delete_national_card_attachment,
             cmd_upload_residence_card_attachment, cmd_delete_residence_card_attachment,
             cmd_upload_passport_attachment, cmd_delete_passport_attachment,
+            cmd_upload_ration_card_attachment, cmd_delete_ration_card_attachment,
             cmd_upload_attachment, cmd_delete_attachment,
             cmd_list_grade_history, cmd_add_grade_history, cmd_delete_grade_history,
             cmd_list_general_docs, cmd_create_general_doc, cmd_update_general_doc, cmd_delete_general_doc,

@@ -225,6 +225,39 @@ function passportAttachments(emp) {
   </div>`;
 }
 
+function rationCardAttachments(emp) {
+  let paths = [];
+  try { paths = JSON.parse(emp?.ration_card_attachment_paths ?? "[]"); } catch {}
+  const fullPaths = emp?.ration_card_attachment_full_paths ?? [];
+  const path = paths[0];
+  const fullPath = fullPaths[0];
+  const name = path?.split(/[/\\]/).pop();
+  const extension = name?.split(".").pop()?.toLowerCase();
+  const assetUrl = fullPath ? convertFileSrc(fullPath) : "";
+  const preview = assetUrl && ["png", "jpg", "jpeg"].includes(extension)
+    ? `<img src="${escHtml(assetUrl)}" alt="${escHtml(name)}" style="display:block;max-width:100%;height:auto;border:1px solid #2d2d2d;border-radius:6px;margin:0 auto 9px" />`
+    : assetUrl && extension === "pdf"
+      ? `<iframe src="${escHtml(assetUrl)}" title="${escHtml(name)}" style="display:block;width:100%;height:220px;background:#fff;border:1px solid #2d2d2d;border-radius:6px;margin-bottom:9px"></iframe>`
+      : "";
+  return `<div style="grid-column:span 2">
+    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px">
+      <p style="font-size:12px;color:#9ca3af">${path ? "نسخة البطاقة التموينية مرفوعة" : "لم تُرفع نسخة البطاقة التموينية"}</p>
+      ${emp?.id
+        ? (path ? "" : `<button type="button" id="btn-upload-ration-card" class="btn-secondary text-xs px-3 py-1.5">رفع نسخة…</button>`)
+        : `<p style="font-size:11px;color:#6b7280">احفظ سجل الموظف أولاً</p>`}
+    </div>
+    ${!path ? `<p style="text-align:center;color:#6b7280;padding:18px;font-size:12px;background:#181818;border:1px solid #2d2d2d;border-radius:8px">لا توجد نسخة للبطاقة التموينية</p>` : `
+      <div style="padding:10px 12px;background:#181818;border:1px solid #2d2d2d;border-radius:8px">
+        ${preview}
+        <p style="font-size:11px;color:#9ca3af;word-break:break-all;margin-bottom:8px">${escHtml(name)}</p>
+        <div style="display:flex;align-items:center;gap:6px">
+          <button type="button" id="btn-upload-ration-card" class="btn-secondary text-xs px-2 py-1">استبدال</button>
+          <button type="button" class="btn-danger text-xs px-2 py-1 btn-delete-ration-card" data-path="${escHtml(path)}">حذف</button>
+        </div>
+      </div>`}
+  </div>`;
+}
+
 // ── Tabs ────────────────────────────────────────────────────────────────────
 const TABS = [
   { id: "basic",       label: "💼 المعلومات الوظيفية" },
@@ -304,9 +337,9 @@ function tabContent(tab, emp) {
         ${sidedCardAttachment("الوجه الخلفي", "back", emp?.residence_card_back_path, emp?.residence_card_back_full_path, Boolean(emp?.id), "residence")}
         ${sectionTitle("البطاقة التموينية الالكترونية")}
         ${field("رقم البطاقة التموينية", "ration_card_no", emp, {ltr:true})}
-        ${field("اسم مركز التموين", "ration_center_name", emp)}
-        ${field("رقم مركز التموين", "ration_center_no", emp, {ltr:true})}
-        ${field("تاريخ الإصدار", "ration_card_date", emp, {date:true})}
+        ${field("اسم رب الأسرة", "ration_center_name", emp)}
+        ${sectionTitle("مرفقات البطاقة التموينية")}
+        ${rationCardAttachments(emp)}
         ${sectionTitle("باجات الدخول")}
         ${field("رقم وتاريخ باج دخول المطار", "airport_badge_no", emp, {ltr:true})}
         ${field("رقم وتاريخ باج الوزارة", "ministry_badge_no", emp, {ltr:true})}
@@ -470,8 +503,6 @@ function renderPanel(emp) {
       residence_address:     g("residence_address"),
       ration_card_no:        g("ration_card_no"),
       ration_center_name:    g("ration_center_name"),
-      ration_center_no:      g("ration_center_no"),
-      ration_card_date:      g("ration_card_date"),
       passport_no:           g("passport_no"),
       passport_type:         g("passport_type"),
       passport_name:         g("passport_name"),
@@ -589,6 +620,34 @@ function attachTabEvents(emp) {
         } catch (err) { showToast(err?.message ?? String(err || "خطأ في الحذف"), "error"); }
       });
     });
+
+    panel.querySelector("#btn-upload-ration-card")?.addEventListener("click", async () => {
+      try {
+        collectVisiblePanelFields(panel);
+        const { open } = await import("@tauri-apps/plugin-dialog");
+        const selected = await open({
+          multiple: false,
+          filters: [{ name: "نسخة البطاقة التموينية", extensions: ["png", "jpg", "jpeg", "pdf"] }],
+        });
+        if (!selected) return;
+        if (!(await confirmAction("تأكيد رفع نسخة البطاقة التموينية؟"))) return;
+        await api.uploadRationCardAttachment(emp.id, selected);
+        showToast("تم رفع نسخة البطاقة التموينية");
+        await refreshDocumentAttachments(emp.id);
+      } catch (err) { showToast(err?.message ?? String(err || "خطأ في الرفع"), "error"); }
+    });
+
+    panel.querySelectorAll(".btn-delete-ration-card").forEach(btn => {
+      btn.addEventListener("click", async () => {
+        if (!(await confirmAction("تأكيد حذف مرفق البطاقة التموينية؟"))) return;
+        try {
+          collectVisiblePanelFields(panel);
+          await api.deleteRationCardAttachment(emp.id, btn.dataset.path);
+          showToast("تم حذف مرفق البطاقة التموينية");
+          await refreshDocumentAttachments(emp.id);
+        } catch (err) { showToast(err?.message ?? String(err || "خطأ في الحذف"), "error"); }
+      });
+    });
   }
 
   // Family tab events
@@ -653,6 +712,8 @@ async function refreshDocumentAttachments(employeeId) {
     residence_card_back_full_path: updated.residence_card_back_full_path,
     passport_attachment_paths: updated.passport_attachment_paths,
     passport_attachment_full_paths: updated.passport_attachment_full_paths,
+    ration_card_attachment_paths: updated.ration_card_attachment_paths,
+    ration_card_attachment_full_paths: updated.ration_card_attachment_full_paths,
   };
   document.getElementById("tab-content").innerHTML = tabContent("documents", _panelDraft);
   attachTabEvents(updated);

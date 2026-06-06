@@ -85,6 +85,8 @@ pub struct Employee {
     pub ration_center_name: Option<String>,
     pub ration_center_no: Option<String>,
     pub ration_card_date: Option<String>,
+    pub ration_card_attachment_paths: Option<String>,
+    pub ration_card_attachment_full_paths: Vec<String>,
     pub passport_no: Option<String>,
     pub passport_type: Option<String>,
     pub passport_name: Option<String>,
@@ -496,7 +498,7 @@ const EMP_COLS: &str = "id,employee_number,photo_path,full_name,mother_name,fath
   family_members,attachment_paths,notes,is_active,created_at,updated_at,work_type_notes,work_schedule,
   civil_id_birthplace,civil_id_birthdate,civil_id_family_number,civil_id_front_path,civil_id_back_path,
   passport_type,passport_attachment_paths,residence_card_issue_date,residence_head_name,residence_form_no,
-  residence_card_front_path,residence_card_back_path";
+  residence_card_front_path,residence_card_back_path,ration_card_attachment_paths";
 
 fn map_emp(r: &rusqlite::Row) -> rusqlite::Result<Employee> {
     Ok(Employee {
@@ -531,9 +533,11 @@ fn map_emp(r: &rusqlite::Row) -> rusqlite::Result<Employee> {
         residence_form_no:r.get(68)?,
         residence_card_front_path:r.get(69)?,
         residence_card_back_path:r.get(70)?,
+        ration_card_attachment_paths:r.get(71)?,
         residence_card_front_full_path:None,
         residence_card_back_full_path:None,
         passport_attachment_full_paths:Vec::new(),
+        ration_card_attachment_full_paths:Vec::new(),
         civil_id_front_full_path:None,
         civil_id_back_full_path:None,
     })
@@ -556,6 +560,12 @@ fn add_employee_full_paths(conn: &Connection, employee: &mut Employee) {
         .and_then(|value| serde_json::from_str(value).ok())
         .unwrap_or_default();
     employee.passport_attachment_full_paths = paths.iter().take(1)
+        .filter_map(|path| attachment_full_path(conn, &Some(path.clone())))
+        .collect();
+    let ration_paths: Vec<String> = employee.ration_card_attachment_paths.as_deref()
+        .and_then(|value| serde_json::from_str(value).ok())
+        .unwrap_or_default();
+    employee.ration_card_attachment_full_paths = ration_paths.iter().take(1)
         .filter_map(|path| attachment_full_path(conn, &Some(path.clone())))
         .collect();
 }

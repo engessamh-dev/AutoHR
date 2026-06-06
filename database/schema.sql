@@ -76,6 +76,7 @@ CREATE TABLE IF NOT EXISTS employees (
   ration_center_name        TEXT,
   ration_center_no          TEXT,
   ration_card_date          TEXT,
+  ration_card_attachment_paths TEXT DEFAULT '[]',
   passport_no               TEXT,
   passport_type             TEXT,
   passport_name             TEXT,

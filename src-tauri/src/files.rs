@@ -207,6 +207,82 @@ pub fn delete_passport_attachment(
 
 /// Copy a file into the employee's attachments folder.
 /// Returns the relative path stored in the DB.
+pub fn upload_ration_card_attachment(
+    conn: &Connection,
+    employee_id: i64,
+    source_path: &str,
+) -> AppResult<String> {
+    ensure_storage_layout(conn)?;
+    let src = Path::new(source_path);
+    let ext = src.extension().and_then(|e| e.to_str()).unwrap_or("").to_lowercase();
+    if !["png", "jpg", "jpeg", "pdf"].contains(&ext.as_str()) {
+        return Err(AppError::Validation("Only png/jpg/jpeg/pdf allowed".into()));
+    }
+    let name = src.file_name().ok_or_else(|| AppError::Validation("Invalid filename".into()))?;
+    let dest_dir = storage_path(conn)
+        .join("Files")
+        .join("Employees")
+        .join(employee_id.to_string())
+        .join("Documents")
+        .join("RationCard");
+    std::fs::create_dir_all(&dest_dir).map_err(|e| AppError::Other(e.to_string()))?;
+
+    let rel = format!(
+        "Files/Employees/{}/Documents/RationCard/{}",
+        employee_id,
+        name.to_string_lossy()
+    );
+    let existing: String = conn.query_row(
+        "SELECT COALESCE(ration_card_attachment_paths,'[]') FROM employees WHERE id=?1",
+        params![employee_id],
+        |r| r.get(0),
+    ).map_err(|_| AppError::NotFound)?;
+    let paths: Vec<String> = serde_json::from_str(&existing).unwrap_or_default();
+
+    std::fs::copy(src, dest_dir.join(name)).map_err(|e| AppError::Other(e.to_string()))?;
+    for old in paths {
+        if old != rel {
+            if let Ok(path) = safe_relative_path(&old) {
+                std::fs::remove_file(storage_path(conn).join(path)).ok();
+            }
+        }
+    }
+    conn.execute(
+        "UPDATE employees SET ration_card_attachment_paths=?1, updated_at=datetime('now') WHERE id=?2",
+        params![serde_json::to_string(&vec![rel.clone()]).map_err(|e| AppError::Other(e.to_string()))?, employee_id],
+    )?;
+    Ok(rel)
+}
+
+pub fn delete_ration_card_attachment(
+    conn: &Connection,
+    employee_id: i64,
+    relative_path: &str,
+) -> AppResult<()> {
+    let rel_path = safe_relative_path(relative_path)?;
+    let expected_prefix = format!("Files/Employees/{}/Documents/RationCard/", employee_id);
+    if !relative_path.replace('\\', "/").starts_with(&expected_prefix) {
+        return Err(AppError::Validation("Invalid ration card attachment path".into()));
+    }
+
+    let existing: String = conn.query_row(
+        "SELECT COALESCE(ration_card_attachment_paths,'[]') FROM employees WHERE id=?1",
+        params![employee_id],
+        |r| r.get(0),
+    ).map_err(|_| AppError::NotFound)?;
+    let paths: Vec<String> = serde_json::from_str(&existing).unwrap_or_default();
+    if paths.first().is_none_or(|path| path != relative_path) {
+        return Err(AppError::NotFound);
+    }
+
+    std::fs::remove_file(storage_path(conn).join(rel_path)).ok();
+    conn.execute(
+        "UPDATE employees SET ration_card_attachment_paths=?1, updated_at=datetime('now') WHERE id=?2",
+        params!["[]", employee_id],
+    )?;
+    Ok(())
+}
+
 pub fn upload_attachment(conn: &Connection, employee_id: i64, source_path: &str) -> AppResult<String> {
     ensure_storage_layout(conn)?;
     let src  = Path::new(source_path);

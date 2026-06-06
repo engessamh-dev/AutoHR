@@ -29,6 +29,8 @@ export const api = {
   deleteResidenceCardAttachment: (empId, side) => invoke("cmd_delete_residence_card_attachment", { employeeId: empId, side }),
   uploadPassportAttachment: (empId, path) => invoke("cmd_upload_passport_attachment", { employeeId: empId, sourcePath: path }),
   deletePassportAttachment: (empId, rel) => invoke("cmd_delete_passport_attachment", { employeeId: empId, relativePath: rel }),
+  uploadRationCardAttachment: (empId, path) => invoke("cmd_upload_ration_card_attachment", { employeeId: empId, sourcePath: path }),
+  deleteRationCardAttachment: (empId, rel) => invoke("cmd_delete_ration_card_attachment", { employeeId: empId, relativePath: rel }),
 
   // Job grade history
   listGradeHistory: (empId)  => invoke("cmd_list_grade_history", { employeeId: empId }),
