@@ -95,6 +95,81 @@ export function confirmAction(message = "هل أنت متأكد من تنفيذ 
   return _confirmActive;
 }
 
+// ── Unsaved changes ────────────────────────────────────────────────────────
+export function confirmSaveChanges(message = "توجد تغييرات غير محفوظة. هل تريد حفظها قبل الإغلاق؟") {
+  if (_confirmActive) return _confirmActive;
+
+  _confirmActive = new Promise(resolve => {
+    const overlay = document.createElement("div");
+    overlay.setAttribute("dir", "rtl");
+    overlay.style.cssText = `
+      position:fixed;inset:0;z-index:10000;background:rgba(0,0,0,.58);
+      display:flex;align-items:center;justify-content:center;padding:20px;
+    `;
+
+    const dialog = document.createElement("div");
+    dialog.style.cssText = `
+      width:min(460px,100%);background:#1f1f1f;border:1px solid #2d2d2d;
+      border-radius:8px;box-shadow:0 18px 60px rgba(0,0,0,.45);
+      padding:18px;color:#f3f4f6;
+    `;
+
+    const title = document.createElement("p");
+    title.textContent = "تغييرات غير محفوظة";
+    title.style.cssText = "font-size:16px;font-weight:700;margin:0 0 10px";
+
+    const body = document.createElement("p");
+    body.textContent = message;
+    body.style.cssText = "font-size:14px;line-height:1.8;color:#d1d5db;margin:0 0 18px";
+
+    const actions = document.createElement("div");
+    actions.style.cssText = "display:flex;gap:10px;justify-content:flex-start;flex-wrap:wrap";
+
+    const save = document.createElement("button");
+    save.type = "button";
+    save.className = "btn-primary";
+    save.textContent = "حفظ";
+
+    const discard = document.createElement("button");
+    discard.type = "button";
+    discard.className = "btn-danger";
+    discard.textContent = "خروج دون حفظ";
+
+    const cancel = document.createElement("button");
+    cancel.type = "button";
+    cancel.className = "btn-secondary";
+    cancel.textContent = "إلغاء";
+
+    const finish = value => {
+      document.removeEventListener("keydown", onKeyDown);
+      overlay.remove();
+      _confirmActive = null;
+      resolve(value);
+    };
+
+    const onKeyDown = event => {
+      if (event.key === "Escape") finish("cancel");
+      if (event.key === "Enter") finish("save");
+    };
+
+    save.addEventListener("click", () => finish("save"));
+    discard.addEventListener("click", () => finish("discard"));
+    cancel.addEventListener("click", () => finish("cancel"));
+    overlay.addEventListener("click", event => {
+      if (event.target === overlay) finish("cancel");
+    });
+    document.addEventListener("keydown", onKeyDown);
+
+    actions.append(save, discard, cancel);
+    dialog.append(title, body, actions);
+    overlay.append(dialog);
+    document.body.append(overlay);
+    setTimeout(() => save.focus(), 0);
+  });
+
+  return _confirmActive;
+}
+
 // ── Branding ───────────────────────────────────────────────────────────────
 export function applyBranding(config) {
   const co   = document.getElementById("sidebar-company");
@@ -120,8 +195,11 @@ export function applyBranding(config) {
 // ── Date helpers ───────────────────────────────────────────────────────────
 export function formatDate(iso) {
   if (!iso) return "—";
-  const d = new Date(iso);
-  return isNaN(d) ? iso : d.toLocaleDateString("ar-IQ");
+  const match = String(iso).match(/^(\d{4})-(\d{2})-(\d{2})/);
+  const d = match
+    ? new Date(Number(match[1]), Number(match[2]) - 1, Number(match[3]))
+    : new Date(iso);
+  return isNaN(d) ? iso : d.toLocaleDateString();
 }
 
 export function todayISO() {

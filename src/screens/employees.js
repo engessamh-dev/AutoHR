@@ -3,13 +3,14 @@
  */
 import { api } from "../api.js";
 import { convertFileSrc } from "@tauri-apps/api/core";
-import { showToast, formatDate, escHtml, debounce, confirmAction } from "../utils.js";
+import { showToast, formatDate, escHtml, debounce, confirmAction, confirmSaveChanges } from "../utils.js";
 
 let _employees = [];
 let _filter = "";
 let _activeTab = "basic";
 let _panelDraft = null;
 let _panelDirty = false;
+let _skipNextSaveConfirmation = false;
 
 export async function renderEmployees(container, user, ctx) {
   window.autohrCanLeaveCurrentScreen = confirmLeavePanel;
@@ -87,7 +88,7 @@ function renderTable() {
 
 function openPanel(emp) {
   _activeTab = "basic";
-  _panelDraft = emp ? { ...emp } : { is_active: 1, family_members: "[]" };
+  _panelDraft = emp ? { ...emp } : { is_active: 1, family_members: "[]", vehicles: "[]" };
   _panelDirty = false;
   document.getElementById("emp-panel").style.transform = "translateX(0)";
   document.getElementById("emp-overlay").style.display = "block";
@@ -102,7 +103,15 @@ async function confirmLeavePanel() {
 }
 
 async function closePanel(force = false) {
-  if (!force && !(await confirmLeavePanel())) return;
+  if (!force && _panelDirty) {
+    const choice = await confirmSaveChanges();
+    if (choice === "cancel") return;
+    if (choice === "save") {
+      _skipNextSaveConfirmation = true;
+      document.getElementById("panel-save")?.click();
+      return;
+    }
+  }
   document.getElementById("emp-panel").style.transform = "translateX(100%)";
   document.getElementById("emp-overlay").style.display = "none";
   _panelDraft = null;
@@ -127,7 +136,9 @@ function collectVisiblePanelFields(panel) {
     rows.forEach(row => {
       arr.push({
         name:        row.querySelector(".fm-name")?.value?.trim() || "",
+        gender:      row.querySelector(".fm-gender")?.value || "",
         birthplace:  row.querySelector(".fm-birthplace")?.value?.trim() || "",
+        birthdate:   row.querySelector(".fm-birthdate")?.value || "",
         civil_id:    row.querySelector(".fm-civil")?.value?.trim() || "",
         issue_date:  row.querySelector(".fm-issue")?.value || "",
         expiry_date: row.querySelector(".fm-expiry")?.value || "",
@@ -136,6 +147,24 @@ function collectVisiblePanelFields(panel) {
       });
     });
     _panelDraft.family_members = JSON.stringify(arr);
+  }
+
+  const vehicleList = panel.querySelector("#vehicle-list");
+  if (vehicleList) {
+    const vehicleRows = vehicleList.querySelectorAll(".vehicle-row");
+    const vehicles = [];
+    vehicleRows.forEach(row => {
+      vehicles.push({
+        plate:       row.querySelector(".vehicle-plate")?.value?.trim() || "",
+        brand:       row.querySelector(".vehicle-brand")?.value?.trim() || "",
+        type:        row.querySelector(".vehicle-type")?.value?.trim() || "",
+        color:       row.querySelector(".vehicle-color")?.value?.trim() || "",
+        annual_no:   row.querySelector(".vehicle-annual-no")?.value?.trim() || "",
+        issue_date:  row.querySelector(".vehicle-issue-date")?.value || "",
+        expiry_date: row.querySelector(".vehicle-expiry-date")?.value || "",
+      });
+    });
+    _panelDraft.vehicles = JSON.stringify(vehicles);
   }
 }
 
@@ -172,7 +201,7 @@ function sidedCardAttachment(label, side, path, fullPath, canUpload, cardType = 
   const name = path?.split(/[/\\]/).pop();
   const extension = name?.split(".").pop()?.toLowerCase();
   const assetUrl = fullPath ? convertFileSrc(fullPath) : "";
-  const preview = assetUrl && ["png", "jpg", "jpeg"].includes(extension)
+  const preview = assetUrl && ["jpg", "jpeg"].includes(extension)
     ? `<img src="${escHtml(assetUrl)}" alt="${label}" style="display:block;max-width:100%;height:auto;border:1px solid #2d2d2d;border-radius:6px;margin:0 auto 9px" />`
     : assetUrl && extension === "pdf"
       ? `<iframe src="${escHtml(assetUrl)}" title="${label}" style="display:block;width:100%;height:220px;background:#fff;border:1px solid #2d2d2d;border-radius:6px;margin-bottom:9px"></iframe>`
@@ -201,7 +230,7 @@ function passportAttachments(emp) {
   const name = path?.split(/[/\\]/).pop();
   const extension = name?.split(".").pop()?.toLowerCase();
   const assetUrl = fullPath ? convertFileSrc(fullPath) : "";
-  const preview = assetUrl && ["png", "jpg", "jpeg"].includes(extension)
+  const preview = assetUrl && ["jpg", "jpeg"].includes(extension)
     ? `<img src="${escHtml(assetUrl)}" alt="${escHtml(name)}" style="display:block;max-width:100%;height:auto;border:1px solid #2d2d2d;border-radius:6px;margin:0 auto 9px" />`
     : assetUrl && extension === "pdf"
       ? `<iframe src="${escHtml(assetUrl)}" title="${escHtml(name)}" style="display:block;width:100%;height:220px;background:#fff;border:1px solid #2d2d2d;border-radius:6px;margin-bottom:9px"></iframe>`
@@ -234,7 +263,7 @@ function rationCardAttachments(emp) {
   const name = path?.split(/[/\\]/).pop();
   const extension = name?.split(".").pop()?.toLowerCase();
   const assetUrl = fullPath ? convertFileSrc(fullPath) : "";
-  const preview = assetUrl && ["png", "jpg", "jpeg"].includes(extension)
+  const preview = assetUrl && ["jpg", "jpeg"].includes(extension)
     ? `<img src="${escHtml(assetUrl)}" alt="${escHtml(name)}" style="display:block;max-width:100%;height:auto;border:1px solid #2d2d2d;border-radius:6px;margin:0 auto 9px" />`
     : assetUrl && extension === "pdf"
       ? `<iframe src="${escHtml(assetUrl)}" title="${escHtml(name)}" style="display:block;width:100%;height:220px;background:#fff;border:1px solid #2d2d2d;border-radius:6px;margin-bottom:9px"></iframe>`
@@ -258,13 +287,199 @@ function rationCardAttachments(emp) {
   </div>`;
 }
 
+const printableDocumentDefinitions = [
+  {
+    id: "national",
+    title: "البطاقة الوطنية",
+    fields: [
+      ["رقم البطاقة الوطنية", "civil_id"],
+      ["جهة الإصدار", "civil_id_issuer"],
+      ["تاريخ الإصدار", "civil_id_issue_date"],
+      ["تاريخ النفاذ", "civil_id_expiry_date"],
+      ["محل الولادة", "civil_id_birthplace"],
+      ["تاريخ الولادة", "civil_id_birthdate"],
+      ["الرقم العائلي", "civil_id_family_number"],
+    ],
+    attachments: [
+      ["الوجه الأمامي", "civil_id_front_path", "civil_id_front_full_path"],
+      ["الوجه الخلفي", "civil_id_back_path", "civil_id_back_full_path"],
+    ],
+  },
+  {
+    id: "passport",
+    title: "جواز السفر",
+    fields: [
+      ["رقم جواز السفر", "passport_no"],
+      ["نوع الجواز", "passport_type"],
+      ["الاسم حسب الجواز", "passport_name"],
+      ["تاريخ الإصدار", "passport_issue_date"],
+      ["تاريخ النفاذ", "passport_expiry_date"],
+    ],
+    attachmentList: ["passport_attachment_paths", "passport_attachment_full_paths"],
+  },
+  {
+    id: "residence",
+    title: "بطاقة السكن",
+    fields: [
+      ["مكتب معلومات", "residence_card_issuer"],
+      ["اسم رب الأسرة", "residence_head_name"],
+      ["عنوان السكن الحالي", "residence_address"],
+      ["رقم الاستمارة", "residence_form_no"],
+      ["رقم بطاقة السكن", "residence_card_no"],
+      ["تاريخ الإصدار", "residence_card_issue_date"],
+    ],
+    attachments: [
+      ["الوجه الأمامي", "residence_card_front_path", "residence_card_front_full_path"],
+      ["الوجه الخلفي", "residence_card_back_path", "residence_card_back_full_path"],
+    ],
+  },
+  {
+    id: "ration",
+    title: "البطاقة التموينية الإلكترونية",
+    fields: [
+      ["رقم البطاقة التموينية", "ration_card_no"],
+      ["اسم رب الأسرة", "ration_center_name"],
+    ],
+    attachmentList: ["ration_card_attachment_paths", "ration_card_attachment_full_paths"],
+  },
+  {
+    id: "airport",
+    title: "باج دخول مطار بغداد",
+    fields: [
+      ["تاريخ الإصدار", "airport_badge_issue_date"],
+      ["تاريخ النفاذ", "airport_badge_expiry"],
+      ["رقم الهوية", "airport_badge_no"],
+    ],
+    attachments: [
+      ["الوجه الأمامي", "airport_badge_front_path", "airport_badge_front_full_path"],
+      ["الوجه الخلفي", "airport_badge_back_path", "airport_badge_back_full_path"],
+    ],
+  },
+  {
+    id: "ministry",
+    title: "هوية وزارة النقل",
+    fields: [
+      ["تاريخ الإصدار", "ministry_badge_issue_date"],
+      ["تاريخ النفاذ", "ministry_badge_expiry"],
+      ["رقم الهوية", "ministry_badge_no"],
+    ],
+    attachments: [
+      ["الوجه الأمامي", "ministry_badge_front_path", "ministry_badge_front_full_path"],
+      ["الوجه الخلفي", "ministry_badge_back_path", "ministry_badge_back_full_path"],
+    ],
+  },
+];
+
+function printableAttachment(label, path, fullPath) {
+  if (!path || !fullPath) {
+    return "";
+  }
+  const name = path.split(/[/\\]/).pop();
+  const extension = name?.split(".").pop()?.toLowerCase();
+  const assetUrl = convertFileSrc(fullPath);
+  const content = ["jpg", "jpeg"].includes(extension)
+    ? `<img src="${escHtml(assetUrl)}" alt="${escHtml(label)}" />`
+    : extension === "pdf"
+      ? `<object data="${escHtml(assetUrl)}" type="application/pdf"></object>`
+      : "";
+  return content ? `<div class="print-attachment">${content}</div>` : "";
+}
+
+function printableSection(definition, emp) {
+  let attachments = definition.attachments ?? [];
+  if (definition.attachmentList) {
+    let paths = [];
+    try { paths = JSON.parse(emp?.[definition.attachmentList[0]] ?? "[]"); } catch {}
+    const fullPaths = emp?.[definition.attachmentList[1]] ?? [];
+    attachments = paths.length
+      ? paths.map((path, index) => [`المرفق ${index + 1}`, path, fullPaths[index]])
+      : [["المرفق", null, null]];
+  }
+  const content = attachments.map(([label, pathKey, fullPathKey]) => printableAttachment(
+        label,
+        definition.attachments ? emp?.[pathKey] : pathKey,
+        definition.attachments ? emp?.[fullPathKey] : fullPathKey,
+      )).join("");
+  return content ? `<section class="print-document" data-print-section="${definition.id}">${content}</section>` : "";
+}
+
+function printableDocumentsHtml(emp, selectedIds) {
+  const sections = printableDocumentDefinitions
+    .filter(definition => selectedIds.has(definition.id))
+    .map(definition => printableSection(definition, emp))
+    .join("");
+  return `<div class="print-page" dir="rtl">${sections || `<p class="print-no-selection">لا توجد مرفقات محددة للطباعة</p>`}</div>`;
+}
+
+const printableDocumentsCss = `
+  *{box-sizing:border-box} body{margin:0;background:#d1d5db;font-family:Arial,sans-serif;color:#111827}
+  .print-page{width:210mm;min-height:297mm;margin:12px auto;padding:10mm;background:#fff;box-shadow:0 3px 18px rgba(0,0,0,.2)}
+  .print-document{display:grid;grid-template-columns:1fr 1fr;gap:8mm;margin:0 0 8mm;break-inside:avoid;page-break-inside:avoid}
+  .print-attachment{min-height:50mm;text-align:center;overflow:hidden;break-inside:avoid;page-break-inside:avoid}
+  .print-attachment img,.print-attachment object{display:block;width:100%;height:auto;max-height:125mm;object-fit:contain}
+  .print-attachment object{height:115mm}
+  .print-no-selection{text-align:center;padding:50px;color:#6b7280}
+  @page{size:A4;margin:0}@media print{body{background:#fff}.print-page{margin:0;box-shadow:none;width:210mm;min-height:297mm}}
+`;
+
+function printSelectedDocuments(emp, selectedIds) {
+  const frame = document.createElement("iframe");
+  frame.style.cssText = "position:fixed;width:0;height:0;border:0;right:-9999px";
+  document.body.append(frame);
+  const doc = frame.contentDocument;
+  doc.open();
+  doc.write(`<!doctype html><html lang="ar" dir="rtl"><head><meta charset="UTF-8"><title>مستمسكات ${escHtml(emp.full_name)}</title><style>${printableDocumentsCss}</style></head><body>${printableDocumentsHtml(emp, selectedIds)}</body></html>`);
+  doc.close();
+  const removeFrame = () => frame.isConnected && frame.remove();
+  frame.contentWindow.addEventListener("afterprint", removeFrame, { once: true });
+  setTimeout(() => {
+    frame.contentWindow.focus();
+    frame.contentWindow.print();
+  }, 800);
+  setTimeout(removeFrame, 60000);
+}
+
+function openDocumentsPrintDialog(emp) {
+  const overlay = document.createElement("div");
+  overlay.setAttribute("dir", "rtl");
+  overlay.style.cssText = "position:fixed;inset:0;z-index:10000;background:rgba(0,0,0,.72);display:flex;flex-direction:column";
+  overlay.innerHTML = `
+    <div style="height:64px;background:#1f1f1f;border-bottom:1px solid #333;display:flex;align-items:center;gap:10px;padding:10px 18px">
+      <strong style="font-size:16px;margin-left:auto">طباعة مستمسكات ${escHtml(emp.full_name)}</strong>
+      <button type="button" id="docs-print" class="btn-primary">طباعة</button>
+      <button type="button" id="docs-print-close" class="btn-secondary">إغلاق</button>
+    </div>
+    <div style="display:grid;grid-template-columns:260px 1fr;min-height:0;flex:1">
+      <aside style="background:#181818;border-left:1px solid #333;padding:16px;overflow:auto">
+        <p style="font-size:12px;color:#9ca3af;margin-bottom:12px">أزل التأشير عن المستمسكات التي لا تريد ظهورها في الطباعة.</p>
+        ${printableDocumentDefinitions.map(definition => `
+          <label style="display:flex;align-items:center;gap:8px;padding:9px 6px;border-bottom:1px solid #2d2d2d;cursor:pointer">
+            <input type="checkbox" class="docs-print-choice" value="${definition.id}" checked style="width:16px;height:16px;accent-color:#5da12c" />
+            <span style="font-size:13px;color:#e5e7eb">${escHtml(definition.title)}</span>
+          </label>`).join("")}
+      </aside>
+      <main id="docs-print-preview" style="overflow:auto;background:#555;padding:18px"></main>
+    </div>`;
+  document.body.append(overlay);
+
+  const selectedIds = () => new Set([...overlay.querySelectorAll(".docs-print-choice:checked")].map(input => input.value));
+  const renderPreview = () => {
+    const preview = overlay.querySelector("#docs-print-preview");
+    preview.innerHTML = `<iframe title="معاينة مستمسكات الموظف" style="display:block;width:100%;height:100%;min-height:700px;border:0;background:#d1d5db"></iframe>`;
+    preview.querySelector("iframe").srcdoc = `<!doctype html><html lang="ar" dir="rtl"><head><meta charset="UTF-8"><style>${printableDocumentsCss}</style></head><body>${printableDocumentsHtml(emp, selectedIds())}</body></html>`;
+  };
+  overlay.querySelector("#docs-print").addEventListener("click", () => printSelectedDocuments(emp, selectedIds()));
+  overlay.querySelector("#docs-print-close").addEventListener("click", () => overlay.remove());
+  overlay.querySelectorAll(".docs-print-choice").forEach(input => input.addEventListener("change", renderPreview));
+  renderPreview();
+}
+
 // ── Tabs ────────────────────────────────────────────────────────────────────
 const TABS = [
   { id: "basic",       label: "💼 المعلومات الوظيفية" },
   { id: "documents",   label: "🪪 المستمسكات" },
-  { id: "family",      label: "👨‍👩‍👧 عائلة" },
-  { id: "vehicle",     label: "🚗 مركبة" },
-  { id: "attachments", label: "📎 مرفقات" },
+  { id: "family",      label: "👨‍👩‍👧 أفراد الأسرة" },
+  { id: "vehicle",     label: "🚗 معلومات المركبة" },
 ];
 
 function tabContent(tab, emp) {
@@ -340,9 +555,20 @@ function tabContent(tab, emp) {
         ${field("اسم رب الأسرة", "ration_center_name", emp)}
         ${sectionTitle("مرفقات البطاقة التموينية")}
         ${rationCardAttachments(emp)}
-        ${sectionTitle("باجات الدخول")}
-        ${field("رقم وتاريخ باج دخول المطار", "airport_badge_no", emp, {ltr:true})}
-        ${field("رقم وتاريخ باج الوزارة", "ministry_badge_no", emp, {ltr:true})}
+        ${sectionTitle("باج دخول مطار بغداد")}
+        ${field("تاريخ الإصدار", "airport_badge_issue_date", emp, {date:true})}
+        ${field("تاريخ النفاذ", "airport_badge_expiry", emp, {date:true})}
+        ${field("رقم الهوية", "airport_badge_no", emp, {ltr:true, span:true})}
+        ${sectionTitle("مرفقات باج دخول مطار بغداد")}
+        ${sidedCardAttachment("الوجه الأمامي", "front", emp?.airport_badge_front_path, emp?.airport_badge_front_full_path, Boolean(emp?.id), "airport")}
+        ${sidedCardAttachment("الوجه الخلفي", "back", emp?.airport_badge_back_path, emp?.airport_badge_back_full_path, Boolean(emp?.id), "airport")}
+        ${sectionTitle("هوية وزارة النقل")}
+        ${field("تاريخ الإصدار", "ministry_badge_issue_date", emp, {date:true})}
+        ${field("تاريخ النفاذ", "ministry_badge_expiry", emp, {date:true})}
+        ${field("رقم الهوية", "ministry_badge_no", emp, {ltr:true, span:true})}
+        ${sectionTitle("مرفقات هوية وزارة النقل")}
+        ${sidedCardAttachment("الوجه الأمامي", "front", emp?.ministry_badge_front_path, emp?.ministry_badge_front_full_path, Boolean(emp?.id), "ministry")}
+        ${sidedCardAttachment("الوجه الخلفي", "back", emp?.ministry_badge_back_path, emp?.ministry_badge_back_full_path, Boolean(emp?.id), "ministry")}
       </div>`;
 
     case "family": return `
@@ -360,35 +586,11 @@ function tabContent(tab, emp) {
       </div>`;
 
     case "vehicle": return `
-      <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
-        ${sectionTitle("معلومات المركبة")}
-        ${field("رقم لوحة المركبة ومحل إصدارها", "vehicle_plate", emp, {ltr:true})}
-        ${field("اسم المركبة ونوعها", "vehicle_name", emp)}
-        ${field("لون المركبة وموديلها", "vehicle_color_model", emp)}
-        ${field("رقم السنوية وتاريخ إصدارها", "vehicle_annual_no", emp, {ltr:true})}
+      <div>
+        <div id="vehicle-list"></div>
+        <button id="btn-add-vehicle" class="btn-secondary text-sm mt-2">+ إضافة مركبة</button>
       </div>`;
 
-    case "attachments": {
-      let paths = [];
-      try { paths = JSON.parse(emp?.attachment_paths ?? "[]"); } catch {}
-      return `
-        <div class="space-y-3">
-          <div class="flex justify-between items-center">
-            <p style="font-size:13px;color:#9ca3af">${paths.length} مرفق(ات)</p>
-            ${emp ? `<button id="btn-upload-att" class="btn-secondary text-sm px-3 py-1.5">رفع ملف…</button>` : `<p style="font-size:12px;color:#6b7280">احفظ السجل أولاً لرفع المرفقات</p>`}
-          </div>
-          ${paths.length === 0
-            ? `<p style="text-align:center;color:#6b7280;padding:32px;font-size:14px">لا توجد مرفقات</p>`
-            : paths.map(p => {
-                const name = p.split(/[/\\]/).pop();
-                return `<div style="display:flex;align-items:center;justify-content:space-between;
-                  padding:10px 12px;background:#181818;border:1px solid #2d2d2d;border-radius:8px">
-                  <span style="font-size:13px;color:#d1d5db">📄 ${escHtml(name)}</span>
-                  <button class="btn-danger text-xs px-2 py-1 btn-del-att" data-path="${escHtml(p)}">حذف</button>
-                </div>`;
-              }).join("")}
-        </div>`;
-    }
   }
 }
 
@@ -431,6 +633,7 @@ function renderPanel(emp) {
     <!-- Footer -->
     <div style="flex-shrink:0;padding:12px 20px;border-top:1px solid #2d2d2d;display:flex;gap:10px">
       <button id="panel-save" class="btn-primary" style="flex:1">حفظ</button>
+      ${!isNew ? `<button id="panel-print-documents" class="btn-secondary" style="display:${_activeTab === "documents" ? "inline-flex" : "none"}">طباعة المستمسكات</button>` : ""}
       ${!isNew ? `<button id="panel-delete" class="btn-danger">حذف</button>` : ""}
       <button id="panel-cancel" class="btn-secondary">إلغاء</button>
     </div>`;
@@ -447,6 +650,10 @@ function renderPanel(emp) {
         b.style.fontWeight  = active ? "700"        : "400";
       });
       document.getElementById("tab-content").innerHTML = tabContent(_activeTab, _panelDraft ?? draft);
+      const printDocumentsButton = panel.querySelector("#panel-print-documents");
+      if (printDocumentsButton) {
+        printDocumentsButton.style.display = _activeTab === "documents" ? "inline-flex" : "none";
+      }
       attachTabEvents(emp);
     });
   });
@@ -457,6 +664,10 @@ function renderPanel(emp) {
 
   panel.querySelector("#panel-close").addEventListener("click",  () => closePanel());
   panel.querySelector("#panel-cancel").addEventListener("click", () => closePanel());
+  panel.querySelector("#panel-print-documents")?.addEventListener("click", () => {
+    collectVisiblePanelFields(panel);
+    openDocumentsPrintDialog(_panelDraft ?? emp);
+  });
 
   // Save
   panel.querySelector("#panel-save").addEventListener("click", async () => {
@@ -503,17 +714,31 @@ function renderPanel(emp) {
       residence_address:     g("residence_address"),
       ration_card_no:        g("ration_card_no"),
       ration_center_name:    g("ration_center_name"),
+      // Preserve legacy ration-card values that are no longer editable in the form.
+      ration_center_no:      g("ration_center_no"),
+      ration_card_date:      g("ration_card_date"),
       passport_no:           g("passport_no"),
       passport_type:         g("passport_type"),
       passport_name:         g("passport_name"),
       passport_issue_date:   g("passport_issue_date"),
       passport_expiry_date:  g("passport_expiry_date"),
       airport_badge_no:      g("airport_badge_no"),
+      airport_badge_issue_date:g("airport_badge_issue_date"),
+      airport_badge_expiry:  g("airport_badge_expiry"),
       ministry_badge_no:     g("ministry_badge_no"),
+      ministry_badge_issue_date:g("ministry_badge_issue_date"),
+      ministry_badge_expiry: g("ministry_badge_expiry"),
       vehicle_plate:         g("vehicle_plate"),
       vehicle_name:          g("vehicle_name"),
+      // Preserve the legacy combined value while saving the new separate fields.
       vehicle_color_model:   g("vehicle_color_model"),
+      vehicle_type:          g("vehicle_type"),
+      vehicle_color:         g("vehicle_color"),
+      vehicle_manufacture_year:g("vehicle_manufacture_year"),
       vehicle_annual_no:     g("vehicle_annual_no"),
+      vehicle_annual_issue_date:g("vehicle_annual_issue_date"),
+      vehicle_annual_expiry_date:g("vehicle_annual_expiry_date"),
+      vehicles:               g("vehicles") || "[]",
       spouse_name:           g("spouse_name"),
       spouse_mother_name:    g("spouse_mother_name"),
       spouse_birthdate:      g("spouse_birthdate"),
@@ -523,8 +748,10 @@ function renderPanel(emp) {
       is_active:             g("is_active") === 0 ? 0 : 1,
     };
 
+    const skipConfirmation = _skipNextSaveConfirmation;
+    _skipNextSaveConfirmation = false;
     if (!data.full_name) { showToast("الاسم الكامل مطلوب", "error"); return; }
-    if (!(await confirmAction(isNew ? "تأكيد إضافة الموظف؟" : "تأكيد حفظ تعديلات الموظف؟"))) return;
+    if (!skipConfirmation && !(await confirmAction(isNew ? "تأكيد إضافة الموظف؟" : "تأكيد حفظ تعديلات الموظف؟"))) return;
     try {
       if (isNew) {
         await api.createEmployee(data);
@@ -561,16 +788,22 @@ function attachTabEvents(emp) {
       btn.addEventListener("click", async () => {
         try {
           collectVisiblePanelFields(panel);
-          const isResidence = btn.dataset.cardType === "residence";
-          const cardName = isResidence ? "بطاقة السكن" : "البطاقة الوطنية";
+          const cardType = btn.dataset.cardType;
+          const cardName = {
+            residence: "بطاقة السكن",
+            airport: "باج دخول مطار بغداد",
+            ministry: "هوية وزارة النقل",
+          }[cardType] ?? "البطاقة الوطنية";
           const { open } = await import("@tauri-apps/plugin-dialog");
           const selected = await open({
             multiple: false,
-            filters: [{ name: `ملفات ${cardName}`, extensions: ["png", "jpg", "jpeg", "pdf"] }],
+            filters: [{ name: `ملفات ${cardName}`, extensions: ["jpg", "jpeg", "pdf"] }],
           });
           if (!selected) return;
           if (!(await confirmAction(`تأكيد رفع ${btn.dataset.side === "front" ? "الوجه الأمامي" : "الوجه الخلفي"} لـ${cardName}؟`))) return;
-          if (isResidence) await api.uploadResidenceCardAttachment(emp.id, btn.dataset.side, selected);
+          if (cardType === "residence") await api.uploadResidenceCardAttachment(emp.id, btn.dataset.side, selected);
+          else if (cardType === "airport") await api.uploadAirportBadgeAttachment(emp.id, btn.dataset.side, selected);
+          else if (cardType === "ministry") await api.uploadMinistryBadgeAttachment(emp.id, btn.dataset.side, selected);
           else await api.uploadNationalCardAttachment(emp.id, btn.dataset.side, selected);
           showToast(`تم رفع مرفق ${cardName}`);
           await refreshDocumentAttachments(emp.id);
@@ -580,12 +813,18 @@ function attachTabEvents(emp) {
 
     panel.querySelectorAll(".btn-delete-sided-card").forEach(btn => {
       btn.addEventListener("click", async () => {
-        const isResidence = btn.dataset.cardType === "residence";
-        const cardName = isResidence ? "بطاقة السكن" : "البطاقة الوطنية";
+        const cardType = btn.dataset.cardType;
+        const cardName = {
+          residence: "بطاقة السكن",
+          airport: "باج دخول مطار بغداد",
+          ministry: "هوية وزارة النقل",
+        }[cardType] ?? "البطاقة الوطنية";
         if (!(await confirmAction(`تأكيد حذف مرفق ${cardName}؟`))) return;
         try {
           collectVisiblePanelFields(panel);
-          if (isResidence) await api.deleteResidenceCardAttachment(emp.id, btn.dataset.side);
+          if (cardType === "residence") await api.deleteResidenceCardAttachment(emp.id, btn.dataset.side);
+          else if (cardType === "airport") await api.deleteAirportBadgeAttachment(emp.id, btn.dataset.side);
+          else if (cardType === "ministry") await api.deleteMinistryBadgeAttachment(emp.id, btn.dataset.side);
           else await api.deleteNationalCardAttachment(emp.id, btn.dataset.side);
           showToast(`تم حذف مرفق ${cardName}`);
           await refreshDocumentAttachments(emp.id);
@@ -599,7 +838,7 @@ function attachTabEvents(emp) {
         const { open } = await import("@tauri-apps/plugin-dialog");
         const selected = await open({
           multiple: false,
-          filters: [{ name: "نسخة جواز السفر", extensions: ["png", "jpg", "jpeg", "pdf"] }],
+          filters: [{ name: "نسخة جواز السفر", extensions: ["jpg", "jpeg", "pdf"] }],
         });
         if (!selected) return;
         if (!(await confirmAction("تأكيد رفع نسخة جواز السفر؟"))) return;
@@ -627,7 +866,7 @@ function attachTabEvents(emp) {
         const { open } = await import("@tauri-apps/plugin-dialog");
         const selected = await open({
           multiple: false,
-          filters: [{ name: "نسخة البطاقة التموينية", extensions: ["png", "jpg", "jpeg", "pdf"] }],
+          filters: [{ name: "نسخة البطاقة التموينية", extensions: ["jpg", "jpeg", "pdf"] }],
         });
         if (!selected) return;
         if (!(await confirmAction("تأكيد رفع نسخة البطاقة التموينية؟"))) return;
@@ -659,40 +898,14 @@ function attachTabEvents(emp) {
     });
   }
 
-  // Attachments tab
-  if (_activeTab === "attachments" && emp) {
-    panel.querySelector("#btn-upload-att")?.addEventListener("click", async () => {
-      try {
-        const { open } = await import("@tauri-apps/plugin-dialog");
-        const selected = await open({ multiple: true });
-        if (!selected) return;
-        const files = Array.isArray(selected) ? selected : [selected];
-        if (!(await confirmAction(`تأكيد رفع ${files.length} ملف(ات)؟`))) return;
-        for (const f of files) {
-          await api.uploadAttachment(emp.id, f);
-        }
-        showToast(`تم رفع ${files.length} ملف(ات)`);
-        _employees = await api.listEmployees();
-        const updated = _employees.find(e => e.id === emp.id);
-        document.getElementById("tab-content").innerHTML = tabContent("attachments", updated);
-        attachTabEvents(updated);
-      } catch (err) { showToast(err?.message ?? String(err || "خطأ في الرفع"), "error"); }
-    });
-
-    panel.querySelectorAll(".btn-del-att").forEach(btn => {
-      btn.addEventListener("click", async () => {
-        if (!(await confirmAction("تأكيد حذف المرفق؟"))) return;
-        try {
-          await api.deleteAttachment(emp.id, btn.dataset.path);
-          showToast("تم حذف المرفق");
-          _employees = await api.listEmployees();
-          const updated = _employees.find(e => e.id === emp.id);
-          document.getElementById("tab-content").innerHTML = tabContent("attachments", updated);
-          attachTabEvents(updated);
-        } catch (err) { showToast(err?.message ?? String(err || "خطأ"), "error"); }
-      });
+  if (_activeTab === "vehicle") {
+    renderVehicleList(_panelDraft ?? emp);
+    panel.querySelector("#btn-add-vehicle")?.addEventListener("click", () => {
+      markPanelDirty();
+      addVehicleRow();
     });
   }
+
 }
 
 async function refreshDocumentAttachments(employeeId) {
@@ -710,6 +923,14 @@ async function refreshDocumentAttachments(employeeId) {
     residence_card_back_path: updated.residence_card_back_path,
     residence_card_front_full_path: updated.residence_card_front_full_path,
     residence_card_back_full_path: updated.residence_card_back_full_path,
+    airport_badge_front_path: updated.airport_badge_front_path,
+    airport_badge_back_path: updated.airport_badge_back_path,
+    airport_badge_front_full_path: updated.airport_badge_front_full_path,
+    airport_badge_back_full_path: updated.airport_badge_back_full_path,
+    ministry_badge_front_path: updated.ministry_badge_front_path,
+    ministry_badge_back_path: updated.ministry_badge_back_path,
+    ministry_badge_front_full_path: updated.ministry_badge_front_full_path,
+    ministry_badge_back_full_path: updated.ministry_badge_back_full_path,
     passport_attachment_paths: updated.passport_attachment_paths,
     passport_attachment_full_paths: updated.passport_attachment_full_paths,
     ration_card_attachment_paths: updated.ration_card_attachment_paths,
@@ -729,7 +950,8 @@ function renderFamilyList(emp) {
     `<p style="font-size:13px;color:#6b7280;padding:8px 0">لا يوجد أفراد مسجلون</p>`;
 
   container.querySelectorAll(".btn-remove-member").forEach(btn => {
-    btn.addEventListener("click", () => {
+    btn.addEventListener("click", async () => {
+      if (!(await confirmAction("تأكيد حذف فرد العائلة؟"))) return;
       markPanelDirty();
       btn.closest(".family-row").remove();
     });
@@ -741,19 +963,33 @@ function familyRowHtml(m = {}, i = Date.now()) {
     padding:10px;margin-bottom:8px;display:grid;grid-template-columns:1fr 1fr;gap:8px">
     <div style="grid-column:span 2;display:flex;justify-content:space-between;align-items:center">
       <p style="font-size:11px;color:#5da12c;font-weight:700">فرد رقم ${typeof i === "number" && i < 100 ? i+1 : ""}</p>
-      <button class="btn-remove-member btn-danger" style="font-size:11px;padding:2px 8px">إزالة</button>
+      <button class="btn-remove-member btn-danger" style="font-size:11px;padding:2px 8px">حذف</button>
+    </div>
+    <div style="grid-column:span 2">
+      <p style="font-size:10px;color:#6b7280;margin-bottom:3px">رقم البطاقة الموحدة</p>
+      <input class="input-field fm-civil" dir="ltr" value="${escHtml(m.civil_id??"")}"/>
     </div>
     <div style="grid-column:span 2">
       <p style="font-size:10px;color:#6b7280;margin-bottom:3px">الاسم الرباعي</p>
       <input class="input-field fm-name" value="${escHtml(m.name??"")}"/>
     </div>
     <div>
-      <p style="font-size:10px;color:#6b7280;margin-bottom:3px">محل الولادة والتاريخ</p>
-      <input class="input-field fm-birthplace" value="${escHtml(m.birthplace??"")}"/>
+      <p style="font-size:10px;color:#6b7280;margin-bottom:3px">الجنس</p>
+      <select class="input-field fm-gender">
+        ${[["","—"],["ذكر","ذكر"],["أنثى","أنثى"]].map(([value, label]) =>
+          `<option value="${value}" ${m.gender===value?"selected":""}>${label}</option>`).join("")}
+      </select>
     </div>
     <div>
-      <p style="font-size:10px;color:#6b7280;margin-bottom:3px">رقم البطاقة الموحدة</p>
-      <input class="input-field fm-civil" dir="ltr" value="${escHtml(m.civil_id??"")}"/>
+      <p style="font-size:10px;color:#6b7280;margin-bottom:3px">فصيلة الدم</p>
+      <select class="input-field fm-blood">
+        ${["","A+","A-","B+","B-","AB+","AB-","O+","O-"].map(b =>
+          `<option ${m.blood_type===b?"selected":""}>${b}</option>`).join("")}
+      </select>
+    </div>
+    <div>
+      <p style="font-size:10px;color:#6b7280;margin-bottom:3px">جهة الإصدار</p>
+      <input class="input-field fm-issuer" value="${escHtml(m.issuer??"")}"/>
     </div>
     <div>
       <p style="font-size:10px;color:#6b7280;margin-bottom:3px">تاريخ الإصدار</p>
@@ -764,15 +1000,12 @@ function familyRowHtml(m = {}, i = Date.now()) {
       <input class="input-field fm-expiry" type="date" value="${m.expiry_date??""}" />
     </div>
     <div>
-      <p style="font-size:10px;color:#6b7280;margin-bottom:3px">جهة الإصدار</p>
-      <input class="input-field fm-issuer" value="${escHtml(m.issuer??"")}"/>
+      <p style="font-size:10px;color:#6b7280;margin-bottom:3px">محل الولادة</p>
+      <input class="input-field fm-birthplace" value="${escHtml(m.birthplace??"")}"/>
     </div>
     <div>
-      <p style="font-size:10px;color:#6b7280;margin-bottom:3px">فصيلة الدم</p>
-      <select class="input-field fm-blood">
-        ${["","A+","A-","B+","B-","AB+","AB-","O+","O-"].map(b =>
-          `<option ${m.blood_type===b?"selected":""}>${b}</option>`).join("")}
-      </select>
+      <p style="font-size:10px;color:#6b7280;margin-bottom:3px">تاريخ الولادة</p>
+      <input class="input-field fm-birthdate" type="date" value="${m.birthdate??""}" />
     </div>
   </div>`;
 }
@@ -786,9 +1019,72 @@ function addFamilyRow() {
   const div = document.createElement("div");
   div.innerHTML = familyRowHtml({}, Date.now());
   const row = div.firstElementChild;
-  row.querySelector(".btn-remove-member").addEventListener("click", () => {
+  row.querySelector(".btn-remove-member").addEventListener("click", async () => {
+    if (!(await confirmAction("تأكيد حذف فرد العائلة؟"))) return;
     markPanelDirty();
     row.remove();
   });
   container.appendChild(row);
+}
+
+function renderVehicleList(emp) {
+  const container = document.getElementById("vehicle-list");
+  if (!container) return;
+  let vehicles = [];
+  try { vehicles = JSON.parse(emp?.vehicles ?? "[]"); } catch {}
+
+  container.innerHTML = vehicles.map((vehicle, index) => vehicleRowHtml(vehicle, index)).join("") ||
+    `<p class="vehicle-empty" style="font-size:13px;color:#6b7280;padding:8px 0">لا توجد مركبات مسجلة</p>`;
+
+  attachVehicleRemoveEvents(container);
+}
+
+function vehicleRowHtml(vehicle = {}, index = Date.now()) {
+  const number = typeof index === "number" && index < 100 ? index + 1 : "";
+  return `<div class="vehicle-row" style="background:#181818;border:1px solid #2d2d2d;border-radius:8px;
+    padding:10px;margin-bottom:10px;display:grid;grid-template-columns:1fr 1fr;gap:8px">
+    <div style="grid-column:span 2;display:flex;justify-content:space-between;align-items:center">
+      <p style="font-size:11px;color:#5da12c;font-weight:700">مركبة رقم ${number}</p>
+      <button type="button" class="btn-remove-vehicle btn-danger" style="font-size:11px;padding:2px 8px">حذف</button>
+    </div>
+    ${vehicleInput("رقم اللوحة", "vehicle-plate", vehicle.plate, true)}
+    ${vehicleInput("العلامة التجارية للمركبة", "vehicle-brand", vehicle.brand)}
+    ${vehicleInput("نوع المركبة", "vehicle-type", vehicle.type)}
+    ${vehicleInput("لون المركبة", "vehicle-color", vehicle.color)}
+    ${vehicleInput("رقم السنوية", "vehicle-annual-no", vehicle.annual_no, true)}
+    ${vehicleInput("تاريخ الإصدار", "vehicle-issue-date", vehicle.issue_date, false, true)}
+    ${vehicleInput("تاريخ النفاذ", "vehicle-expiry-date", vehicle.expiry_date, false, true)}
+  </div>`;
+}
+
+function vehicleInput(label, className, value = "", ltr = false, date = false) {
+  return `<div>
+    <p style="font-size:10px;color:#6b7280;margin-bottom:3px">${label}</p>
+    <input class="input-field ${className}" type="${date ? "date" : "text"}"
+      dir="${ltr ? "ltr" : "rtl"}" value="${date ? (value ?? "") : escHtml(value ?? "")}" />
+  </div>`;
+}
+
+function attachVehicleRemoveEvents(container) {
+  container.querySelectorAll(".btn-remove-vehicle").forEach(button => {
+    button.addEventListener("click", async () => {
+      if (!(await confirmAction("تأكيد حذف المركبة؟"))) return;
+      markPanelDirty();
+      button.closest(".vehicle-row").remove();
+      if (!container.querySelector(".vehicle-row")) {
+        container.innerHTML = `<p class="vehicle-empty" style="font-size:13px;color:#6b7280;padding:8px 0">لا توجد مركبات مسجلة</p>`;
+      }
+    });
+  });
+}
+
+function addVehicleRow() {
+  const container = document.getElementById("vehicle-list");
+  if (!container) return;
+  container.querySelector(".vehicle-empty")?.remove();
+  const wrapper = document.createElement("div");
+  wrapper.innerHTML = vehicleRowHtml({}, Date.now());
+  const row = wrapper.firstElementChild;
+  container.appendChild(row);
+  attachVehicleRemoveEvents(row);
 }

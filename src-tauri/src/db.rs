@@ -102,13 +102,25 @@ fn migrate(conn: &Connection) -> SqlResult<()> {
         ("passport_expiry_date",     "TEXT"),
         ("passport_attachment_paths", "TEXT DEFAULT '[]'"),
         ("airport_badge_no",         "TEXT"),
+        ("airport_badge_issue_date", "TEXT"),
         ("airport_badge_expiry",     "TEXT"),
+        ("airport_badge_front_path", "TEXT"),
+        ("airport_badge_back_path",  "TEXT"),
         ("ministry_badge_no",        "TEXT"),
+        ("ministry_badge_issue_date", "TEXT"),
         ("ministry_badge_expiry",    "TEXT"),
+        ("ministry_badge_front_path", "TEXT"),
+        ("ministry_badge_back_path",  "TEXT"),
         ("vehicle_plate",            "TEXT"),
         ("vehicle_name",             "TEXT"),
         ("vehicle_color_model",      "TEXT"),
+        ("vehicle_type",             "TEXT"),
+        ("vehicle_color",            "TEXT"),
+        ("vehicle_manufacture_year", "TEXT"),
         ("vehicle_annual_no",        "TEXT"),
+        ("vehicle_annual_issue_date", "TEXT"),
+        ("vehicle_annual_expiry_date", "TEXT"),
+        ("vehicles",                  "TEXT DEFAULT '[]'"),
         ("spouse_name",              "TEXT"),
         ("spouse_mother_name",       "TEXT"),
         ("spouse_birthdate",         "TEXT"),
@@ -139,6 +151,17 @@ fn migrate(conn: &Connection) -> SqlResult<()> {
         UPDATE employees SET
             civil_id_birthplace=COALESCE(NULLIF(civil_id_birthplace,''),birthplace),
             civil_id_birthdate=COALESCE(NULLIF(civil_id_birthdate,''),birthdate);
+        UPDATE employees SET
+            vehicle_color=COALESCE(NULLIF(vehicle_color,''), TRIM(CASE
+                WHEN INSTR(vehicle_color_model,' - ') > 0
+                THEN SUBSTR(vehicle_color_model,1,INSTR(vehicle_color_model,' - ')-1)
+                ELSE vehicle_color_model
+            END)),
+            vehicle_manufacture_year=COALESCE(NULLIF(vehicle_manufacture_year,''), TRIM(CASE
+                WHEN INSTR(vehicle_color_model,' - ') > 0
+                THEN SUBSTR(vehicle_color_model,INSTR(vehicle_color_model,' - ')+3)
+                ELSE NULL
+            END));
     ")?;
 
     // Create tables introduced in v2 schema if they don't exist yet

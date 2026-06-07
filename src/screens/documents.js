@@ -120,7 +120,7 @@ export async function renderDocuments(container, user, ctx) {
     return `<div class="space-y-4">
       <!-- Tabs -->
       <div style="display:flex;gap:8px;border-bottom:1px solid #2d2d2d;padding-bottom:0">
-        ${[["general","📂 الأرشيف العام"],["employee","👤 وثائق الموظفين"]].map(([id, label]) => `
+        ${[["general","📂 الوارد"],["employee","👤 وثائق الموظفين"]].map(([id, label]) => `
           <button class="doc-tab" data-tab="${id}" style="padding:8px 16px;border:none;cursor:pointer;
             font-size:13px;border-bottom:2px solid ${activeTab===id?"#5da12c":"transparent"};
             background:transparent;color:${activeTab===id?"#5da12c":"#9ca3af"};
@@ -143,7 +143,7 @@ export async function renderDocuments(container, user, ctx) {
         <div class="card space-y-3">
           <div class="flex gap-3 items-center flex-wrap">
             <input id="general-doc-search" class="input-field flex-1 min-w-[220px]"
-              placeholder="بحث في الأرشيف العام..." value="${escHtml(generalSearch)}" />
+              placeholder="بحث في الوارد..." value="${escHtml(generalSearch)}" />
             <span class="badge badge-gray">${filteredDocs.length} / ${generalDocs.length}</span>
             <button id="btn-add-doc" class="btn-primary px-4 py-2">+ إضافة وثيقة</button>
           </div>
@@ -295,7 +295,10 @@ export async function renderDocuments(container, user, ctx) {
     el.querySelectorAll(".btn-upload-doc").forEach(btn => {
       btn.addEventListener("click", async () => {
         try {
-          const selected = await open({ multiple: false });
+          const selected = await open({
+            multiple: false,
+            filters: [{ name: "ملفات الوثائق", extensions: ["jpg", "jpeg", "pdf"] }],
+          });
           if (!selected) return;
           if (!(await confirmAction("تأكيد رفع الملف لهذه الوثيقة؟"))) return;
           await api.uploadGeneralDocFile(parseInt(btn.dataset.id, 10), selected);
@@ -439,7 +442,10 @@ export async function renderDocuments(container, user, ctx) {
       const empId = parseInt(el.querySelector("#emp-doc-employee")?.value || "0", 10);
       if (!empId) { showToast("اختر الموظف أولاً", "warn"); return; }
       try {
-        const selected = await open({ multiple: true });
+        const selected = await open({
+          multiple: true,
+          filters: [{ name: "ملفات الوثائق", extensions: ["jpg", "jpeg", "pdf"] }],
+        });
         if (!selected) return;
         const files = Array.isArray(selected) ? selected : [selected];
         if (!(await confirmAction(`تأكيد رفع ${files.length} وثيقة للموظف؟`))) return;

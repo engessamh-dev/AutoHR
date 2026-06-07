@@ -95,13 +95,29 @@ pub struct Employee {
     pub passport_attachment_paths: Option<String>,
     pub passport_attachment_full_paths: Vec<String>,
     pub airport_badge_no: Option<String>,
+    pub airport_badge_issue_date: Option<String>,
     pub airport_badge_expiry: Option<String>,
+    pub airport_badge_front_path: Option<String>,
+    pub airport_badge_back_path: Option<String>,
+    pub airport_badge_front_full_path: Option<String>,
+    pub airport_badge_back_full_path: Option<String>,
     pub ministry_badge_no: Option<String>,
+    pub ministry_badge_issue_date: Option<String>,
     pub ministry_badge_expiry: Option<String>,
+    pub ministry_badge_front_path: Option<String>,
+    pub ministry_badge_back_path: Option<String>,
+    pub ministry_badge_front_full_path: Option<String>,
+    pub ministry_badge_back_full_path: Option<String>,
     pub vehicle_plate: Option<String>,
     pub vehicle_name: Option<String>,
     pub vehicle_color_model: Option<String>,
+    pub vehicle_type: Option<String>,
+    pub vehicle_color: Option<String>,
+    pub vehicle_manufacture_year: Option<String>,
     pub vehicle_annual_no: Option<String>,
+    pub vehicle_annual_issue_date: Option<String>,
+    pub vehicle_annual_expiry_date: Option<String>,
+    pub vehicles: Option<String>,
     pub spouse_name: Option<String>,
     pub spouse_mother_name: Option<String>,
     pub spouse_birthdate: Option<String>,
@@ -163,13 +179,21 @@ pub struct EmployeeData {
     pub passport_issue_date: Option<String>,
     pub passport_expiry_date: Option<String>,
     pub airport_badge_no: Option<String>,
+    pub airport_badge_issue_date: Option<String>,
     pub airport_badge_expiry: Option<String>,
     pub ministry_badge_no: Option<String>,
+    pub ministry_badge_issue_date: Option<String>,
     pub ministry_badge_expiry: Option<String>,
     pub vehicle_plate: Option<String>,
     pub vehicle_name: Option<String>,
     pub vehicle_color_model: Option<String>,
+    pub vehicle_type: Option<String>,
+    pub vehicle_color: Option<String>,
+    pub vehicle_manufacture_year: Option<String>,
     pub vehicle_annual_no: Option<String>,
+    pub vehicle_annual_issue_date: Option<String>,
+    pub vehicle_annual_expiry_date: Option<String>,
+    pub vehicles: Option<String>,
     pub spouse_name: Option<String>,
     pub spouse_mother_name: Option<String>,
     pub spouse_birthdate: Option<String>,
@@ -265,27 +289,6 @@ fn merge_legacy_dir(src: &Path, dst: &Path) -> std::io::Result<bool> {
     Ok(true)
 }
 
-fn prefix_legacy_attachment_paths(conn: &Connection) -> AppResult<()> {
-    let mut stmt = conn.prepare("SELECT id,COALESCE(attachment_paths,'[]') FROM employees")?;
-    let rows = stmt.query_map([], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?)))?
-        .collect::<rusqlite::Result<Vec<_>>>()?;
-    for (id, raw) in rows {
-        let mut changed = false;
-        let mut paths: Vec<String> = serde_json::from_str(&raw).unwrap_or_default();
-        for path in &mut paths {
-            if path.starts_with("Employees/") {
-                *path = format!("Files/{}", path);
-                changed = true;
-            }
-        }
-        if changed {
-            let json = serde_json::to_string(&paths).map_err(|e| AppError::Other(e.to_string()))?;
-            conn.execute("UPDATE employees SET attachment_paths=?1 WHERE id=?2", params![json, id])?;
-        }
-    }
-    Ok(())
-}
-
 fn backup_date_parts(name: &str) -> Option<(&str, &str)> {
     for part in name.split('_') {
         let bytes = part.as_bytes();
@@ -347,7 +350,24 @@ pub fn ensure_storage_layout(conn: &Connection) -> AppResult<()> {
     let moved_employees = merge_legacy_dir(&root.join("Employees"), &root.join("Files").join("Employees")).unwrap_or(false);
     if moved_employees {
         conn.execute("UPDATE employees SET photo_path='Files/' || photo_path WHERE photo_path LIKE 'Employees/%'", [])?;
-        prefix_legacy_attachment_paths(conn)?;
+    }
+    let old_attachments_cleaned: bool = conn.query_row(
+        "SELECT EXISTS(SELECT 1 FROM app_settings WHERE key='employee_attachments_cleanup_v1')",
+        [],
+        |row| row.get(0),
+    ).unwrap_or(false);
+    if !old_attachments_cleaned {
+        let employees_dir = root.join("Files").join("Employees");
+        if let Ok(entries) = std::fs::read_dir(&employees_dir) {
+            for entry in entries.flatten() {
+                std::fs::remove_dir_all(entry.path().join("Attachments")).ok();
+            }
+        }
+        conn.execute("UPDATE employees SET attachment_paths='[]'", [])?;
+        conn.execute(
+            "INSERT INTO app_settings(key,value) VALUES('employee_attachments_cleanup_v1','done')",
+            [],
+        )?;
     }
 
     let moved_general_docs = merge_legacy_dir(&root.join("GeneralDocs"), &root.join("Files").join("GeneralDocs")).unwrap_or(false);
@@ -498,7 +518,10 @@ const EMP_COLS: &str = "id,employee_number,photo_path,full_name,mother_name,fath
   family_members,attachment_paths,notes,is_active,created_at,updated_at,work_type_notes,work_schedule,
   civil_id_birthplace,civil_id_birthdate,civil_id_family_number,civil_id_front_path,civil_id_back_path,
   passport_type,passport_attachment_paths,residence_card_issue_date,residence_head_name,residence_form_no,
-  residence_card_front_path,residence_card_back_path,ration_card_attachment_paths";
+  residence_card_front_path,residence_card_back_path,ration_card_attachment_paths,
+  airport_badge_issue_date,airport_badge_front_path,airport_badge_back_path,
+  ministry_badge_issue_date,ministry_badge_front_path,ministry_badge_back_path,
+  vehicle_color,vehicle_manufacture_year,vehicle_type,vehicle_annual_issue_date,vehicle_annual_expiry_date,vehicles";
 
 fn map_emp(r: &rusqlite::Row) -> rusqlite::Result<Employee> {
     Ok(Employee {
@@ -534,8 +557,24 @@ fn map_emp(r: &rusqlite::Row) -> rusqlite::Result<Employee> {
         residence_card_front_path:r.get(69)?,
         residence_card_back_path:r.get(70)?,
         ration_card_attachment_paths:r.get(71)?,
+        airport_badge_issue_date:r.get(72)?,
+        airport_badge_front_path:r.get(73)?,
+        airport_badge_back_path:r.get(74)?,
+        ministry_badge_issue_date:r.get(75)?,
+        ministry_badge_front_path:r.get(76)?,
+        ministry_badge_back_path:r.get(77)?,
+        vehicle_color:r.get(78)?,
+        vehicle_manufacture_year:r.get(79)?,
+        vehicle_type:r.get(80)?,
+        vehicle_annual_issue_date:r.get(81)?,
+        vehicle_annual_expiry_date:r.get(82)?,
+        vehicles:r.get(83)?,
         residence_card_front_full_path:None,
         residence_card_back_full_path:None,
+        airport_badge_front_full_path:None,
+        airport_badge_back_full_path:None,
+        ministry_badge_front_full_path:None,
+        ministry_badge_back_full_path:None,
         passport_attachment_full_paths:Vec::new(),
         ration_card_attachment_full_paths:Vec::new(),
         civil_id_front_full_path:None,
@@ -556,6 +595,10 @@ fn add_employee_full_paths(conn: &Connection, employee: &mut Employee) {
     employee.civil_id_back_full_path = attachment_full_path(conn, &employee.civil_id_back_path);
     employee.residence_card_front_full_path = attachment_full_path(conn, &employee.residence_card_front_path);
     employee.residence_card_back_full_path = attachment_full_path(conn, &employee.residence_card_back_path);
+    employee.airport_badge_front_full_path = attachment_full_path(conn, &employee.airport_badge_front_path);
+    employee.airport_badge_back_full_path = attachment_full_path(conn, &employee.airport_badge_back_path);
+    employee.ministry_badge_front_full_path = attachment_full_path(conn, &employee.ministry_badge_front_path);
+    employee.ministry_badge_back_full_path = attachment_full_path(conn, &employee.ministry_badge_back_path);
     let paths: Vec<String> = employee.passport_attachment_paths.as_deref()
         .and_then(|value| serde_json::from_str(value).ok())
         .unwrap_or_default();
@@ -609,11 +652,13 @@ pub fn create_employee(conn: &Connection, d: &EmployeeData, username: &str) -> A
       spouse_name,spouse_mother_name,spouse_birthdate,marriage_date,
       family_members,notes,is_active,work_type_notes,work_schedule,
       civil_id_birthplace,civil_id_birthdate,civil_id_family_number,passport_type,
-      residence_card_issue_date,residence_head_name,residence_form_no)
+      residence_card_issue_date,residence_head_name,residence_form_no,
+      airport_badge_issue_date,ministry_badge_issue_date,vehicle_color,vehicle_manufacture_year,vehicle_type,
+      vehicle_annual_issue_date,vehicle_annual_expiry_date,vehicles)
     VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,
            ?21,?22,?23,?24,?25,?26,?27,?28,?29,?30,?31,?32,?33,?34,?35,?36,?37,?38,
            ?39,?40,?41,?42,?43,?44,?45,?46,?47,?48,?49,?50,?51,?52,?53,?54,?55,?56,?57,?58,
-           ?59,?60,?61)",
+           ?59,?60,?61,?62,?63,?64,?65,?66,?67,?68,?69)",
     params![d.employee_number,d.full_name.trim(),d.mother_name,d.father_birthplace,d.mother_birthplace,
       d.gender,d.birthdate,d.birthplace,d.marital_status,d.blood_type,
       d.workplace,d.job_title,d.job_grade,d.hire_date,d.contract_type,d.department,d.division,d.phone,d.email,
@@ -627,7 +672,9 @@ pub fn create_employee(conn: &Connection, d: &EmployeeData, username: &str) -> A
       d.spouse_name,d.spouse_mother_name,d.spouse_birthdate,d.marriage_date,
       d.family_members.as_deref().unwrap_or("[]"),d.notes,d.is_active.unwrap_or(1),d.work_type_notes,d.work_schedule,
       d.civil_id_birthplace,d.civil_id_birthdate,d.civil_id_family_number,d.passport_type,
-      d.residence_card_issue_date,d.residence_head_name,d.residence_form_no])?;
+      d.residence_card_issue_date,d.residence_head_name,d.residence_form_no,
+      d.airport_badge_issue_date,d.ministry_badge_issue_date,d.vehicle_color,d.vehicle_manufacture_year,d.vehicle_type,
+      d.vehicle_annual_issue_date,d.vehicle_annual_expiry_date,d.vehicles.as_deref().unwrap_or("[]")])?;
     let id = conn.last_insert_rowid();
     log_activity(conn, username, "CREATE_EMPLOYEE", Some("employee"), Some(id), Some(d.full_name.trim()), None);
     get_employee(conn, id)
@@ -649,7 +696,10 @@ pub fn update_employee(conn: &Connection, id: i64, d: &EmployeeData, username: &
       family_members=?50,notes=?51,is_active=?52,work_type_notes=?53,work_schedule=?54,
       civil_id_birthplace=?55,civil_id_birthdate=?56,civil_id_family_number=?57,passport_type=?58,
       residence_card_issue_date=?59,residence_head_name=?60,residence_form_no=?61,
-      updated_at=datetime('now') WHERE id=?62",
+      airport_badge_issue_date=?62,ministry_badge_issue_date=?63,
+      vehicle_color=?64,vehicle_manufacture_year=?65,vehicle_type=?66,
+      vehicle_annual_issue_date=?67,vehicle_annual_expiry_date=?68,
+      vehicles=?69,updated_at=datetime('now') WHERE id=?70",
     params![d.employee_number,d.full_name.trim(),d.mother_name,d.father_birthplace,d.mother_birthplace,
       d.gender,d.birthdate,d.birthplace,d.marital_status,d.blood_type,
       d.workplace,d.job_title,d.job_grade,d.hire_date,d.contract_type,d.department,d.division,d.phone,d.email,
@@ -663,7 +713,9 @@ pub fn update_employee(conn: &Connection, id: i64, d: &EmployeeData, username: &
       d.spouse_name,d.spouse_mother_name,d.spouse_birthdate,d.marriage_date,
       d.family_members.as_deref().unwrap_or("[]"),d.notes,d.is_active.unwrap_or(1),d.work_type_notes,d.work_schedule,
       d.civil_id_birthplace,d.civil_id_birthdate,d.civil_id_family_number,d.passport_type,
-      d.residence_card_issue_date,d.residence_head_name,d.residence_form_no,id])?;
+      d.residence_card_issue_date,d.residence_head_name,d.residence_form_no,
+      d.airport_badge_issue_date,d.ministry_badge_issue_date,d.vehicle_color,d.vehicle_manufacture_year,d.vehicle_type,
+      d.vehicle_annual_issue_date,d.vehicle_annual_expiry_date,d.vehicles.as_deref().unwrap_or("[]"),id])?;
     log_activity(conn, username, "UPDATE_EMPLOYEE", Some("employee"), Some(id), Some(d.full_name.trim()), None);
     get_employee(conn, id)
 }
@@ -773,6 +825,10 @@ pub fn delete_general_doc(conn: &Connection, id: i64, username: &str) -> AppResu
 pub fn upload_general_doc_file(conn: &Connection, doc_id: i64, source_path: &str) -> AppResult<String> {
     ensure_storage_layout(conn)?;
     let src  = std::path::Path::new(source_path);
+    let ext = src.extension().and_then(|value| value.to_str()).unwrap_or("").to_lowercase();
+    if !["jpg", "jpeg", "pdf"].contains(&ext.as_str()) {
+        return Err(AppError::Validation("Only jpg/jpeg/pdf allowed".into()));
+    }
     let name = src.file_name().ok_or_else(|| AppError::Validation("Invalid filename".into()))?;
     let dir  = crate::services::storage_path(conn)
         .join("Files")

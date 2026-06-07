@@ -35,12 +35,12 @@ export async function renderDashboard(container, user, ctx) {
   active.forEach(e => {
     if (isExpiringSoon(e.airport_badge_expiry) || isExpired(e.airport_badge_expiry)) {
       const days = daysLeft(e.airport_badge_expiry);
-      badgeAlerts.push({ name: e.full_name, num: e.employee_number, type: "باج المطار",
+      badgeAlerts.push({ name: e.full_name, num: e.employee_number, type: "باج دخول مطار بغداد",
         date: e.airport_badge_expiry, days, expired: days !== null && days < 0 });
     }
     if (isExpiringSoon(e.ministry_badge_expiry) || isExpired(e.ministry_badge_expiry)) {
       const days = daysLeft(e.ministry_badge_expiry);
-      badgeAlerts.push({ name: e.full_name, num: e.employee_number, type: "باج الوزارة",
+      badgeAlerts.push({ name: e.full_name, num: e.employee_number, type: "هوية وزارة النقل",
         date: e.ministry_badge_expiry, days, expired: days !== null && days < 0 });
     }
   });

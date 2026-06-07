@@ -64,6 +64,13 @@ for (const [column, definition] of [
   ["residence_form_no", "TEXT"],
   ["residence_card_front_path", "TEXT"],
   ["residence_card_back_path", "TEXT"],
+  ["ration_card_attachment_paths", "TEXT DEFAULT '[]'"],
+  ["airport_badge_issue_date", "TEXT"],
+  ["airport_badge_front_path", "TEXT"],
+  ["airport_badge_back_path", "TEXT"],
+  ["ministry_badge_issue_date", "TEXT"],
+  ["ministry_badge_front_path", "TEXT"],
+  ["ministry_badge_back_path", "TEXT"],
 ]) {
   if (!existingEmployeeColumns.has(column)) {
     db.exec(`ALTER TABLE employees ADD COLUMN ${column} ${definition}`);

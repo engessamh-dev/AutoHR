@@ -29,6 +29,22 @@ fn residence_card_column(side: &str) -> AppResult<&'static str> {
     }
 }
 
+fn airport_badge_column(side: &str) -> AppResult<&'static str> {
+    match side {
+        "front" => Ok("airport_badge_front_path"),
+        "back" => Ok("airport_badge_back_path"),
+        _ => Err(AppError::Validation("Invalid airport badge side".into())),
+    }
+}
+
+fn ministry_badge_column(side: &str) -> AppResult<&'static str> {
+    match side {
+        "front" => Ok("ministry_badge_front_path"),
+        "back" => Ok("ministry_badge_back_path"),
+        _ => Err(AppError::Validation("Invalid ministry badge side".into())),
+    }
+}
+
 fn upload_sided_card_attachment(
     conn: &Connection,
     employee_id: i64,
@@ -40,8 +56,8 @@ fn upload_sided_card_attachment(
     ensure_storage_layout(conn)?;
     let src = Path::new(source_path);
     let ext = src.extension().and_then(|e| e.to_str()).unwrap_or("").to_lowercase();
-    if !["png", "jpg", "jpeg", "pdf"].contains(&ext.as_str()) {
-        return Err(AppError::Validation("Only png/jpg/jpeg/pdf allowed".into()));
+    if !["jpg", "jpeg", "pdf"].contains(&ext.as_str()) {
+        return Err(AppError::Validation("Only jpg/jpeg/pdf allowed".into()));
     }
     let previous: Option<String> = conn.query_row(
         &format!("SELECT {} FROM employees WHERE id=?1", column),
@@ -129,6 +145,44 @@ pub fn delete_residence_card_attachment(
     delete_sided_card_attachment(conn, employee_id, column)
 }
 
+pub fn upload_airport_badge_attachment(
+    conn: &Connection,
+    employee_id: i64,
+    side: &str,
+    source_path: &str,
+) -> AppResult<String> {
+    let column = airport_badge_column(side)?;
+    upload_sided_card_attachment(conn, employee_id, side, source_path, column, "AirportBadge")
+}
+
+pub fn delete_airport_badge_attachment(
+    conn: &Connection,
+    employee_id: i64,
+    side: &str,
+) -> AppResult<()> {
+    let column = airport_badge_column(side)?;
+    delete_sided_card_attachment(conn, employee_id, column)
+}
+
+pub fn upload_ministry_badge_attachment(
+    conn: &Connection,
+    employee_id: i64,
+    side: &str,
+    source_path: &str,
+) -> AppResult<String> {
+    let column = ministry_badge_column(side)?;
+    upload_sided_card_attachment(conn, employee_id, side, source_path, column, "MinistryBadge")
+}
+
+pub fn delete_ministry_badge_attachment(
+    conn: &Connection,
+    employee_id: i64,
+    side: &str,
+) -> AppResult<()> {
+    let column = ministry_badge_column(side)?;
+    delete_sided_card_attachment(conn, employee_id, column)
+}
+
 pub fn upload_passport_attachment(
     conn: &Connection,
     employee_id: i64,
@@ -137,8 +191,8 @@ pub fn upload_passport_attachment(
     ensure_storage_layout(conn)?;
     let src = Path::new(source_path);
     let ext = src.extension().and_then(|e| e.to_str()).unwrap_or("").to_lowercase();
-    if !["png", "jpg", "jpeg", "pdf"].contains(&ext.as_str()) {
-        return Err(AppError::Validation("Only png/jpg/jpeg/pdf allowed".into()));
+    if !["jpg", "jpeg", "pdf"].contains(&ext.as_str()) {
+        return Err(AppError::Validation("Only jpg/jpeg/pdf allowed".into()));
     }
     let name = src.file_name().ok_or_else(|| AppError::Validation("Invalid filename".into()))?;
     let dest_dir = storage_path(conn)
@@ -205,8 +259,7 @@ pub fn delete_passport_attachment(
     Ok(())
 }
 
-/// Copy a file into the employee's attachments folder.
-/// Returns the relative path stored in the DB.
+/// Replace the employee's ration card attachment and return its relative path.
 pub fn upload_ration_card_attachment(
     conn: &Connection,
     employee_id: i64,
@@ -215,8 +268,8 @@ pub fn upload_ration_card_attachment(
     ensure_storage_layout(conn)?;
     let src = Path::new(source_path);
     let ext = src.extension().and_then(|e| e.to_str()).unwrap_or("").to_lowercase();
-    if !["png", "jpg", "jpeg", "pdf"].contains(&ext.as_str()) {
-        return Err(AppError::Validation("Only png/jpg/jpeg/pdf allowed".into()));
+    if !["jpg", "jpeg", "pdf"].contains(&ext.as_str()) {
+        return Err(AppError::Validation("Only jpg/jpeg/pdf allowed".into()));
     }
     let name = src.file_name().ok_or_else(|| AppError::Validation("Invalid filename".into()))?;
     let dest_dir = storage_path(conn)
@@ -285,59 +338,42 @@ pub fn delete_ration_card_attachment(
 
 pub fn upload_attachment(conn: &Connection, employee_id: i64, source_path: &str) -> AppResult<String> {
     ensure_storage_layout(conn)?;
-    let src  = Path::new(source_path);
+    let src = Path::new(source_path);
+    let ext = src.extension().and_then(|e| e.to_str()).unwrap_or("").to_lowercase();
+    if !["jpg", "jpeg", "pdf"].contains(&ext.as_str()) {
+        return Err(AppError::Validation("Only jpg/jpeg/pdf allowed".into()));
+    }
     let name = src.file_name().ok_or_else(|| AppError::Validation("Invalid filename".into()))?;
-
     let dest_dir = storage_path(conn)
-        .join("Files")
-        .join("Employees")
-        .join(employee_id.to_string())
-        .join("Attachments");
+        .join("Files").join("Employees").join(employee_id.to_string()).join("Attachments");
     std::fs::create_dir_all(&dest_dir).map_err(|e| AppError::Other(e.to_string()))?;
-
-    let dest = dest_dir.join(name);
-    std::fs::copy(src, &dest).map_err(|e| AppError::Other(e.to_string()))?;
-
-    // relative path for portability
+    std::fs::copy(src, dest_dir.join(name)).map_err(|e| AppError::Other(e.to_string()))?;
     let rel = format!("Files/Employees/{}/Attachments/{}", employee_id, name.to_string_lossy());
-
-    // update attachment_paths JSON array in DB
     let existing: String = conn.query_row(
         "SELECT COALESCE(attachment_paths,'[]') FROM employees WHERE id=?1",
-        params![employee_id],
-        |r| r.get(0),
+        params![employee_id], |r| r.get(0),
     ).unwrap_or_else(|_| "[]".into());
-
     let mut paths: Vec<String> = serde_json::from_str(&existing).unwrap_or_default();
-    if !paths.contains(&rel) {
-        paths.push(rel.clone());
-    }
-    let new_json = serde_json::to_string(&paths).unwrap_or_default();
+    if !paths.contains(&rel) { paths.push(rel.clone()); }
     conn.execute(
         "UPDATE employees SET attachment_paths=?1, updated_at=datetime('now') WHERE id=?2",
-        params![new_json, employee_id],
+        params![serde_json::to_string(&paths).unwrap_or_default(), employee_id],
     )?;
     Ok(rel)
 }
 
-/// Delete an attachment by its relative path.
 pub fn delete_attachment(conn: &Connection, employee_id: i64, relative_path: &str) -> AppResult<()> {
     let rel_path = safe_relative_path(relative_path)?;
-    let full = storage_path(conn).join(rel_path);
-    std::fs::remove_file(&full).ok(); // ignore if already gone
-
+    std::fs::remove_file(storage_path(conn).join(rel_path)).ok();
     let existing: String = conn.query_row(
         "SELECT COALESCE(attachment_paths,'[]') FROM employees WHERE id=?1",
-        params![employee_id],
-        |r| r.get(0),
+        params![employee_id], |r| r.get(0),
     ).unwrap_or_else(|_| "[]".into());
-
     let mut paths: Vec<String> = serde_json::from_str(&existing).unwrap_or_default();
-    paths.retain(|p| p != relative_path);
-    let new_json = serde_json::to_string(&paths).unwrap_or_default();
+    paths.retain(|path| path != relative_path);
     conn.execute(
         "UPDATE employees SET attachment_paths=?1, updated_at=datetime('now') WHERE id=?2",
-        params![new_json, employee_id],
+        params![serde_json::to_string(&paths).unwrap_or_default(), employee_id],
     )?;
     Ok(())
 }

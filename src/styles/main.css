@@ -32,6 +32,9 @@
            focus:outline-none focus:border-autohr-green focus:ring-1 focus:ring-autohr-green
            transition-colors duration-150;
   }
+  .input-field[type="date"] {
+    color-scheme: dark;
+  }
 
   .btn-primary {
     @apply bg-autohr-green hover:bg-autohr-green/90 text-white font-semibold

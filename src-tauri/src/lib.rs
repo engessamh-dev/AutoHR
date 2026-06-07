@@ -100,6 +100,34 @@ fn session_user(sess: &State<SessionState>) -> Result<String, AppError> {
     log_activity(&conn, &user, "DELETE_RESIDENCE_CARD_ATTACHMENT", Some("employee"), Some(employee_id), None, Some(&side));
     Ok(())
 }
+#[tauri::command] fn cmd_upload_airport_badge_attachment(state: State<DbState>, sess: State<SessionState>, employee_id: i64, side: String, source_path: String) -> Result<String, AppError> {
+    let conn = state.0.lock().unwrap();
+    let user = session_user(&sess)?;
+    let rel = files::upload_airport_badge_attachment(&conn, employee_id, &side, &source_path)?;
+    log_activity(&conn, &user, "UPLOAD_AIRPORT_BADGE_ATTACHMENT", Some("employee"), Some(employee_id), Some(&rel), Some(&side));
+    Ok(rel)
+}
+#[tauri::command] fn cmd_delete_airport_badge_attachment(state: State<DbState>, sess: State<SessionState>, employee_id: i64, side: String) -> Result<(), AppError> {
+    let conn = state.0.lock().unwrap();
+    let user = session_user(&sess)?;
+    files::delete_airport_badge_attachment(&conn, employee_id, &side)?;
+    log_activity(&conn, &user, "DELETE_AIRPORT_BADGE_ATTACHMENT", Some("employee"), Some(employee_id), None, Some(&side));
+    Ok(())
+}
+#[tauri::command] fn cmd_upload_ministry_badge_attachment(state: State<DbState>, sess: State<SessionState>, employee_id: i64, side: String, source_path: String) -> Result<String, AppError> {
+    let conn = state.0.lock().unwrap();
+    let user = session_user(&sess)?;
+    let rel = files::upload_ministry_badge_attachment(&conn, employee_id, &side, &source_path)?;
+    log_activity(&conn, &user, "UPLOAD_MINISTRY_BADGE_ATTACHMENT", Some("employee"), Some(employee_id), Some(&rel), Some(&side));
+    Ok(rel)
+}
+#[tauri::command] fn cmd_delete_ministry_badge_attachment(state: State<DbState>, sess: State<SessionState>, employee_id: i64, side: String) -> Result<(), AppError> {
+    let conn = state.0.lock().unwrap();
+    let user = session_user(&sess)?;
+    files::delete_ministry_badge_attachment(&conn, employee_id, &side)?;
+    log_activity(&conn, &user, "DELETE_MINISTRY_BADGE_ATTACHMENT", Some("employee"), Some(employee_id), None, Some(&side));
+    Ok(())
+}
 #[tauri::command] fn cmd_upload_passport_attachment(state: State<DbState>, sess: State<SessionState>, employee_id: i64, source_path: String) -> Result<String, AppError> {
     let conn = state.0.lock().unwrap();
     let user = session_user(&sess)?;
@@ -234,6 +262,8 @@ pub fn run() {
             cmd_upload_employee_photo,
             cmd_upload_national_card_attachment, cmd_delete_national_card_attachment,
             cmd_upload_residence_card_attachment, cmd_delete_residence_card_attachment,
+            cmd_upload_airport_badge_attachment, cmd_delete_airport_badge_attachment,
+            cmd_upload_ministry_badge_attachment, cmd_delete_ministry_badge_attachment,
             cmd_upload_passport_attachment, cmd_delete_passport_attachment,
             cmd_upload_ration_card_attachment, cmd_delete_ration_card_attachment,
             cmd_upload_attachment, cmd_delete_attachment,
