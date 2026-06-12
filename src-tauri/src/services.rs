@@ -222,12 +222,16 @@ pub struct GeneralDoc {
     pub doc_number: Option<String>, pub issue_date: Option<String>,
     pub issuer: Option<String>, pub notes: Option<String>,
     pub file_path: Option<String>, pub created_at: Option<String>,
+    pub employee_ids: Vec<i64>, pub employee_names: Vec<String>,
+    pub attachment_paths: Vec<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct GeneralDocData {
     pub title: String, pub doc_type: Option<String>, pub doc_number: Option<String>,
     pub issue_date: Option<String>, pub issuer: Option<String>, pub notes: Option<String>,
+    #[serde(default)]
+    pub employee_ids: Vec<i64>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -265,6 +269,14 @@ pub fn storage_path(conn: &Connection) -> std::path::PathBuf {
         "SELECT value FROM app_settings WHERE key='storage_destination'", [], |r| r.get(0)
     ).unwrap_or_default();
     if val.is_empty() { dirs::document_dir().unwrap_or_default().join("GCANS") }
+    else { std::path::PathBuf::from(val) }
+}
+
+pub fn backup_path(conn: &Connection) -> std::path::PathBuf {
+    let val: String = conn.query_row(
+        "SELECT value FROM app_settings WHERE key='backup_destination'", [], |r| r.get(0)
+    ).unwrap_or_default();
+    if val.is_empty() { dirs::document_dir().unwrap_or_default().join("GCANS Backups") }
     else { std::path::PathBuf::from(val) }
 }
 
@@ -334,10 +346,9 @@ pub fn ensure_storage_layout(conn: &Connection) -> AppResult<()> {
     let root = storage_path(conn);
     for dir in [
         "Database",
-        "Backups/Daily",
-        "Backups/Monthly",
         "Files/Employees",
         "Files/GeneralDocs",
+        "Files/OutgoingDocs",
         "Branding",
         "Exports/PDF",
         "Exports/Excel",
@@ -376,6 +387,14 @@ pub fn ensure_storage_layout(conn: &Connection) -> AppResult<()> {
     }
     organize_legacy_backups(&root).ok();
 
+    Ok(())
+}
+
+pub fn ensure_backup_layout(conn: &Connection) -> AppResult<()> {
+    let root = backup_path(conn);
+    for dir in ["Daily", "Monthly"] {
+        std::fs::create_dir_all(root.join(dir)).map_err(|e| AppError::Other(e.to_string()))?;
+    }
     Ok(())
 }
 
@@ -426,10 +445,10 @@ pub fn login(conn: &Connection, username: &str, password: &str) -> AppResult<Use
 pub fn logout(conn: &Connection, username: &str) -> AppResult<()> {
     let storage = storage_path(conn);
     ensure_storage_layout(conn).ok();
+    ensure_backup_layout(conn).ok();
     conn.execute_batch("PRAGMA wal_checkpoint(FULL);").ok();
     let now = chrono::Local::now();
-    let backups = storage
-        .join("Backups")
+    let backups = backup_path(conn)
         .join("Daily")
         .join(now.format("%Y").to_string())
         .join(now.format("%m").to_string());
@@ -779,22 +798,70 @@ pub fn delete_grade_history(conn: &Connection, id: i64) -> AppResult<()> {
 }
 
 // ── General docs ───────────────────────────────────────────────────────────
+fn add_general_doc_employees(conn: &Connection, doc: &mut GeneralDoc) -> AppResult<()> {
+    let mut stmt = conn.prepare(
+        "SELECT e.id,e.full_name
+         FROM general_doc_employees gde
+         JOIN employees e ON e.id=gde.employee_id
+         WHERE gde.general_doc_id=?1
+         ORDER BY e.full_name"
+    )?;
+    let linked = stmt.query_map(params![doc.id], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?)))?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    doc.employee_ids = linked.iter().map(|(id, _)| *id).collect();
+    doc.employee_names = linked.into_iter().map(|(_, name)| name).collect();
+    Ok(())
+}
+
+fn replace_general_doc_employees(conn: &Connection, doc_id: i64, employee_ids: &[i64]) -> AppResult<()> {
+    conn.execute("DELETE FROM general_doc_employees WHERE general_doc_id=?1", params![doc_id])?;
+    let mut ids = employee_ids.to_vec();
+    ids.sort_unstable();
+    ids.dedup();
+    for employee_id in ids {
+        conn.execute(
+            "INSERT INTO general_doc_employees(general_doc_id,employee_id)
+             SELECT ?1,?2 WHERE EXISTS(SELECT 1 FROM employees WHERE id=?2)",
+            params![doc_id, employee_id],
+        )?;
+    }
+    Ok(())
+}
+
+fn add_general_doc_attachments(conn: &Connection, doc: &mut GeneralDoc) -> AppResult<()> {
+    let mut stmt = conn.prepare(
+        "SELECT file_path FROM general_doc_attachments WHERE general_doc_id=?1 ORDER BY id"
+    )?;
+    doc.attachment_paths = stmt.query_map(params![doc.id], |r| r.get(0))?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    Ok(())
+}
+
 pub fn list_general_docs(conn: &Connection) -> AppResult<Vec<GeneralDoc>> {
     let mut stmt = conn.prepare(
         "SELECT id,title,doc_type,doc_number,issue_date,issuer,notes,file_path,created_at FROM general_docs ORDER BY created_at DESC"
     )?;
-    let result = stmt.query_map([], |r| Ok(GeneralDoc {
+    let mut result: Vec<GeneralDoc> = stmt.query_map([], |r| Ok(GeneralDoc {
         id:r.get(0)?,title:r.get(1)?,doc_type:r.get(2)?,doc_number:r.get(3)?,
         issue_date:r.get(4)?,issuer:r.get(5)?,notes:r.get(6)?,file_path:r.get(7)?,created_at:r.get(8)?,
+        employee_ids:Vec::new(),employee_names:Vec::new(),attachment_paths:Vec::new(),
     }))?.collect::<rusqlite::Result<_>>()?;
+    for doc in &mut result {
+        add_general_doc_employees(conn, &mut *doc)?;
+        add_general_doc_attachments(conn, &mut *doc)?;
+    }
     Ok(result)
 }
 
 fn get_general_doc(conn: &Connection, id: i64) -> AppResult<GeneralDoc> {
-    conn.query_row("SELECT id,title,doc_type,doc_number,issue_date,issuer,notes,file_path,created_at FROM general_docs WHERE id=?1",
+    let mut doc = conn.query_row("SELECT id,title,doc_type,doc_number,issue_date,issuer,notes,file_path,created_at FROM general_docs WHERE id=?1",
         params![id], |r| Ok(GeneralDoc { id:r.get(0)?,title:r.get(1)?,doc_type:r.get(2)?,doc_number:r.get(3)?,
-            issue_date:r.get(4)?,issuer:r.get(5)?,notes:r.get(6)?,file_path:r.get(7)?,created_at:r.get(8)? }))
-        .map_err(|_| AppError::NotFound)
+            issue_date:r.get(4)?,issuer:r.get(5)?,notes:r.get(6)?,file_path:r.get(7)?,created_at:r.get(8)?,
+            employee_ids:Vec::new(),employee_names:Vec::new(),attachment_paths:Vec::new() }))
+        .map_err(|_| AppError::NotFound)?;
+    add_general_doc_employees(conn, &mut doc)?;
+    add_general_doc_attachments(conn, &mut doc)?;
+    Ok(doc)
 }
 
 pub fn create_general_doc(conn: &Connection, data: &GeneralDocData, username: &str) -> AppResult<GeneralDoc> {
@@ -802,6 +869,7 @@ pub fn create_general_doc(conn: &Connection, data: &GeneralDocData, username: &s
     conn.execute("INSERT INTO general_docs(title,doc_type,doc_number,issue_date,issuer,notes) VALUES(?1,?2,?3,?4,?5,?6)",
         params![data.title.trim(),data.doc_type,data.doc_number,data.issue_date,data.issuer,data.notes])?;
     let id = conn.last_insert_rowid();
+    replace_general_doc_employees(conn, id, &data.employee_ids)?;
     log_activity(conn, username, "CREATE_DOC", Some("general_doc"), Some(id), Some(data.title.trim()), None);
     get_general_doc(conn, id)
 }
@@ -811,19 +879,37 @@ pub fn update_general_doc(conn: &Connection, id: i64, data: &GeneralDocData, use
     conn.execute("UPDATE general_docs SET title=?1,doc_type=?2,doc_number=?3,issue_date=?4,issuer=?5,notes=?6,updated_at=datetime('now') WHERE id=?7",
         params![data.title.trim(),data.doc_type,data.doc_number,data.issue_date,data.issuer,data.notes,id])?;
     if conn.changes() == 0 { return Err(AppError::NotFound); }
+    replace_general_doc_employees(conn, id, &data.employee_ids)?;
     log_activity(conn, username, "UPDATE_DOC", Some("general_doc"), Some(id), Some(data.title.trim()), None);
     get_general_doc(conn, id)
 }
 
 pub fn delete_general_doc(conn: &Connection, id: i64, username: &str) -> AppResult<()> {
     let title: String = conn.query_row("SELECT title FROM general_docs WHERE id=?1", params![id], |r| r.get(0)).unwrap_or_default();
+    conn.execute("DELETE FROM general_doc_attachments WHERE general_doc_id=?1", params![id])?;
+    conn.execute("DELETE FROM general_doc_employees WHERE general_doc_id=?1", params![id])?;
     conn.execute("DELETE FROM general_docs WHERE id=?1", params![id])?;
+    std::fs::remove_dir_all(storage_path(conn).join("Files").join("GeneralDocs").join(id.to_string())).ok();
     log_activity(conn, username, "DELETE_DOC", Some("general_doc"), Some(id), Some(&title), None);
     Ok(())
 }
 
 pub fn upload_general_doc_file(conn: &Connection, doc_id: i64, source_path: &str) -> AppResult<String> {
     ensure_storage_layout(conn)?;
+    let document_exists: bool = conn.query_row(
+        "SELECT EXISTS(SELECT 1 FROM general_docs WHERE id=?1)",
+        params![doc_id],
+        |r| r.get(0),
+    )?;
+    if !document_exists { return Err(AppError::NotFound); }
+    let attachment_count: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM general_doc_attachments WHERE general_doc_id=?1",
+        params![doc_id],
+        |r| r.get(0),
+    )?;
+    if attachment_count >= 20 {
+        return Err(AppError::Validation("Maximum 20 attachments per document".into()));
+    }
     let src  = std::path::Path::new(source_path);
     let ext = src.extension().and_then(|value| value.to_str()).unwrap_or("").to_lowercase();
     if !["jpg", "jpeg", "pdf"].contains(&ext.as_str()) {
@@ -835,10 +921,176 @@ pub fn upload_general_doc_file(conn: &Connection, doc_id: i64, source_path: &str
         .join("GeneralDocs")
         .join(doc_id.to_string());
     std::fs::create_dir_all(&dir).ok();
-    std::fs::copy(src, dir.join(name)).map_err(|e| AppError::Other(e.to_string()))?;
-    let rel = format!("Files/GeneralDocs/{}/{}", doc_id, name.to_string_lossy());
-    conn.execute("UPDATE general_docs SET file_path=?1,updated_at=datetime('now') WHERE id=?2", params![rel, doc_id])?;
+    let timestamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_err(|e| AppError::Other(e.to_string()))?
+        .as_millis();
+    let stored_name = format!("{}_{}", timestamp, name.to_string_lossy());
+    std::fs::copy(src, dir.join(&stored_name)).map_err(|e| AppError::Other(e.to_string()))?;
+    let rel = format!("Files/GeneralDocs/{}/{}", doc_id, stored_name);
+    conn.execute(
+        "INSERT INTO general_doc_attachments(general_doc_id,file_path) VALUES(?1,?2)",
+        params![doc_id, rel],
+    )?;
+    conn.execute("UPDATE general_docs SET updated_at=datetime('now') WHERE id=?1", params![doc_id])?;
     Ok(rel)
+}
+
+pub fn delete_general_doc_attachment(conn: &Connection, doc_id: i64, relative_path: &str) -> AppResult<()> {
+    let stored_path: String = conn.query_row(
+        "SELECT file_path FROM general_doc_attachments WHERE general_doc_id=?1 AND file_path=?2",
+        params![doc_id, relative_path],
+        |r| r.get(0),
+    ).map_err(|_| AppError::NotFound)?;
+    let normalized = stored_path.replace('\\', "/");
+    let expected_prefix = format!("Files/GeneralDocs/{}/", doc_id);
+    if !normalized.starts_with(&expected_prefix) || normalized.contains("../") {
+        return Err(AppError::Validation("Invalid attachment path".into()));
+    }
+    std::fs::remove_file(storage_path(conn).join(&stored_path)).ok();
+    conn.execute(
+        "DELETE FROM general_doc_attachments WHERE general_doc_id=?1 AND file_path=?2",
+        params![doc_id, stored_path],
+    )?;
+    conn.execute("UPDATE general_docs SET updated_at=datetime('now') WHERE id=?1", params![doc_id])?;
+    Ok(())
+}
+
+// ── Outgoing docs ──────────────────────────────────────────────────────────
+fn add_outgoing_doc_details(conn: &Connection, doc: &mut GeneralDoc) -> AppResult<()> {
+    let mut employee_stmt = conn.prepare(
+        "SELECT e.id,e.full_name
+         FROM outgoing_doc_employees ode
+         JOIN employees e ON e.id=ode.employee_id
+         WHERE ode.outgoing_doc_id=?1
+         ORDER BY e.full_name"
+    )?;
+    let linked = employee_stmt.query_map(params![doc.id], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?)))?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    doc.employee_ids = linked.iter().map(|(id, _)| *id).collect();
+    doc.employee_names = linked.into_iter().map(|(_, name)| name).collect();
+
+    let mut attachment_stmt = conn.prepare(
+        "SELECT file_path FROM outgoing_doc_attachments WHERE outgoing_doc_id=?1 ORDER BY id"
+    )?;
+    doc.attachment_paths = attachment_stmt.query_map(params![doc.id], |r| r.get(0))?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    Ok(())
+}
+
+fn replace_outgoing_doc_employees(conn: &Connection, doc_id: i64, employee_ids: &[i64]) -> AppResult<()> {
+    conn.execute("DELETE FROM outgoing_doc_employees WHERE outgoing_doc_id=?1", params![doc_id])?;
+    let mut ids = employee_ids.to_vec();
+    ids.sort_unstable();
+    ids.dedup();
+    for employee_id in ids {
+        conn.execute(
+            "INSERT INTO outgoing_doc_employees(outgoing_doc_id,employee_id)
+             SELECT ?1,?2 WHERE EXISTS(SELECT 1 FROM employees WHERE id=?2)",
+            params![doc_id, employee_id],
+        )?;
+    }
+    Ok(())
+}
+
+pub fn list_outgoing_docs(conn: &Connection) -> AppResult<Vec<GeneralDoc>> {
+    let mut stmt = conn.prepare(
+        "SELECT id,title,doc_type,doc_number,issue_date,issuer,notes,created_at FROM outgoing_docs ORDER BY created_at DESC"
+    )?;
+    let mut result: Vec<GeneralDoc> = stmt.query_map([], |r| Ok(GeneralDoc {
+        id:r.get(0)?,title:r.get(1)?,doc_type:r.get(2)?,doc_number:r.get(3)?,
+        issue_date:r.get(4)?,issuer:r.get(5)?,notes:r.get(6)?,file_path:None,created_at:r.get(7)?,
+        employee_ids:Vec::new(),employee_names:Vec::new(),attachment_paths:Vec::new(),
+    }))?.collect::<rusqlite::Result<_>>()?;
+    for doc in &mut result { add_outgoing_doc_details(conn, &mut *doc)?; }
+    Ok(result)
+}
+
+fn get_outgoing_doc(conn: &Connection, id: i64) -> AppResult<GeneralDoc> {
+    let mut doc = conn.query_row(
+        "SELECT id,title,doc_type,doc_number,issue_date,issuer,notes,created_at FROM outgoing_docs WHERE id=?1",
+        params![id], |r| Ok(GeneralDoc {
+            id:r.get(0)?,title:r.get(1)?,doc_type:r.get(2)?,doc_number:r.get(3)?,
+            issue_date:r.get(4)?,issuer:r.get(5)?,notes:r.get(6)?,file_path:None,created_at:r.get(7)?,
+            employee_ids:Vec::new(),employee_names:Vec::new(),attachment_paths:Vec::new(),
+        })
+    ).map_err(|_| AppError::NotFound)?;
+    add_outgoing_doc_details(conn, &mut doc)?;
+    Ok(doc)
+}
+
+pub fn create_outgoing_doc(conn: &Connection, data: &GeneralDocData, username: &str) -> AppResult<GeneralDoc> {
+    if data.title.trim().is_empty() { return Err(AppError::Validation("title required".into())); }
+    conn.execute(
+        "INSERT INTO outgoing_docs(title,doc_type,doc_number,issue_date,issuer,notes) VALUES(?1,?2,?3,?4,?5,?6)",
+        params![data.title.trim(),data.doc_type,data.doc_number,data.issue_date,data.issuer,data.notes],
+    )?;
+    let id = conn.last_insert_rowid();
+    replace_outgoing_doc_employees(conn, id, &data.employee_ids)?;
+    log_activity(conn, username, "CREATE_OUTGOING_DOC", Some("outgoing_doc"), Some(id), Some(data.title.trim()), None);
+    get_outgoing_doc(conn, id)
+}
+
+pub fn update_outgoing_doc(conn: &Connection, id: i64, data: &GeneralDocData, username: &str) -> AppResult<GeneralDoc> {
+    if data.title.trim().is_empty() { return Err(AppError::Validation("title required".into())); }
+    conn.execute(
+        "UPDATE outgoing_docs SET title=?1,doc_type=?2,doc_number=?3,issue_date=?4,issuer=?5,notes=?6,updated_at=datetime('now') WHERE id=?7",
+        params![data.title.trim(),data.doc_type,data.doc_number,data.issue_date,data.issuer,data.notes,id],
+    )?;
+    if conn.changes() == 0 { return Err(AppError::NotFound); }
+    replace_outgoing_doc_employees(conn, id, &data.employee_ids)?;
+    log_activity(conn, username, "UPDATE_OUTGOING_DOC", Some("outgoing_doc"), Some(id), Some(data.title.trim()), None);
+    get_outgoing_doc(conn, id)
+}
+
+pub fn delete_outgoing_doc(conn: &Connection, id: i64, username: &str) -> AppResult<()> {
+    let title: String = conn.query_row("SELECT title FROM outgoing_docs WHERE id=?1", params![id], |r| r.get(0))
+        .unwrap_or_default();
+    conn.execute("DELETE FROM outgoing_doc_attachments WHERE outgoing_doc_id=?1", params![id])?;
+    conn.execute("DELETE FROM outgoing_doc_employees WHERE outgoing_doc_id=?1", params![id])?;
+    conn.execute("DELETE FROM outgoing_docs WHERE id=?1", params![id])?;
+    std::fs::remove_dir_all(storage_path(conn).join("Files").join("OutgoingDocs").join(id.to_string())).ok();
+    log_activity(conn, username, "DELETE_OUTGOING_DOC", Some("outgoing_doc"), Some(id), Some(&title), None);
+    Ok(())
+}
+
+pub fn upload_outgoing_doc_file(conn: &Connection, doc_id: i64, source_path: &str) -> AppResult<String> {
+    ensure_storage_layout(conn)?;
+    let exists: bool = conn.query_row("SELECT EXISTS(SELECT 1 FROM outgoing_docs WHERE id=?1)", params![doc_id], |r| r.get(0))?;
+    if !exists { return Err(AppError::NotFound); }
+    let count: i64 = conn.query_row("SELECT COUNT(*) FROM outgoing_doc_attachments WHERE outgoing_doc_id=?1", params![doc_id], |r| r.get(0))?;
+    if count >= 20 { return Err(AppError::Validation("Maximum 20 attachments per document".into())); }
+    let src = Path::new(source_path);
+    let ext = src.extension().and_then(|value| value.to_str()).unwrap_or("").to_lowercase();
+    if !["jpg", "jpeg", "pdf"].contains(&ext.as_str()) {
+        return Err(AppError::Validation("Only jpg/jpeg/pdf allowed".into()));
+    }
+    let name = src.file_name().ok_or_else(|| AppError::Validation("Invalid filename".into()))?;
+    let dir = storage_path(conn).join("Files").join("OutgoingDocs").join(doc_id.to_string());
+    std::fs::create_dir_all(&dir).map_err(|e| AppError::Other(e.to_string()))?;
+    let timestamp = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)
+        .map_err(|e| AppError::Other(e.to_string()))?.as_millis();
+    let stored_name = format!("{}_{}", timestamp, name.to_string_lossy());
+    std::fs::copy(src, dir.join(&stored_name)).map_err(|e| AppError::Other(e.to_string()))?;
+    let rel = format!("Files/OutgoingDocs/{}/{}", doc_id, stored_name);
+    conn.execute("INSERT INTO outgoing_doc_attachments(outgoing_doc_id,file_path) VALUES(?1,?2)", params![doc_id, rel])?;
+    conn.execute("UPDATE outgoing_docs SET updated_at=datetime('now') WHERE id=?1", params![doc_id])?;
+    Ok(rel)
+}
+
+pub fn delete_outgoing_doc_attachment(conn: &Connection, doc_id: i64, relative_path: &str) -> AppResult<()> {
+    let stored_path: String = conn.query_row(
+        "SELECT file_path FROM outgoing_doc_attachments WHERE outgoing_doc_id=?1 AND file_path=?2",
+        params![doc_id, relative_path], |r| r.get(0),
+    ).map_err(|_| AppError::NotFound)?;
+    let normalized = stored_path.replace('\\', "/");
+    if !normalized.starts_with(&format!("Files/OutgoingDocs/{}/", doc_id)) || normalized.contains("../") {
+        return Err(AppError::Validation("Invalid attachment path".into()));
+    }
+    std::fs::remove_file(storage_path(conn).join(&stored_path)).ok();
+    conn.execute("DELETE FROM outgoing_doc_attachments WHERE outgoing_doc_id=?1 AND file_path=?2", params![doc_id, stored_path])?;
+    conn.execute("UPDATE outgoing_docs SET updated_at=datetime('now') WHERE id=?1", params![doc_id])?;
+    Ok(())
 }
 
 // ── Activity log ───────────────────────────────────────────────────────────
@@ -903,6 +1155,18 @@ pub fn set_storage_path(conn: &Connection, path: &str) -> AppResult<()> {
     conn.execute("INSERT INTO app_settings(key,value) VALUES('storage_destination',?1)
         ON CONFLICT(key) DO UPDATE SET value=excluded.value", params![path])?;
     ensure_storage_layout(conn)?;
+    Ok(())
+}
+
+pub fn get_backup_path(conn: &Connection) -> AppResult<String> {
+    ensure_backup_layout(conn).ok();
+    Ok(backup_path(conn).to_string_lossy().into_owned())
+}
+
+pub fn set_backup_path(conn: &Connection, path: &str) -> AppResult<()> {
+    conn.execute("INSERT INTO app_settings(key,value) VALUES('backup_destination',?1)
+        ON CONFLICT(key) DO UPDATE SET value=excluded.value", params![path])?;
+    ensure_backup_layout(conn)?;
     Ok(())
 }
 

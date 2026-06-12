@@ -8,8 +8,11 @@ import { open }      from "@tauri-apps/plugin-dialog";
 export async function renderAbout(container, user, ctx) {
   const isMaster = Boolean(user?.is_master);
   let storagePath = "";
+  let backupPath = "";
   if (isMaster) {
-    try { storagePath = await api.getStoragePath(); } catch {}
+    try {
+      [storagePath, backupPath] = await Promise.all([api.getStoragePath(), api.getBackupPath()]);
+    } catch {}
   }
 
   container.innerHTML = `
@@ -33,18 +36,31 @@ export async function renderAbout(container, user, ctx) {
           <p>🖥️ <strong class="text-gray-300">الإطار:</strong> Tauri v2 + Vite + Tailwind CSS</p>
           <p>📁 <strong class="text-gray-300">مسار التخزين:</strong>
             <span dir="ltr" class="text-gray-300">${storagePath || "Documents/AutoHR (افتراضي)"}</span>
+          </p>
+          <p>💾 <strong class="text-gray-300">مسار النسخ الاحتياطية:</strong>
+            <span dir="ltr" class="text-gray-300">${backupPath || "Documents/GCANS Backups (افتراضي)"}</span>
           </p>` : ""}
         </div>
       </div>
 
       ${isMaster ? `<div class="card space-y-3">
-        <p class="section-title">مسار حفظ البيانات والنسخ الاحتياطية</p>
+        <p class="section-title">مسار حفظ البيانات والمرفقات</p>
         <div class="flex gap-3">
           <input id="storage-input" class="input-field flex-1" dir="ltr"
-                 value="${storagePath}" placeholder="مسار التخزين…" readonly />
+                 value="${storagePath}" placeholder="مسار حفظ البيانات…" readonly />
           <button id="btn-pick-storage" class="btn-secondary whitespace-nowrap">تصفّح…</button>
         </div>
-        <button id="btn-save-storage" class="btn-primary px-6">حفظ المسار</button>
+        <button id="btn-save-storage" class="btn-primary px-6">حفظ مسار البيانات</button>
+      </div>
+
+      <div class="card space-y-3">
+        <p class="section-title">مسار النسخ الاحتياطية</p>
+        <div class="flex gap-3">
+          <input id="backup-input" class="input-field flex-1" dir="ltr"
+                 value="${backupPath}" placeholder="مسار النسخ الاحتياطية…" readonly />
+          <button id="btn-pick-backup" class="btn-secondary whitespace-nowrap">تصفّح…</button>
+        </div>
+        <button id="btn-save-backup" class="btn-primary px-6">حفظ مسار النسخ الاحتياطية</button>
       </div>` : ""}
     </div>`;
 
@@ -58,10 +74,27 @@ export async function renderAbout(container, user, ctx) {
   container.querySelector("#btn-save-storage")?.addEventListener("click", async () => {
     const path = container.querySelector("#storage-input").value.trim();
     if (!path) { showToast("اختر مساراً أولاً", "warn"); return; }
-    if (!(await confirmAction("تأكيد تغيير مسار حفظ البيانات والنسخ الاحتياطية؟"))) return;
+    if (!(await confirmAction("تأكيد تغيير مسار حفظ البيانات والمرفقات؟"))) return;
     try {
       await api.setStoragePath(path);
-      showToast("تم حفظ مسار التخزين");
+      showToast("تم حفظ مسار البيانات");
+    } catch (err) { showToast(err?.message ?? "خطأ", "error"); }
+  });
+
+  container.querySelector("#btn-pick-backup")?.addEventListener("click", async () => {
+    try {
+      const dir = await open({ directory: true, multiple: false });
+      if (dir) container.querySelector("#backup-input").value = dir;
+    } catch {}
+  });
+
+  container.querySelector("#btn-save-backup")?.addEventListener("click", async () => {
+    const path = container.querySelector("#backup-input").value.trim();
+    if (!path) { showToast("اختر مساراً أولاً", "warn"); return; }
+    if (!(await confirmAction("تأكيد تغيير مسار النسخ الاحتياطية؟"))) return;
+    try {
+      await api.setBackupPath(path);
+      showToast("تم حفظ مسار النسخ الاحتياطية");
     } catch (err) { showToast(err?.message ?? "خطأ", "error"); }
   });
 }

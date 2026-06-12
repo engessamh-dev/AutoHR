@@ -47,6 +47,13 @@ export const api = {
   updateGeneralDoc:  (id, data) => invoke("cmd_update_general_doc", { id, data }),
   deleteGeneralDoc:  (id)     => invoke("cmd_delete_general_doc",  { id }),
   uploadGeneralDocFile: (docId, path) => invoke("cmd_upload_general_doc_file", { docId, sourcePath: path }),
+  deleteGeneralDocAttachment: (docId, relativePath) => invoke("cmd_delete_general_doc_attachment", { docId, relativePath }),
+  listOutgoingDocs: () => invoke("cmd_list_outgoing_docs"),
+  createOutgoingDoc: (data) => invoke("cmd_create_outgoing_doc", { data }),
+  updateOutgoingDoc: (id, data) => invoke("cmd_update_outgoing_doc", { id, data }),
+  deleteOutgoingDoc: (id) => invoke("cmd_delete_outgoing_doc", { id }),
+  uploadOutgoingDocFile: (docId, path) => invoke("cmd_upload_outgoing_doc_file", { docId, sourcePath: path }),
+  deleteOutgoingDocAttachment: (docId, relativePath) => invoke("cmd_delete_outgoing_doc_attachment", { docId, relativePath }),
 
   // Activity log
   listActivityLog: (limit) => invoke("cmd_list_activity_log", { limit: limit ?? 50 }),
@@ -59,6 +66,8 @@ export const api = {
   // Settings
   getStoragePath: ()     => invoke("cmd_get_storage_path"),
   setStoragePath: (path) => invoke("cmd_set_storage_path", { path }),
+  getBackupPath: ()      => invoke("cmd_get_backup_path"),
+  setBackupPath: (path)  => invoke("cmd_set_backup_path", { path }),
   getDocumentTypes: ()       => invoke("cmd_get_document_types"),
   setDocumentTypes: (types)  => invoke("cmd_set_document_types", { types }),
 

@@ -140,6 +140,44 @@ CREATE TABLE IF NOT EXISTS general_docs (
   updated_at  TEXT DEFAULT (datetime('now'))
 );
 
+CREATE TABLE IF NOT EXISTS general_doc_employees (
+  general_doc_id INTEGER NOT NULL REFERENCES general_docs(id) ON DELETE CASCADE,
+  employee_id    INTEGER NOT NULL REFERENCES employees(id) ON DELETE CASCADE,
+  PRIMARY KEY (general_doc_id, employee_id)
+);
+
+CREATE TABLE IF NOT EXISTS general_doc_attachments (
+  id             INTEGER PRIMARY KEY AUTOINCREMENT,
+  general_doc_id INTEGER NOT NULL REFERENCES general_docs(id) ON DELETE CASCADE,
+  file_path      TEXT NOT NULL,
+  created_at     TEXT DEFAULT (datetime('now'))
+);
+
+CREATE TABLE IF NOT EXISTS outgoing_docs (
+  id          INTEGER PRIMARY KEY AUTOINCREMENT,
+  title       TEXT NOT NULL,
+  doc_type    TEXT,
+  doc_number  TEXT,
+  issue_date  TEXT,
+  issuer      TEXT,
+  notes       TEXT,
+  created_at  TEXT DEFAULT (datetime('now')),
+  updated_at  TEXT DEFAULT (datetime('now'))
+);
+
+CREATE TABLE IF NOT EXISTS outgoing_doc_employees (
+  outgoing_doc_id INTEGER NOT NULL REFERENCES outgoing_docs(id) ON DELETE CASCADE,
+  employee_id     INTEGER NOT NULL REFERENCES employees(id) ON DELETE CASCADE,
+  PRIMARY KEY (outgoing_doc_id, employee_id)
+);
+
+CREATE TABLE IF NOT EXISTS outgoing_doc_attachments (
+  id              INTEGER PRIMARY KEY AUTOINCREMENT,
+  outgoing_doc_id INTEGER NOT NULL REFERENCES outgoing_docs(id) ON DELETE CASCADE,
+  file_path       TEXT NOT NULL,
+  created_at      TEXT DEFAULT (datetime('now'))
+);
+
 -- Activity / audit log
 CREATE TABLE IF NOT EXISTS activity_log (
   id          INTEGER PRIMARY KEY AUTOINCREMENT,

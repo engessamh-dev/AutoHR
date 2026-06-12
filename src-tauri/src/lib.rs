@@ -197,6 +197,36 @@ fn session_user(sess: &State<SessionState>) -> Result<String, AppError> {
     session_user(&sess)?;
     upload_general_doc_file(&state.0.lock().unwrap(), doc_id, &source_path)
 }
+#[tauri::command] fn cmd_delete_general_doc_attachment(state: State<DbState>, sess: State<SessionState>, doc_id: i64, relative_path: String) -> Result<(), AppError> {
+    session_user(&sess)?;
+    delete_general_doc_attachment(&state.0.lock().unwrap(), doc_id, &relative_path)
+}
+#[tauri::command] fn cmd_list_outgoing_docs(state: State<DbState>) -> Result<Vec<GeneralDoc>, AppError> {
+    list_outgoing_docs(&state.0.lock().unwrap())
+}
+#[tauri::command] fn cmd_create_outgoing_doc(state: State<DbState>, sess: State<SessionState>, data: GeneralDocData) -> Result<GeneralDoc, AppError> {
+    let conn = state.0.lock().unwrap();
+    let user = session_user(&sess)?;
+    create_outgoing_doc(&conn, &data, &user)
+}
+#[tauri::command] fn cmd_update_outgoing_doc(state: State<DbState>, sess: State<SessionState>, id: i64, data: GeneralDocData) -> Result<GeneralDoc, AppError> {
+    let conn = state.0.lock().unwrap();
+    let user = session_user(&sess)?;
+    update_outgoing_doc(&conn, id, &data, &user)
+}
+#[tauri::command] fn cmd_delete_outgoing_doc(state: State<DbState>, sess: State<SessionState>, id: i64) -> Result<(), AppError> {
+    let conn = state.0.lock().unwrap();
+    let user = session_user(&sess)?;
+    delete_outgoing_doc(&conn, id, &user)
+}
+#[tauri::command] fn cmd_upload_outgoing_doc_file(state: State<DbState>, sess: State<SessionState>, doc_id: i64, source_path: String) -> Result<String, AppError> {
+    session_user(&sess)?;
+    upload_outgoing_doc_file(&state.0.lock().unwrap(), doc_id, &source_path)
+}
+#[tauri::command] fn cmd_delete_outgoing_doc_attachment(state: State<DbState>, sess: State<SessionState>, doc_id: i64, relative_path: String) -> Result<(), AppError> {
+    session_user(&sess)?;
+    delete_outgoing_doc_attachment(&state.0.lock().unwrap(), doc_id, &relative_path)
+}
 #[tauri::command] fn cmd_list_activity_log(state: State<DbState>, limit: i64) -> Result<Vec<ActivityLog>, AppError> {
     list_activity_log(&state.0.lock().unwrap(), limit)
 }
@@ -229,6 +259,18 @@ fn session_user(sess: &State<SessionState>) -> Result<String, AppError> {
         .allow_directory(storage_path(&conn), true)
         .map_err(|e| AppError::Other(e.to_string()))
 }
+#[tauri::command] fn cmd_get_backup_path(state: State<DbState>, sess: State<SessionState>) -> Result<String, AppError> {
+    let conn = state.0.lock().unwrap();
+    let user = session_user(&sess)?;
+    assert_master(&conn, &user)?;
+    get_backup_path(&conn)
+}
+#[tauri::command] fn cmd_set_backup_path(state: State<DbState>, sess: State<SessionState>, path: String) -> Result<(), AppError> {
+    let conn = state.0.lock().unwrap();
+    let user = session_user(&sess)?;
+    assert_master(&conn, &user)?;
+    set_backup_path(&conn, &path)
+}
 #[tauri::command] fn cmd_get_document_types(state: State<DbState>) -> Result<Vec<String>, AppError> {
     get_document_types(&state.0.lock().unwrap())
 }
@@ -244,6 +286,7 @@ fn session_user(sess: &State<SessionState>) -> Result<String, AppError> {
 pub fn run() {
     let conn = db::open().expect("Failed to open database");
     ensure_storage_layout(&conn).ok();
+    ensure_backup_layout(&conn).ok();
     let storage_root = storage_path(&conn);
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
@@ -269,10 +312,12 @@ pub fn run() {
             cmd_upload_attachment, cmd_delete_attachment,
             cmd_list_grade_history, cmd_add_grade_history, cmd_delete_grade_history,
             cmd_list_general_docs, cmd_create_general_doc, cmd_update_general_doc, cmd_delete_general_doc,
-            cmd_upload_general_doc_file,
+            cmd_upload_general_doc_file, cmd_delete_general_doc_attachment,
+            cmd_list_outgoing_docs, cmd_create_outgoing_doc, cmd_update_outgoing_doc, cmd_delete_outgoing_doc,
+            cmd_upload_outgoing_doc_file, cmd_delete_outgoing_doc_attachment,
             cmd_list_activity_log,
             cmd_list_users, cmd_create_user, cmd_delete_user,
-            cmd_get_storage_path, cmd_set_storage_path,
+            cmd_get_storage_path, cmd_set_storage_path, cmd_get_backup_path, cmd_set_backup_path,
             cmd_get_document_types, cmd_set_document_types,
             cmd_export_employees_pdf, cmd_export_employees_excel, cmd_print_employee_card,
         ])
