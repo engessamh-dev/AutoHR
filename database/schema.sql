@@ -303,3 +303,172 @@ CREATE INDEX IF NOT EXISTS idx_outgoing_docs_created_at ON outgoing_docs(created
 CREATE INDEX IF NOT EXISTS idx_outgoing_doc_employees_employee ON outgoing_doc_employees(employee_id);
 CREATE INDEX IF NOT EXISTS idx_outgoing_doc_attachments_doc ON outgoing_doc_attachments(outgoing_doc_id);
 CREATE INDEX IF NOT EXISTS idx_activity_log_created_at ON activity_log(created_at DESC);
+
+-- Configurable HR promotion and annual allowance module.
+-- Values below are operational examples only; administrators must review and edit them.
+INSERT OR IGNORE INTO app_settings(key,value) VALUES('hr_alert_lead_months','6');
+
+CREATE TABLE IF NOT EXISTS hr_employee_profiles (
+  employee_id                  INTEGER PRIMARY KEY REFERENCES employees(id) ON DELETE CASCADE,
+  certificate                  TEXT,
+  current_salary_grade         TEXT,
+  current_salary_step          INTEGER,
+  current_base_salary          REAL,
+  last_promotion_date          TEXT,
+  last_allowance_date          TEXT,
+  service_status               TEXT,
+  linked_document_refs         TEXT DEFAULT '[]',
+  system_promotion_due_date    TEXT,
+  manual_promotion_due_date    TEXT,
+  promotion_override_reason    TEXT,
+  promotion_approval_note      TEXT,
+  promotion_override_attachment TEXT,
+  system_allowance_due_date    TEXT,
+  manual_allowance_due_date    TEXT,
+  allowance_override_reason    TEXT,
+  allowance_approval_note      TEXT,
+  allowance_override_attachment TEXT,
+  notes                        TEXT,
+  created_at                   TEXT DEFAULT (datetime('now')),
+  updated_at                   TEXT DEFAULT (datetime('now'))
+);
+
+CREATE TABLE IF NOT EXISTS hr_salary_scales (
+  id                         INTEGER PRIMARY KEY AUTOINCREMENT,
+  rule_name                  TEXT NOT NULL DEFAULT 'salary_scale',
+  grade                      TEXT NOT NULL,
+  step                       INTEGER NOT NULL,
+  base_salary                REAL,
+  annual_allowance_amount    REAL,
+  steps_per_grade            INTEGER,
+  required_promotion_months  INTEGER,
+  allowance_period_months    INTEGER NOT NULL DEFAULT 12,
+  promotion_target_grade     TEXT,
+  promotion_target_step      INTEGER,
+  effective_from             TEXT NOT NULL,
+  effective_to               TEXT,
+  rule_version               TEXT NOT NULL DEFAULT '1',
+  active                     INTEGER NOT NULL DEFAULT 1 CHECK(active IN (0,1)),
+  created_by                 TEXT,
+  updated_by                 TEXT,
+  change_reason              TEXT,
+  created_at                 TEXT DEFAULT (datetime('now')),
+  updated_at                 TEXT DEFAULT (datetime('now')),
+  UNIQUE(grade, step, rule_version)
+);
+
+CREATE TABLE IF NOT EXISTS hr_appreciation_rules (
+  id                       INTEGER PRIMARY KEY AUTOINCREMENT,
+  source_name              TEXT NOT NULL,
+  appreciation_type        TEXT,
+  credit_months            INTEGER NOT NULL DEFAULT 0,
+  credit_days              INTEGER NOT NULL DEFAULT 0,
+  affects_promotion        INTEGER NOT NULL DEFAULT 1 CHECK(affects_promotion IN (0,1)),
+  affects_allowance        INTEGER NOT NULL DEFAULT 0 CHECK(affects_allowance IN (0,1)),
+  max_accumulation_days    INTEGER,
+  effective_from           TEXT NOT NULL,
+  effective_to             TEXT,
+  rule_version             TEXT NOT NULL DEFAULT '1',
+  active                   INTEGER NOT NULL DEFAULT 1 CHECK(active IN (0,1)),
+  created_by               TEXT,
+  updated_by               TEXT,
+  change_reason            TEXT,
+  created_at               TEXT DEFAULT (datetime('now')),
+  updated_at               TEXT DEFAULT (datetime('now'))
+);
+
+CREATE TABLE IF NOT EXISTS hr_penalty_rules (
+  id                       INTEGER PRIMARY KEY AUTOINCREMENT,
+  penalty_type             TEXT NOT NULL,
+  delay_months             INTEGER NOT NULL DEFAULT 0,
+  delay_days               INTEGER NOT NULL DEFAULT 0,
+  affects_promotion        INTEGER NOT NULL DEFAULT 1 CHECK(affects_promotion IN (0,1)),
+  affects_allowance        INTEGER NOT NULL DEFAULT 1 CHECK(affects_allowance IN (0,1)),
+  multiple_rule            TEXT NOT NULL DEFAULT 'accumulate',
+  effective_from           TEXT NOT NULL,
+  effective_to             TEXT,
+  rule_version             TEXT NOT NULL DEFAULT '1',
+  active                   INTEGER NOT NULL DEFAULT 1 CHECK(active IN (0,1)),
+  created_by               TEXT,
+  updated_by               TEXT,
+  change_reason            TEXT,
+  created_at               TEXT DEFAULT (datetime('now')),
+  updated_at               TEXT DEFAULT (datetime('now'))
+);
+
+CREATE TABLE IF NOT EXISTS hr_interruption_rules (
+  id                       INTEGER PRIMARY KEY AUTOINCREMENT,
+  interruption_type        TEXT NOT NULL,
+  affects_promotion        INTEGER NOT NULL DEFAULT 1 CHECK(affects_promotion IN (0,1)),
+  affects_allowance        INTEGER NOT NULL DEFAULT 1 CHECK(affects_allowance IN (0,1)),
+  counted_or_excluded      TEXT NOT NULL DEFAULT 'excluded',
+  effective_from           TEXT NOT NULL,
+  effective_to             TEXT,
+  rule_version             TEXT NOT NULL DEFAULT '1',
+  active                   INTEGER NOT NULL DEFAULT 1 CHECK(active IN (0,1)),
+  created_by               TEXT,
+  updated_by               TEXT,
+  change_reason            TEXT,
+  created_at               TEXT DEFAULT (datetime('now')),
+  updated_at               TEXT DEFAULT (datetime('now'))
+);
+
+CREATE TABLE IF NOT EXISTS hr_appreciation_letters (
+  id                       INTEGER PRIMARY KEY AUTOINCREMENT,
+  employee_id              INTEGER NOT NULL REFERENCES employees(id) ON DELETE CASCADE,
+  letter_number            TEXT NOT NULL,
+  letter_date              TEXT NOT NULL,
+  issuing_authority        TEXT,
+  appreciation_type        TEXT,
+  credit_months            INTEGER NOT NULL DEFAULT 0,
+  credit_days              INTEGER NOT NULL DEFAULT 0,
+  affects_promotion        INTEGER NOT NULL DEFAULT 1 CHECK(affects_promotion IN (0,1)),
+  affects_allowance        INTEGER NOT NULL DEFAULT 0 CHECK(affects_allowance IN (0,1)),
+  used_in_calculation      INTEGER NOT NULL DEFAULT 1 CHECK(used_in_calculation IN (0,1)),
+  attachment_path          TEXT,
+  notes                    TEXT,
+  created_at               TEXT DEFAULT (datetime('now')),
+  updated_at               TEXT DEFAULT (datetime('now')),
+  UNIQUE(employee_id, letter_number, letter_date)
+);
+
+CREATE TABLE IF NOT EXISTS hr_penalties (
+  id                       INTEGER PRIMARY KEY AUTOINCREMENT,
+  employee_id              INTEGER NOT NULL REFERENCES employees(id) ON DELETE CASCADE,
+  penalty_order_number     TEXT NOT NULL,
+  penalty_date             TEXT NOT NULL,
+  penalty_type             TEXT NOT NULL,
+  delay_months             INTEGER NOT NULL DEFAULT 0,
+  delay_days               INTEGER NOT NULL DEFAULT 0,
+  affects_promotion        INTEGER NOT NULL DEFAULT 1 CHECK(affects_promotion IN (0,1)),
+  affects_allowance        INTEGER NOT NULL DEFAULT 1 CHECK(affects_allowance IN (0,1)),
+  cancelled                INTEGER NOT NULL DEFAULT 0 CHECK(cancelled IN (0,1)),
+  cancellation_order       TEXT,
+  cancellation_date        TEXT,
+  attachment_path          TEXT,
+  notes                    TEXT,
+  created_at               TEXT DEFAULT (datetime('now')),
+  updated_at               TEXT DEFAULT (datetime('now')),
+  UNIQUE(employee_id, penalty_order_number, penalty_date)
+);
+
+CREATE TABLE IF NOT EXISTS hr_service_interruptions (
+  id                       INTEGER PRIMARY KEY AUTOINCREMENT,
+  employee_id              INTEGER NOT NULL REFERENCES employees(id) ON DELETE CASCADE,
+  interruption_type        TEXT NOT NULL,
+  start_date               TEXT NOT NULL,
+  end_date                 TEXT NOT NULL,
+  affects_promotion        INTEGER NOT NULL DEFAULT 1 CHECK(affects_promotion IN (0,1)),
+  affects_allowance        INTEGER NOT NULL DEFAULT 1 CHECK(affects_allowance IN (0,1)),
+  counted_or_excluded      TEXT NOT NULL DEFAULT 'excluded',
+  attachment_path          TEXT,
+  notes                    TEXT,
+  created_at               TEXT DEFAULT (datetime('now')),
+  updated_at               TEXT DEFAULT (datetime('now'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_hr_profiles_grade_step ON hr_employee_profiles(current_salary_grade, current_salary_step);
+CREATE INDEX IF NOT EXISTS idx_hr_salary_active ON hr_salary_scales(active, grade, step, effective_from);
+CREATE INDEX IF NOT EXISTS idx_hr_appreciations_employee ON hr_appreciation_letters(employee_id, letter_date);
+CREATE INDEX IF NOT EXISTS idx_hr_penalties_employee ON hr_penalties(employee_id, penalty_date);
+CREATE INDEX IF NOT EXISTS idx_hr_interruptions_employee ON hr_service_interruptions(employee_id, start_date);

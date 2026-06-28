@@ -341,18 +341,25 @@ pub fn role_permissions(role: &str) -> &'static [&'static str] {
             "dashboard.view", "employees.view", "employees.create", "employees.edit", "employees.delete",
             "documents.view", "documents.manage", "documents.upload", "documents.download", "documents.delete", "documents.print",
             "users.manage", "users.assign_system_admin", "audit.view", "settings.manage", "backups.manage",
+            "hr.dashboard.view", "hr.employees.view", "hr.employees.manage", "hr.rules.view", "hr.rules.manage",
+            "hr.appreciations.manage", "hr.penalties.manage", "hr.reports.view", "hr.audit.view", "hr.override.manage",
         ],
         "archive_admin" => &[
             "dashboard.view", "employees.view", "employees.create", "employees.edit", "employees.delete",
             "documents.view", "documents.manage", "documents.upload", "documents.download", "documents.delete", "documents.print",
             "users.manage", "audit.view", "settings.manage", "backups.manage",
+            "hr.dashboard.view", "hr.employees.view", "hr.employees.manage", "hr.rules.view", "hr.rules.manage",
+            "hr.appreciations.manage", "hr.penalties.manage", "hr.reports.view", "hr.audit.view", "hr.override.manage",
         ],
         "archive_officer" => &[
             "dashboard.view", "employees.view", "employees.create", "employees.edit",
             "documents.view", "documents.upload", "documents.download", "documents.print", "audit.view",
+            "hr.dashboard.view", "hr.employees.view", "hr.employees.manage",
+            "hr.appreciations.manage", "hr.penalties.manage", "hr.reports.view",
         ],
         "viewer" => &[
             "dashboard.view", "employees.view", "documents.view", "documents.print",
+            "hr.dashboard.view", "hr.employees.view", "hr.rules.view", "hr.reports.view",
         ],
         _ => &[],
     }

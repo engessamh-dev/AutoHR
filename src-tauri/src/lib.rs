@@ -1,6 +1,7 @@
 // lib.rs — GCANS v2.0
-mod db; mod services; mod files;
+mod db; mod services; mod files; mod hr;
 use services::*;
+use hr::*;
 use tauri::{AppHandle, Emitter, Manager, State, Window};
 use std::io::Write;
 use std::sync::Mutex;
@@ -679,6 +680,132 @@ async fn cmd_restore_backup(window: Window, state: State<'_, DbState>, sess: Sta
     let workbook = build_report_xlsx(&headers, &rows)?;
     std::fs::write(destination_path, workbook).map_err(|e| AppError::Other(e.to_string()))
 }
+
+#[tauri::command] fn cmd_list_hr_profiles(state: State<DbState>, sess: State<SessionState>) -> Result<Vec<HrEmployeeProfile>, AppError> {
+    let conn = state.0.lock().unwrap();
+    authorize(&conn, &sess, "hr.employees.view")?;
+    list_hr_profiles(&conn)
+}
+#[tauri::command] fn cmd_get_hr_profile(state: State<DbState>, sess: State<SessionState>, employee_id: i64) -> Result<HrEmployeeProfile, AppError> {
+    let conn = state.0.lock().unwrap();
+    authorize(&conn, &sess, "hr.employees.view")?;
+    get_hr_profile(&conn, employee_id)
+}
+#[tauri::command] fn cmd_save_hr_profile(state: State<DbState>, sess: State<SessionState>, data: HrEmployeeProfileData) -> Result<HrEmployeeProfile, AppError> {
+    let conn = state.0.lock().unwrap();
+    let user = authorize(&conn, &sess, "hr.employees.manage")?;
+    save_hr_profile(&conn, &user, &data)
+}
+#[tauri::command] fn cmd_list_hr_salary_scales(state: State<DbState>, sess: State<SessionState>) -> Result<Vec<HrSalaryScale>, AppError> {
+    let conn = state.0.lock().unwrap();
+    authorize(&conn, &sess, "hr.rules.view")?;
+    list_salary_scales(&conn)
+}
+#[tauri::command] fn cmd_save_hr_salary_scale(state: State<DbState>, sess: State<SessionState>, id: Option<i64>, data: HrSalaryScaleData) -> Result<HrSalaryScale, AppError> {
+    let conn = state.0.lock().unwrap();
+    let user = authorize(&conn, &sess, "hr.rules.manage")?;
+    save_salary_scale(&conn, &user, id, &data)
+}
+#[tauri::command] fn cmd_delete_hr_salary_scale(state: State<DbState>, sess: State<SessionState>, id: i64) -> Result<(), AppError> {
+    let conn = state.0.lock().unwrap();
+    let user = authorize(&conn, &sess, "hr.rules.manage")?;
+    delete_salary_scale(&conn, &user, id)
+}
+#[tauri::command] fn cmd_list_hr_appreciation_rules(state: State<DbState>, sess: State<SessionState>) -> Result<Vec<HrAppreciationRule>, AppError> {
+    let conn = state.0.lock().unwrap();
+    authorize(&conn, &sess, "hr.rules.view")?;
+    list_appreciation_rules(&conn)
+}
+#[tauri::command] fn cmd_save_hr_appreciation_rule(state: State<DbState>, sess: State<SessionState>, id: Option<i64>, data: HrAppreciationRuleData) -> Result<HrAppreciationRule, AppError> {
+    let conn = state.0.lock().unwrap();
+    let user = authorize(&conn, &sess, "hr.rules.manage")?;
+    save_appreciation_rule(&conn, &user, id, &data)
+}
+#[tauri::command] fn cmd_list_hr_penalty_rules(state: State<DbState>, sess: State<SessionState>) -> Result<Vec<HrPenaltyRule>, AppError> {
+    let conn = state.0.lock().unwrap();
+    authorize(&conn, &sess, "hr.rules.view")?;
+    list_penalty_rules(&conn)
+}
+#[tauri::command] fn cmd_save_hr_penalty_rule(state: State<DbState>, sess: State<SessionState>, id: Option<i64>, data: HrPenaltyRuleData) -> Result<HrPenaltyRule, AppError> {
+    let conn = state.0.lock().unwrap();
+    let user = authorize(&conn, &sess, "hr.rules.manage")?;
+    save_penalty_rule(&conn, &user, id, &data)
+}
+#[tauri::command] fn cmd_list_hr_interruption_rules(state: State<DbState>, sess: State<SessionState>) -> Result<Vec<HrInterruptionRule>, AppError> {
+    let conn = state.0.lock().unwrap();
+    authorize(&conn, &sess, "hr.rules.view")?;
+    list_interruption_rules(&conn)
+}
+#[tauri::command] fn cmd_save_hr_interruption_rule(state: State<DbState>, sess: State<SessionState>, id: Option<i64>, data: HrInterruptionRuleData) -> Result<HrInterruptionRule, AppError> {
+    let conn = state.0.lock().unwrap();
+    let user = authorize(&conn, &sess, "hr.rules.manage")?;
+    save_interruption_rule(&conn, &user, id, &data)
+}
+#[tauri::command] fn cmd_delete_hr_rule(state: State<DbState>, sess: State<SessionState>, table: String, id: i64) -> Result<(), AppError> {
+    let conn = state.0.lock().unwrap();
+    let user = authorize(&conn, &sess, "hr.rules.manage")?;
+    delete_hr_rule(&conn, &user, &table, id)
+}
+#[tauri::command] fn cmd_list_hr_appreciations(state: State<DbState>, sess: State<SessionState>, employee_id: Option<i64>) -> Result<Vec<HrAppreciationLetter>, AppError> {
+    let conn = state.0.lock().unwrap();
+    authorize(&conn, &sess, "hr.employees.view")?;
+    list_appreciation_letters(&conn, employee_id)
+}
+#[tauri::command] fn cmd_save_hr_appreciation(state: State<DbState>, sess: State<SessionState>, id: Option<i64>, data: HrAppreciationLetterData) -> Result<HrAppreciationLetter, AppError> {
+    let conn = state.0.lock().unwrap();
+    let user = authorize(&conn, &sess, "hr.appreciations.manage")?;
+    save_appreciation_letter(&conn, &user, id, &data)
+}
+#[tauri::command] fn cmd_list_hr_penalties(state: State<DbState>, sess: State<SessionState>, employee_id: Option<i64>) -> Result<Vec<HrPenalty>, AppError> {
+    let conn = state.0.lock().unwrap();
+    authorize(&conn, &sess, "hr.employees.view")?;
+    list_penalties(&conn, employee_id)
+}
+#[tauri::command] fn cmd_save_hr_penalty(state: State<DbState>, sess: State<SessionState>, id: Option<i64>, data: HrPenaltyData) -> Result<HrPenalty, AppError> {
+    let conn = state.0.lock().unwrap();
+    let user = authorize(&conn, &sess, "hr.penalties.manage")?;
+    save_penalty(&conn, &user, id, &data)
+}
+#[tauri::command] fn cmd_list_hr_interruptions(state: State<DbState>, sess: State<SessionState>, employee_id: Option<i64>) -> Result<Vec<HrServiceInterruption>, AppError> {
+    let conn = state.0.lock().unwrap();
+    authorize(&conn, &sess, "hr.employees.view")?;
+    list_service_interruptions(&conn, employee_id)
+}
+#[tauri::command] fn cmd_save_hr_interruption(state: State<DbState>, sess: State<SessionState>, id: Option<i64>, data: HrServiceInterruptionData) -> Result<HrServiceInterruption, AppError> {
+    let conn = state.0.lock().unwrap();
+    let user = authorize(&conn, &sess, "hr.employees.manage")?;
+    save_service_interruption(&conn, &user, id, &data)
+}
+#[tauri::command] fn cmd_delete_hr_record(state: State<DbState>, sess: State<SessionState>, table: String, id: i64) -> Result<(), AppError> {
+    let conn = state.0.lock().unwrap();
+    let user = session_user(&sess)?;
+    delete_hr_record(&conn, &user, &table, id)
+}
+#[tauri::command] fn cmd_calculate_hr_employee(state: State<DbState>, sess: State<SessionState>, employee_id: i64) -> Result<Vec<HrEligibilityResult>, AppError> {
+    let conn = state.0.lock().unwrap();
+    authorize(&conn, &sess, "hr.employees.view")?;
+    calculate_hr_employee(&conn, employee_id)
+}
+#[tauri::command] fn cmd_calculate_hr_all(state: State<DbState>, sess: State<SessionState>) -> Result<Vec<HrEligibilityResult>, AppError> {
+    let conn = state.0.lock().unwrap();
+    authorize(&conn, &sess, "hr.reports.view")?;
+    calculate_hr_all(&conn)
+}
+#[tauri::command] fn cmd_hr_dashboard_summary(state: State<DbState>, sess: State<SessionState>) -> Result<HrDashboardSummary, AppError> {
+    let conn = state.0.lock().unwrap();
+    authorize(&conn, &sess, "hr.dashboard.view")?;
+    dashboard_summary(&conn)
+}
+#[tauri::command] fn cmd_get_hr_alert_lead_months(state: State<DbState>, sess: State<SessionState>) -> Result<i64, AppError> {
+    let conn = state.0.lock().unwrap();
+    authorize(&conn, &sess, "hr.rules.view")?;
+    get_hr_alert_lead_months(&conn)
+}
+#[tauri::command] fn cmd_set_hr_alert_lead_months(state: State<DbState>, sess: State<SessionState>, months: i64) -> Result<i64, AppError> {
+    let conn = state.0.lock().unwrap();
+    let user = authorize(&conn, &sess, "hr.rules.manage")?;
+    set_hr_alert_lead_months(&conn, &user, months)
+}
 pub fn run() {
     let conn = db::open().expect("Failed to open database");
     ensure_storage_layout(&conn).ok();
@@ -723,6 +850,16 @@ pub fn run() {
             cmd_get_document_types, cmd_set_document_types,
             cmd_create_backup, cmd_restore_backup, cmd_audit_document_view, cmd_audit_document_download, cmd_download_document,
             cmd_get_document_preview_path, cmd_print_document, cmd_print_employee_documents, cmd_save_report_xlsx,
+            cmd_list_hr_profiles, cmd_get_hr_profile, cmd_save_hr_profile,
+            cmd_list_hr_salary_scales, cmd_save_hr_salary_scale, cmd_delete_hr_salary_scale,
+            cmd_list_hr_appreciation_rules, cmd_save_hr_appreciation_rule,
+            cmd_list_hr_penalty_rules, cmd_save_hr_penalty_rule,
+            cmd_list_hr_interruption_rules, cmd_save_hr_interruption_rule, cmd_delete_hr_rule,
+            cmd_list_hr_appreciations, cmd_save_hr_appreciation,
+            cmd_list_hr_penalties, cmd_save_hr_penalty,
+            cmd_list_hr_interruptions, cmd_save_hr_interruption, cmd_delete_hr_record,
+            cmd_calculate_hr_employee, cmd_calculate_hr_all, cmd_hr_dashboard_summary,
+            cmd_get_hr_alert_lead_months, cmd_set_hr_alert_lead_months,
         ])
         .run(tauri::generate_context!())
         .expect("error while running application");
