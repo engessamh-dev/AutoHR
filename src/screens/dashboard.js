@@ -3,60 +3,28 @@
  * Stats + expiry alerts (badges) + contract renewal warnings
  */
 import { api }        from "../api.js";
-import { formatDate } from "../utils.js";
+import { buildDocumentAlerts } from "./document-alerts.js";
+import { confirmAction, escHtml, formatDate } from "../utils.js";
 
 export async function renderDashboard(container, user, ctx) {
-  const employees = await api.listEmployees();
+  const [employees, incomingDocs, outgoingDocs] = await Promise.all([
+    api.listEmployees(),
+    api.listGeneralDocs(),
+    api.listOutgoingDocs(),
+  ]);
   const active    = employees.filter(e => e.is_active);
   const inactive  = employees.filter(e => !e.is_active);
 
-  const today     = new Date();
-  const in30      = new Date(); in30.setDate(today.getDate() + 30);
-
-  function isExpiringSoon(dateStr) {
-    if (!dateStr) return false;
-    const d = new Date(dateStr);
-    return !isNaN(d) && d >= today && d <= in30;
-  }
-  function isExpired(dateStr) {
-    if (!dateStr) return false;
-    const d = new Date(dateStr);
-    return !isNaN(d) && d < today;
-  }
-  function daysLeft(dateStr) {
-    if (!dateStr) return null;
-    const d = new Date(dateStr);
-    if (isNaN(d)) return null;
-    return Math.ceil((d - today) / 86400000);
-  }
-
-  // Badge alerts
-  const badgeAlerts = [];
-  active.forEach(e => {
-    if (isExpiringSoon(e.airport_badge_expiry) || isExpired(e.airport_badge_expiry)) {
-      const days = daysLeft(e.airport_badge_expiry);
-      badgeAlerts.push({ name: e.full_name, num: e.employee_number, type: "باج دخول مطار بغداد",
-        date: e.airport_badge_expiry, days, expired: days !== null && days < 0 });
-    }
-    if (isExpiringSoon(e.ministry_badge_expiry) || isExpired(e.ministry_badge_expiry)) {
-      const days = daysLeft(e.ministry_badge_expiry);
-      badgeAlerts.push({ name: e.full_name, num: e.employee_number, type: "هوية وزارة النقل",
-        date: e.ministry_badge_expiry, days, expired: days !== null && days < 0 });
-    }
-  });
-
-  // Dept breakdown
-  const deptMap = {};
-  active.forEach(e => { const d = e.department || "غير محدد"; deptMap[d] = (deptMap[d]||0)+1; });
+  const documentAlerts = buildDocumentAlerts(employees);
 
   function alertRow(a, typeLabel = "") {
     const color  = a.expired ? "#dc2626" : "#d97706";
     const bg     = a.expired ? "#dc262615" : "#d9770615";
     const label  = a.expired ? "منتهي" : `${a.days} يوم`;
     return `<tr style="border-bottom:1px solid #2d2d2d">
-      <td class="table-cell font-medium">${a.name}</td>
-      <td class="table-cell" dir="ltr">${a.num ?? "—"}</td>
-      ${typeLabel ? `<td class="table-cell">${a.type ?? typeLabel}</td>` : ""}
+      <td class="table-cell font-medium">${escHtml(a.name)}</td>
+      <td class="table-cell" dir="ltr">${escHtml(a.num ?? "—")}</td>
+      ${typeLabel ? `<td class="table-cell">${escHtml(a.type ?? typeLabel)}</td>` : ""}
       <td class="table-cell">${formatDate(a.date)}</td>
       <td class="table-cell">
         <span style="padding:2px 10px;border-radius:999px;font-size:12px;font-weight:700;
@@ -65,74 +33,165 @@ export async function renderDashboard(container, user, ctx) {
     </tr>`;
   }
 
+  function recentDocsRows(docs, emptyLabel, archiveTab) {
+    return docs
+      .slice()
+      .sort((a, b) => String(b.created_at ?? "").localeCompare(String(a.created_at ?? "")))
+      .slice(0, 5)
+      .map(d => `
+        <tr class="table-row dashboard-doc-row" data-archive-tab="${archiveTab}" data-doc-id="${d.id}" title="اضغط لتعديل الوثيقة">
+          <td class="table-cell font-medium text-gray-100">${escHtml(d.title || "—")}</td>
+          <td class="table-cell">${escHtml(d.issuer || "—")}</td>
+          <td class="table-cell" dir="ltr">${escHtml(d.doc_number || "—")}</td>
+          <td class="table-cell">${formatDate(d.issue_date)}</td>
+          <td class="table-cell">
+            <button type="button" class="dashboard-doc-attachments"
+              data-archive-tab="${archiveTab}" data-doc-id="${d.id}"
+              title="إدارة مرفقات الوثيقة"
+              style="border:none;background:transparent;cursor:pointer;padding:2px">
+              <span class="badge ${d.attachment_paths?.length ? "badge-green" : "badge-gray"}"
+                style="gap:6px;font-size:12px;padding:5px 11px">
+                <span>📎</span>
+                <span dir="ltr">${d.attachment_paths?.length ?? 0} / 20</span>
+              </span>
+            </button>
+          </td>
+          <td class="table-cell">
+            <button type="button" class="btn-danger text-xs px-2 py-1 dashboard-doc-delete"
+              data-archive-tab="${archiveTab}" data-doc-id="${d.id}">حذف</button>
+          </td>
+        </tr>`)
+      .join("") || `<tr><td colspan="6" class="table-cell text-center text-gray-500">${emptyLabel}</td></tr>`;
+  }
+
   container.innerHTML = `<div class="space-y-5">
 
     <!-- Stats -->
     <div class="grid grid-cols-2 md:grid-cols-4 gap-4">
+      <div class="stat-card"><span class="stat-value">${employees.length}</span><span class="stat-label">إجمالي الموظفين</span></div>
+      <div class="stat-card"><span class="stat-value">${active.length}</span><span class="stat-label">الموظفون النشطون</span></div>
+      <div class="stat-card"><span class="stat-value">${inactive.length}</span><span class="stat-label">الموظفون غير النشطين</span></div>
+      <button id="stat-document-alerts" type="button" class="stat-card stat-card-action text-right">
+        <span class="stat-value">${documentAlerts.length}</span>
+        <span class="stat-label">تنبيهات المستمسكات</span>
+      </button>
+    </div>
 
-    <!-- Badge alerts -->
-    ${badgeAlerts.length > 0 ? `
+    <!-- Document alerts -->
+    ${documentAlerts.length > 0 ? `
     <div class="card" style="border-color:#dc262640">
-      <p class="section-title" style="color:#dc2626">⚠️ تنبيهات الباجات — منتهية أو تنتهي خلال 30 يوم</p>
-      <table class="w-full">
-        <thead><tr>
-          <th class="table-header">الموظف</th>
-          <th class="table-header">الرقم الوظيفي</th>
-          <th class="table-header">نوع الباج</th>
-          <th class="table-header">تاريخ الانتهاء</th>
-          <th class="table-header">المتبقي</th>
-        </tr></thead>
-        <tbody>${badgeAlerts.map(a => alertRow(a, "نوع")).join("")}</tbody>
-      </table>
+      <button id="document-alerts-toggle" type="button"
+        style="width:100%;display:flex;align-items:center;justify-content:space-between;gap:12px;background:transparent;border:0;padding:0;cursor:pointer;text-align:right">
+        <span class="section-title mb-0" style="color:#dc2626">تنبيهات المستمسكات — منتهية أو قريبة النفاذ</span>
+        <span style="display:flex;align-items:center;gap:8px">
+          <span class="badge badge-red">${documentAlerts.length}</span>
+          <span id="document-alerts-toggle-icon" style="color:#f3f4f6;font-size:18px;line-height:1">⌄</span>
+        </span>
+      </button>
+      <div id="document-alerts-dropdown" class="hidden" style="margin-top:14px">
+        <table class="w-full">
+          <thead><tr>
+            <th class="table-header">الموظف</th>
+            <th class="table-header">الرقم الوظيفي</th>
+            <th class="table-header">اسم المستمسك</th>
+            <th class="table-header">تاريخ النفاذ</th>
+            <th class="table-header">المتبقي</th>
+          </tr></thead>
+          <tbody>${documentAlerts.map(a => alertRow({
+            name: a.employeeName,
+            num: a.employeeNumber,
+            type: a.documentName,
+            date: a.expiryDate,
+            days: a.days,
+            expired: a.expired,
+          }, "المستمسك")).join("")}</tbody>
+        </table>
+      </div>
     </div>` : ""}
 
     <!-- Contract alerts -->
 
-    <!-- Dept breakdown -->
-    <div class="card">
-      <p class="section-title">توزيع الموظفين النشطين حسب القسم</p>
-      ${Object.keys(deptMap).length === 0
-        ? `<p class="text-gray-500 text-sm text-center py-4">لا يوجد موظفون</p>`
-        : `<table class="w-full"><thead><tr>
-            <th class="table-header">القسم</th>
-            <th class="table-header">العدد</th>
-          </tr></thead><tbody>
-          ${Object.entries(deptMap).sort((a,b) => b[1]-a[1]).map(([dept, count]) => `
-            <tr class="table-row">
-              <td class="table-cell">${dept}</td>
-              <td class="table-cell">
-                <div style="display:flex;align-items:center;gap:8px">
-                  <div style="flex:1;background:#2d2d2d;border-radius:999px;height:8px">
-                    <div style="background:#5da12c;height:8px;border-radius:999px;width:${Math.round((count/active.length)*100)}%"></div>
-                  </div>
-                  <span style="font-size:12px;color:#9ca3af;min-width:20px">${count}</span>
-                </div>
-              </td>
-            </tr>`).join("")}
-          </tbody></table>`}
-    </div>
+    <div class="space-y-4">
+      <div class="card overflow-auto">
+        <div class="flex items-center justify-between gap-3 mb-4">
+          <p class="section-title mb-0">الوارد</p>
+          <span class="badge badge-gray">آخر 5 وثائق</span>
+        </div>
+        <table class="w-full">
+          <thead><tr>
+            <th class="table-header">الجهة المصدرة</th>
+            <th class="table-header">الموضوع</th>
+            <th class="table-header">إلى</th>
+            <th class="table-header">تاريخ الإصدار</th>
+            <th class="table-header">المرفقات</th>
+            <th class="table-header">إجراء</th>
+          </tr></thead>
+          <tbody>${recentDocsRows(incomingDocs, "لا توجد وثائق واردة", "general")}</tbody>
+        </table>
+      </div>
 
-    <!-- Recent employees -->
-    <div class="card">
-      <p class="section-title">آخر الموظفين المضافين</p>
-      <table class="w-full">
-        <thead><tr>
-          <th class="table-header">الاسم</th>
-          <th class="table-header">الرقم الوظيفي</th>
-          <th class="table-header">العنوان الوظيفي</th>
-          <th class="table-header">تاريخ المباشرة</th>
-        </tr></thead>
-        <tbody>
-          ${active.slice(-5).reverse().map(e => `
-            <tr class="table-row">
-              <td class="table-cell font-medium text-gray-100">${e.full_name}</td>
-              <td class="table-cell" dir="ltr">${e.employee_number ?? "—"}</td>
-              <td class="table-cell">${e.job_title ?? "—"}</td>
-              <td class="table-cell">${formatDate(e.hire_date)}</td>
-            </tr>`).join("") ||
-            `<tr><td colspan="4" class="table-cell text-center text-gray-500">لا يوجد موظفون</td></tr>`}
-        </tbody>
-      </table>
+      <div class="card overflow-auto">
+        <div class="flex items-center justify-between gap-3 mb-4">
+          <p class="section-title mb-0">الصادر</p>
+          <span class="badge badge-gray">آخر 5 وثائق</span>
+        </div>
+        <table class="w-full">
+          <thead><tr>
+            <th class="table-header">الجهة المصدرة</th>
+            <th class="table-header">الموضوع</th>
+            <th class="table-header">إلى</th>
+            <th class="table-header">تاريخ الإصدار</th>
+            <th class="table-header">المرفقات</th>
+            <th class="table-header">إجراء</th>
+          </tr></thead>
+          <tbody>${recentDocsRows(outgoingDocs, "لا توجد وثائق صادرة", "outgoing")}</tbody>
+        </table>
+      </div>
     </div>
   </div>`;
+
+  container.querySelector("#stat-document-alerts")?.addEventListener("click", () => {
+    ctx.navigateTo("documentAlerts");
+  });
+  container.querySelectorAll(".dashboard-doc-row").forEach(row => {
+    row.addEventListener("click", event => {
+      if (event.target.closest("button")) return;
+      ctx.navigateTo("documents", {
+        archiveTab: row.dataset.archiveTab,
+        editDocId: parseInt(row.dataset.docId, 10),
+        compactArchiveMode: true,
+      });
+    });
+  });
+  container.querySelectorAll(".dashboard-doc-delete").forEach(button => {
+    button.addEventListener("click", async event => {
+      event.stopPropagation();
+      if (!(await confirmAction("تأكيد حذف الوثيقة؟"))) return;
+      try {
+        const id = parseInt(button.dataset.docId, 10);
+        if (button.dataset.archiveTab === "outgoing") await api.deleteOutgoingDoc(id);
+        else await api.deleteGeneralDoc(id);
+        ctx.showToast("تم حذف الوثيقة");
+        await renderDashboard(container, user, ctx);
+      } catch (error) {
+        ctx.showToast(error?.message ?? "تعذر حذف الوثيقة", "error");
+      }
+    });
+  });
+  container.querySelectorAll(".dashboard-doc-attachments").forEach(button => {
+    button.addEventListener("click", event => {
+      event.stopPropagation();
+      ctx.navigateTo("documents", {
+        archiveTab: button.dataset.archiveTab,
+        manageAttachmentDocId: parseInt(button.dataset.docId, 10),
+        compactArchiveMode: true,
+      });
+    });
+  });
+  container.querySelector("#document-alerts-toggle")?.addEventListener("click", () => {
+    const dropdown = container.querySelector("#document-alerts-dropdown");
+    const icon = container.querySelector("#document-alerts-toggle-icon");
+    dropdown?.classList.toggle("hidden");
+    if (icon) icon.textContent = dropdown?.classList.contains("hidden") ? "⌄" : "⌃";
+  });
 }

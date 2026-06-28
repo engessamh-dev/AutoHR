@@ -9,8 +9,7 @@ import Database from "better-sqlite3";
 import { readFileSync, mkdirSync, existsSync } from "fs";
 import { join, dirname } from "path";
 import { fileURLToPath } from "url";
-import { createHash } from "crypto";
-import { sampleEmployees } from "./sample-employees.js";
+import { hashSync } from "bcryptjs";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const root = join(__dirname, "..");
@@ -21,10 +20,8 @@ const schemaPath = join(root, "database", "schema.sql");
 
 if (!existsSync(dbDir)) mkdirSync(dbDir, { recursive: true });
 
-// Simple SHA-256 password hash (Rust side uses same approach for demo)
-// In production use argon2 or bcrypt via Rust
 function hashPassword(plain) {
-  return createHash("sha256").update(plain).digest("hex");
+  return hashSync(plain, 12);
 }
 
 console.log("📦 AutoHR Seed Database");
@@ -37,6 +34,46 @@ db.pragma("foreign_keys = ON");
 // Apply schema
 const schema = readFileSync(schemaPath, "utf8");
 db.exec(schema);
+const userColumns = new Set(
+  db.prepare("PRAGMA table_info(users)").all().map(column => column.name)
+);
+if (!userColumns.has("must_change_password")) {
+  db.exec("ALTER TABLE users ADD COLUMN must_change_password INTEGER NOT NULL DEFAULT 0 CHECK(must_change_password IN (0,1))");
+}
+const legacyRoleCount = db.prepare("SELECT COUNT(*) count FROM users WHERE role IN ('master','operator','hr_admin','hr_officer')").get().count;
+const usersSql = db.prepare("SELECT sql FROM sqlite_master WHERE type='table' AND name='users'").get().sql;
+if (legacyRoleCount || usersSql.includes("hr_admin") || usersSql.includes("'master'")) {
+  db.exec(`
+    PRAGMA foreign_keys=OFF;
+    ALTER TABLE users RENAME TO users_legacy_roles;
+    CREATE TABLE users (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      username TEXT NOT NULL UNIQUE,
+      password TEXT NOT NULL,
+      role TEXT NOT NULL DEFAULT 'viewer' CHECK(role IN ('system_admin','archive_admin','archive_officer','viewer')),
+      must_change_password INTEGER NOT NULL DEFAULT 0 CHECK(must_change_password IN (0,1)),
+      created_at TEXT DEFAULT (datetime('now'))
+    );
+    INSERT INTO users(id,username,password,role,must_change_password,created_at)
+      SELECT id,username,password,CASE
+        WHEN username='sysadmin' OR role='master' OR role='system_admin' THEN 'system_admin'
+        WHEN role='hr_admin' OR role='archive_admin' THEN 'archive_admin'
+        ELSE 'archive_officer' END,
+        must_change_password,created_at FROM users_legacy_roles;
+    DROP TABLE users_legacy_roles;
+    PRAGMA foreign_keys=ON;
+  `);
+}
+const auditColumns = new Set(
+  db.prepare("PRAGMA table_info(activity_log)").all().map(column => column.name)
+);
+for (const [column, definition] of [
+  ["user_id", "INTEGER"],
+  ["role", "TEXT NOT NULL DEFAULT 'unknown'"],
+  ["result", "TEXT NOT NULL DEFAULT 'Success'"],
+]) {
+  if (!auditColumns.has(column)) db.exec(`ALTER TABLE activity_log ADD COLUMN ${column} ${definition}`);
+}
 console.log("✅ Schema applied");
 
 const obsoleteEmployeeColumns = [
@@ -92,10 +129,12 @@ db.exec(`
 const existingAdmin = db.prepare("SELECT id FROM users WHERE username = 'sysadmin'").get();
 if (!existingAdmin) {
   db.prepare(
-    "INSERT INTO users (username, password, role) VALUES (?, ?, 'master')"
+    "INSERT INTO users (username, password, role, must_change_password) VALUES (?, ?, 'system_admin', 1)"
   ).run("sysadmin", hashPassword("password"));
   console.log("✅ sysadmin user created (password: password)");
 } else {
+  db.prepare("UPDATE users SET password=?, must_change_password=1 WHERE username='sysadmin'")
+    .run(hashPassword("password"));
   console.log("ℹ️  sysadmin already exists — skipped");
 }
 
@@ -106,23 +145,7 @@ db.exec(`
 `);
 console.log("✅ Employee records cleared");
 
-const availableEmployeeColumns = new Set(
-  db.prepare("PRAGMA table_info(employees)").all().map(column => column.name)
-);
-const sampleEmployeeColumns = Object.keys(sampleEmployees[0]).filter(column =>
-  availableEmployeeColumns.has(column)
-);
-const insertEmployee = db.prepare(`
-  INSERT INTO employees (${sampleEmployeeColumns.join(", ")})
-  VALUES (${sampleEmployeeColumns.map(column => `@${column}`).join(", ")})
-`);
-const insertSampleEmployees = db.transaction(employees => {
-  for (const employee of employees) {
-    insertEmployee.run(employee);
-  }
-});
-insertSampleEmployees(sampleEmployees);
-console.log(`Seeded ${sampleEmployees.length} fictional employee records`);
+console.log("No employee records are bundled in release databases");
 
 // Default company config
 db.prepare(`

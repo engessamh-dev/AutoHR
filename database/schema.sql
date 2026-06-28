@@ -7,7 +7,8 @@ CREATE TABLE IF NOT EXISTS users (
   id         INTEGER PRIMARY KEY AUTOINCREMENT,
   username   TEXT NOT NULL UNIQUE,
   password   TEXT NOT NULL,
-  role       TEXT NOT NULL DEFAULT 'operator' CHECK(role IN ('master','operator')),
+  role       TEXT NOT NULL DEFAULT 'viewer' CHECK(role IN ('system_admin','archive_admin','archive_officer','viewer')),
+  must_change_password INTEGER NOT NULL DEFAULT 0 CHECK(must_change_password IN (0,1)),
   created_at TEXT DEFAULT (datetime('now'))
 );
 
@@ -45,6 +46,7 @@ CREATE TABLE IF NOT EXISTS employees (
   job_title                 TEXT,
   job_grade                 TEXT,
   hire_date                 TEXT,
+  appointment_date          TEXT,
   contract_type             TEXT DEFAULT 'ملاك',
   work_type_notes           TEXT,
   work_schedule             TEXT,
@@ -107,6 +109,7 @@ CREATE TABLE IF NOT EXISTS employees (
   spouse_mother_name        TEXT,
   spouse_birthdate          TEXT,
   marriage_date             TEXT,
+  spouses                   TEXT DEFAULT '[]',
   family_members            TEXT DEFAULT '[]',
   attachment_paths          TEXT DEFAULT '[]',
   notes                     TEXT,
@@ -126,6 +129,71 @@ CREATE TABLE IF NOT EXISTS grade_history (
   created_at  TEXT DEFAULT (datetime('now'))
 );
 
+CREATE TABLE IF NOT EXISTS employee_spouses (
+  id                       INTEGER PRIMARY KEY AUTOINCREMENT,
+  employee_id              INTEGER NOT NULL REFERENCES employees(id) ON DELETE CASCADE,
+  sort_order               INTEGER NOT NULL DEFAULT 0,
+  civil_id                 TEXT,
+  name                     TEXT,
+  mother_name              TEXT,
+  gender                   TEXT,
+  birthplace               TEXT,
+  birthdate                TEXT,
+  issue_date               TEXT,
+  expiry_date              TEXT,
+  issuer                   TEXT,
+  blood_type               TEXT,
+  marriage_date            TEXT,
+  national_card_front_path TEXT,
+  national_card_back_path  TEXT,
+  created_at               TEXT DEFAULT (datetime('now')),
+  updated_at               TEXT DEFAULT (datetime('now'))
+);
+
+CREATE TABLE IF NOT EXISTS employee_family_members (
+  id                       INTEGER PRIMARY KEY AUTOINCREMENT,
+  employee_id              INTEGER NOT NULL REFERENCES employees(id) ON DELETE CASCADE,
+  sort_order               INTEGER NOT NULL DEFAULT 0,
+  civil_id                 TEXT,
+  name                     TEXT,
+  gender                   TEXT,
+  birthplace               TEXT,
+  birthdate                TEXT,
+  issue_date               TEXT,
+  expiry_date              TEXT,
+  issuer                   TEXT,
+  blood_type               TEXT,
+  national_card_front_path TEXT,
+  national_card_back_path  TEXT,
+  created_at               TEXT DEFAULT (datetime('now')),
+  updated_at               TEXT DEFAULT (datetime('now'))
+);
+
+CREATE TABLE IF NOT EXISTS employee_vehicles (
+  id          INTEGER PRIMARY KEY AUTOINCREMENT,
+  employee_id INTEGER NOT NULL REFERENCES employees(id) ON DELETE CASCADE,
+  sort_order  INTEGER NOT NULL DEFAULT 0,
+  plate       TEXT,
+  brand       TEXT,
+  type        TEXT,
+  color       TEXT,
+  annual_no   TEXT,
+  issue_date  TEXT,
+  expiry_date TEXT,
+  created_at  TEXT DEFAULT (datetime('now')),
+  updated_at  TEXT DEFAULT (datetime('now'))
+);
+
+CREATE TABLE IF NOT EXISTS employee_attachments (
+  id          INTEGER PRIMARY KEY AUTOINCREMENT,
+  employee_id INTEGER NOT NULL REFERENCES employees(id) ON DELETE CASCADE,
+  kind        TEXT NOT NULL CHECK(kind IN ('general','passport','ration_card')),
+  file_path   TEXT NOT NULL,
+  sort_order  INTEGER NOT NULL DEFAULT 0,
+  created_at  TEXT DEFAULT (datetime('now')),
+  UNIQUE(employee_id, kind, file_path)
+);
+
 -- General document archive (not linked to any employee)
 CREATE TABLE IF NOT EXISTS general_docs (
   id          INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -134,6 +202,9 @@ CREATE TABLE IF NOT EXISTS general_docs (
   doc_number  TEXT,
   issue_date  TEXT,
   issuer      TEXT,
+  doc_count   TEXT,
+  margin      TEXT,
+  is_internal_memo INTEGER NOT NULL DEFAULT 0 CHECK(is_internal_memo IN (0,1)),
   notes       TEXT,
   file_path   TEXT,
   created_at  TEXT DEFAULT (datetime('now')),
@@ -150,6 +221,7 @@ CREATE TABLE IF NOT EXISTS general_doc_attachments (
   id             INTEGER PRIMARY KEY AUTOINCREMENT,
   general_doc_id INTEGER NOT NULL REFERENCES general_docs(id) ON DELETE CASCADE,
   file_path      TEXT NOT NULL,
+  sort_order     INTEGER NOT NULL DEFAULT 0,
   created_at     TEXT DEFAULT (datetime('now'))
 );
 
@@ -160,6 +232,9 @@ CREATE TABLE IF NOT EXISTS outgoing_docs (
   doc_number  TEXT,
   issue_date  TEXT,
   issuer      TEXT,
+  doc_count   TEXT,
+  margin      TEXT,
+  is_internal_memo INTEGER NOT NULL DEFAULT 0 CHECK(is_internal_memo IN (0,1)),
   notes       TEXT,
   created_at  TEXT DEFAULT (datetime('now')),
   updated_at  TEXT DEFAULT (datetime('now'))
@@ -175,20 +250,28 @@ CREATE TABLE IF NOT EXISTS outgoing_doc_attachments (
   id              INTEGER PRIMARY KEY AUTOINCREMENT,
   outgoing_doc_id INTEGER NOT NULL REFERENCES outgoing_docs(id) ON DELETE CASCADE,
   file_path       TEXT NOT NULL,
+  sort_order      INTEGER NOT NULL DEFAULT 0,
   created_at      TEXT DEFAULT (datetime('now'))
 );
 
 -- Activity / audit log
 CREATE TABLE IF NOT EXISTS activity_log (
-  id          INTEGER PRIMARY KEY AUTOINCREMENT,
-  username    TEXT NOT NULL,
-  action      TEXT NOT NULL,
-  target_type TEXT,
-  target_id   INTEGER,
-  target_name TEXT,
-  details     TEXT,
-  created_at  TEXT DEFAULT (datetime('now'))
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id     INTEGER,
+    username    TEXT NOT NULL,
+    role        TEXT NOT NULL DEFAULT 'unknown',
+    action      TEXT NOT NULL,
+    target_type TEXT,
+    target_id   INTEGER,
+    target_name TEXT,
+    result      TEXT NOT NULL DEFAULT 'Success' CHECK(result IN ('Success','Failure')),
+    details     TEXT,
+    created_at  TEXT DEFAULT (datetime('now'))
 );
+CREATE TRIGGER IF NOT EXISTS activity_log_no_update BEFORE UPDATE ON activity_log
+BEGIN SELECT RAISE(ABORT, 'audit log is immutable'); END;
+CREATE TRIGGER IF NOT EXISTS activity_log_no_delete BEFORE DELETE ON activity_log
+BEGIN SELECT RAISE(ABORT, 'audit log is immutable'); END;
 
 -- Backup log
 CREATE TABLE IF NOT EXISTS backup_log (
@@ -197,3 +280,26 @@ CREATE TABLE IF NOT EXISTS backup_log (
   backup_path TEXT NOT NULL,
   created_at  TEXT DEFAULT (datetime('now'))
 );
+
+CREATE TABLE IF NOT EXISTS document_metadata (
+  stored_path   TEXT PRIMARY KEY,
+  original_name TEXT NOT NULL,
+  mime_type     TEXT NOT NULL,
+  size_bytes    INTEGER NOT NULL CHECK(size_bytes > 0),
+  created_at    TEXT DEFAULT (datetime('now'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_employees_full_name ON employees(full_name);
+CREATE INDEX IF NOT EXISTS idx_employees_department ON employees(department);
+CREATE INDEX IF NOT EXISTS idx_grade_history_employee_date ON grade_history(employee_id, effective_date DESC);
+CREATE INDEX IF NOT EXISTS idx_employee_spouses_employee ON employee_spouses(employee_id, sort_order);
+CREATE INDEX IF NOT EXISTS idx_employee_family_members_employee ON employee_family_members(employee_id, sort_order);
+CREATE INDEX IF NOT EXISTS idx_employee_vehicles_employee ON employee_vehicles(employee_id, sort_order);
+CREATE INDEX IF NOT EXISTS idx_employee_attachments_employee_kind ON employee_attachments(employee_id, kind, sort_order);
+CREATE INDEX IF NOT EXISTS idx_general_docs_created_at ON general_docs(created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_general_doc_employees_employee ON general_doc_employees(employee_id);
+CREATE INDEX IF NOT EXISTS idx_general_doc_attachments_doc ON general_doc_attachments(general_doc_id);
+CREATE INDEX IF NOT EXISTS idx_outgoing_docs_created_at ON outgoing_docs(created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_outgoing_doc_employees_employee ON outgoing_doc_employees(employee_id);
+CREATE INDEX IF NOT EXISTS idx_outgoing_doc_attachments_doc ON outgoing_doc_attachments(outgoing_doc_id);
+CREATE INDEX IF NOT EXISTS idx_activity_log_created_at ON activity_log(created_at DESC);

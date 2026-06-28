@@ -34,7 +34,7 @@ export async function renderCompany(container, user, ctx) {
         ${cfg?.logo_full_path
           ? `<img src="" id="logo-preview" class="w-20 h-20 rounded object-cover border border-autohr-border" />`
           : `<div class="w-20 h-20 rounded bg-autohr-green/20 flex items-center justify-center border border-autohr-border">
-               <span class="text-2xl font-bold text-autohr-green">AH</span>
+               <span class="text-xl font-bold text-autohr-green">CNS</span>
              </div>`}
         <p class="text-xs text-gray-500">يدعم PNG، JPG، JPEG — بحد أقصى 5 MB</p>
         <button id="btn-upload-logo" class="btn-secondary px-4">رفع شعار جديد…</button>
@@ -60,7 +60,7 @@ export async function renderCompany(container, user, ctx) {
     if (!data.company_name) { showToast("اسم الشركة مطلوب", "error"); return; }
     if (!(await confirmAction("تأكيد حفظ بيانات الجهة؟"))) return;
     try {
-      cfg = await api.updateCompanyConfig(user?.username ?? "sysadmin", data);
+      cfg = await api.updateCompanyConfig(data);
       applyBranding(cfg);
       showToast("تم حفظ بيانات الجهة");
     } catch (err) { showToast(err?.message ?? "خطأ", "error"); }
@@ -74,7 +74,7 @@ export async function renderCompany(container, user, ctx) {
       });
       if (!selected) return;
       if (!(await confirmAction("تأكيد رفع شعار جديد؟"))) return;
-      cfg = await api.uploadCompanyLogo(user?.username ?? "sysadmin", selected);
+      cfg = await api.uploadCompanyLogo(selected);
       applyBranding(cfg);
       showToast("تم رفع الشعار بنجاح");
       container.innerHTML = html();

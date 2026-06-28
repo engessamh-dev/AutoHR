@@ -25,7 +25,7 @@ npm run seed-db
 npm run tauri:dev
 ```
 
-Default login: `sysadmin` / `password`. See [README.md](README.md) and [ARCHITECTURE.md](ARCHITECTURE.md) for fuller detail (Architecture doc has RBAC/logo-upload/backup flow diagrams).
+Initial login: `sysadmin` / temporary password `password`. The account is blocked from normal system access until the password is changed. See [README.md](README.md) and [ARCHITECTURE.md](ARCHITECTURE.md) for fuller detail.
 
 ## Conventions to follow
 

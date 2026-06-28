@@ -37,6 +37,8 @@ export function confirmAction(message = "هل أنت متأكد من تنفيذ 
     `;
 
     const dialog = document.createElement("div");
+    dialog.setAttribute("role", "alertdialog");
+    dialog.setAttribute("aria-modal", "true");
     dialog.style.cssText = `
       width:min(420px,100%);background:#1f1f1f;border:1px solid #2d2d2d;
       border-radius:8px;box-shadow:0 18px 60px rgba(0,0,0,.45);
@@ -108,6 +110,8 @@ export function confirmSaveChanges(message = "توجد تغييرات غير م�
     `;
 
     const dialog = document.createElement("div");
+    dialog.setAttribute("role", "alertdialog");
+    dialog.setAttribute("aria-modal", "true");
     dialog.style.cssText = `
       width:min(460px,100%);background:#1f1f1f;border:1px solid #2d2d2d;
       border-radius:8px;box-shadow:0 18px 60px rgba(0,0,0,.45);
@@ -177,10 +181,12 @@ export function applyBranding(config) {
   const logo = document.getElementById("sidebar-logo");
   const fb   = document.getElementById("sidebar-logo-fallback");
   const hdr  = document.getElementById("header-branding");
+  const loginUnit = document.getElementById("login-unit-name");
 
-  if (co)   co.textContent   = config.company_name || "AutoHR";
+  if (co)   co.textContent   = config.company_name || "CNSArch";
   if (dept) dept.textContent = [config.department_name, config.division_name].filter(Boolean).join(" · ");
   if (hdr)  hdr.textContent  = [config.company_name, config.department_name].filter(Boolean).join(" — ");
+  if (loginUnit) loginUnit.textContent = config.division_name || "وحدة الاتمتة";
 
   if (config.logo_full_path && logo && fb) {
     logo.src = convertFileSrc(config.logo_full_path);

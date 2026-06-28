@@ -39,7 +39,7 @@ AutoHR/
 
 | Table | Purpose |
 |-------|---------|
-| `users` | Operators (max 10). `role`: `master` \| `operator`. Seeded: `sysadmin` |
+| `users` | Operators (max 10). Roles: `system_admin`, `archive_admin`, `archive_officer`, `viewer`. Seeded: `sysadmin`, forced password change |
 | `company_config` | Single row: `company_name`, `department_name`, `division_name`, `logo_path` |
 | `app_settings` | `storage_destination` → Documents/AutoHR default |
 | `employees` | Full HR records + relative attachment paths |
@@ -87,6 +87,13 @@ cmd_upload_company_logo(user, source_path)
     → INSERT backup_log
     → redirect to login
 ```
+
+## Full Backup Format
+
+Manual backups use encrypted `.autohrbak` v2 containers. Each backup contains a consistent SQLite
+snapshot, the managed attachment/document data tree, and a SHA-256 manifest. Restore extracts into
+staging, validates all database relationships and referenced files, creates a full pre-restore backup,
+then swaps the data directory and database before requiring re-authentication.
 
 ---
 

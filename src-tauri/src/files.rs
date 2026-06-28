@@ -1,16 +1,81 @@
 // src-tauri/src/files.rs
 use rusqlite::{params, Connection};
-use std::path::{Component, Path};
+use rand::{rngs::OsRng, RngCore};
+use std::{fs::File, io::Read, path::{Component, Path}};
 use crate::services::{ensure_storage_layout, storage_path, AppError};
 
 pub type AppResult<T> = Result<T, AppError>;
 
-fn safe_relative_path(relative_path: &str) -> AppResult<&Path> {
+pub const MAX_DOCUMENT_SIZE: u64 = 20 * 1024 * 1024;
+pub const MAX_IMAGE_SIZE: u64 = 5 * 1024 * 1024;
+
+pub struct ValidatedUpload {
+    pub original_name: String,
+    pub extension: &'static str,
+    pub mime_type: &'static str,
+    pub size: u64,
+}
+
+pub fn safe_relative_path(relative_path: &str) -> AppResult<&Path> {
     let path = Path::new(relative_path);
     if path.is_absolute() || path.components().any(|c| matches!(c, Component::ParentDir | Component::Prefix(_))) {
         return Err(AppError::Validation("Invalid attachment path".into()));
     }
     Ok(path)
+}
+
+pub fn validate_upload(source_path: &str, allow_pdf: bool, allow_png: bool, max_size: u64) -> AppResult<ValidatedUpload> {
+    let source = Path::new(source_path);
+    let metadata = std::fs::metadata(source).map_err(|_| AppError::Validation("The selected file could not be read".into()))?;
+    if !metadata.is_file() || metadata.len() == 0 {
+        return Err(AppError::Validation("Select a non-empty file".into()));
+    }
+    if metadata.len() > max_size {
+        return Err(AppError::Validation(format!("The selected file exceeds the {} MB limit", max_size / 1024 / 1024)));
+    }
+    let original_name = source.file_name().and_then(|n| n.to_str())
+        .filter(|name| !name.is_empty()).ok_or_else(|| AppError::Validation("The selected filename is invalid".into()))?.to_string();
+    let supplied_extension = source.extension().and_then(|e| e.to_str()).unwrap_or("").to_ascii_lowercase();
+    let mut signature = [0u8; 8];
+    let mut file = File::open(source).map_err(|_| AppError::Validation("The selected file could not be read".into()))?;
+    let read = file.read(&mut signature).map_err(|_| AppError::Validation("The selected file could not be read".into()))?;
+    let (extension, mime_type) = if read >= 5 && &signature[..5] == b"%PDF-" && allow_pdf {
+        ("pdf", "application/pdf")
+    } else if read >= 3 && signature[..3] == [0xff, 0xd8, 0xff] {
+        ("jpg", "image/jpeg")
+    } else if read >= 8 && signature == [0x89, b'P', b'N', b'G', 0x0d, 0x0a, 0x1a, 0x0a] && allow_png {
+        ("png", "image/png")
+    } else {
+        return Err(AppError::Validation("Only valid PDF or image files are allowed".into()));
+    };
+    if supplied_extension != extension && !(extension == "jpg" && supplied_extension == "jpeg") {
+        return Err(AppError::Validation("The file extension does not match its contents".into()));
+    }
+    Ok(ValidatedUpload { original_name, extension, mime_type, size: metadata.len() })
+}
+
+pub fn random_filename(extension: &str) -> String {
+    let mut bytes = [0u8; 16];
+    OsRng.fill_bytes(&mut bytes);
+    format!("{}.{}", hex::encode(bytes), extension)
+}
+
+pub fn copy_validated_upload(conn: &Connection, source_path: &str, destination_dir: &Path, relative_dir: &str,
+    allow_pdf: bool, allow_png: bool, max_size: u64) -> AppResult<String> {
+    let upload = validate_upload(source_path, allow_pdf, allow_png, max_size)?;
+    std::fs::create_dir_all(destination_dir).map_err(|e| AppError::Other(e.to_string()))?;
+    let filename = random_filename(upload.extension);
+    let destination = destination_dir.join(&filename);
+    std::fs::copy(source_path, &destination).map_err(|e| AppError::Other(e.to_string()))?;
+    let rel = format!("{}/{}", relative_dir.trim_end_matches('/'), filename);
+    if let Err(error) = conn.execute(
+        "INSERT OR REPLACE INTO document_metadata(stored_path,original_name,mime_type,size_bytes) VALUES(?1,?2,?3,?4)",
+        params![rel, upload.original_name, upload.mime_type, upload.size as i64],
+    ) {
+        std::fs::remove_file(destination).ok();
+        return Err(error.into());
+    }
+    Ok(rel)
 }
 
 fn national_card_column(side: &str) -> AppResult<&'static str> {
@@ -48,17 +113,12 @@ fn ministry_badge_column(side: &str) -> AppResult<&'static str> {
 fn upload_sided_card_attachment(
     conn: &Connection,
     employee_id: i64,
-    side: &str,
+    _side: &str,
     source_path: &str,
     column: &str,
     folder: &str,
 ) -> AppResult<String> {
     ensure_storage_layout(conn)?;
-    let src = Path::new(source_path);
-    let ext = src.extension().and_then(|e| e.to_str()).unwrap_or("").to_lowercase();
-    if !["jpg", "jpeg", "pdf"].contains(&ext.as_str()) {
-        return Err(AppError::Validation("Only jpg/jpeg/pdf allowed".into()));
-    }
     let previous: Option<String> = conn.query_row(
         &format!("SELECT {} FROM employees WHERE id=?1", column),
         params![employee_id],
@@ -67,10 +127,8 @@ fn upload_sided_card_attachment(
     let dest_dir = storage_path(conn)
         .join("Files").join("Employees").join(employee_id.to_string())
         .join("Documents").join(folder);
-    std::fs::create_dir_all(&dest_dir).map_err(|e| AppError::Other(e.to_string()))?;
-    let filename = format!("{}.{}", side, ext);
-    std::fs::copy(src, dest_dir.join(&filename)).map_err(|e| AppError::Other(e.to_string()))?;
-    let rel = format!("Files/Employees/{}/Documents/{}/{}", employee_id, folder, filename);
+    let rel = copy_validated_upload(conn, source_path, &dest_dir,
+        &format!("Files/Employees/{}/Documents/{}", employee_id, folder), true, false, MAX_DOCUMENT_SIZE)?;
     conn.execute(
         &format!("UPDATE employees SET {}=?1, updated_at=datetime('now') WHERE id=?2", column),
         params![rel, employee_id],
@@ -95,14 +153,14 @@ fn delete_sided_card_attachment(
         params![employee_id],
         |r| r.get(0),
     ).map_err(|_| AppError::NotFound)?;
-    if let Some(relative_path) = existing {
-        let path = safe_relative_path(&relative_path)?;
-        std::fs::remove_file(storage_path(conn).join(path)).ok();
-    }
     conn.execute(
         &format!("UPDATE employees SET {}=NULL, updated_at=datetime('now') WHERE id=?1", column),
         params![employee_id],
     )?;
+    if let Some(relative_path) = existing {
+        let path = safe_relative_path(&relative_path)?;
+        std::fs::remove_file(storage_path(conn).join(path)).ok();
+    }
     Ok(())
 }
 
@@ -124,6 +182,196 @@ pub fn delete_national_card_attachment(
 ) -> AppResult<()> {
     let column = national_card_column(side)?;
     delete_sided_card_attachment(conn, employee_id, column)
+}
+
+fn family_national_card_key(side: &str) -> AppResult<&'static str> {
+    match side {
+        "front" => Ok("national_card_front_path"),
+        "back" => Ok("national_card_back_path"),
+        _ => Err(AppError::Validation("Invalid family national card side".into())),
+    }
+}
+
+fn family_members_json(conn: &Connection, employee_id: i64) -> AppResult<Vec<serde_json::Value>> {
+    let mut stmt = conn.prepare(
+        "SELECT civil_id,name,gender,birthplace,birthdate,issue_date,expiry_date,issuer,blood_type,national_card_front_path,national_card_back_path
+         FROM employee_family_members WHERE employee_id=?1 ORDER BY sort_order,id"
+    )?;
+    let members = stmt.query_map(params![employee_id], |row| {
+        Ok(serde_json::json!({
+            "civil_id": row.get::<_, Option<String>>(0)?.unwrap_or_default(),
+            "name": row.get::<_, Option<String>>(1)?.unwrap_or_default(),
+            "gender": row.get::<_, Option<String>>(2)?.unwrap_or_default(),
+            "birthplace": row.get::<_, Option<String>>(3)?.unwrap_or_default(),
+            "birthdate": row.get::<_, Option<String>>(4)?.unwrap_or_default(),
+            "issue_date": row.get::<_, Option<String>>(5)?.unwrap_or_default(),
+            "expiry_date": row.get::<_, Option<String>>(6)?.unwrap_or_default(),
+            "issuer": row.get::<_, Option<String>>(7)?.unwrap_or_default(),
+            "blood_type": row.get::<_, Option<String>>(8)?.unwrap_or_default(),
+            "national_card_front_path": row.get::<_, Option<String>>(9)?.unwrap_or_default(),
+            "national_card_back_path": row.get::<_, Option<String>>(10)?.unwrap_or_default(),
+        }))
+    })?.collect::<rusqlite::Result<Vec<_>>>()?;
+    Ok(members)
+}
+
+pub fn upload_family_national_card_attachment(
+    conn: &Connection,
+    employee_id: i64,
+    member_index: usize,
+    side: &str,
+    source_path: &str,
+) -> AppResult<String> {
+    ensure_storage_layout(conn)?;
+    let key = family_national_card_key(side)?;
+    let mut members = family_members_json(conn, employee_id)?;
+    let member = members.get_mut(member_index).ok_or(AppError::NotFound)?;
+    let member_object = member.as_object_mut()
+        .ok_or_else(|| AppError::Validation("Invalid family member data".into()))?;
+    let previous = member_object.get(key).and_then(|value| value.as_str()).map(str::to_owned);
+    let dest_dir = storage_path(conn)
+        .join("Files").join("Employees").join(employee_id.to_string())
+        .join("Family").join((member_index + 1).to_string()).join("NationalCard");
+    let rel = copy_validated_upload(conn, source_path, &dest_dir,
+        &format!("Files/Employees/{}/Family/{}/NationalCard", employee_id, member_index + 1),
+        true, false, MAX_DOCUMENT_SIZE)?;
+    member_object.insert(key.to_string(), serde_json::Value::String(rel.clone()));
+    let updated = conn.execute(
+        &format!("UPDATE employee_family_members SET {}=?1, updated_at=datetime('now') WHERE employee_id=?2 AND sort_order=?3", key),
+        params![rel, employee_id, member_index as i64],
+    )?;
+    if updated == 0 {
+        return Err(AppError::NotFound);
+    }
+    if let Some(old) = previous {
+        if old != rel {
+            if let Ok(path) = safe_relative_path(&old) {
+                std::fs::remove_file(storage_path(conn).join(path)).ok();
+            }
+        }
+    }
+    Ok(rel)
+}
+
+pub fn delete_family_national_card_attachment(
+    conn: &Connection,
+    employee_id: i64,
+    member_index: usize,
+    side: &str,
+) -> AppResult<()> {
+    let key = family_national_card_key(side)?;
+    let mut members = family_members_json(conn, employee_id)?;
+    let member = members.get_mut(member_index).ok_or(AppError::NotFound)?;
+    let member_object = member.as_object_mut()
+        .ok_or_else(|| AppError::Validation("Invalid family member data".into()))?;
+    let existing = member_object.remove(key).and_then(|value| value.as_str().map(str::to_owned));
+    let updated = conn.execute(
+        &format!("UPDATE employee_family_members SET {}=NULL, updated_at=datetime('now') WHERE employee_id=?1 AND sort_order=?2", key),
+        params![employee_id, member_index as i64],
+    )?;
+    if updated == 0 {
+        return Err(AppError::NotFound);
+    }
+    if let Some(relative_path) = existing {
+        let path = safe_relative_path(&relative_path)?;
+        std::fs::remove_file(storage_path(conn).join(path)).ok();
+    }
+    Ok(())
+}
+
+fn spouses_json(conn: &Connection, employee_id: i64) -> AppResult<Vec<serde_json::Value>> {
+    let mut stmt = conn.prepare(
+        "SELECT civil_id,name,mother_name,gender,birthplace,birthdate,issue_date,expiry_date,issuer,blood_type,marriage_date,national_card_front_path,national_card_back_path
+         FROM employee_spouses WHERE employee_id=?1 ORDER BY sort_order,id"
+    )?;
+    let spouses = stmt.query_map(params![employee_id], |row| {
+        Ok(serde_json::json!({
+            "civil_id": row.get::<_, Option<String>>(0)?.unwrap_or_default(),
+            "name": row.get::<_, Option<String>>(1)?.unwrap_or_default(),
+            "mother_name": row.get::<_, Option<String>>(2)?.unwrap_or_default(),
+            "gender": row.get::<_, Option<String>>(3)?.unwrap_or_default(),
+            "birthplace": row.get::<_, Option<String>>(4)?.unwrap_or_default(),
+            "birthdate": row.get::<_, Option<String>>(5)?.unwrap_or_default(),
+            "issue_date": row.get::<_, Option<String>>(6)?.unwrap_or_default(),
+            "expiry_date": row.get::<_, Option<String>>(7)?.unwrap_or_default(),
+            "issuer": row.get::<_, Option<String>>(8)?.unwrap_or_default(),
+            "blood_type": row.get::<_, Option<String>>(9)?.unwrap_or_default(),
+            "marriage_date": row.get::<_, Option<String>>(10)?.unwrap_or_default(),
+            "national_card_front_path": row.get::<_, Option<String>>(11)?.unwrap_or_default(),
+            "national_card_back_path": row.get::<_, Option<String>>(12)?.unwrap_or_default(),
+        }))
+    })?.collect::<rusqlite::Result<Vec<_>>>()?;
+    Ok(spouses)
+}
+
+pub fn upload_spouse_national_card_attachment(
+    conn: &Connection,
+    employee_id: i64,
+    spouse_index: usize,
+    side: &str,
+    source_path: &str,
+) -> AppResult<String> {
+    ensure_storage_layout(conn)?;
+    if spouse_index >= 4 {
+        return Err(AppError::Validation("Only up to 4 spouses are allowed".into()));
+    }
+    let key = family_national_card_key(side)?;
+    let mut spouses = spouses_json(conn, employee_id)?;
+    let spouse = spouses.get_mut(spouse_index).ok_or(AppError::NotFound)?;
+    let spouse_object = spouse.as_object_mut()
+        .ok_or_else(|| AppError::Validation("Invalid spouse data".into()))?;
+    let previous = spouse_object.get(key).and_then(|value| value.as_str()).map(str::to_owned);
+    let dest_dir = storage_path(conn)
+        .join("Files").join("Employees").join(employee_id.to_string())
+        .join("Spouses").join((spouse_index + 1).to_string()).join("NationalCard");
+    let rel = copy_validated_upload(conn, source_path, &dest_dir,
+        &format!("Files/Employees/{}/Spouses/{}/NationalCard", employee_id, spouse_index + 1),
+        true, false, MAX_DOCUMENT_SIZE)?;
+    spouse_object.insert(key.to_string(), serde_json::Value::String(rel.clone()));
+    let updated = conn.execute(
+        &format!("UPDATE employee_spouses SET {}=?1, updated_at=datetime('now') WHERE employee_id=?2 AND sort_order=?3", key),
+        params![rel, employee_id, spouse_index as i64],
+    )?;
+    if updated == 0 {
+        return Err(AppError::NotFound);
+    }
+    if let Some(old) = previous {
+        if old != rel {
+            if let Ok(path) = safe_relative_path(&old) {
+                std::fs::remove_file(storage_path(conn).join(path)).ok();
+            }
+        }
+    }
+    Ok(rel)
+}
+
+pub fn delete_spouse_national_card_attachment(
+    conn: &Connection,
+    employee_id: i64,
+    spouse_index: usize,
+    side: &str,
+) -> AppResult<()> {
+    if spouse_index >= 4 {
+        return Err(AppError::Validation("Only up to 4 spouses are allowed".into()));
+    }
+    let key = family_national_card_key(side)?;
+    let mut spouses = spouses_json(conn, employee_id)?;
+    let spouse = spouses.get_mut(spouse_index).ok_or(AppError::NotFound)?;
+    let spouse_object = spouse.as_object_mut()
+        .ok_or_else(|| AppError::Validation("Invalid spouse data".into()))?;
+    let existing = spouse_object.remove(key).and_then(|value| value.as_str().map(str::to_owned));
+    let updated = conn.execute(
+        &format!("UPDATE employee_spouses SET {}=NULL, updated_at=datetime('now') WHERE employee_id=?1 AND sort_order=?2", key),
+        params![employee_id, spouse_index as i64],
+    )?;
+    if updated == 0 {
+        return Err(AppError::NotFound);
+    }
+    if let Some(relative_path) = existing {
+        let path = safe_relative_path(&relative_path)?;
+        std::fs::remove_file(storage_path(conn).join(path)).ok();
+    }
+    Ok(())
 }
 
 pub fn upload_residence_card_attachment(
@@ -189,25 +437,14 @@ pub fn upload_passport_attachment(
     source_path: &str,
 ) -> AppResult<String> {
     ensure_storage_layout(conn)?;
-    let src = Path::new(source_path);
-    let ext = src.extension().and_then(|e| e.to_str()).unwrap_or("").to_lowercase();
-    if !["jpg", "jpeg", "pdf"].contains(&ext.as_str()) {
-        return Err(AppError::Validation("Only jpg/jpeg/pdf allowed".into()));
-    }
-    let name = src.file_name().ok_or_else(|| AppError::Validation("Invalid filename".into()))?;
     let dest_dir = storage_path(conn)
         .join("Files")
         .join("Employees")
         .join(employee_id.to_string())
         .join("Documents")
         .join("Passport");
-    std::fs::create_dir_all(&dest_dir).map_err(|e| AppError::Other(e.to_string()))?;
-
-    let rel = format!(
-        "Files/Employees/{}/Documents/Passport/{}",
-        employee_id,
-        name.to_string_lossy()
-    );
+    let rel = copy_validated_upload(conn, source_path, &dest_dir,
+        &format!("Files/Employees/{}/Documents/Passport", employee_id), true, false, MAX_DOCUMENT_SIZE)?;
     let existing: String = conn.query_row(
         "SELECT COALESCE(passport_attachment_paths,'[]') FROM employees WHERE id=?1",
         params![employee_id],
@@ -215,7 +452,15 @@ pub fn upload_passport_attachment(
     ).map_err(|_| AppError::NotFound)?;
     let paths: Vec<String> = serde_json::from_str(&existing).unwrap_or_default();
 
-    std::fs::copy(src, dest_dir.join(name)).map_err(|e| AppError::Other(e.to_string()))?;
+    conn.execute(
+        "UPDATE employees SET passport_attachment_paths=?1, updated_at=datetime('now') WHERE id=?2",
+        params![serde_json::to_string(&vec![rel.clone()]).map_err(|e| AppError::Other(e.to_string()))?, employee_id],
+    )?;
+    conn.execute("DELETE FROM employee_attachments WHERE employee_id=?1 AND kind='passport'", params![employee_id])?;
+    conn.execute(
+        "INSERT INTO employee_attachments(employee_id,kind,file_path,sort_order) VALUES(?1,'passport',?2,0)",
+        params![employee_id, rel],
+    )?;
     for old in paths {
         if old != rel {
             if let Ok(path) = safe_relative_path(&old) {
@@ -223,10 +468,6 @@ pub fn upload_passport_attachment(
             }
         }
     }
-    conn.execute(
-        "UPDATE employees SET passport_attachment_paths=?1, updated_at=datetime('now') WHERE id=?2",
-        params![serde_json::to_string(&vec![rel.clone()]).map_err(|e| AppError::Other(e.to_string()))?, employee_id],
-    )?;
     Ok(rel)
 }
 
@@ -251,11 +492,15 @@ pub fn delete_passport_attachment(
         return Err(AppError::NotFound);
     }
 
-    std::fs::remove_file(storage_path(conn).join(rel_path)).ok();
     conn.execute(
         "UPDATE employees SET passport_attachment_paths=?1, updated_at=datetime('now') WHERE id=?2",
         params!["[]", employee_id],
     )?;
+    conn.execute(
+        "DELETE FROM employee_attachments WHERE employee_id=?1 AND kind='passport' AND file_path=?2",
+        params![employee_id, relative_path],
+    )?;
+    std::fs::remove_file(storage_path(conn).join(rel_path)).ok();
     Ok(())
 }
 
@@ -266,25 +511,14 @@ pub fn upload_ration_card_attachment(
     source_path: &str,
 ) -> AppResult<String> {
     ensure_storage_layout(conn)?;
-    let src = Path::new(source_path);
-    let ext = src.extension().and_then(|e| e.to_str()).unwrap_or("").to_lowercase();
-    if !["jpg", "jpeg", "pdf"].contains(&ext.as_str()) {
-        return Err(AppError::Validation("Only jpg/jpeg/pdf allowed".into()));
-    }
-    let name = src.file_name().ok_or_else(|| AppError::Validation("Invalid filename".into()))?;
     let dest_dir = storage_path(conn)
         .join("Files")
         .join("Employees")
         .join(employee_id.to_string())
         .join("Documents")
         .join("RationCard");
-    std::fs::create_dir_all(&dest_dir).map_err(|e| AppError::Other(e.to_string()))?;
-
-    let rel = format!(
-        "Files/Employees/{}/Documents/RationCard/{}",
-        employee_id,
-        name.to_string_lossy()
-    );
+    let rel = copy_validated_upload(conn, source_path, &dest_dir,
+        &format!("Files/Employees/{}/Documents/RationCard", employee_id), true, false, MAX_DOCUMENT_SIZE)?;
     let existing: String = conn.query_row(
         "SELECT COALESCE(ration_card_attachment_paths,'[]') FROM employees WHERE id=?1",
         params![employee_id],
@@ -292,7 +526,15 @@ pub fn upload_ration_card_attachment(
     ).map_err(|_| AppError::NotFound)?;
     let paths: Vec<String> = serde_json::from_str(&existing).unwrap_or_default();
 
-    std::fs::copy(src, dest_dir.join(name)).map_err(|e| AppError::Other(e.to_string()))?;
+    conn.execute(
+        "UPDATE employees SET ration_card_attachment_paths=?1, updated_at=datetime('now') WHERE id=?2",
+        params![serde_json::to_string(&vec![rel.clone()]).map_err(|e| AppError::Other(e.to_string()))?, employee_id],
+    )?;
+    conn.execute("DELETE FROM employee_attachments WHERE employee_id=?1 AND kind='ration_card'", params![employee_id])?;
+    conn.execute(
+        "INSERT INTO employee_attachments(employee_id,kind,file_path,sort_order) VALUES(?1,'ration_card',?2,0)",
+        params![employee_id, rel],
+    )?;
     for old in paths {
         if old != rel {
             if let Ok(path) = safe_relative_path(&old) {
@@ -300,10 +542,6 @@ pub fn upload_ration_card_attachment(
             }
         }
     }
-    conn.execute(
-        "UPDATE employees SET ration_card_attachment_paths=?1, updated_at=datetime('now') WHERE id=?2",
-        params![serde_json::to_string(&vec![rel.clone()]).map_err(|e| AppError::Other(e.to_string()))?, employee_id],
-    )?;
     Ok(rel)
 }
 
@@ -328,27 +566,24 @@ pub fn delete_ration_card_attachment(
         return Err(AppError::NotFound);
     }
 
-    std::fs::remove_file(storage_path(conn).join(rel_path)).ok();
     conn.execute(
         "UPDATE employees SET ration_card_attachment_paths=?1, updated_at=datetime('now') WHERE id=?2",
         params!["[]", employee_id],
     )?;
+    conn.execute(
+        "DELETE FROM employee_attachments WHERE employee_id=?1 AND kind='ration_card' AND file_path=?2",
+        params![employee_id, relative_path],
+    )?;
+    std::fs::remove_file(storage_path(conn).join(rel_path)).ok();
     Ok(())
 }
 
 pub fn upload_attachment(conn: &Connection, employee_id: i64, source_path: &str) -> AppResult<String> {
     ensure_storage_layout(conn)?;
-    let src = Path::new(source_path);
-    let ext = src.extension().and_then(|e| e.to_str()).unwrap_or("").to_lowercase();
-    if !["jpg", "jpeg", "pdf"].contains(&ext.as_str()) {
-        return Err(AppError::Validation("Only jpg/jpeg/pdf allowed".into()));
-    }
-    let name = src.file_name().ok_or_else(|| AppError::Validation("Invalid filename".into()))?;
     let dest_dir = storage_path(conn)
         .join("Files").join("Employees").join(employee_id.to_string()).join("Attachments");
-    std::fs::create_dir_all(&dest_dir).map_err(|e| AppError::Other(e.to_string()))?;
-    std::fs::copy(src, dest_dir.join(name)).map_err(|e| AppError::Other(e.to_string()))?;
-    let rel = format!("Files/Employees/{}/Attachments/{}", employee_id, name.to_string_lossy());
+    let rel = copy_validated_upload(conn, source_path, &dest_dir,
+        &format!("Files/Employees/{}/Attachments", employee_id), true, false, MAX_DOCUMENT_SIZE)?;
     let existing: String = conn.query_row(
         "SELECT COALESCE(attachment_paths,'[]') FROM employees WHERE id=?1",
         params![employee_id], |r| r.get(0),
@@ -359,21 +594,71 @@ pub fn upload_attachment(conn: &Connection, employee_id: i64, source_path: &str)
         "UPDATE employees SET attachment_paths=?1, updated_at=datetime('now') WHERE id=?2",
         params![serde_json::to_string(&paths).unwrap_or_default(), employee_id],
     )?;
+    conn.execute(
+        "INSERT OR IGNORE INTO employee_attachments(employee_id,kind,file_path,sort_order)
+         VALUES(?1,'general',?2,COALESCE((SELECT MAX(sort_order)+1 FROM employee_attachments WHERE employee_id=?1 AND kind='general'),0))",
+        params![employee_id, rel],
+    )?;
     Ok(rel)
 }
 
 pub fn delete_attachment(conn: &Connection, employee_id: i64, relative_path: &str) -> AppResult<()> {
     let rel_path = safe_relative_path(relative_path)?;
-    std::fs::remove_file(storage_path(conn).join(rel_path)).ok();
+    let expected_prefix = format!("Files/Employees/{}/Attachments/", employee_id);
+    if !relative_path.replace('\\', "/").starts_with(&expected_prefix) {
+        return Err(AppError::Validation("Invalid attachment path".into()));
+    }
     let existing: String = conn.query_row(
         "SELECT COALESCE(attachment_paths,'[]') FROM employees WHERE id=?1",
         params![employee_id], |r| r.get(0),
     ).unwrap_or_else(|_| "[]".into());
     let mut paths: Vec<String> = serde_json::from_str(&existing).unwrap_or_default();
+    if !paths.iter().any(|path| path == relative_path) { return Err(AppError::NotFound); }
     paths.retain(|path| path != relative_path);
     conn.execute(
         "UPDATE employees SET attachment_paths=?1, updated_at=datetime('now') WHERE id=?2",
         params![serde_json::to_string(&paths).unwrap_or_default(), employee_id],
     )?;
+    conn.execute(
+        "DELETE FROM employee_attachments WHERE employee_id=?1 AND kind='general' AND file_path=?2",
+        params![employee_id, relative_path],
+    )?;
+    std::fs::remove_file(storage_path(conn).join(rel_path)).ok();
     Ok(())
+}
+
+#[cfg(test)]
+mod security_tests {
+    use super::*;
+    use std::io::Write;
+
+    #[test]
+    fn rejects_path_traversal() {
+        assert!(safe_relative_path("../database.db").is_err());
+        assert!(safe_relative_path("Files/Employees/1/doc.pdf").is_ok());
+    }
+
+    #[test]
+    fn validates_signature_and_extension() {
+        let dir = tempfile::tempdir().unwrap();
+        let valid = dir.path().join("document.pdf");
+        std::fs::write(&valid, b"%PDF-1.7\nsafe").unwrap();
+        assert!(validate_upload(valid.to_str().unwrap(), true, false, MAX_DOCUMENT_SIZE).is_ok());
+        let spoofed = dir.path().join("malware.pdf");
+        std::fs::write(&spoofed, b"MZ executable").unwrap();
+        assert!(validate_upload(spoofed.to_str().unwrap(), true, false, MAX_DOCUMENT_SIZE).is_err());
+    }
+
+    #[test]
+    fn rejects_oversized_upload() {
+        let mut file = tempfile::NamedTempFile::new().unwrap();
+        file.write_all(b"%PDF-").unwrap();
+        file.as_file().set_len(1025).unwrap();
+        assert!(validate_upload(file.path().to_str().unwrap(), true, false, 1024).is_err());
+    }
+
+    #[test]
+    fn internal_names_are_random() {
+        assert_ne!(random_filename("pdf"), random_filename("pdf"));
+    }
 }

@@ -6,12 +6,14 @@ import { invoke } from "@tauri-apps/api/core";
 export const api = {
   // Auth
   login:  (username, password) => invoke("cmd_login",  { username, password }),
-  logout: (username)           => invoke("cmd_logout", { username }),
+  changePassword: (currentPassword, newPassword) => invoke("cmd_change_password", { currentPassword, newPassword }),
+  logout: ()                   => invoke("cmd_logout"),
 
   // Company config
   getCompanyConfig:    ()           => invoke("cmd_get_company_config"),
-  updateCompanyConfig: (user, data) => invoke("cmd_update_company_config", { user, data }),
-  uploadCompanyLogo:   (user, path) => invoke("cmd_upload_company_logo", { user, sourcePath: path }),
+  getPublicCompanyConfig: ()        => invoke("cmd_get_public_company_config"),
+  updateCompanyConfig: (data)       => invoke("cmd_update_company_config", { data }),
+  uploadCompanyLogo:   (path)       => invoke("cmd_upload_company_logo", { sourcePath: path }),
 
   // Employees
   listEmployees:    ()         => invoke("cmd_list_employees"),
@@ -25,6 +27,10 @@ export const api = {
   uploadEmployeePhoto: (empId, path) => invoke("cmd_upload_employee_photo", { employeeId: empId, sourcePath: path }),
   uploadNationalCardAttachment: (empId, side, path) => invoke("cmd_upload_national_card_attachment", { employeeId: empId, side, sourcePath: path }),
   deleteNationalCardAttachment: (empId, side) => invoke("cmd_delete_national_card_attachment", { employeeId: empId, side }),
+  uploadFamilyNationalCardAttachment: (empId, memberIndex, side, path) => invoke("cmd_upload_family_national_card_attachment", { employeeId: empId, memberIndex, side, sourcePath: path }),
+  deleteFamilyNationalCardAttachment: (empId, memberIndex, side) => invoke("cmd_delete_family_national_card_attachment", { employeeId: empId, memberIndex, side }),
+  uploadSpouseNationalCardAttachment: (empId, spouseIndex, side, path) => invoke("cmd_upload_spouse_national_card_attachment", { employeeId: empId, spouseIndex, side, sourcePath: path }),
+  deleteSpouseNationalCardAttachment: (empId, spouseIndex, side) => invoke("cmd_delete_spouse_national_card_attachment", { employeeId: empId, spouseIndex, side }),
   uploadResidenceCardAttachment: (empId, side, path) => invoke("cmd_upload_residence_card_attachment", { employeeId: empId, side, sourcePath: path }),
   deleteResidenceCardAttachment: (empId, side) => invoke("cmd_delete_residence_card_attachment", { employeeId: empId, side }),
   uploadAirportBadgeAttachment: (empId, side, path) => invoke("cmd_upload_airport_badge_attachment", { employeeId: empId, side, sourcePath: path }),
@@ -48,31 +54,45 @@ export const api = {
   deleteGeneralDoc:  (id)     => invoke("cmd_delete_general_doc",  { id }),
   uploadGeneralDocFile: (docId, path) => invoke("cmd_upload_general_doc_file", { docId, sourcePath: path }),
   deleteGeneralDocAttachment: (docId, relativePath) => invoke("cmd_delete_general_doc_attachment", { docId, relativePath }),
+  moveGeneralDocAttachment: (docId, relativePath, direction) => invoke("cmd_move_general_doc_attachment", { docId, relativePath, direction }),
   listOutgoingDocs: () => invoke("cmd_list_outgoing_docs"),
   createOutgoingDoc: (data) => invoke("cmd_create_outgoing_doc", { data }),
   updateOutgoingDoc: (id, data) => invoke("cmd_update_outgoing_doc", { id, data }),
   deleteOutgoingDoc: (id) => invoke("cmd_delete_outgoing_doc", { id }),
   uploadOutgoingDocFile: (docId, path) => invoke("cmd_upload_outgoing_doc_file", { docId, sourcePath: path }),
   deleteOutgoingDocAttachment: (docId, relativePath) => invoke("cmd_delete_outgoing_doc_attachment", { docId, relativePath }),
+  moveOutgoingDocAttachment: (docId, relativePath, direction) => invoke("cmd_move_outgoing_doc_attachment", { docId, relativePath, direction }),
+  scanDocument: () => invoke("cmd_scan_document"),
 
   // Activity log
   listActivityLog: (limit) => invoke("cmd_list_activity_log", { limit: limit ?? 50 }),
 
   // Users
   listUsers:  ()              => invoke("cmd_list_users"),
-  createUser: (user, data)    => invoke("cmd_create_user",  { user, data }),
-  deleteUser: (user, id)      => invoke("cmd_delete_user",  { user, id }),
+  createUser: (data)          => invoke("cmd_create_user",  { data }),
+  deleteUser: (id)            => invoke("cmd_delete_user",  { id }),
+  updateUserRole: (id, role)  => invoke("cmd_update_user_role", { id, data: { role } }),
+  resetUserPassword: (id, password) => invoke("cmd_reset_user_password", { id, data: { password } }),
 
   // Settings
   getStoragePath: ()     => invoke("cmd_get_storage_path"),
   setStoragePath: (path) => invoke("cmd_set_storage_path", { path }),
   getBackupPath: ()      => invoke("cmd_get_backup_path"),
   setBackupPath: (path)  => invoke("cmd_set_backup_path", { path }),
+  getAutoBackupSettings: () => invoke("cmd_get_auto_backup_settings"),
+  setAutoBackupSettings: (data) => invoke("cmd_set_auto_backup_settings", { data }),
+  runDueAutoBackups: () => invoke("cmd_run_due_auto_backups"),
+  exitApp: () => invoke("cmd_exit_app"),
+  createBackup: (password)       => invoke("cmd_create_backup", { password }),
+  restoreBackup: (path, password)  => invoke("cmd_restore_backup", { sourcePath: path, password }),
   getDocumentTypes: ()       => invoke("cmd_get_document_types"),
   setDocumentTypes: (types)  => invoke("cmd_set_document_types", { types }),
 
-  // Export
-  exportEmployeesPdf:   ()    => invoke("cmd_export_employees_pdf"),
-  exportEmployeesExcel: ()    => invoke("cmd_export_employees_excel"),
-  printEmployeeCard:    (id)  => invoke("cmd_print_employee_card", { id }),
+  printEmployeeDocuments: (employeeId, documentNames) => invoke("cmd_print_employee_documents", { employeeId, documentNames }),
+  saveReportXlsx: (destinationPath, headers, rows) => invoke("cmd_save_report_xlsx", { destinationPath, headers, rows }),
+  auditDocumentView: (employeeId, documentName) => invoke("cmd_audit_document_view", { employeeId, documentName }),
+  auditDocumentDownload: (employeeId, documentName) => invoke("cmd_audit_document_download", { employeeId, documentName }),
+  downloadDocument: (relativePath, destinationDir) => invoke("cmd_download_document", { relativePath, destinationDir }),
+  getDocumentPreviewPath: (relativePath) => invoke("cmd_get_document_preview_path", { relativePath }),
+  printDocument: (relativePath) => invoke("cmd_print_document", { relativePath }),
 };

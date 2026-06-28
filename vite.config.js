@@ -1,9 +1,14 @@
 import { defineConfig } from "vite";
+import { readFileSync } from "node:fs";
 
 const host = process.env.TAURI_DEV_HOST;
+const packageJson = JSON.parse(readFileSync(new URL("./package.json", import.meta.url), "utf8"));
 
 export default defineConfig({
   clearScreen: false,
+  define: {
+    "import.meta.env.VITE_APP_VERSION": JSON.stringify(packageJson.version),
+  },
   server: {
     port: 1420,
     strictPort: true,

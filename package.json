@@ -9,18 +9,26 @@
     "tauri": "tauri",
     "tauri:dev": "tauri dev",
     "tauri:build": "tauri build",
-    "seed-db": "node scripts/seed-database.js"
+    "seed-db": "node scripts/seed-database.js",
+    "sync-version": "node scripts/sync-version.js",
+    "version:patch": "npm version patch --no-git-tag-version && npm run sync-version",
+    "version:minor": "npm version minor --no-git-tag-version && npm run sync-version",
+    "version:major": "npm version major --no-git-tag-version && npm run sync-version"
   },
   "devDependencies": {
     "@tauri-apps/cli": "^2.2.0",
     "autoprefixer": "^10.4.20",
+    "bcryptjs": "^3.0.3",
     "better-sqlite3": "^11.10.0",
+    "esbuild": "^0.28.1",
     "postcss": "^8.4.49",
     "tailwindcss": "^3.4.17",
-    "vite": "^6.0.7"
+    "vite": "^8.0.16"
   },
   "dependencies": {
     "@tauri-apps/api": "^2.2.0",
-    "@tauri-apps/plugin-dialog": "^2.2.0"
+    "@tauri-apps/plugin-dialog": "^2.2.0",
+    "@tauri-apps/plugin-notification": "^2.3.3",
+    "pdfjs-dist": "^6.0.227"
   }
 }

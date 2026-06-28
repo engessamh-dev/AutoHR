@@ -14,7 +14,7 @@ npm run tauri:dev
 ## الدخول الافتراضي
 
 - **Username:** `sysadmin`
-- **Password:** `password`
+- **Temporary password:** `password` (must be changed before the system can be used)
 
 ## الشاشات
 
