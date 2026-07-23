@@ -12,10 +12,11 @@ import pdfWorkerUrl from "pdfjs-dist/build/pdf.worker.min.mjs?url";
 pdfjsLib.GlobalWorkerOptions.workerSrc = pdfWorkerUrl;
 
 export async function renderDocuments(container, user, ctx) {
-  let [generalDocs, outgoingDocs, employees] = await Promise.all([
+  let [generalDocs, outgoingDocs, employees, documentTypes] = await Promise.all([
     api.listGeneralDocs(),
     api.listOutgoingDocs(),
     api.listEmployees(),
+    api.getDocumentTypes().catch(() => []),
   ]);
 
   let activeTab = ctx?.archiveTab === "outgoing" ? "outgoing" : "general";
@@ -67,6 +68,16 @@ export async function renderDocuments(container, user, ctx) {
 
   function generalDocAttachments(doc) {
     return doc?.attachment_paths ?? [];
+  }
+
+  function hrEffectTypeLabel(type) {
+    if (type === "appreciation") return "شكر وتقدير";
+    if (type === "penalty") return "عقوبة";
+    return "لا يؤثر";
+  }
+
+  async function saveDocumentTypes(types) {
+    documentTypes = await api.setDocumentTypes(types);
   }
 
   async function printablePages(asset) {
@@ -806,6 +817,13 @@ export async function renderDocuments(container, user, ctx) {
     let formDirty = false;
     const selectedEmployeeIds = new Set(doc?.employee_ids ?? []);
     const hasEmployeeLinks = selectedEmployeeIds.size > 0;
+    const initialHrEffectType = isOutgoing() ? "none" : (doc?.hr_effect_type ?? "none");
+    const hasHrEffect = initialHrEffectType !== "none";
+    const initialHrScope = doc?.hr_affects_promotion && !doc?.hr_affects_allowance
+      ? "promotion"
+      : !doc?.hr_affects_promotion && doc?.hr_affects_allowance
+        ? "allowance"
+        : "both";
     el.innerHTML = `
       <div id="doc-form-stage" style="min-height:calc(100vh - 190px);padding:20px 0 20px 56px">
         <div id="doc-form-card" class="card max-w-2xl space-y-4">
@@ -821,8 +839,63 @@ export async function renderDocuments(container, user, ctx) {
             </div>
             <div>
               <p style="font-size:11px;color:#6b7280;margin-bottom:4px">الموضوع</p>
-              <input id="d-issuer" class="input-field" value="${escHtml(doc?.issuer ?? "")}" />
+              <div style="display:grid;grid-template-columns:1fr auto auto;gap:8px;align-items:center">
+                <div style="position:relative;min-width:0">
+                  <input id="d-issuer" class="input-field" value="${escHtml(doc?.issuer ?? "")}" autocomplete="off" />
+                  <div id="d-subject-menu" class="hidden" style="position:absolute;z-index:50;top:calc(100% + 6px);left:0;right:0;max-height:220px;overflow:auto;background:#1f1f1f;border:1px solid #2d5f8a;border-radius:8px;box-shadow:0 12px 28px rgba(0,0,0,.35)">
+                    ${documentTypes.map(type => `<button type="button" class="d-subject-option" data-value="${escHtml(type)}" style="display:block;width:100%;text-align:right;padding:10px 12px;border:0;border-bottom:1px solid #2d2d2d;background:transparent;color:#f3f4f6;cursor:pointer">${escHtml(type)}</button>`).join("")}
+                  </div>
+                </div>
+                <datalist id="d-subject-options">
+                  ${documentTypes.map(type => `<option value="${escHtml(type)}"></option>`).join("")}
+                </datalist>
+                <button type="button" id="d-add-subject" class="btn-secondary px-3" title="إضافة الموضوع للقائمة">+</button>
+                <button type="button" id="d-delete-subject" class="btn-danger px-3" title="حذف الموضوع من القائمة">-</button>
+              </div>
             </div>
+            ${!isOutgoing() ? `<label style="display:flex;align-items:center;gap:8px;cursor:pointer;font-size:13px;color:#d1d5db;grid-column:1 / -1">
+              <input id="d-has-hr-effect" type="checkbox" ${hasHrEffect ? "checked" : ""}
+                style="width:16px;height:16px;accent-color:#5da12c" />
+              هل الوثيقة لها تأثير على الترفيع والمرحلة؟
+            </label>` : ""}
+            ${!isOutgoing() ? `<div id="d-hr-effect-section" style="border-top:1px solid #2d2d2d;padding-top:12px;display:${hasHrEffect ? "block" : "none"};grid-column:1 / -1">
+              <p style="font-size:12px;font-weight:700;color:#d1d5db;margin-bottom:4px">تأثير الكتاب على العلاوات والترقيات</p>
+              <p id="d-hr-effect-hint" style="font-size:11px;color:#9ca3af;margin-bottom:10px">
+                ${initialHrEffectType === "penalty" ? "سيتم تأخير الترقية والعلاوة بهذه المدة." : "سيتم تقريب الترقية والعلاوة بهذه المدة."}
+              </p>
+              <div style="margin-bottom:12px">
+                <p style="font-size:11px;color:#6b7280;margin-bottom:6px">نوع التأثير</p>
+                <select id="d-hr-effect-type" class="input-field">
+                  ${[
+                    ["appreciation", "شكر وتقدير / تقريب الاستحقاق"],
+                    ["penalty", "عقوبة / تأخير الاستحقاق"],
+                  ].map(([value, label]) => `<option value="${value}" ${initialHrEffectType === value ? "selected" : ""}>${label}</option>`).join("")}
+                </select>
+              </div>
+              <div style="margin-bottom:12px">
+                <p style="font-size:11px;color:#6b7280;margin-bottom:6px">نطاق التأثير</p>
+                <div style="display:flex;gap:8px;flex-wrap:wrap">
+                  ${[
+                    ["promotion", "الترقية فقط"],
+                    ["allowance", "العلاوة فقط"],
+                    ["both", "الترقية والعلاوة"],
+                  ].map(([value, label]) => `<label class="btn-secondary text-xs px-3 py-2" style="cursor:pointer">
+                    <input class="d-hr-effect-scope" type="radio" name="d-hr-effect-scope" value="${value}" ${initialHrScope === value ? "checked" : ""} style="margin-left:6px;accent-color:#5da12c" />
+                    ${label}
+                  </label>`).join("")}
+                </div>
+              </div>
+              <div class="grid grid-cols-2 gap-3">
+                <div>
+                  <p style="font-size:11px;color:#6b7280;margin-bottom:4px">الأشهر</p>
+                  <input id="d-hr-effect-months" class="input-field" type="number" min="0" value="${escHtml(doc?.hr_effect_months ?? 0)}" />
+                </div>
+                <div>
+                  <p style="font-size:11px;color:#6b7280;margin-bottom:4px">الأيام</p>
+                  <input id="d-hr-effect-days" class="input-field" type="number" min="0" value="${escHtml(doc?.hr_effect_days ?? 0)}" />
+                </div>
+              </div>
+            </div>` : ""}
             <div>
               <p style="font-size:11px;color:#6b7280;margin-bottom:4px">تاريخ الإصدار</p>
               <input id="d-date" class="input-field" type="date" value="${escHtml(doc?.issue_date ?? "")}" />
@@ -910,23 +983,124 @@ export async function renderDocuments(container, user, ctx) {
       el.querySelector("#d-manage-attachments")?.remove();
       el.querySelector("#d-scan-attachment")?.remove();
     }
+    if (!can(user, "documents.manage")) {
+      el.querySelector("#d-add-subject")?.remove();
+      el.querySelector("#d-delete-subject")?.remove();
+    }
 
-    const collectDocData = () => ({
-      title: el.querySelector("#d-title")?.value.trim() || "",
-      doc_type: null,
-      doc_number: el.querySelector("#d-number")?.value.trim() || null,
-      issue_date: el.querySelector("#d-date")?.value || null,
-      issuer: el.querySelector("#d-issuer")?.value.trim() || null,
-      doc_count: el.querySelector("#d-count")?.value.trim() || null,
-      margin: el.querySelector("#d-margin")?.value.trim() || null,
-      is_internal_memo: Boolean(el.querySelector("#d-internal-memo")?.checked),
-      notes: el.querySelector("#d-notes")?.value.trim() || null,
-      employee_ids: el.querySelector("#d-has-employees")?.checked
-        ? [...el.querySelectorAll(".d-employee-checkbox:checked")]
-            .map(checkbox => parseInt(checkbox.value, 10))
-            .sort((a, b) => a - b)
-        : [],
+    const updateSubjectOptions = () => {
+      const list = el.querySelector("#d-subject-options");
+      if (list) list.innerHTML = documentTypes.map(type => `<option value="${escHtml(type)}"></option>`).join("");
+      const menu = el.querySelector("#d-subject-menu");
+      if (!menu) return;
+      menu.innerHTML = documentTypes.map(type =>
+        `<button type="button" class="d-subject-option" data-value="${escHtml(type)}" style="display:block;width:100%;text-align:right;padding:10px 12px;border:0;border-bottom:1px solid #2d2d2d;background:transparent;color:#f3f4f6;cursor:pointer">${escHtml(type)}</button>`
+      ).join("");
+      bindSubjectOptions();
+    };
+    const subjectInput = el.querySelector("#d-issuer");
+    const subjectMenu = el.querySelector("#d-subject-menu");
+    const showSubjectMenu = () => subjectMenu?.classList.remove("hidden");
+    const hideSubjectMenu = () => subjectMenu?.classList.add("hidden");
+    const hrEffectCheckbox = el.querySelector("#d-has-hr-effect");
+    const syncHrEffectSection = () => {
+      const enabled = Boolean(hrEffectCheckbox?.checked);
+      const type = el.querySelector("#d-hr-effect-type")?.value || "appreciation";
+      const section = el.querySelector("#d-hr-effect-section");
+      const hint = el.querySelector("#d-hr-effect-hint");
+      if (!section) return;
+      section.style.display = enabled ? "block" : "none";
+      if (hint) {
+        const scope = el.querySelector(".d-hr-effect-scope:checked")?.value || "both";
+        const scopeText = scope === "promotion" ? "الترقية" : scope === "allowance" ? "العلاوة" : "الترقية والعلاوة";
+        hint.textContent = type === "penalty"
+          ? `سيتم تأخير ${scopeText} بهذه المدة.`
+          : `سيتم تقريب ${scopeText} بهذه المدة.`;
+      }
+    };
+    const bindSubjectOptions = () => {
+      el.querySelectorAll(".d-subject-option").forEach(button => {
+        button.addEventListener("mousedown", event => event.preventDefault());
+        button.addEventListener("click", () => {
+          subjectInput.value = button.dataset.value || "";
+          syncHrEffectSection();
+          formDirty = true;
+          hideSubjectMenu();
+        });
+      });
+    };
+    bindSubjectOptions();
+    subjectInput?.addEventListener("focus", showSubjectMenu);
+    subjectInput?.addEventListener("click", showSubjectMenu);
+    hrEffectCheckbox?.addEventListener("change", syncHrEffectSection);
+    el.querySelector("#d-hr-effect-type")?.addEventListener("change", syncHrEffectSection);
+    el.querySelectorAll(".d-hr-effect-scope").forEach(input => input.addEventListener("change", syncHrEffectSection));
+    subjectInput?.addEventListener("keydown", event => {
+      if (event.key === "ArrowDown") showSubjectMenu();
+      if (event.key === "Escape") hideSubjectMenu();
     });
+    document.addEventListener("mousedown", event => {
+      if (!el.contains(event.target) || (!subjectInput?.contains(event.target) && !subjectMenu?.contains(event.target))) {
+        hideSubjectMenu();
+      }
+    });
+    el.querySelector("#d-add-subject")?.addEventListener("click", async () => {
+      const subject = el.querySelector("#d-issuer")?.value.trim();
+      if (!subject) return showToast("أدخل الموضوع أولاً", "warn");
+      if (documentTypes.includes(subject)) return showToast("الموضوع موجود في القائمة");
+      try {
+        await saveDocumentTypes([...documentTypes, subject]);
+        updateSubjectOptions();
+        formDirty = true;
+        showToast("تمت إضافة الموضوع للقائمة");
+      } catch (error) {
+        showToast(error?.message ?? "تعذر حفظ قائمة الموضوعات", "error");
+      }
+    });
+    el.querySelector("#d-delete-subject")?.addEventListener("click", async () => {
+      const subject = el.querySelector("#d-issuer")?.value.trim();
+      if (!subject) return showToast("اختر الموضوع أولاً", "warn");
+      if (!documentTypes.includes(subject)) return showToast("الموضوع غير موجود في القائمة", "warn");
+      if (!(await confirmAction("تأكيد حذف هذا الموضوع من القائمة؟"))) return;
+      const nextTypes = documentTypes.filter(type => type !== subject);
+      if (nextTypes.length === 0) return showToast("يجب أن يبقى موضوع واحد على الأقل", "warn");
+      try {
+        await saveDocumentTypes(nextTypes);
+        updateSubjectOptions();
+        formDirty = true;
+        showToast("تم حذف الموضوع من القائمة");
+      } catch (error) {
+        showToast(error?.message ?? "تعذر تحديث قائمة الموضوعات", "error");
+      }
+    });
+
+    const collectDocData = () => {
+      const issuer = el.querySelector("#d-issuer")?.value.trim() || null;
+      const hasEffect = !isOutgoing() && Boolean(el.querySelector("#d-has-hr-effect")?.checked);
+      const hrEffectType = hasEffect ? (el.querySelector("#d-hr-effect-type")?.value || "appreciation") : "none";
+      const hrScope = el.querySelector(".d-hr-effect-scope:checked")?.value || "both";
+      return {
+        title: el.querySelector("#d-title")?.value.trim() || "",
+        doc_type: null,
+        doc_number: el.querySelector("#d-number")?.value.trim() || null,
+        issue_date: el.querySelector("#d-date")?.value || null,
+        issuer,
+        doc_count: el.querySelector("#d-count")?.value.trim() || null,
+        margin: el.querySelector("#d-margin")?.value.trim() || null,
+        is_internal_memo: Boolean(el.querySelector("#d-internal-memo")?.checked),
+        notes: el.querySelector("#d-notes")?.value.trim() || null,
+        hr_effect_type: hrEffectType,
+        hr_affects_promotion: hasEffect && (hrScope === "promotion" || hrScope === "both"),
+        hr_affects_allowance: hasEffect && (hrScope === "allowance" || hrScope === "both"),
+        hr_effect_months: hasEffect ? Number(el.querySelector("#d-hr-effect-months")?.value || 0) : 0,
+        hr_effect_days: hasEffect ? Number(el.querySelector("#d-hr-effect-days")?.value || 0) : 0,
+        employee_ids: el.querySelector("#d-has-employees")?.checked
+          ? [...el.querySelectorAll(".d-employee-checkbox:checked")]
+              .map(checkbox => parseInt(checkbox.value, 10))
+              .sort((a, b) => a - b)
+          : [],
+      };
+    };
     const initialDocData = JSON.stringify(collectDocData());
     const hasUnsavedDocChanges = () =>
       can(user, "documents.manage") && (formDirty || pendingAttachments.length > 0 || JSON.stringify(collectDocData()) !== initialDocData);

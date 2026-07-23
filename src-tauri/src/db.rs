@@ -420,6 +420,11 @@ fn migrate(conn: &Connection) -> SqlResult<()> {
             doc_count  TEXT,
             margin     TEXT,
             is_internal_memo INTEGER NOT NULL DEFAULT 0,
+            hr_effect_type TEXT NOT NULL DEFAULT 'none',
+            hr_affects_promotion INTEGER NOT NULL DEFAULT 0,
+            hr_affects_allowance INTEGER NOT NULL DEFAULT 0,
+            hr_effect_months INTEGER NOT NULL DEFAULT 0,
+            hr_effect_days INTEGER NOT NULL DEFAULT 0,
             notes      TEXT,
             file_path  TEXT,
             created_at TEXT DEFAULT (datetime('now')),
@@ -544,6 +549,30 @@ fn migrate(conn: &Connection) -> SqlResult<()> {
         if !columns.iter().any(|column| column == "is_internal_memo") {
             conn.execute(&format!("ALTER TABLE {table} ADD COLUMN is_internal_memo INTEGER NOT NULL DEFAULT 0"), [])?;
         }
+    }
+    let general_doc_columns: Vec<String> = {
+        let mut stmt = conn.prepare("PRAGMA table_info(general_docs)")?;
+        let columns = stmt.query_map([], |r| r.get::<_, String>(1))?.collect::<SqlResult<_>>()?;
+        columns
+    };
+    for (column, definition) in [
+        ("hr_effect_type", "TEXT NOT NULL DEFAULT 'none'"),
+        ("hr_affects_promotion", "INTEGER NOT NULL DEFAULT 0"),
+        ("hr_affects_allowance", "INTEGER NOT NULL DEFAULT 0"),
+        ("hr_effect_months", "INTEGER NOT NULL DEFAULT 0"),
+        ("hr_effect_days", "INTEGER NOT NULL DEFAULT 0"),
+    ] {
+        if !general_doc_columns.iter().any(|existing| existing == column) {
+            conn.execute(&format!("ALTER TABLE general_docs ADD COLUMN {column} {definition}"), [])?;
+        }
+    }
+    let salary_columns: Vec<String> = {
+        let mut stmt = conn.prepare("PRAGMA table_info(hr_salary_scales)")?;
+        let columns = stmt.query_map([], |r| r.get::<_, String>(1))?.collect::<SqlResult<_>>()?;
+        columns
+    };
+    if !salary_columns.iter().any(|column| column == "allowance_next_step") {
+        conn.execute("ALTER TABLE hr_salary_scales ADD COLUMN allowance_next_step INTEGER", [])?;
     }
     migrate_employee_repeating_data(conn)?;
     Ok(())

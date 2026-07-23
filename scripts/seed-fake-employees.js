@@ -118,12 +118,25 @@ function employeeRows() {
 }
 
 function ensureSampleSalaryScale(db) {
+  const salaryColumns = new Set(db.prepare("PRAGMA table_info(hr_salary_scales)").all().map(column => column.name));
+  if (!salaryColumns.has("allowance_next_step")) {
+    db.exec("ALTER TABLE hr_salary_scales ADD COLUMN allowance_next_step INTEGER");
+  }
   const insert = db.prepare(`
     INSERT OR IGNORE INTO hr_salary_scales(
       rule_name,grade,step,base_salary,annual_allowance_amount,steps_per_grade,
-      required_promotion_months,allowance_period_months,promotion_target_grade,promotion_target_step,
+      required_promotion_months,allowance_period_months,promotion_target_grade,promotion_target_step,allowance_next_step,
       effective_from,rule_version,active,created_by,updated_by,change_reason
-    ) VALUES('sample_salary_scale',?,?,?,?,?,?,?,?,?,'2020-01-01','sample-v1',1,'seed','seed','editable fake sample')
+    ) VALUES('sample_salary_scale',?,?,?,?,?,?,?,?,?,?,'2020-01-01','sample-v1',1,'seed','seed','editable fake sample')
+    ON CONFLICT(grade, step, rule_version) DO UPDATE SET
+      required_promotion_months=excluded.required_promotion_months,
+      allowance_period_months=excluded.allowance_period_months,
+      promotion_target_grade=excluded.promotion_target_grade,
+      promotion_target_step=excluded.promotion_target_step,
+      allowance_next_step=excluded.allowance_next_step,
+      active=1,
+      updated_by='seed',
+      updated_at=datetime('now')
   `);
   for (const [gradeIndex, grade] of grades.entries()) {
     for (let step = 1; step <= 5; step += 1) {
@@ -138,6 +151,7 @@ function ensureSampleSalaryScale(db) {
         12,
         targetGrade,
         1,
+        step < 5 ? step + 1 : null,
       );
     }
   }

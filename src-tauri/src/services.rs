@@ -245,6 +245,11 @@ pub struct GeneralDoc {
     pub doc_number: Option<String>, pub issue_date: Option<String>,
     pub issuer: Option<String>, pub doc_count: Option<String>, pub margin: Option<String>,
     pub is_internal_memo: bool,
+    pub hr_effect_type: Option<String>,
+    pub hr_affects_promotion: bool,
+    pub hr_affects_allowance: bool,
+    pub hr_effect_months: i64,
+    pub hr_effect_days: i64,
     pub notes: Option<String>,
     pub file_path: Option<String>, pub created_at: Option<String>,
     pub employee_ids: Vec<i64>, pub employee_names: Vec<String>,
@@ -256,6 +261,15 @@ pub struct GeneralDocData {
     pub title: String, pub doc_type: Option<String>, pub doc_number: Option<String>,
     pub issue_date: Option<String>, pub issuer: Option<String>,
     pub doc_count: Option<String>, pub margin: Option<String>, pub is_internal_memo: bool,
+    pub hr_effect_type: Option<String>,
+    #[serde(default)]
+    pub hr_affects_promotion: bool,
+    #[serde(default)]
+    pub hr_affects_allowance: bool,
+    #[serde(default)]
+    pub hr_effect_months: i64,
+    #[serde(default)]
+    pub hr_effect_days: i64,
     pub notes: Option<String>,
     #[serde(default)]
     pub employee_ids: Vec<i64>,
@@ -509,7 +523,7 @@ pub fn ensure_storage_layout(conn: &Connection) -> AppResult<()> {
 
 pub fn ensure_backup_layout(conn: &Connection) -> AppResult<()> {
     let root = backup_path(conn);
-    for dir in ["Daily", "Monthly"] {
+    for dir in ["Daily", "Weekly", "Monthly"] {
         std::fs::create_dir_all(root.join(dir)).map_err(|e| AppError::Other(e.to_string()))?;
     }
     Ok(())
@@ -1237,6 +1251,13 @@ fn validate_document_data(data: &GeneralDocData) -> AppResult<()> {
     if data.employee_ids.len() > 1000 {
         return Err(AppError::Validation("Too many linked employees".into()));
     }
+    let effect_type = data.hr_effect_type.as_deref().unwrap_or("none");
+    if !matches!(effect_type, "none" | "appreciation" | "penalty") {
+        return Err(AppError::Validation("Invalid HR effect type".into()));
+    }
+    if data.hr_effect_months < 0 || data.hr_effect_days < 0 {
+        return Err(AppError::Validation("HR effect months and days must be non-negative".into()));
+    }
     Ok(())
 }
 
@@ -1251,12 +1272,18 @@ fn add_general_doc_attachments(conn: &Connection, doc: &mut GeneralDoc) -> AppRe
 
 pub fn list_general_docs(conn: &Connection) -> AppResult<Vec<GeneralDoc>> {
     let mut stmt = conn.prepare(
-        "SELECT id,title,doc_type,doc_number,issue_date,issuer,doc_count,margin,is_internal_memo,notes,file_path,created_at FROM general_docs ORDER BY created_at DESC"
+        "SELECT id,title,doc_type,doc_number,issue_date,issuer,doc_count,margin,is_internal_memo,
+                hr_effect_type,hr_affects_promotion,hr_affects_allowance,hr_effect_months,hr_effect_days,
+                notes,file_path,created_at
+         FROM general_docs ORDER BY created_at DESC"
     )?;
     let mut result: Vec<GeneralDoc> = stmt.query_map([], |r| Ok(GeneralDoc {
         id:r.get(0)?,title:r.get(1)?,doc_type:r.get(2)?,doc_number:r.get(3)?,
         issue_date:r.get(4)?,issuer:r.get(5)?,doc_count:r.get(6)?,margin:r.get(7)?,
-        is_internal_memo:r.get(8)?,notes:r.get(9)?,file_path:r.get(10)?,created_at:r.get(11)?,
+        is_internal_memo:r.get(8)?,hr_effect_type:r.get(9)?,
+        hr_affects_promotion:r.get::<_, i64>(10)? == 1,hr_affects_allowance:r.get::<_, i64>(11)? == 1,
+        hr_effect_months:r.get(12)?,hr_effect_days:r.get(13)?,
+        notes:r.get(14)?,file_path:r.get(15)?,created_at:r.get(16)?,
         employee_ids:Vec::new(),employee_names:Vec::new(),attachment_paths:Vec::new(),
     }))?.collect::<rusqlite::Result<_>>()?;
     for doc in &mut result {
@@ -1267,10 +1294,17 @@ pub fn list_general_docs(conn: &Connection) -> AppResult<Vec<GeneralDoc>> {
 }
 
 fn get_general_doc(conn: &Connection, id: i64) -> AppResult<GeneralDoc> {
-    let mut doc = conn.query_row("SELECT id,title,doc_type,doc_number,issue_date,issuer,doc_count,margin,is_internal_memo,notes,file_path,created_at FROM general_docs WHERE id=?1",
+    let mut doc = conn.query_row(
+        "SELECT id,title,doc_type,doc_number,issue_date,issuer,doc_count,margin,is_internal_memo,
+                hr_effect_type,hr_affects_promotion,hr_affects_allowance,hr_effect_months,hr_effect_days,
+                notes,file_path,created_at
+         FROM general_docs WHERE id=?1",
         params![id], |r| Ok(GeneralDoc { id:r.get(0)?,title:r.get(1)?,doc_type:r.get(2)?,doc_number:r.get(3)?,
             issue_date:r.get(4)?,issuer:r.get(5)?,doc_count:r.get(6)?,margin:r.get(7)?,
-            is_internal_memo:r.get(8)?,notes:r.get(9)?,file_path:r.get(10)?,created_at:r.get(11)?,
+            is_internal_memo:r.get(8)?,hr_effect_type:r.get(9)?,
+            hr_affects_promotion:r.get::<_, i64>(10)? == 1,hr_affects_allowance:r.get::<_, i64>(11)? == 1,
+            hr_effect_months:r.get(12)?,hr_effect_days:r.get(13)?,
+            notes:r.get(14)?,file_path:r.get(15)?,created_at:r.get(16)?,
             employee_ids:Vec::new(),employee_names:Vec::new(),attachment_paths:Vec::new() }))
         .map_err(|_| AppError::NotFound)?;
     add_general_doc_employees(conn, &mut doc)?;
@@ -1282,8 +1316,9 @@ pub fn create_general_doc(conn: &Connection, data: &GeneralDocData, username: &s
     assert_permission(conn, username, "documents.manage")?;
     validate_document_data(data)?;
     let tx = conn.unchecked_transaction()?;
-    tx.execute("INSERT INTO general_docs(title,doc_type,doc_number,issue_date,issuer,doc_count,margin,is_internal_memo,notes) VALUES(?1,NULL,?2,?3,?4,?5,?6,?7,?8)",
-        params![data.title.trim(),data.doc_number,data.issue_date,data.issuer,data.doc_count,data.margin,data.is_internal_memo,data.notes])?;
+    tx.execute("INSERT INTO general_docs(title,doc_type,doc_number,issue_date,issuer,doc_count,margin,is_internal_memo,hr_effect_type,hr_affects_promotion,hr_affects_allowance,hr_effect_months,hr_effect_days,notes) VALUES(?1,NULL,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13)",
+        params![data.title.trim(),data.doc_number,data.issue_date,data.issuer,data.doc_count,data.margin,data.is_internal_memo,
+            data.hr_effect_type.as_deref().unwrap_or("none"),data.hr_affects_promotion,data.hr_affects_allowance,data.hr_effect_months,data.hr_effect_days,data.notes])?;
     let id = tx.last_insert_rowid();
     replace_general_doc_employees(&tx, id, &data.employee_ids)?;
     log_activity(&tx, username, "CREATE_DOC", Some("general_doc"), Some(id), Some(data.title.trim()), None);
@@ -1295,8 +1330,9 @@ pub fn update_general_doc(conn: &Connection, id: i64, data: &GeneralDocData, use
     assert_permission(conn, username, "documents.manage")?;
     validate_document_data(data)?;
     let tx = conn.unchecked_transaction()?;
-    tx.execute("UPDATE general_docs SET title=?1,doc_type=NULL,doc_number=?2,issue_date=?3,issuer=?4,doc_count=?5,margin=?6,is_internal_memo=?7,notes=?8,updated_at=datetime('now') WHERE id=?9",
-        params![data.title.trim(),data.doc_number,data.issue_date,data.issuer,data.doc_count,data.margin,data.is_internal_memo,data.notes,id])?;
+    tx.execute("UPDATE general_docs SET title=?1,doc_type=NULL,doc_number=?2,issue_date=?3,issuer=?4,doc_count=?5,margin=?6,is_internal_memo=?7,hr_effect_type=?8,hr_affects_promotion=?9,hr_affects_allowance=?10,hr_effect_months=?11,hr_effect_days=?12,notes=?13,updated_at=datetime('now') WHERE id=?14",
+        params![data.title.trim(),data.doc_number,data.issue_date,data.issuer,data.doc_count,data.margin,data.is_internal_memo,
+            data.hr_effect_type.as_deref().unwrap_or("none"),data.hr_affects_promotion,data.hr_affects_allowance,data.hr_effect_months,data.hr_effect_days,data.notes,id])?;
     if tx.changes() == 0 { return Err(AppError::NotFound); }
     replace_general_doc_employees(&tx, id, &data.employee_ids)?;
     log_activity(&tx, username, "UPDATE_DOC", Some("general_doc"), Some(id), Some(data.title.trim()), None);
@@ -1449,7 +1485,9 @@ pub fn list_outgoing_docs(conn: &Connection) -> AppResult<Vec<GeneralDoc>> {
     let mut result: Vec<GeneralDoc> = stmt.query_map([], |r| Ok(GeneralDoc {
         id:r.get(0)?,title:r.get(1)?,doc_type:r.get(2)?,doc_number:r.get(3)?,
         issue_date:r.get(4)?,issuer:r.get(5)?,doc_count:r.get(6)?,margin:r.get(7)?,
-        is_internal_memo:r.get(8)?,notes:r.get(9)?,file_path:None,created_at:r.get(10)?,
+        is_internal_memo:r.get(8)?,hr_effect_type:Some("none".into()),
+        hr_affects_promotion:false,hr_affects_allowance:false,hr_effect_months:0,hr_effect_days:0,
+        notes:r.get(9)?,file_path:None,created_at:r.get(10)?,
         employee_ids:Vec::new(),employee_names:Vec::new(),attachment_paths:Vec::new(),
     }))?.collect::<rusqlite::Result<_>>()?;
     for doc in &mut result { add_outgoing_doc_details(conn, &mut *doc)?; }
@@ -1462,7 +1500,9 @@ fn get_outgoing_doc(conn: &Connection, id: i64) -> AppResult<GeneralDoc> {
         params![id], |r| Ok(GeneralDoc {
             id:r.get(0)?,title:r.get(1)?,doc_type:r.get(2)?,doc_number:r.get(3)?,
             issue_date:r.get(4)?,issuer:r.get(5)?,doc_count:r.get(6)?,margin:r.get(7)?,
-            is_internal_memo:r.get(8)?,notes:r.get(9)?,file_path:None,created_at:r.get(10)?,
+            is_internal_memo:r.get(8)?,hr_effect_type:Some("none".into()),
+            hr_affects_promotion:false,hr_affects_allowance:false,hr_effect_months:0,hr_effect_days:0,
+            notes:r.get(9)?,file_path:None,created_at:r.get(10)?,
             employee_ids:Vec::new(),employee_names:Vec::new(),attachment_paths:Vec::new(),
         })
     ).map_err(|_| AppError::NotFound)?;
@@ -2093,18 +2133,75 @@ fn automatic_backup_is_current(conn: &Connection, date_key: &str, path_key: &str
     dated_automatic_backup_exists(conn, category, marker)
 }
 
+fn latest_data_change_activity_id(conn: &Connection) -> AppResult<Option<i64>> {
+    conn.query_row(
+        "SELECT MAX(id) FROM activity_log
+         WHERE result='Success'
+           AND action NOT IN (
+             'LOGIN','LOGOUT','VIEW_DOCUMENT','DOWNLOAD_DOCUMENT','PRINT_DOCUMENT',
+             'CREATE_BACKUP','CREATE_AUTO_BACKUP'
+           )
+           AND (target_type IS NOT NULL OR action='SCAN_DOCUMENT')",
+        [],
+        |row| row.get(0),
+    ).map_err(Into::into)
+}
+
+fn parse_setting_i64(conn: &Connection, key: &str) -> AppResult<Option<i64>> {
+    Ok(get_setting(conn, key)?.and_then(|value| value.parse::<i64>().ok()))
+}
+
+fn last_automatic_backup_activity_id(conn: &Connection, category: &str) -> AppResult<Option<i64>> {
+    conn.query_row(
+        "SELECT MAX(id) FROM activity_log
+         WHERE result='Success' AND action='CREATE_AUTO_BACKUP' AND details=?1",
+        params![category],
+        |row| row.get(0),
+    ).map_err(Into::into)
+}
+
+fn last_recorded_backup_change_id(conn: &Connection, change_key: &str, category: &str) -> AppResult<Option<i64>> {
+    match parse_setting_i64(conn, change_key)? {
+        Some(id) => Ok(Some(id)),
+        None => last_automatic_backup_activity_id(conn, category),
+    }
+}
+
+fn automatic_backup_needs_creation(
+    conn: &Connection,
+    date_key: &str,
+    path_key: &str,
+    change_key: &str,
+    marker: &str,
+    category: &str,
+    latest_change_id: Option<i64>,
+) -> AppResult<bool> {
+    let Some(latest_change_id) = latest_change_id else {
+        return Ok(false);
+    };
+    if last_recorded_backup_change_id(conn, change_key, category)?
+        .is_some_and(|backup_change_id| backup_change_id >= latest_change_id)
+    {
+        return Ok(false);
+    }
+    Ok(!automatic_backup_is_current(conn, date_key, path_key, marker, category)? || latest_change_id > 0)
+}
+
 fn create_and_record_automatic_backup(
     conn: &Connection,
     password: &str,
     category: &str,
     date_key: &str,
     path_key: &str,
+    change_key: &str,
     marker: &str,
+    latest_change_id: i64,
     progress: &mut dyn FnMut(BackupProgress),
 ) -> AppResult<String> {
     let path = create_automatic_backup(conn, password, category, progress)?;
     set_setting(conn, date_key, marker)?;
     set_setting(conn, path_key, &path)?;
+    set_setting(conn, change_key, &latest_change_id.to_string())?;
     Ok(path)
 }
 
@@ -2121,15 +2218,18 @@ where
     let iso_week = chrono::Local::now().iso_week();
     let week = format!("{}-W{:02}", iso_week.year(), iso_week.week());
     let month = chrono::Local::now().format("%Y-%m").to_string();
+    let latest_change_id = latest_data_change_activity_id(conn)?;
     let mut created = Vec::new();
 
     if setting_bool(conn, "auto_backup_daily_enabled")?
-        && !automatic_backup_is_current(
+        && automatic_backup_needs_creation(
             conn,
             "auto_backup_last_daily",
             "auto_backup_last_daily_path",
+            "auto_backup_last_daily_change_id",
             &today,
             "Daily",
+            latest_change_id,
         )?
     {
         progress(backup_progress(2, "جاري إنشاء النسخة اليومية التلقائية..."));
@@ -2139,19 +2239,23 @@ where
             "Daily",
             "auto_backup_last_daily",
             "auto_backup_last_daily_path",
+            "auto_backup_last_daily_change_id",
             &today,
+            latest_change_id.unwrap_or_default(),
             &mut progress,
         )?;
         created.push("يومي".to_string());
     }
 
     if setting_bool(conn, "auto_backup_weekly_enabled")?
-        && !automatic_backup_is_current(
+        && automatic_backup_needs_creation(
             conn,
             "auto_backup_last_weekly",
             "auto_backup_last_weekly_path",
+            "auto_backup_last_weekly_change_id",
             &week,
             "Weekly",
+            latest_change_id,
         )?
     {
         progress(backup_progress(2, "جاري إنشاء النسخة الأسبوعية التلقائية..."));
@@ -2161,19 +2265,23 @@ where
             "Weekly",
             "auto_backup_last_weekly",
             "auto_backup_last_weekly_path",
+            "auto_backup_last_weekly_change_id",
             &week,
+            latest_change_id.unwrap_or_default(),
             &mut progress,
         )?;
         created.push("أسبوعي".to_string());
     }
 
     if setting_bool(conn, "auto_backup_monthly_enabled")?
-        && !automatic_backup_is_current(
+        && automatic_backup_needs_creation(
             conn,
             "auto_backup_last_monthly",
             "auto_backup_last_monthly_path",
+            "auto_backup_last_monthly_change_id",
             &month,
             "Monthly",
+            latest_change_id,
         )?
     {
         progress(backup_progress(2, "جاري إنشاء النسخة الشهرية التلقائية..."));
@@ -2183,7 +2291,9 @@ where
             "Monthly",
             "auto_backup_last_monthly",
             "auto_backup_last_monthly_path",
+            "auto_backup_last_monthly_change_id",
             &month,
+            latest_change_id.unwrap_or_default(),
             &mut progress,
         )?;
         created.push("شهري".to_string());
@@ -2455,7 +2565,9 @@ pub fn get_document_types(conn: &Connection) -> AppResult<Vec<String>> {
 }
 
 pub fn set_document_types(conn: &Connection, user: &str, types: &[String]) -> AppResult<Vec<String>> {
-    assert_permission(conn, user, "settings.manage")?;
+    if assert_permission(conn, user, "documents.manage").is_err() {
+        assert_permission(conn, user, "settings.manage")?;
+    }
     let normalized = normalize_document_types(types);
     if normalized.is_empty() {
         return Err(AppError::Validation("document types required".into()));

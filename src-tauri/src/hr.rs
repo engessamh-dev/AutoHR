@@ -1,6 +1,7 @@
-use chrono::{Datelike, Duration, Months, NaiveDate, Utc};
+use chrono::{Duration, Months, NaiveDate, Utc};
 use rusqlite::{params, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
+use std::collections::HashSet;
 
 use crate::services::{assert_permission, log_activity, AppError, AppResult};
 
@@ -69,6 +70,7 @@ pub struct HrSalaryScale {
     pub allowance_period_months: i64,
     pub promotion_target_grade: Option<String>,
     pub promotion_target_step: Option<i64>,
+    pub allowance_next_step: Option<i64>,
     pub effective_from: String,
     pub effective_to: Option<String>,
     pub rule_version: String,
@@ -90,6 +92,7 @@ pub struct HrSalaryScaleData {
     pub allowance_period_months: Option<i64>,
     pub promotion_target_grade: Option<String>,
     pub promotion_target_step: Option<i64>,
+    pub allowance_next_step: Option<i64>,
     pub effective_from: String,
     pub effective_to: Option<String>,
     pub rule_version: Option<String>,
@@ -319,6 +322,9 @@ pub struct HrEligibilityResult {
     pub manual_due_date: Option<String>,
     pub alert_date: Option<String>,
     pub status: String,
+    pub next_grade: Option<String>,
+    pub next_step: Option<i64>,
+    pub next_label: Option<String>,
     pub notes: Vec<String>,
     pub components: Vec<HrCalculationComponent>,
 }
@@ -329,6 +335,8 @@ pub struct HrDashboardSummary {
     pub promotion_due_3_months: i64,
     pub promotion_due_this_month: i64,
     pub overdue_promotions: i64,
+    pub allowance_due_6_months: i64,
+    pub overdue_allowances: i64,
     pub allowance_due: i64,
     pub missing_hr_data: i64,
     pub unprocessed_appreciations: i64,
@@ -364,8 +372,8 @@ fn add_months(date: NaiveDate, months: i64) -> NaiveDate {
     }
 }
 
-fn duration_days(start: NaiveDate, end: NaiveDate) -> i64 {
-    (end - start).num_days().max(0) + 1
+fn add_days(date: NaiveDate, days: i64) -> NaiveDate {
+    date.checked_add_signed(Duration::days(days)).unwrap_or(date)
 }
 
 fn validate_rule_dates(from: &str, to: &Option<String>) -> AppResult<()> {
@@ -513,7 +521,7 @@ pub fn save_hr_profile(conn: &Connection, user: &str, data: &HrEmployeeProfileDa
 pub fn list_salary_scales(conn: &Connection) -> AppResult<Vec<HrSalaryScale>> {
     let mut stmt = conn.prepare(
         "SELECT id,rule_name,grade,step,base_salary,annual_allowance_amount,steps_per_grade,required_promotion_months,
-                allowance_period_months,promotion_target_grade,promotion_target_step,effective_from,effective_to,rule_version,active,created_by,updated_by,change_reason
+                allowance_period_months,promotion_target_grade,promotion_target_step,allowance_next_step,effective_from,effective_to,rule_version,active,created_by,updated_by,change_reason
          FROM hr_salary_scales ORDER BY active DESC, grade, step, effective_from DESC"
     )?;
     let rows = stmt.query_map([], map_salary_scale)?.collect::<rusqlite::Result<_>>()?;
@@ -526,15 +534,16 @@ fn map_salary_scale(row: &rusqlite::Row) -> rusqlite::Result<HrSalaryScale> {
         base_salary: row.get(4)?, annual_allowance_amount: row.get(5)?, steps_per_grade: row.get(6)?,
         required_promotion_months: row.get(7)?, allowance_period_months: row.get(8)?,
         promotion_target_grade: row.get(9)?, promotion_target_step: row.get(10)?,
-        effective_from: row.get(11)?, effective_to: row.get(12)?, rule_version: row.get(13)?,
-        active: row.get::<_, i64>(14)? == 1, created_by: row.get(15)?, updated_by: row.get(16)?, change_reason: row.get(17)?,
+        allowance_next_step: row.get(11)?,
+        effective_from: row.get(12)?, effective_to: row.get(13)?, rule_version: row.get(14)?,
+        active: row.get::<_, i64>(15)? == 1, created_by: row.get(16)?, updated_by: row.get(17)?, change_reason: row.get(18)?,
     })
 }
 
 pub fn save_salary_scale(conn: &Connection, user: &str, id: Option<i64>, data: &HrSalaryScaleData) -> AppResult<HrSalaryScale> {
     assert_permission(conn, user, "hr.rules.manage")?;
     validate_rule_dates(&data.effective_from, &data.effective_to)?;
-    validate_nonnegative(&[data.step, data.steps_per_grade.unwrap_or(0), data.required_promotion_months.unwrap_or(0), data.allowance_period_months.unwrap_or(12), data.promotion_target_step.unwrap_or(0)])?;
+    validate_nonnegative(&[data.step, data.steps_per_grade.unwrap_or(0), data.required_promotion_months.unwrap_or(0), data.allowance_period_months.unwrap_or(12), data.promotion_target_step.unwrap_or(0), data.allowance_next_step.unwrap_or(0)])?;
     if data.grade.trim().is_empty() {
         return Err(AppError::Validation("Salary grade is required".into()));
     }
@@ -545,26 +554,26 @@ pub fn save_salary_scale(conn: &Connection, user: &str, id: Option<i64>, data: &
     if let Some(id) = id {
         conn.execute(
             "UPDATE hr_salary_scales SET rule_name=?1,grade=?2,step=?3,base_salary=?4,annual_allowance_amount=?5,steps_per_grade=?6,
-             required_promotion_months=?7,allowance_period_months=?8,promotion_target_grade=?9,promotion_target_step=?10,
-             effective_from=?11,effective_to=?12,rule_version=?13,active=?14,updated_by=?15,change_reason=?16,updated_at=datetime('now') WHERE id=?17",
+             required_promotion_months=?7,allowance_period_months=?8,promotion_target_grade=?9,promotion_target_step=?10,allowance_next_step=?11,
+             effective_from=?12,effective_to=?13,rule_version=?14,active=?15,updated_by=?16,change_reason=?17,updated_at=datetime('now') WHERE id=?18",
             params![rule_name,data.grade.trim(),data.step,data.base_salary,data.annual_allowance_amount,data.steps_per_grade,data.required_promotion_months,
-                allowance_months,data.promotion_target_grade,data.promotion_target_step,data.effective_from,data.effective_to,version,active,user,data.change_reason,id],
+                allowance_months,data.promotion_target_grade,data.promotion_target_step,data.allowance_next_step,data.effective_from,data.effective_to,version,active,user,data.change_reason,id],
         )?;
         if conn.changes() == 0 { return Err(AppError::NotFound); }
     } else {
         conn.execute(
             "INSERT INTO hr_salary_scales(rule_name,grade,step,base_salary,annual_allowance_amount,steps_per_grade,required_promotion_months,
-             allowance_period_months,promotion_target_grade,promotion_target_step,effective_from,effective_to,rule_version,active,created_by,updated_by,change_reason)
-             VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?15,?16)",
+             allowance_period_months,promotion_target_grade,promotion_target_step,allowance_next_step,effective_from,effective_to,rule_version,active,created_by,updated_by,change_reason)
+             VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?16,?17)",
             params![rule_name,data.grade.trim(),data.step,data.base_salary,data.annual_allowance_amount,data.steps_per_grade,data.required_promotion_months,
-                allowance_months,data.promotion_target_grade,data.promotion_target_step,data.effective_from,data.effective_to,version,active,user,data.change_reason],
+                allowance_months,data.promotion_target_grade,data.promotion_target_step,data.allowance_next_step,data.effective_from,data.effective_to,version,active,user,data.change_reason],
         )?;
     }
     let new_id = id.unwrap_or_else(|| conn.last_insert_rowid());
     log_activity(conn, user, if id.is_some() { "UPDATE_HR_SALARY_SCALE" } else { "CREATE_HR_SALARY_SCALE" }, Some("hr_salary_scale"), Some(new_id), Some(data.grade.trim()), data.change_reason.as_deref());
     conn.query_row(
         "SELECT id,rule_name,grade,step,base_salary,annual_allowance_amount,steps_per_grade,required_promotion_months,
-         allowance_period_months,promotion_target_grade,promotion_target_step,effective_from,effective_to,rule_version,active,created_by,updated_by,change_reason
+         allowance_period_months,promotion_target_grade,promotion_target_step,allowance_next_step,effective_from,effective_to,rule_version,active,created_by,updated_by,change_reason
          FROM hr_salary_scales WHERE id=?1",
         params![new_id],
         map_salary_scale,
@@ -817,7 +826,7 @@ fn active_salary_rule(conn: &Connection, grade: &str, step: i64, date: NaiveDate
     let date_str = fmt_date(date);
     conn.query_row(
         "SELECT id,rule_name,grade,step,base_salary,annual_allowance_amount,steps_per_grade,required_promotion_months,
-                allowance_period_months,promotion_target_grade,promotion_target_step,effective_from,effective_to,rule_version,active,created_by,updated_by,change_reason
+                allowance_period_months,promotion_target_grade,promotion_target_step,allowance_next_step,effective_from,effective_to,rule_version,active,created_by,updated_by,change_reason
          FROM hr_salary_scales
          WHERE active=1 AND grade=?1 AND step=?2 AND effective_from<=?3 AND (effective_to IS NULL OR effective_to='' OR effective_to>=?3)
          ORDER BY effective_from DESC,id DESC LIMIT 1",
@@ -845,8 +854,38 @@ fn status_for(final_due: NaiveDate, alert_months: i64, today: NaiveDate) -> Stri
     else { "Not due".into() }
 }
 
-fn credit_days(months: i64, days: i64) -> i64 {
-    months.saturating_mul(30).saturating_add(days)
+fn incoming_document_effects(
+    conn: &Connection,
+    employee_id: i64,
+    calculation_type: &str,
+    base_date: NaiveDate,
+) -> AppResult<Vec<(String, Option<String>, String, i64, i64)>> {
+    let affects_column = if calculation_type == "promotion" {
+        "hr_affects_promotion"
+    } else {
+        "hr_affects_allowance"
+    };
+    let sql = format!(
+        "SELECT g.hr_effect_type,g.doc_number,g.title,g.hr_effect_months,g.hr_effect_days
+         FROM general_docs g
+         JOIN general_doc_employees ge ON ge.general_doc_id=g.id
+         WHERE ge.employee_id=?1
+           AND g.hr_effect_type IN ('appreciation','penalty')
+           AND g.{affects_column}=1
+           AND (g.issue_date IS NULL OR g.issue_date='' OR g.issue_date>=?2)
+         ORDER BY COALESCE(g.issue_date, ''), g.id"
+    );
+    let mut stmt = conn.prepare(&sql)?;
+    let rows = stmt.query_map(params![employee_id, fmt_date(base_date)], |row| {
+        Ok((
+            row.get::<_, String>(0)?,
+            row.get::<_, Option<String>>(1)?,
+            row.get::<_, String>(2)?,
+            row.get::<_, i64>(3)?,
+            row.get::<_, i64>(4)?,
+        ))
+    })?.collect::<rusqlite::Result<_>>()?;
+    Ok(rows)
 }
 
 fn calculate_one(conn: &Connection, profile: HrEmployeeProfile, calculation_type: &str) -> AppResult<HrEligibilityResult> {
@@ -899,60 +938,41 @@ fn calculate_one(conn: &Connection, profile: HrEmployeeProfile, calculation_type
         notes: Some(format!("grade {} / step {}", rule.grade, rule.step)),
     });
 
-    let mut appreciation_days = 0;
-    for item in list_appreciation_letters(conn, Some(profile.employee_id))? {
-        let affects = if calculation_type == "promotion" { item.affects_promotion } else { item.affects_allowance };
-        let counted = item.used_in_calculation && affects;
-        let days = if counted { credit_days(item.credit_months, item.credit_days) } else { 0 };
-        appreciation_days += days;
+    let mut final_due = original;
+    let mut appreciation_credit_days = 0;
+    let mut penalty_delay_days = 0;
+    for (effect_type, doc_number, title, months, days) in incoming_document_effects(conn, profile.employee_id, calculation_type, base_date)? {
+        let sign = if effect_type == "appreciation" { -1 } else { 1 };
+        final_due = add_days(add_months(final_due, sign * months), sign * days);
+        let total_days = months * 30 + days;
+        if effect_type == "appreciation" {
+            appreciation_credit_days += total_days;
+        } else {
+            penalty_delay_days += total_days;
+        }
         components.push(HrCalculationComponent {
-            label: format!("Appreciation {}", item.letter_number),
-            date: Some(item.letter_date),
-            months: item.credit_months,
-            days: item.credit_days,
-            counted,
-            notes: if counted { item.notes } else { Some("Ignored: not marked for this calculation or already disabled".into()) },
+            label: if effect_type == "appreciation" { "Incoming appreciation document".into() } else { "Incoming penalty document".into() },
+            date: doc_number.clone(),
+            months: sign * months,
+            days: sign * days,
+            counted: true,
+            notes: Some(format!("{title}{}", doc_number.map(|value| format!(" / {value}")).unwrap_or_default())),
         });
     }
-
-    let mut penalty_days = 0;
-    for item in list_penalties(conn, Some(profile.employee_id))? {
-        let affects = if calculation_type == "promotion" { item.affects_promotion } else { item.affects_allowance };
-        let counted = !item.cancelled && affects;
-        let days = if counted { credit_days(item.delay_months, item.delay_days) } else { 0 };
-        penalty_days += days;
-        components.push(HrCalculationComponent {
-            label: format!("Penalty {}", item.penalty_order_number),
-            date: Some(item.penalty_date),
-            months: item.delay_months,
-            days: item.delay_days,
-            counted,
-            notes: if counted { item.notes } else { Some("Ignored: cancelled/revoked or does not affect this calculation".into()) },
-        });
-    }
-
-    let mut interruption_days = 0;
-    for item in list_service_interruptions(conn, Some(profile.employee_id))? {
-        let affects = if calculation_type == "promotion" { item.affects_promotion } else { item.affects_allowance };
-        let start = parse_date(&item.start_date, "interruption start_date")?;
-        let end = parse_date(&item.end_date, "interruption end_date")?;
-        let counted = affects && item.counted_or_excluded == "excluded";
-        let days = if counted { duration_days(start, end) } else { 0 };
-        interruption_days += days;
-        components.push(HrCalculationComponent {
-            label: format!("Service interruption {}", item.interruption_type),
-            date: Some(item.start_date),
-            months: 0,
-            days,
-            counted,
-            notes: if counted { item.notes } else { Some("Ignored: counted service or does not affect this calculation".into()) },
-        });
-    }
-
-    let final_due = original - Duration::days(appreciation_days) + Duration::days(penalty_days + interruption_days);
     let alert_date = add_months(final_due, -alert_months);
-    let manual = if calculation_type == "promotion" { profile.manual_promotion_due_date.clone() } else { profile.manual_allowance_due_date.clone() };
     let status = if blocked { "Blocked / missing data".into() } else { status_for(final_due, alert_months, today) };
+    let (next_grade, next_step, next_label) = if calculation_type == "promotion" {
+        let label = rule.promotion_target_grade.clone()
+            .map(|grade| format!("الدرجة التالية: {grade}"))
+            .unwrap_or_else(|| "لم يتم تحديد الدرجة التالية".into());
+        (rule.promotion_target_grade.clone(), rule.promotion_target_step, Some(label))
+    } else if rule.steps_per_grade.is_some_and(|last_step| step_value >= last_step) {
+        (None, None, Some("آخر مرحلة في هذه الدرجة".into()))
+    } else {
+        let step = rule.allowance_next_step.or_else(|| Some(step_value + 1));
+        let label = step.map(|value| format!("المرحلة التالية: {value}"));
+        (None, step, label)
+    };
     let final_text = fmt_date(final_due);
     if calculation_type == "promotion" {
         conn.execute("UPDATE hr_employee_profiles SET system_promotion_due_date=?1,updated_at=datetime('now') WHERE employee_id=?2", params![final_text, profile.employee_id]).ok();
@@ -969,13 +989,16 @@ fn calculate_one(conn: &Connection, profile: HrEmployeeProfile, calculation_type
         current_step: profile.current_salary_step,
         calculation_type: calculation_type.into(),
         original_due_date: Some(fmt_date(original)),
-        appreciation_credit_days: appreciation_days,
-        penalty_delay_days: penalty_days,
-        excluded_service_days: interruption_days,
+        appreciation_credit_days,
+        penalty_delay_days,
+        excluded_service_days: 0,
         final_due_date: Some(fmt_date(final_due)),
-        manual_due_date: manual,
+        manual_due_date: None,
         alert_date: Some(fmt_date(alert_date)),
         status,
+        next_grade,
+        next_step,
+        next_label,
         notes,
         components,
     })
@@ -998,6 +1021,9 @@ fn blocked_result(profile: HrEmployeeProfile, calculation_type: &str, notes: Vec
         manual_due_date: if calculation_type == "promotion" { profile.manual_promotion_due_date } else { profile.manual_allowance_due_date },
         alert_date: None,
         status: "Blocked / missing data".into(),
+        next_grade: None,
+        next_step: None,
+        next_label: None,
         notes,
         components: Vec::new(),
     }
@@ -1026,26 +1052,25 @@ pub fn dashboard_summary(conn: &Connection) -> AppResult<HrDashboardSummary> {
     let promotions: Vec<_> = results.iter().filter(|item| item.calculation_type == "promotion").cloned().collect();
     let allowances: Vec<_> = results.iter().filter(|item| item.calculation_type == "allowance").cloned().collect();
     let today = Utc::now().date_naive();
-    let month = today.month();
-    let year = today.year();
     let due_in_days = |item: &HrEligibilityResult, max_days: i64| -> bool {
         item.final_due_date.as_deref()
             .and_then(|date| NaiveDate::parse_from_str(date, "%Y-%m-%d").ok())
             .is_some_and(|date| date >= today && (date - today).num_days() <= max_days)
     };
-    let due_this_month = |item: &HrEligibilityResult| -> bool {
-        item.final_due_date.as_deref()
-            .and_then(|date| NaiveDate::parse_from_str(date, "%Y-%m-%d").ok())
-            .is_some_and(|date| date.year() == year && date.month() == month)
-    };
-    let missing_hr_data = promotions.iter().filter(|item| item.status == "Blocked / missing data").count() as i64;
+    let missing_hr_data = results.iter()
+        .filter(|item| item.status == "Blocked / missing data")
+        .map(|item| item.employee_id)
+        .collect::<HashSet<_>>()
+        .len() as i64;
     let unprocessed_appreciations: i64 = conn.query_row("SELECT COUNT(*) FROM hr_appreciation_letters WHERE used_in_calculation=0", [], |r| r.get(0)).unwrap_or(0);
     let active_penalties: i64 = conn.query_row("SELECT COUNT(*) FROM hr_penalties WHERE cancelled=0", [], |r| r.get(0)).unwrap_or(0);
     Ok(HrDashboardSummary {
         promotion_due_6_months: promotions.iter().filter(|item| due_in_days(item, 186)).count() as i64,
-        promotion_due_3_months: promotions.iter().filter(|item| due_in_days(item, 93)).count() as i64,
-        promotion_due_this_month: promotions.iter().filter(|item| due_this_month(item)).count() as i64,
+        promotion_due_3_months: 0,
+        promotion_due_this_month: 0,
         overdue_promotions: promotions.iter().filter(|item| item.status == "Overdue").count() as i64,
+        allowance_due_6_months: allowances.iter().filter(|item| due_in_days(item, 186)).count() as i64,
+        overdue_allowances: allowances.iter().filter(|item| item.status == "Overdue").count() as i64,
         allowance_due: allowances.iter().filter(|item| ["Due now", "Overdue", "Due within 1 month"].contains(&item.status.as_str())).count() as i64,
         missing_hr_data,
         unprocessed_appreciations,
