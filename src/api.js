@@ -2,6 +2,7 @@
  * api.js — Tauri invoke bridge v2.0
  */
 import { invoke } from "@tauri-apps/api/core";
+import { uploadWithScanner } from "./attachments/scanner.js";
 
 export const api = {
   // Auth
@@ -13,7 +14,7 @@ export const api = {
   getCompanyConfig:    ()           => invoke("cmd_get_company_config"),
   getPublicCompanyConfig: ()        => invoke("cmd_get_public_company_config"),
   updateCompanyConfig: (data)       => invoke("cmd_update_company_config", { data }),
-  uploadCompanyLogo:   (path)       => invoke("cmd_upload_company_logo", { sourcePath: path }),
+  uploadCompanyLogo:   (path)       => uploadWithScanner("cmd_upload_company_logo", { sourcePath: path }),
 
   // Employees
   listEmployees:    ()         => invoke("cmd_list_employees"),
@@ -22,24 +23,26 @@ export const api = {
   updateEmployee:   (id, data) => invoke("cmd_update_employee", { id, data }),
   deleteEmployee:   (id)       => invoke("cmd_delete_employee", { id }),
   nextEmployeeNumber: ()       => invoke("cmd_next_employee_number"),
-  uploadAttachment: (empId, path) => invoke("cmd_upload_attachment", { employeeId: empId, sourcePath: path }),
+  uploadAttachment: (empId, path) => uploadWithScanner("cmd_upload_attachment", { employeeId: empId, sourcePath: path }),
+  uploadDocumentAttachment: (empId, path) => invoke("cmd_upload_attachment", { employeeId: empId, sourcePath: path }),
   deleteAttachment: (empId, rel)  => invoke("cmd_delete_attachment", { employeeId: empId, relativePath: rel }),
-  uploadEmployeePhoto: (empId, path) => invoke("cmd_upload_employee_photo", { employeeId: empId, sourcePath: path }),
-  uploadNationalCardAttachment: (empId, side, path) => invoke("cmd_upload_national_card_attachment", { employeeId: empId, side, sourcePath: path }),
+  deleteEmployeePhoto: (empId) => invoke("cmd_delete_employee_photo", { employeeId: empId }),
+  uploadEmployeePhoto: (empId, path) => uploadWithScanner("cmd_upload_employee_photo", { employeeId: empId, sourcePath: path }),
+  uploadNationalCardAttachment: (empId, side, path) => uploadWithScanner("cmd_upload_national_card_attachment", { employeeId: empId, side, sourcePath: path }),
   deleteNationalCardAttachment: (empId, side) => invoke("cmd_delete_national_card_attachment", { employeeId: empId, side }),
-  uploadFamilyNationalCardAttachment: (empId, memberIndex, side, path) => invoke("cmd_upload_family_national_card_attachment", { employeeId: empId, memberIndex, side, sourcePath: path }),
+  uploadFamilyNationalCardAttachment: (empId, memberIndex, side, path) => uploadWithScanner("cmd_upload_family_national_card_attachment", { employeeId: empId, memberIndex, side, sourcePath: path }),
   deleteFamilyNationalCardAttachment: (empId, memberIndex, side) => invoke("cmd_delete_family_national_card_attachment", { employeeId: empId, memberIndex, side }),
-  uploadSpouseNationalCardAttachment: (empId, spouseIndex, side, path) => invoke("cmd_upload_spouse_national_card_attachment", { employeeId: empId, spouseIndex, side, sourcePath: path }),
+  uploadSpouseNationalCardAttachment: (empId, spouseIndex, side, path) => uploadWithScanner("cmd_upload_spouse_national_card_attachment", { employeeId: empId, spouseIndex, side, sourcePath: path }),
   deleteSpouseNationalCardAttachment: (empId, spouseIndex, side) => invoke("cmd_delete_spouse_national_card_attachment", { employeeId: empId, spouseIndex, side }),
-  uploadResidenceCardAttachment: (empId, side, path) => invoke("cmd_upload_residence_card_attachment", { employeeId: empId, side, sourcePath: path }),
+  uploadResidenceCardAttachment: (empId, side, path) => uploadWithScanner("cmd_upload_residence_card_attachment", { employeeId: empId, side, sourcePath: path }),
   deleteResidenceCardAttachment: (empId, side) => invoke("cmd_delete_residence_card_attachment", { employeeId: empId, side }),
-  uploadAirportBadgeAttachment: (empId, side, path) => invoke("cmd_upload_airport_badge_attachment", { employeeId: empId, side, sourcePath: path }),
+  uploadAirportBadgeAttachment: (empId, side, path) => uploadWithScanner("cmd_upload_airport_badge_attachment", { employeeId: empId, side, sourcePath: path }),
   deleteAirportBadgeAttachment: (empId, side) => invoke("cmd_delete_airport_badge_attachment", { employeeId: empId, side }),
-  uploadMinistryBadgeAttachment: (empId, side, path) => invoke("cmd_upload_ministry_badge_attachment", { employeeId: empId, side, sourcePath: path }),
+  uploadMinistryBadgeAttachment: (empId, side, path) => uploadWithScanner("cmd_upload_ministry_badge_attachment", { employeeId: empId, side, sourcePath: path }),
   deleteMinistryBadgeAttachment: (empId, side) => invoke("cmd_delete_ministry_badge_attachment", { employeeId: empId, side }),
-  uploadPassportAttachment: (empId, path) => invoke("cmd_upload_passport_attachment", { employeeId: empId, sourcePath: path }),
+  uploadPassportAttachment: (empId, path) => uploadWithScanner("cmd_upload_passport_attachment", { employeeId: empId, sourcePath: path }),
   deletePassportAttachment: (empId, rel) => invoke("cmd_delete_passport_attachment", { employeeId: empId, relativePath: rel }),
-  uploadRationCardAttachment: (empId, path) => invoke("cmd_upload_ration_card_attachment", { employeeId: empId, sourcePath: path }),
+  uploadRationCardAttachment: (empId, path) => uploadWithScanner("cmd_upload_ration_card_attachment", { employeeId: empId, sourcePath: path }),
   deleteRationCardAttachment: (empId, rel) => invoke("cmd_delete_ration_card_attachment", { employeeId: empId, relativePath: rel }),
 
   // Job grade history
@@ -52,17 +55,18 @@ export const api = {
   createGeneralDoc:  (data)   => invoke("cmd_create_general_doc",  { data }),
   updateGeneralDoc:  (id, data) => invoke("cmd_update_general_doc", { id, data }),
   deleteGeneralDoc:  (id)     => invoke("cmd_delete_general_doc",  { id }),
-  uploadGeneralDocFile: (docId, path) => invoke("cmd_upload_general_doc_file", { docId, sourcePath: path }),
+  uploadGeneralDocFile: (docId, path) => uploadWithScanner("cmd_upload_general_doc_file", { docId, sourcePath: path }),
   deleteGeneralDocAttachment: (docId, relativePath) => invoke("cmd_delete_general_doc_attachment", { docId, relativePath }),
   moveGeneralDocAttachment: (docId, relativePath, direction) => invoke("cmd_move_general_doc_attachment", { docId, relativePath, direction }),
   listOutgoingDocs: () => invoke("cmd_list_outgoing_docs"),
   createOutgoingDoc: (data) => invoke("cmd_create_outgoing_doc", { data }),
   updateOutgoingDoc: (id, data) => invoke("cmd_update_outgoing_doc", { id, data }),
   deleteOutgoingDoc: (id) => invoke("cmd_delete_outgoing_doc", { id }),
-  uploadOutgoingDocFile: (docId, path) => invoke("cmd_upload_outgoing_doc_file", { docId, sourcePath: path }),
+  uploadOutgoingDocFile: (docId, path) => uploadWithScanner("cmd_upload_outgoing_doc_file", { docId, sourcePath: path }),
   deleteOutgoingDocAttachment: (docId, relativePath) => invoke("cmd_delete_outgoing_doc_attachment", { docId, relativePath }),
   moveOutgoingDocAttachment: (docId, relativePath, direction) => invoke("cmd_move_outgoing_doc_attachment", { docId, relativePath, direction }),
-  scanDocument: () => invoke("cmd_scan_document"),
+  selectScannerDevice: () => invoke("cmd_select_scanner_device"),
+  scanDocument: (deviceId) => invoke("cmd_scan_document", { deviceId }),
 
   // Activity log
   listActivityLog: (limit) => invoke("cmd_list_activity_log", { limit: limit ?? 50 }),
@@ -73,6 +77,9 @@ export const api = {
   deleteUser: (id)            => invoke("cmd_delete_user",  { id }),
   updateUserRole: (id, role)  => invoke("cmd_update_user_role", { id, data: { role } }),
   resetUserPassword: (id, password) => invoke("cmd_reset_user_password", { id, data: { password } }),
+
+  getScannerSettings: () => invoke("cmd_scanner_settings"),
+  setScannerSettings: (settings) => invoke("cmd_set_scanner_settings", { settings }),
 
   // Settings
   getStoragePath: ()     => invoke("cmd_get_storage_path"),
@@ -92,8 +99,10 @@ export const api = {
   saveReportXlsx: (destinationPath, headers, rows) => invoke("cmd_save_report_xlsx", { destinationPath, headers, rows }),
   auditDocumentView: (employeeId, documentName) => invoke("cmd_audit_document_view", { employeeId, documentName }),
   auditDocumentDownload: (employeeId, documentName) => invoke("cmd_audit_document_download", { employeeId, documentName }),
-  downloadDocument: (relativePath, destinationDir) => invoke("cmd_download_document", { relativePath, destinationDir }),
+  downloadDocument: (relativePath, destinationPath) => invoke("cmd_download_document", { relativePath, destinationPath }),
+  getDocumentDownloadName: (relativePath) => invoke("cmd_get_document_download_name", { relativePath }),
   getDocumentPreviewPath: (relativePath) => invoke("cmd_get_document_preview_path", { relativePath }),
+  readDocument: (relativePath) => invoke("cmd_read_document", { relativePath }),
   printDocument: (relativePath) => invoke("cmd_print_document", { relativePath }),
 
   // HR promotion and annual allowance module

@@ -1,6 +1,7 @@
-@tailwind base;
-@tailwind components;
-@tailwind utilities;
+@import "tailwindcss" source(none);
+@config "../../tailwind.config.js";
+@source "../";
+@source "../../index.html";
 
 @layer base {
   html {
@@ -13,7 +14,7 @@
     @apply border-autohr-border;
   }
   :focus-visible {
-    @apply outline-none ring-2 ring-autohr-green ring-offset-2 ring-offset-autohr-bg;
+    @apply outline-hidden ring-2 ring-autohr-green ring-offset-2 ring-offset-autohr-bg;
   }
   button:disabled,
   input:disabled,
@@ -463,7 +464,7 @@
     box-shadow: 0 18px 45px rgba(0, 0, 0, 0.3), inset 0 1px rgba(255, 255, 255, 0.06);
     backdrop-filter: blur(14px);
   }
-  .card-sm {
+  .card-sm, .stat-card {
     @apply rounded-lg border border-autohr-border p-4;
     background: linear-gradient(145deg, rgba(9, 42, 78, 0.92), rgba(3, 22, 43, 0.94));
     box-shadow: inset 0 1px rgba(255, 255, 255, 0.05);
@@ -472,7 +473,7 @@
   .input-field {
     @apply w-full border border-autohr-border rounded-lg px-4 py-2.5
            text-gray-100 placeholder-gray-500
-           focus:outline-none focus:border-autohr-green focus:ring-1 focus:ring-autohr-green
+           focus:outline-hidden focus:border-autohr-green focus:ring-1 focus:ring-autohr-green
            transition-colors duration-150;
     background: rgba(1, 16, 34, 0.82);
     box-shadow: inset 0 1px 4px rgba(0, 0, 0, 0.28);
@@ -539,7 +540,7 @@
   .badge-gray   { @apply bg-gray-700 text-gray-400; }
 
   .stat-card {
-    @apply card-sm flex flex-col gap-1;
+    @apply flex flex-col gap-1;
   }
   .stat-card-action {
     @apply cursor-pointer transition-colors duration-150;
@@ -570,3 +571,47 @@
     @apply text-xs font-semibold text-gray-500 uppercase tracking-widest mb-3;
   }
 }
+/* One shared offline scanner for every attachment entry point. */
+.smart-scanner-overlay{position:fixed;inset:0;z-index:11000;background:rgba(0,0,0,.75);display:flex;align-items:center;justify-content:center;padding:16px}
+.smart-scanner-dialog{background:#1f1f1f;color:#f3f4f6;border:1px solid #414141;border-radius:10px;padding:20px;width:min(1100px,100%);max-height:95vh;overflow:auto;box-shadow:0 20px 70px #0008}
+.smart-scanner-dialog h2{font-size:18px;font-weight:bold;margin:0 0 12px}.smart-scanner-dialog h3{font-size:14px;margin:10px 0}
+.smart-scanner-actions,.smart-scanner-toolbar{display:flex;gap:8px;flex-wrap:wrap;margin:12px 0;align-items:center}
+.smart-scanner-previews{display:grid;grid-template-columns:1fr 1fr;gap:16px}.smart-scanner-previews section{min-width:0}
+.smart-scanner-previews img{display:block;max-width:100%;height:auto}.smart-scanner-previews img[hidden]{display:none}
+.smart-scanner-scroll{max-height:55vh;overflow:auto;padding:12px;direction:ltr;background:#151515}
+.smart-scanner-image{position:relative;width:100%;touch-action:pan-x pan-y}.smart-scanner-image img{width:100%;display:block}
+.smart-scanner-image svg{position:absolute;inset:0;width:100%;height:100%;pointer-events:none}.smart-scanner-image polygon{fill:#5da12c22;stroke:#a3e635;stroke-width:3;vector-effect:non-scaling-stroke}
+.smart-scanner-corner{position:absolute;transform:translate(-50%,-50%);width:24px;height:24px;border:2px solid white;background:#5da12c;border-radius:50%;touch-action:none;cursor:move}
+.smart-scanner-dialog :focus-visible{outline:3px solid #a3e635;outline-offset:3px}.smart-scanner-dialog [data-error]{color:#fca5a5}
+.smart-scanner-setting{display:flex;align-items:center;gap:12px;margin:12px 0}.smart-scanner-setting .input-field{max-width:200px}
+@media(max-width:760px){.smart-scanner-previews{grid-template-columns:1fr}.smart-scanner-dialog{padding:12px}.smart-scanner-scroll{max-height:42vh}}
+
+/* Fit both axes; corner handles stay inside padded scroll areas at fit zoom. */
+.smart-scanner-scroll{height:clamp(160px,40vh,480px);max-height:none;padding:16px}
+.smart-scanner-image{margin:0 auto;max-width:none;flex-shrink:0}
+.smart-scanner-image img{width:100%;height:100%;max-width:none}
+.smart-scanner-previews [data-result]{width:100%;height:clamp(160px,40vh,480px);object-fit:contain}
+.smart-scanner-image.is-manual [data-selected]{stroke:#fbbf24;fill:#fbbf2411;stroke-dasharray:8 5}
+.smart-scanner-image.is-manual .smart-scanner-corner{background:#b45309}
+.smart-scanner-dialog [data-debug]{max-height:160px;overflow:auto;font-size:11px}
+.smart-scanner-dialog [data-metrics]{white-space:pre-wrap;overflow-wrap:anywhere}
+@media(max-width:760px){.smart-scanner-scroll,.smart-scanner-previews [data-result]{height:clamp(140px,25vh,280px)}}
+
+/* Keep review actions outside the independently scrollable image viewport. */
+.smart-scanner-dialog:has([data-original]){height:calc(100dvh - 32px);max-height:900px;display:flex;flex-direction:column;overflow:hidden}
+.smart-scanner-dialog:has([data-original])>h2,.smart-scanner-dialog:has([data-original])>p,.smart-scanner-dialog:has([data-original])>.smart-scanner-toolbar,.smart-scanner-dialog:has([data-original])>.smart-scanner-actions,.smart-scanner-dialog:has([data-original])>details{flex-shrink:0}
+.smart-scanner-dialog:has([data-original])>.smart-scanner-previews{flex:1;min-height:0;grid-template-rows:minmax(0,1fr)}
+.smart-scanner-dialog:has([data-original]) .smart-scanner-previews section{display:flex;flex-direction:column;min-height:0}
+.smart-scanner-dialog:has([data-original]) .smart-scanner-scroll{height:auto;min-height:0;flex:1}
+.smart-scanner-dialog:has([data-original]) [data-result]{height:100%;min-height:0;flex:1}
+.smart-scanner-dialog:has([data-original]) [data-debug]{max-height:90px}
+@media(max-width:760px){.smart-scanner-dialog:has([data-original])>.smart-scanner-previews{grid-template-rows:repeat(2,minmax(0,1fr))}.smart-scanner-dialog:has([data-original]) .smart-scanner-toolbar,.smart-scanner-dialog:has([data-original]) .smart-scanner-actions{margin:5px 0}}
+
+.employee-photo-actions{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px;margin-top:12px}
+.employee-photo-actions button{width:100%;min-height:36px;padding:7px 8px;white-space:normal;line-height:1.4;margin:0}
+.employee-photo-actions #btn-upload-photo{order:1}
+.employee-photo-actions .btn-download-attachment{order:2}
+.employee-photo-actions .smart-scanner-actions{display:contents}
+.employee-photo-actions .smart-scanner-actions button{order:3;grid-column:1/-1}
+.employee-photo-actions #btn-delete-photo{order:4;grid-column:1/-1}
+.employee-photo-actions #btn-upload-photo:only-child{grid-column:1/-1}

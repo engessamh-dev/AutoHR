@@ -1,5 +1,8 @@
 // lib.rs — GCANS v2.0
-mod db; mod services; mod files; mod hr;
+mod db; mod services; mod files; mod hr; mod scanner;
+mod scanner_commands;
+use scanner_commands::*;
+#[cfg(test)] mod scanner_tests;
 use services::*;
 use hr::*;
 use tauri::{AppHandle, Emitter, Manager, State, Window};
@@ -164,7 +167,36 @@ fn build_report_xlsx(headers: &[String], rows: &[Vec<String>]) -> AppResult<Vec<
 }
 
 #[tauri::command]
-fn cmd_scan_document(state: State<DbState>, sess: State<SessionState>) -> Result<String, AppError> {
+fn cmd_select_scanner_device(state: State<DbState>, sess: State<SessionState>) -> Result<String, AppError> {
+    let conn = state.0.lock().unwrap();
+    authorize(&conn, &sess, "documents.upload")?;
+    drop(conn);
+
+    #[cfg(not(target_os = "windows"))]
+    return Err(AppError::Validation("Document scanning is supported on Windows only".into()));
+
+    #[cfg(target_os = "windows")]
+    {
+        use std::os::windows::process::CommandExt;
+        use std::process::Command;
+        let script = "$ErrorActionPreference='Stop';$dialog=New-Object -ComObject WIA.CommonDialog;$device=$dialog.ShowSelectDevice(1,$true,$false);if($null -eq $device){exit 2};[Console]::Out.Write($device.DeviceID)";
+        let output = Command::new("powershell.exe")
+            .creation_flags(0x08000000)
+            .args(["-NoProfile", "-NonInteractive", "-STA", "-Command", script])
+            .output().map_err(|error| AppError::Other(error.to_string()))?;
+        match output.status.code() {
+            Some(0) => {
+                let device_id = String::from_utf8_lossy(&output.stdout).trim().to_string();
+                if device_id.is_empty() { Err(AppError::Validation("لم يتم اختيار ماسح ضوئي".into())) } else { Ok(device_id) }
+            }
+            Some(2) => Err(AppError::Validation("تم إلغاء اختيار الماسح الضوئي".into())),
+            _ => Err(AppError::Validation("تعذر اختيار جهاز الماسح الضوئي. تأكد من تثبيت تعريف WIA الخاص به.".into())),
+        }
+    }
+}
+
+#[tauri::command]
+fn cmd_scan_document(state: State<DbState>, sess: State<SessionState>, device_id: String) -> Result<String, AppError> {
     let conn = state.0.lock().unwrap();
     let user = authorize(&conn, &sess, "documents.upload")?;
     drop(conn);
@@ -184,15 +216,23 @@ fn cmd_scan_document(state: State<DbState>, sess: State<SessionState>) -> Result
         rand::thread_rng().fill_bytes(&mut random);
         let output_path = std::env::temp_dir().join(format!("autohr_scan_{}.jpg", hex::encode(random)));
         let escaped_path = output_path.to_string_lossy().replace('\'', "''");
+        let escaped_device_id = device_id.replace('\'', "''");
         let script = format!(
             "$ErrorActionPreference='Stop';\
              $manager=New-Object -ComObject WIA.DeviceManager;\
-             $scanners=@($manager.DeviceInfos | Where-Object {{$_.Type -eq 1}});\
-             if($scanners.Count -eq 0){{exit 3}};\
+             $info=@($manager.DeviceInfos | Where-Object {{$_.Type -eq 1 -and $_.DeviceID -eq '{escaped_device_id}'}})[0];\
+             if($null -eq $info){{exit 3}};\
+             $device=$info.Connect();\
              $dialog=New-Object -ComObject WIA.CommonDialog;\
-             $image=$dialog.ShowAcquireImage(1,1,131072,'{{B96B3CAE-0728-11D3-9D7B-0000F81EF32E}}',$true,$true,$false);\
+             $image=$dialog.ShowTransfer($device.Items.Item(1),'{{B96B3CAE-0728-11D3-9D7B-0000F81EF32E}}',$false);\
              if($null -eq $image){{exit 2}};\
-             $image.SaveFile('{escaped_path}')"
+             $processor=New-Object -ComObject WIA.ImageProcess;\
+             $convertId=$processor.FilterInfos.Item('Convert').FilterID;\
+             $processor.Filters.Add($convertId);\
+             $processor.Filters.Item(1).Properties.Item('FormatID').Value='{{B96B3CAE-0728-11D3-9D7B-0000F81EF32E}}';\
+             $processor.Filters.Item(1).Properties.Item('Quality').Value=90;\
+             $converted=$processor.Apply($image);\
+             $converted.SaveFile('{escaped_path}')"
         );
         let output = Command::new("powershell.exe")
             .creation_flags(0x08000000)
@@ -241,6 +281,7 @@ fn cmd_scan_document(state: State<DbState>, sess: State<SessionState>) -> Result
     let conn = state.0.lock().unwrap();
     let username = session_identity(&sess)?;
     logout(&conn, &username)?;
+    scanner::clear_owner(&username);
     *sess.0.lock().unwrap() = None;
     Ok(())
 }
@@ -296,6 +337,13 @@ fn cmd_scan_document(state: State<DbState>, sess: State<SessionState>) -> Result
     let result = upload_employee_photo(&conn, employee_id, &source_path)?;
     log_activity(&conn, &user, "UPLOAD_DOCUMENT", Some("employee"), Some(employee_id), Some(&result), Some("photo"));
     Ok(result)
+}
+#[tauri::command] fn cmd_delete_employee_photo(state: State<DbState>, sess: State<SessionState>, employee_id: i64) -> Result<(), AppError> {
+    let conn = state.0.lock().unwrap();
+    let user = authorize(&conn, &sess, "employees.edit")?;
+    files::delete_employee_photo(&conn, employee_id)?;
+    log_activity(&conn, &user, "DELETE_DOCUMENT", Some("employee"), Some(employee_id), None, Some("photo"));
+    Ok(())
 }
 #[tauri::command] fn cmd_upload_attachment(state: State<DbState>, sess: State<SessionState>, employee_id: i64, source_path: String) -> Result<String, AppError> {
     let conn = state.0.lock().unwrap();
@@ -658,13 +706,17 @@ async fn cmd_restore_backup(window: Window, state: State<'_, DbState>, sess: Sta
     let conn = state.0.lock().unwrap(); let user = authorize(&conn, &sess, "documents.download")?;
     log_activity(&conn, &user, "DOWNLOAD_DOCUMENT", Some("employee"), Some(employee_id), Some(&document_name), None); Ok(())
 }
-#[tauri::command] fn cmd_download_document(state: State<DbState>, sess: State<SessionState>, relative_path: String, destination_dir: String) -> Result<String, AppError> {
+#[tauri::command] fn cmd_download_document(state: State<DbState>, sess: State<SessionState>, relative_path: String, destination_path: String) -> Result<String, AppError> {
     let conn = state.0.lock().unwrap(); let user = authorize(&conn, &sess, "documents.download")?;
-    download_document(&conn, &user, &relative_path, &destination_dir)
+    download_document(&conn, &user, &relative_path, &destination_path)
 }
 #[tauri::command] fn cmd_get_document_preview_path(state: State<DbState>, sess: State<SessionState>, relative_path: String) -> Result<String, AppError> {
     let conn = state.0.lock().unwrap(); let user = authorize(&conn, &sess, "documents.view")?;
     document_preview_path(&conn, &user, &relative_path)
+}
+#[tauri::command] fn cmd_read_document(state: State<DbState>, sess: State<SessionState>, relative_path: String) -> Result<Vec<u8>, AppError> {
+    let conn = state.0.lock().unwrap(); let user = authorize(&conn, &sess, "documents.view")?;
+    read_document(&conn, &user, &relative_path)
 }
 #[tauri::command] fn cmd_print_document(state: State<DbState>, sess: State<SessionState>, relative_path: String) -> Result<(), AppError> {
     let conn = state.0.lock().unwrap(); let user = authorize(&conn, &sess, "documents.print")?;
@@ -806,9 +858,14 @@ async fn cmd_restore_backup(window: Window, state: State<'_, DbState>, sess: Sta
     let user = authorize(&conn, &sess, "hr.rules.manage")?;
     set_hr_alert_lead_months(&conn, &user, months)
 }
+pub fn scanner_self_test() -> Result<(), String> {
+    scanner::production_self_test().map_err(|error| error.to_string())
+}
+
 pub fn run() {
     let conn = db::open().expect("Failed to open database");
     ensure_storage_layout(&conn).ok();
+    scanner::recover_pending_files(&conn).ok();
     ensure_backup_layout(&conn).ok();
     let storage_root = storage_path(&conn);
     tauri::Builder::default()
@@ -826,7 +883,7 @@ pub fn run() {
             cmd_next_employee_number,
             cmd_list_employees, cmd_get_employee,
             cmd_create_employee, cmd_update_employee, cmd_delete_employee,
-            cmd_upload_employee_photo,
+            cmd_upload_employee_photo, cmd_delete_employee_photo,
             cmd_upload_national_card_attachment, cmd_delete_national_card_attachment,
             cmd_upload_family_national_card_attachment, cmd_delete_family_national_card_attachment,
             cmd_upload_spouse_national_card_attachment, cmd_delete_spouse_national_card_attachment,
@@ -836,12 +893,15 @@ pub fn run() {
             cmd_upload_passport_attachment, cmd_delete_passport_attachment,
             cmd_upload_ration_card_attachment, cmd_delete_ration_card_attachment,
             cmd_upload_attachment, cmd_delete_attachment,
+            cmd_scanner_settings, cmd_set_scanner_settings, cmd_scanner_prepare, cmd_scanner_render,
+            cmd_scanner_release, cmd_scanner_save_existing, cmd_scanner_upload, cmd_scanner_detect, cmd_scanner_versions,
+            cmd_get_document_download_name,
             cmd_list_grade_history, cmd_add_grade_history, cmd_delete_grade_history,
             cmd_list_general_docs, cmd_create_general_doc, cmd_update_general_doc, cmd_delete_general_doc,
             cmd_upload_general_doc_file, cmd_delete_general_doc_attachment, cmd_move_general_doc_attachment,
             cmd_list_outgoing_docs, cmd_create_outgoing_doc, cmd_update_outgoing_doc, cmd_delete_outgoing_doc,
             cmd_upload_outgoing_doc_file, cmd_delete_outgoing_doc_attachment, cmd_move_outgoing_doc_attachment,
-            cmd_scan_document,
+            cmd_select_scanner_device, cmd_scan_document,
             cmd_list_activity_log,
             cmd_list_users, cmd_create_user, cmd_delete_user, cmd_update_user_role, cmd_reset_user_password,
             cmd_get_storage_path, cmd_set_storage_path, cmd_get_backup_path, cmd_set_backup_path,
@@ -849,7 +909,7 @@ pub fn run() {
             cmd_run_due_auto_backups, cmd_exit_app,
             cmd_get_document_types, cmd_set_document_types,
             cmd_create_backup, cmd_restore_backup, cmd_audit_document_view, cmd_audit_document_download, cmd_download_document,
-            cmd_get_document_preview_path, cmd_print_document, cmd_print_employee_documents, cmd_save_report_xlsx,
+            cmd_get_document_preview_path, cmd_read_document, cmd_print_document, cmd_print_employee_documents, cmd_save_report_xlsx,
             cmd_list_hr_profiles, cmd_get_hr_profile, cmd_save_hr_profile,
             cmd_list_hr_salary_scales, cmd_save_hr_salary_scale, cmd_delete_hr_salary_scale,
             cmd_list_hr_appreciation_rules, cmd_save_hr_appreciation_rule,

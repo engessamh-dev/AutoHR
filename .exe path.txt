@@ -1,0 +1,1 @@
+I:\AutoHR-fixed\target\release\bundle\nsis

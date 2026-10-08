@@ -1,3 +1,4 @@
+import { bindAttachmentScannerButtons } from "../attachments/integration.js";
 /**
  * screens/company.js — sysadmin-only identity + logo upload
  */
@@ -32,7 +33,7 @@ export async function renderCompany(container, user, ctx) {
       <div class="card space-y-4">
         <p class="section-title">شعار المنشأة</p>
         ${cfg?.logo_full_path
-          ? `<img src="" id="logo-preview" class="w-20 h-20 rounded object-cover border border-autohr-border" />`
+          ? `<img src="" data-scan-path="${escHtml(cfg.logo_path)}" id="logo-preview" class="w-20 h-20 rounded object-cover border border-autohr-border" />`
           : `<div class="w-20 h-20 rounded bg-autohr-green/20 flex items-center justify-center border border-autohr-border">
                <span class="text-xl font-bold text-autohr-green">CNS</span>
              </div>`}
@@ -51,6 +52,7 @@ export async function renderCompany(container, user, ctx) {
     if (preview) preview.src = convertFileSrc(cfg.logo_full_path);
   }
 
+  bindAttachmentScannerButtons(container, user, async () => { cfg = await api.getCompanyConfig(); applyBranding(cfg); container.querySelector("#logo-preview").src = (await import("@tauri-apps/api/core")).convertFileSrc(cfg.logo_full_path); });
   container.querySelector("#btn-save-cfg").addEventListener("click", async () => {
     const data = {
       company_name:    container.querySelector("#c-company").value.trim(),
@@ -70,14 +72,14 @@ export async function renderCompany(container, user, ctx) {
     try {
       const selected = await open({
         multiple: false,
-        filters: [{ name: "Images", extensions: ["png", "jpg", "jpeg"] }],
+        filters: [{ name: "Images", extensions: ["png", "jpg", "jpeg", "webp"] }],
       });
       if (!selected) return;
       if (!(await confirmAction("تأكيد رفع شعار جديد؟"))) return;
       cfg = await api.uploadCompanyLogo(selected);
       applyBranding(cfg);
       showToast("تم رفع الشعار بنجاح");
-      container.innerHTML = html();
+      await renderCompany(container, user, ctx);
     } catch (err) {
       showToast(err?.message ?? "فشل رفع الشعار", "error");
     }

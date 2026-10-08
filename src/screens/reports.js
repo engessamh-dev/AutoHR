@@ -10,6 +10,10 @@ const fieldGroups = [
       ["employee_number", "الرقم الوظيفي"],
       ["full_name", "الاسم الرباعي واللقب"],
       ["mother_name", "اسم الأم"],
+      ["father_birthdate", "تاريخ ولادة الأب", "date"],
+      ["father_birthplace", "محل ولادة الأب"],
+      ["mother_birthdate", "تاريخ ولادة الأم", "date"],
+      ["mother_birthplace", "محل ولادة الأم"],
       ["gender", "الجنس"],
       ["marital_status", "الحالة الاجتماعية"],
       ["birthdate", "تاريخ الولادة", "date"],
@@ -161,10 +165,12 @@ function storedConfig() {
     const parsed = JSON.parse(localStorage.getItem(STORAGE_KEY) ?? "{}");
     return {
       columns: Array.isArray(parsed.columns) && parsed.columns.length ? parsed.columns : defaultColumns,
-      filters: {},
+      filters: {
+        employeeIds: Array.isArray(parsed.filters?.employeeIds) ? parsed.filters.employeeIds : [],
+      },
     };
   } catch {
-    return { columns: defaultColumns, filters: {} };
+    return { columns: defaultColumns, filters: { employeeIds: [] } };
   }
 }
 
@@ -181,6 +187,8 @@ function derivedValue(employee, key) {
   const rationAttachments = parseJsonArray(employee.ration_card_attachment_paths);
 
   const derived = {
+    birthdate: employee.birthdate || employee.civil_id_birthdate || "",
+    birthplace: employee.birthplace || employee.civil_id_birthplace || "",
     is_active_label: employee.is_active ? "نشط" : "غير نشط",
     has_civil_id_front: yesNo(employee.civil_id_front_path),
     has_civil_id_back: yesNo(employee.civil_id_back_path),
@@ -267,6 +275,11 @@ export async function renderReports(container) {
   const employees = await api.listEmployees();
   const config = storedConfig();
   const selected = new Set(config.columns);
+  let chosenEmployeeIds = new Set(
+    config.filters.employeeIds.length
+      ? config.filters.employeeIds.map(Number)
+      : employees.map(employee => Number(employee.id))
+  );
 
   container.innerHTML = `
     <div class="h-full flex flex-col gap-4">
@@ -307,19 +320,42 @@ export async function renderReports(container) {
 
   const render = () => {
     const columns = selectedColumns(container);
-    const rows = employees;
+    const employeeIds = [...chosenEmployeeIds];
+    const rows = employees.filter(employee => chosenEmployeeIds.has(Number(employee.id)));
     const fields = columns.map(key => fieldDefs.find(field => field.key === key)).filter(Boolean);
-    container.querySelector("#report-summary").textContent = `عدد النتائج: ${rows.length} / ${employees.length}`;
+    container.querySelector("#report-summary").textContent = `الموظفون المحددون: ${rows.length} / ${employees.length}`;
     container.querySelector("#report-table").innerHTML = fields.length
       ? `<table class="w-full">
-          <thead><tr>${fields.map(field => `<th class="table-header">${escHtml(field.label)}</th>`).join("")}</tr></thead>
-          <tbody>${rows.length ? rows.map(employee => `<tr class="table-row">${fields.map(field => `<td class="table-cell">${escHtml(formatReportValue(employee, field))}</td>`).join("")}</tr>`).join("") : `<tr><td colspan="${fields.length}" class="table-cell text-center text-gray-500">لا توجد نتائج</td></tr>`}</tbody>
+          <thead><tr>
+            <th class="table-header" style="width:54px;text-align:center"><input id="report-employees-all" type="checkbox" ${rows.length === employees.length ? "checked" : ""} style="width:16px;height:16px;accent-color:#5da12c" title="تحديد جميع الموظفين" /></th>
+            ${fields.map(field => `<th class="table-header">${escHtml(field.label)}</th>`).join("")}
+          </tr></thead>
+          <tbody>${employees.length ? employees.map(employee => `<tr class="table-row">
+            <td class="table-cell" style="text-align:center"><input type="checkbox" class="report-employee" value="${employee.id}" ${chosenEmployeeIds.has(Number(employee.id)) ? "checked" : ""} style="width:16px;height:16px;accent-color:#5da12c" aria-label="تحديد ${escHtml(employee.full_name)}" /></td>
+            ${fields.map(field => `<td class="table-cell">${escHtml(formatReportValue(employee, field))}</td>`).join("")}
+          </tr>`).join("") : `<tr><td colspan="${fields.length + 1}" class="table-cell text-center text-gray-500">لا توجد نتائج</td></tr>`}</tbody>
         </table>`
       : `<div class="p-8 text-center text-gray-500">اختر حقلاً واحداً على الأقل</div>`;
-    return { rows, fields, filters: {}, columns };
+    const selectAll = container.querySelector("#report-employees-all");
+    if (selectAll) selectAll.indeterminate = rows.length > 0 && rows.length < employees.length;
+    return { rows, fields, filters: { employeeIds }, columns };
   };
 
   container.querySelectorAll(".report-field").forEach(input => input.addEventListener("input", render));
+  container.querySelector("#report-table").addEventListener("change", event => {
+    if (event.target.id === "report-employees-all") {
+      chosenEmployeeIds = event.target.checked
+        ? new Set(employees.map(employee => Number(employee.id)))
+        : new Set();
+    } else if (event.target.classList.contains("report-employee")) {
+      const employeeId = Number(event.target.value);
+      if (event.target.checked) chosenEmployeeIds.add(employeeId);
+      else chosenEmployeeIds.delete(employeeId);
+    } else {
+      return;
+    }
+    render();
+  });
   container.querySelector("#report-select-all").addEventListener("click", () => {
     container.querySelectorAll(".report-field").forEach(input => { input.checked = true; });
     render();

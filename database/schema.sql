@@ -36,7 +36,9 @@ CREATE TABLE IF NOT EXISTS employees (
   full_name                 TEXT NOT NULL,
   mother_name               TEXT,
   father_birthplace         TEXT,
+  father_birthdate          TEXT,
   mother_birthplace         TEXT,
+  mother_birthdate          TEXT,
   gender                    TEXT,
   birthdate                 TEXT,
   birthplace                TEXT,
@@ -291,7 +293,10 @@ CREATE TABLE IF NOT EXISTS document_metadata (
   original_name TEXT NOT NULL,
   mime_type     TEXT NOT NULL,
   size_bytes    INTEGER NOT NULL CHECK(size_bytes > 0),
-  created_at    TEXT DEFAULT (datetime('now'))
+  created_at    TEXT DEFAULT (datetime('now')),
+  original_path TEXT,
+  processed_path TEXT,
+  parent_path TEXT
 );
 
 CREATE INDEX IF NOT EXISTS idx_employees_full_name ON employees(full_name);

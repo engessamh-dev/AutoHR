@@ -74,6 +74,10 @@ for (const [column, definition] of [
 ]) {
   if (!auditColumns.has(column)) db.exec(`ALTER TABLE activity_log ADD COLUMN ${column} ${definition}`);
 }
+const metadataColumns = new Set(db.prepare("PRAGMA table_info(document_metadata)").all().map(column => column.name));
+for (const column of ["original_path", "processed_path", "parent_path"]) {
+  if (!metadataColumns.has(column)) db.exec(`ALTER TABLE document_metadata ADD COLUMN ${column} TEXT`);
+}
 console.log("✅ Schema applied");
 
 const obsoleteEmployeeColumns = [
@@ -87,6 +91,8 @@ const existingEmployeeColumns = new Set(
   db.prepare("PRAGMA table_info(employees)").all().map(column => column.name)
 );
 for (const [column, definition] of [
+  ["father_birthdate", "TEXT"],
+  ["mother_birthdate", "TEXT"],
   ["work_type_notes", "TEXT"],
   ["work_schedule", "TEXT"],
   ["civil_id_birthplace", "TEXT"],

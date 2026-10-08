@@ -59,7 +59,9 @@ pub struct Employee {
     pub full_name: String,
     pub mother_name: Option<String>,
     pub father_birthplace: Option<String>,
+    pub father_birthdate: Option<String>,
     pub mother_birthplace: Option<String>,
+    pub mother_birthdate: Option<String>,
     pub gender: Option<String>,
     pub birthdate: Option<String>,
     pub birthplace: Option<String>,
@@ -157,7 +159,9 @@ pub struct EmployeeData {
     pub full_name: String,
     pub mother_name: Option<String>,
     pub father_birthplace: Option<String>,
+    pub father_birthdate: Option<String>,
     pub mother_birthplace: Option<String>,
+    pub mother_birthdate: Option<String>,
     pub gender: Option<String>,
     pub birthdate: Option<String>,
     pub birthplace: Option<String>,
@@ -394,10 +398,15 @@ pub fn assert_permission(conn: &Connection, username: &str, permission: &str) ->
 }
 
 pub fn app_data_path() -> std::path::PathBuf {
-    dirs::data_dir().unwrap_or_else(|| std::path::PathBuf::from(".")).join("CNSArch")
+    dirs::data_dir().unwrap_or_else(|| std::path::PathBuf::from(".")).join(if cfg!(debug_assertions) { "CNSArch-Development" } else { "CNSArch" })
 }
 
+#[cfg(test)]
+thread_local! { pub(crate) static TEST_STORAGE_ROOT: std::cell::RefCell<Option<std::path::PathBuf>> = const { std::cell::RefCell::new(None) }; }
+
 pub fn storage_path(_conn: &Connection) -> std::path::PathBuf {
+    #[cfg(test)]
+    if let Some(root) = TEST_STORAGE_ROOT.with(|value| value.borrow().clone()) { return root; }
     app_data_path().join("Data")
 }
 
@@ -486,6 +495,12 @@ fn organize_legacy_backups(root: &Path) -> std::io::Result<()> {
 }
 
 pub fn ensure_storage_layout(conn: &Connection) -> AppResult<()> {
+    // Isolated tests must never import the user's legacy Documents folders.
+    #[cfg(test)]
+    if TEST_STORAGE_ROOT.with(|root| root.borrow().is_some()) {
+        std::fs::create_dir_all(storage_path(conn)).map_err(|e| AppError::Other(e.to_string()))?;
+        return Ok(());
+    }
     let root = storage_path(conn);
     for dir in [
         "Database",
@@ -509,12 +524,15 @@ pub fn ensure_storage_layout(conn: &Connection) -> AppResult<()> {
     if moved_general_docs {
         conn.execute("UPDATE general_docs SET file_path='Files/' || file_path WHERE file_path LIKE 'GeneralDocs/%'", [])?;
     }
+    // Development must not import legacy production attachments.
+    if !cfg!(debug_assertions) {
     if let Some(documents_dir) = dirs::document_dir() {
         for legacy_name in ["GCANS", "AutoHR"] {
             let legacy_root = documents_dir.join(legacy_name);
             copy_legacy_dir_missing(&legacy_root.join("Files"), &root.join("Files")).ok();
             copy_legacy_dir_missing(&legacy_root.join("Branding"), &root.join("Branding")).ok();
         }
+    }
     }
     organize_legacy_backups(&root).ok();
 
@@ -639,7 +657,7 @@ pub fn get_company_config(conn: &Connection) -> AppResult<CompanyConfig> {
     conn.query_row("SELECT company_name,department_name,division_name,logo_path FROM company_config WHERE id=1",
         [], |r| {
             let logo_path: Option<String> = r.get(3)?;
-            let logo_full_path = logo_path.as_ref().map(|p| storage_path(conn).join(p).to_string_lossy().into_owned());
+            let logo_full_path = logo_path.as_ref().map(|p| crate::scanner::effective_path(conn,p).unwrap_or_else(|_|storage_path(conn).join(p)).to_string_lossy().into_owned());
             Ok(CompanyConfig {
                 company_name:r.get(0)?,
                 department_name:r.get(1)?,
@@ -670,7 +688,7 @@ pub fn upload_company_logo(conn: &Connection, user: &str, source_path: &str) -> 
     conn.execute("UPDATE company_config SET logo_path=?1 WHERE id=1", params![rel])?;
     if let Some(previous) = previous {
         if let Ok(path) = crate::files::safe_relative_path(&previous) {
-            std::fs::remove_file(storage_path(conn).join(path)).ok();
+            crate::scanner::remove_replaced(conn, source_path, path);
         }
     }
     log_activity(conn, user, "UPLOAD_COMPANY_LOGO", Some("company_config"), Some(1), None, None);
@@ -709,7 +727,7 @@ const EMP_COLS: &str = "id,employee_number,photo_path,full_name,mother_name,fath
   airport_badge_issue_date,airport_badge_front_path,airport_badge_back_path,
   ministry_badge_issue_date,ministry_badge_front_path,ministry_badge_back_path,
   vehicle_color,vehicle_manufacture_year,vehicle_type,vehicle_annual_issue_date,vehicle_annual_expiry_date,vehicles,spouses,
-  appointment_date";
+  appointment_date,father_birthdate,mother_birthdate";
 
 fn map_emp(r: &rusqlite::Row) -> rusqlite::Result<Employee> {
     Ok(Employee {
@@ -760,6 +778,8 @@ fn map_emp(r: &rusqlite::Row) -> rusqlite::Result<Employee> {
         vehicles:r.get(83)?,
         spouses:r.get(84)?,
         appointment_date:r.get(85)?,
+        father_birthdate:r.get(86)?,
+        mother_birthdate:r.get(87)?,
         residence_card_front_full_path:None,
         residence_card_back_full_path:None,
         airport_badge_front_full_path:None,
@@ -778,7 +798,7 @@ fn attachment_full_path(conn: &Connection, relative_path: &Option<String>) -> Op
     if path.is_absolute() || path.components().any(|c| matches!(c, std::path::Component::ParentDir | std::path::Component::Prefix(_))) {
         return None;
     }
-    Some(storage_path(conn).join(path).to_string_lossy().into_owned())
+    Some(crate::scanner::effective_path(conn, relative_path.as_deref()?).unwrap_or_else(|_| storage_path(conn).join(path)).to_string_lossy().into_owned())
 }
 
 fn row_text(row: &rusqlite::Row, index: usize) -> rusqlite::Result<Option<String>> {
@@ -1079,11 +1099,12 @@ pub fn create_employee(conn: &Connection, d: &EmployeeData, username: &str) -> A
       civil_id_birthplace,civil_id_birthdate,civil_id_family_number,passport_type,
       residence_card_issue_date,residence_head_name,residence_form_no,
       airport_badge_issue_date,ministry_badge_issue_date,vehicle_color,vehicle_manufacture_year,vehicle_type,
-      vehicle_annual_issue_date,vehicle_annual_expiry_date,vehicles,spouses,appointment_date)
+      vehicle_annual_issue_date,vehicle_annual_expiry_date,vehicles,spouses,appointment_date,
+      father_birthdate,mother_birthdate)
     VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,
            ?21,?22,?23,?24,?25,?26,?27,?28,?29,?30,?31,?32,?33,?34,?35,?36,?37,?38,
            ?39,?40,?41,?42,?43,?44,?45,?46,?47,?48,?49,?50,?51,?52,?53,?54,?55,?56,?57,?58,
-           ?59,?60,?61,?62,?63,?64,?65,?66,?67,?68,?69,?70,?71)",
+           ?59,?60,?61,?62,?63,?64,?65,?66,?67,?68,?69,?70,?71,?72,?73)",
     params![d.employee_number,d.full_name.trim(),d.mother_name,d.father_birthplace,d.mother_birthplace,
       d.gender,d.birthdate,d.birthplace,d.marital_status,d.blood_type,
       d.workplace,d.job_title,d.job_grade,d.hire_date,d.contract_type,d.department,d.division,d.phone,d.email,
@@ -1100,7 +1121,7 @@ pub fn create_employee(conn: &Connection, d: &EmployeeData, username: &str) -> A
       d.residence_card_issue_date,d.residence_head_name,d.residence_form_no,
       d.airport_badge_issue_date,d.ministry_badge_issue_date,d.vehicle_color,d.vehicle_manufacture_year,d.vehicle_type,
       d.vehicle_annual_issue_date,d.vehicle_annual_expiry_date,d.vehicles.as_deref().unwrap_or("[]"),
-      d.spouses.as_deref().unwrap_or("[]"),d.appointment_date])?;
+      d.spouses.as_deref().unwrap_or("[]"),d.appointment_date,d.father_birthdate,d.mother_birthdate])?;
     let id = conn.last_insert_rowid();
     replace_employee_repeating_data(conn, id, d)?;
     log_activity(conn, username, "CREATE_EMPLOYEE", Some("employee"), Some(id), Some(d.full_name.trim()), None);
@@ -1127,7 +1148,8 @@ pub fn update_employee(conn: &Connection, id: i64, d: &EmployeeData, username: &
       airport_badge_issue_date=?62,ministry_badge_issue_date=?63,
       vehicle_color=?64,vehicle_manufacture_year=?65,vehicle_type=?66,
       vehicle_annual_issue_date=?67,vehicle_annual_expiry_date=?68,
-      vehicles=?69,spouses=?70,appointment_date=?71,updated_at=datetime('now') WHERE id=?72",
+      vehicles=?69,spouses=?70,appointment_date=?71,father_birthdate=?72,mother_birthdate=?73,
+      updated_at=datetime('now') WHERE id=?74",
     params![d.employee_number,d.full_name.trim(),d.mother_name,d.father_birthplace,d.mother_birthplace,
       d.gender,d.birthdate,d.birthplace,d.marital_status,d.blood_type,
       d.workplace,d.job_title,d.job_grade,d.hire_date,d.contract_type,d.department,d.division,d.phone,d.email,
@@ -1144,7 +1166,7 @@ pub fn update_employee(conn: &Connection, id: i64, d: &EmployeeData, username: &
       d.residence_card_issue_date,d.residence_head_name,d.residence_form_no,
       d.airport_badge_issue_date,d.ministry_badge_issue_date,d.vehicle_color,d.vehicle_manufacture_year,d.vehicle_type,
       d.vehicle_annual_issue_date,d.vehicle_annual_expiry_date,d.vehicles.as_deref().unwrap_or("[]"),
-      d.spouses.as_deref().unwrap_or("[]"),d.appointment_date,id])?;
+      d.spouses.as_deref().unwrap_or("[]"),d.appointment_date,d.father_birthdate,d.mother_birthdate,id])?;
     replace_employee_repeating_data(conn, id, d)?;
     log_activity(conn, username, "UPDATE_EMPLOYEE", Some("employee"), Some(id), Some(d.full_name.trim()), None);
     get_employee(conn, id)
@@ -1156,6 +1178,7 @@ pub fn delete_employee(conn: &Connection, id: i64, username: &str) -> AppResult<
         .unwrap_or_default();
     conn.execute("DELETE FROM employees WHERE id=?1", params![id])?;
     if conn.changes() == 0 { return Err(AppError::NotFound); }
+    crate::scanner::remove_metadata_prefix(conn,&format!("Files/Employees/{id}/"))?;
     std::fs::remove_dir_all(storage_path(conn).join("Files").join("Employees").join(id.to_string())).ok();
     log_activity(conn, username, "DELETE_EMPLOYEE", Some("employee"), Some(id), Some(&name), None);
     Ok(())
@@ -1176,7 +1199,7 @@ pub fn upload_employee_photo(conn: &Connection, employee_id: i64, source_path: &
     conn.execute("UPDATE employees SET photo_path=?1 WHERE id=?2", params![rel, employee_id])?;
     if let Some(previous) = previous {
         if let Ok(path) = crate::files::safe_relative_path(&previous) {
-            std::fs::remove_file(storage_path(conn).join(path)).ok();
+            crate::scanner::remove_replaced(conn, source_path, path);
         }
     }
     Ok(rel)
@@ -1346,6 +1369,7 @@ pub fn delete_general_doc(conn: &Connection, id: i64, username: &str) -> AppResu
     conn.execute("DELETE FROM general_doc_attachments WHERE general_doc_id=?1", params![id])?;
     conn.execute("DELETE FROM general_doc_employees WHERE general_doc_id=?1", params![id])?;
     conn.execute("DELETE FROM general_docs WHERE id=?1", params![id])?;
+    crate::scanner::remove_metadata_prefix(conn,&format!("Files/GeneralDocs/{id}/"))?;
     std::fs::remove_dir_all(storage_path(conn).join("Files").join("GeneralDocs").join(id.to_string())).ok();
     log_activity(conn, username, "DELETE_DOC", Some("general_doc"), Some(id), Some(&title), None);
     Ok(())
@@ -1398,7 +1422,7 @@ pub fn delete_general_doc_attachment(conn: &Connection, doc_id: i64, relative_pa
         params![doc_id, stored_path],
     )?;
     conn.execute("UPDATE general_docs SET updated_at=datetime('now') WHERE id=?1", params![doc_id])?;
-    std::fs::remove_file(storage_path(conn).join(&stored_path)).ok();
+    crate::scanner::cleanup_metadata_file(conn, &stored_path);
     Ok(())
 }
 
@@ -1547,6 +1571,7 @@ pub fn delete_outgoing_doc(conn: &Connection, id: i64, username: &str) -> AppRes
     conn.execute("DELETE FROM outgoing_doc_attachments WHERE outgoing_doc_id=?1", params![id])?;
     conn.execute("DELETE FROM outgoing_doc_employees WHERE outgoing_doc_id=?1", params![id])?;
     conn.execute("DELETE FROM outgoing_docs WHERE id=?1", params![id])?;
+    crate::scanner::remove_metadata_prefix(conn,&format!("Files/OutgoingDocs/{id}/"))?;
     std::fs::remove_dir_all(storage_path(conn).join("Files").join("OutgoingDocs").join(id.to_string())).ok();
     log_activity(conn, username, "DELETE_OUTGOING_DOC", Some("outgoing_doc"), Some(id), Some(&title), None);
     Ok(())
@@ -1581,7 +1606,7 @@ pub fn delete_outgoing_doc_attachment(conn: &Connection, doc_id: i64, relative_p
     }
     conn.execute("DELETE FROM outgoing_doc_attachments WHERE outgoing_doc_id=?1 AND file_path=?2", params![doc_id, stored_path])?;
     conn.execute("UPDATE outgoing_docs SET updated_at=datetime('now') WHERE id=?1", params![doc_id])?;
-    std::fs::remove_file(storage_path(conn).join(&stored_path)).ok();
+    crate::scanner::cleanup_metadata_file(conn, &stored_path);
     Ok(())
 }
 
@@ -2324,6 +2349,22 @@ fn validate_database(path: &Path) -> AppResult<()> {
 fn validate_backup_references(database_path: &Path, staging: &Path) -> AppResult<()> {
     let conn = Connection::open(database_path)?;
     let mut references = Vec::<String>::new();
+    let metadata_columns: Vec<String> = {
+        let mut stmt = conn.prepare("PRAGMA table_info(document_metadata)")?;
+        let columns = stmt.query_map([], |r| r.get::<_, String>(1))?.collect::<rusqlite::Result<_>>()?;
+        columns
+    };
+    // Older backups have no scanner columns; current backups must contain both image versions.
+    for column in ["original_path", "processed_path"] {
+        if metadata_columns.iter().any(|name| name == column) {
+            let mut stmt = conn.prepare(&format!("SELECT {column} FROM document_metadata WHERE {column} IS NOT NULL"))?;
+            references.extend(stmt.query_map([], |r| r.get::<_, String>(0))?.collect::<rusqlite::Result<Vec<_>>>()?);
+        }
+    }
+    if metadata_columns.iter().any(|name| name == "parent_path") {
+        let mut stmt = conn.prepare("SELECT stored_path FROM document_metadata WHERE parent_path IS NOT NULL")?;
+        references.extend(stmt.query_map([], |r| r.get::<_, String>(0))?.collect::<rusqlite::Result<Vec<_>>>()?);
+    }
     for query in [
         "SELECT logo_path FROM company_config WHERE logo_path IS NOT NULL",
         "SELECT photo_path FROM employees WHERE photo_path IS NOT NULL",
@@ -2335,6 +2376,11 @@ fn validate_backup_references(database_path: &Path, staging: &Path) -> AppResult
         "SELECT airport_badge_back_path FROM employees WHERE airport_badge_back_path IS NOT NULL",
         "SELECT ministry_badge_front_path FROM employees WHERE ministry_badge_front_path IS NOT NULL",
         "SELECT ministry_badge_back_path FROM employees WHERE ministry_badge_back_path IS NOT NULL",
+        "SELECT national_card_front_path FROM employee_spouses WHERE national_card_front_path IS NOT NULL",
+        "SELECT national_card_back_path FROM employee_spouses WHERE national_card_back_path IS NOT NULL",
+        "SELECT national_card_front_path FROM employee_family_members WHERE national_card_front_path IS NOT NULL",
+        "SELECT national_card_back_path FROM employee_family_members WHERE national_card_back_path IS NOT NULL",
+        "SELECT file_path FROM employee_attachments",
         "SELECT file_path FROM general_docs WHERE file_path IS NOT NULL",
         "SELECT file_path FROM general_doc_attachments",
         "SELECT file_path FROM outgoing_doc_attachments",
@@ -2479,7 +2525,7 @@ where
         return Err(AppError::Other(error.to_string()));
     }
     progress(backup_progress(86, "جاري استعادة قاعدة البيانات..."));
-    if let Err(error) = conn.restore(rusqlite::DatabaseName::Main, staging.path().join("database.db"), None::<fn(rusqlite::backup::Progress)>) {
+    if let Err(error) = conn.restore(rusqlite::DatabaseName::Main, staging.path().join("database.db"), None::<fn(rusqlite::backup::Progress)>).and_then(|_|crate::scanner::ensure_metadata_columns(conn)) {
         std::fs::remove_dir_all(&current_data).ok();
         if rollback_data.exists() { std::fs::rename(&rollback_data, &current_data).ok(); }
         conn.restore(rusqlite::DatabaseName::Main, &rollback_database, None::<fn(rusqlite::backup::Progress)>).ok();
@@ -2503,7 +2549,7 @@ where
     Ok(())
 }
 
-fn stored_document_path(conn: &Connection, relative_path: &str) -> AppResult<std::path::PathBuf> {
+pub(crate) fn stored_document_path(conn: &Connection, relative_path: &str) -> AppResult<std::path::PathBuf> {
     let relative = Path::new(relative_path);
     if relative.is_absolute() || relative.components().any(|c| matches!(c, std::path::Component::ParentDir | std::path::Component::Prefix(_))) {
         return Err(AppError::Validation("Invalid document path".into()));
@@ -2533,9 +2579,17 @@ fn archive_document_path(conn: &Connection, relative_path: &str) -> AppResult<st
 
 pub fn document_preview_path(conn: &Connection, user: &str, relative_path: &str) -> AppResult<String> {
     assert_permission(conn, user, "documents.view")?;
-    let source = archive_document_path(conn, relative_path)?;
+    archive_document_path(conn, relative_path)?;
+    let source = crate::scanner::effective_path(conn, relative_path)?;
     log_activity(conn, user, "VIEW_DOCUMENT", Some("document"), None, Some(relative_path), None);
     Ok(source.to_string_lossy().into_owned())
+}
+
+pub fn read_document(conn: &Connection, user: &str, relative_path: &str) -> AppResult<Vec<u8>> {
+    assert_permission(conn, user, "documents.view")?;
+    archive_document_path(conn, relative_path)?;
+    let source = crate::scanner::effective_path(conn, relative_path)?;
+    std::fs::read(&source).map_err(|e| AppError::Other(e.to_string()))
 }
 
 pub fn print_document(conn: &Connection, user: &str, relative_path: &str) -> AppResult<()> {
@@ -2545,12 +2599,16 @@ pub fn print_document(conn: &Connection, user: &str, relative_path: &str) -> App
     Ok(())
 }
 
-pub fn download_document(conn: &Connection, user: &str, relative_path: &str, destination_dir: &str) -> AppResult<String> {
+pub fn download_document(conn: &Connection, user: &str, relative_path: &str, destination_path: &str) -> AppResult<String> {
     assert_permission(conn, user, "documents.download")?;
-    let source = stored_document_path(conn, relative_path)?;
+    stored_document_path(conn, relative_path)?;
+    let source = crate::scanner::effective_path(conn, relative_path)?;
     let name = source.file_name().ok_or_else(|| AppError::Validation("Invalid document name".into()))?;
-    let destination = Path::new(destination_dir).join(name);
-    std::fs::copy(&source, &destination).map_err(|e| AppError::Other(e.to_string()))?;
+    let destination = Path::new(destination_path);
+    if destination.file_name().is_none() || !destination.parent().is_some_and(Path::is_dir) {
+        return Err(AppError::Validation("Invalid download destination".into()));
+    }
+    std::fs::copy(&source, destination).map_err(|e| AppError::Other(e.to_string()))?;
     log_activity(conn, user, "DOWNLOAD_DOCUMENT", Some("document"), None, name.to_str(), Some(&destination.to_string_lossy()));
     Ok(destination.to_string_lossy().into_owned())
 }
@@ -2657,6 +2715,34 @@ mod phase3_security_tests {
     }
 
     #[test]
+    fn backup_validation_checks_normalized_employee_attachments() {
+        let dir = tempfile::tempdir().unwrap();
+        let database = dir.path().join("database.db");
+        let conn = Connection::open(&database).unwrap();
+        conn.execute_batch(include_str!("../../database/schema.sql")).unwrap();
+        conn.execute("INSERT INTO employees(id,full_name) VALUES(1,'Synthetic')", []).unwrap();
+        for (table, column) in [
+            ("employee_spouses", "national_card_front_path"),
+            ("employee_spouses", "national_card_back_path"),
+            ("employee_family_members", "national_card_front_path"),
+            ("employee_family_members", "national_card_back_path"),
+            ("employee_attachments", "file_path"),
+        ] {
+            let relative = format!("Files/Employees/1/{table}-{column}.jpg");
+            if table == "employee_attachments" {
+                conn.execute("INSERT INTO employee_attachments(employee_id,kind,file_path) VALUES(1,'general',?1)", [&relative]).unwrap();
+            } else {
+                conn.execute(&format!("INSERT INTO {table}(employee_id,name,{column}) VALUES(1,'Synthetic',?1)"), [&relative]).unwrap();
+            }
+            assert!(validate_backup_references(&database, dir.path()).is_err());
+            let path = dir.path().join("Data").join(relative);
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(path, b"synthetic attachment").unwrap();
+            validate_backup_references(&database, dir.path()).unwrap();
+        }
+    }
+
+    #[test]
     fn role_boundaries_match_phase_three() {
         let viewer = role_permissions("viewer");
         assert!(viewer.contains(&"documents.view") && viewer.contains(&"documents.print"));
@@ -2715,4 +2801,13 @@ mod phase3_security_tests {
         move_general_doc_attachment(&conn, 7, "third.pdf", "down").unwrap();
         assert_eq!(ordered(), vec!["first.pdf", "second.pdf", "third.pdf"]);
     }
+}
+
+#[cfg(test)]
+#[test]
+fn development_data_path_is_isolated() {
+    let base=dirs::data_dir().unwrap_or_else(||std::path::PathBuf::from("."));
+    assert_eq!(app_data_path(),base.join("CNSArch-Development"));
+    assert_ne!(app_data_path(),base.join("CNSArch"));
+    assert_eq!(crate::db::db_path(),app_data_path().join("database.db"));
 }

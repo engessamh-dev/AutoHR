@@ -1,3 +1,4 @@
+import { bindAttachmentScannerButtons } from "../attachments/integration.js";
 /**
  * screens/about.js — Version, storage path picker
  */
@@ -142,7 +143,7 @@ export async function renderAbout(container, user, ctx) {
           </div>
           <div>
             <h2 class="text-xl font-bold">CNSArch</h2>
-            <p class="text-sm text-gray-400">الشركة العامة لخدمات الملاحة الجوية — GCANS</p>
+            <p class="text-sm text-gray-400">الشركة العامة لإدارة المطارات والملاحة الجوية - GCAAN</p>
             <p class="text-xs text-gray-500 mt-1">${formatAppVersion()}</p>
           </div>
         </div>
@@ -182,7 +183,7 @@ export async function renderAbout(container, user, ctx) {
         <p class="section-title">شعار المنشأة</p>
         <div id="company-logo-box">
           ${companyConfig?.logo_full_path
-            ? `<img src="" id="logo-preview" class="w-20 h-20 rounded object-cover border border-autohr-border" />`
+            ? `<img src="" data-scan-path="${escHtml(companyConfig.logo_path)}" id="logo-preview" class="w-20 h-20 rounded object-cover border border-autohr-border" />`
             : `<div class="w-20 h-20 rounded bg-autohr-green/20 flex items-center justify-center border border-autohr-border">
                  <span class="text-xl font-bold text-autohr-green">CNS</span>
                </div>`}
@@ -259,6 +260,7 @@ export async function renderAbout(container, user, ctx) {
     }
   }
   syncCompanyLogoPreview();
+  bindAttachmentScannerButtons(container, user, async () => { companyConfig = await api.getCompanyConfig(); applyBranding(companyConfig); syncCompanyLogoPreview(); });
 
   container.querySelector("#btn-save-cfg")?.addEventListener("click", async () => {
     const data = {
@@ -279,7 +281,7 @@ export async function renderAbout(container, user, ctx) {
     try {
       const selected = await open({
         multiple: false,
-        filters: [{ name: "Images", extensions: ["png", "jpg", "jpeg"] }],
+        filters: [{ name: "Images", extensions: ["png", "jpg", "jpeg", "webp"] }],
       });
       if (!selected) return;
       if (!(await confirmAction("تأكيد رفع شعار جديد؟"))) return;
@@ -287,7 +289,7 @@ export async function renderAbout(container, user, ctx) {
       applyBranding(companyConfig);
       const box = container.querySelector("#company-logo-box");
       if (box) {
-        box.innerHTML = `<img src="${convertFileSrc(companyConfig.logo_full_path)}" id="logo-preview" class="w-20 h-20 rounded object-cover border border-autohr-border" />`;
+        box.innerHTML = `<img src="${convertFileSrc(companyConfig.logo_full_path)}" data-scan-path="${escHtml(companyConfig.logo_path)}" id="logo-preview" class="w-20 h-20 rounded object-cover border border-autohr-border" />`;
       }
       showToast("تم رفع الشعار بنجاح");
     } catch (err) {

@@ -1,15 +1,16 @@
 /**
  * documents.js — General + per-employee document archive
  */
+import { bindAttachmentScannerButtons } from "../attachments/integration.js";
 import { api }       from "../api.js";
-import { convertFileSrc } from "@tauri-apps/api/core";
 import { showToast, escHtml, confirmAction, confirmSaveChanges } from "../utils.js";
-import { open }      from "@tauri-apps/plugin-dialog";
+import { open, save } from "@tauri-apps/plugin-dialog";
 import { can }       from "../permissions.js";
 import * as pdfjsLib from "pdfjs-dist";
 import pdfWorkerUrl from "pdfjs-dist/build/pdf.worker.min.mjs?url";
 
 pdfjsLib.GlobalWorkerOptions.workerSrc = pdfWorkerUrl;
+const DOCUMENT_EXTENSIONS = ["jpg", "jpeg", "png", "webp", "pdf", "doc", "docx", "xls", "xlsx", "ppt", "pptx"];
 
 export async function renderDocuments(container, user, ctx) {
   let [generalDocs, outgoingDocs, employees, documentTypes] = await Promise.all([
@@ -18,6 +19,23 @@ export async function renderDocuments(container, user, ctx) {
     api.listEmployees(),
     api.getDocumentTypes().catch(() => []),
   ]);
+
+  async function downloadStoredFile(path) {
+    const downloadName = (await api.getDocumentDownloadName(path)).replace(/^\d+_/, "");
+    const extension = downloadName.includes(".") ? downloadName.split(".").pop() : "";
+    const destination = await save({
+      title: "حفظ الملف باسم",
+      defaultPath: downloadName,
+      ...(extension ? { filters: [{ name: "الملف", extensions: [extension] }] } : {}),
+    });
+    if (!destination) return;
+    try {
+      const savedPath = await api.downloadDocument(path, destination);
+      showToast(`تم تحميل الملف إلى ${savedPath}`);
+    } catch (error) {
+      showToast(error?.message ?? "تعذر تحميل الملف", "error");
+    }
+  }
 
   let activeTab = ctx?.archiveTab === "outgoing" ? "outgoing" : "general";
   const compactArchiveMode = Boolean(ctx?.compactArchiveMode);
@@ -85,22 +103,27 @@ export async function renderDocuments(container, user, ctx) {
       return [{ title: asset.title, html: `<img src="${escHtml(asset.assetUrl)}" alt="${escHtml(asset.title)}">` }];
     }
     const bytes = await (await fetch(asset.assetUrl)).arrayBuffer();
-    const pdf = await pdfjsLib.getDocument({ data: bytes }).promise;
+    const loadingTask = pdfjsLib.getDocument({ data: bytes });
+    const pdf = await loadingTask.promise;
     const pages = [];
-    for (let pageNumber = 1; pageNumber <= pdf.numPages; pageNumber += 1) {
-      const page = await pdf.getPage(pageNumber);
-      const viewport = page.getViewport({ scale: 1.5 });
-      const canvas = document.createElement("canvas");
-      canvas.width = Math.ceil(viewport.width);
-      canvas.height = Math.ceil(viewport.height);
-      await page.render({ canvasContext: canvas.getContext("2d"), viewport }).promise;
-      pages.push({
-        title: pdf.numPages > 1 ? `${asset.title} - ${pageNumber}` : asset.title,
-        html: `<img src="${canvas.toDataURL("image/jpeg", 0.94)}" alt="${escHtml(asset.title)} - ${pageNumber}">`,
-      });
-      page.cleanup();
+    try {
+      for (let pageNumber = 1; pageNumber <= pdf.numPages; pageNumber += 1) {
+        const page = await pdf.getPage(pageNumber);
+        const viewport = page.getViewport({ scale: 1.5 });
+        const canvas = document.createElement("canvas");
+        canvas.width = Math.ceil(viewport.width);
+        canvas.height = Math.ceil(viewport.height);
+        await page.render({ canvasContext: canvas.getContext("2d"), viewport }).promise;
+        pages.push({
+          title: pdf.numPages > 1 ? `${asset.title} - ${pageNumber}` : asset.title,
+          html: `<img src="${canvas.toDataURL("image/jpeg", 0.94)}" alt="${escHtml(asset.title)} - ${pageNumber}">`,
+        });
+        page.cleanup();
+      }
+    } finally {
+      await pdf.cleanup?.();
+      await loadingTask.destroy();
     }
-    await pdf.destroy();
     return pages;
   }
 
@@ -168,6 +191,7 @@ export async function renderDocuments(container, user, ctx) {
           <button type="button" id="document-preview-next" class="btn-secondary" title="المرفق اللاحق" style="min-width:42px">↓</button>
         ` : ""}
         ${can(user, "documents.print") ? `<button type="button" id="document-preview-print" class="btn-primary">طباعة</button>` : ""}
+        ${can(user, "documents.download") ? `<button type="button" id="document-preview-download" class="btn-secondary">تحميل</button>` : ""}
         <button type="button" id="document-preview-close" class="btn-secondary">إغلاق</button>
       </div>
       <main id="document-preview-body" style="min-height:0;flex:1;padding:18px;background:#555"></main>`;
@@ -180,10 +204,14 @@ export async function renderDocuments(container, user, ctx) {
       const next = overlay.querySelector("#document-preview-next");
       if (prev) prev.disabled = currentIndex === 0;
       if (next) next.disabled = currentIndex === previewPaths.length - 1;
+      const isImage = ["jpg", "jpeg", "png", "webp"].includes(asset.extension);
       overlay.querySelector("#document-preview-body").innerHTML = asset.extension === "pdf"
         ? `<iframe src="${escHtml(asset.assetUrl)}" title="معاينة الوثيقة" style="display:block;width:100%;height:100%;border:0;background:#fff"></iframe>`
-        : `<div style="width:100%;height:100%;overflow:auto;text-align:center;background:#d1d5db;padding:18px">
+        : isImage ? `<div style="width:100%;height:100%;overflow:auto;text-align:center;background:#d1d5db;padding:18px">
             <img src="${escHtml(asset.assetUrl)}" alt="${escHtml(asset.title)}" style="max-width:100%;height:auto;max-height:100%;object-fit:contain;background:#fff;box-shadow:0 3px 18px rgba(0,0,0,.25)">
+          </div>`
+        : `<div style="display:grid;place-items:center;width:100%;height:100%;background:#d1d5db;color:#374151;text-align:center;padding:24px">
+            <div><p style="font-size:18px;font-weight:700;margin-bottom:8px">لا تتوفر معاينة داخلية لهذا النوع من الملفات</p><p>يمكنك تحميل الملف وفتحه ببرنامج Office المناسب.</p></div>
           </div>`;
     }
 
@@ -219,20 +247,28 @@ export async function renderDocuments(container, user, ctx) {
       try { await printDocument(previewPaths[currentIndex], asset.title); }
       catch (error) { showToast(error?.message ?? "تعذرت طباعة الوثيقة", "error"); }
     });
+    overlay.querySelector("#document-preview-download")?.addEventListener("click", () => {
+      downloadStoredFile(previewPaths[currentIndex]);
+    });
     renderPreviewBody();
     document.addEventListener("keydown", onKeyDown);
     document.body.append(overlay);
   }
 
   async function loadDocumentAsset(path) {
-    const fullPath = await api.getDocumentPreviewPath(path);
-    const response = await fetch(convertFileSrc(fullPath));
-    if (!response.ok) throw new Error("تعذر تحميل ملف الوثيقة");
-    const blob = await response.blob();
+    const extension = fileName(path).split(".").pop()?.toLowerCase();
+    let mimeType = extension === "pdf" ? "application/pdf"
+      : extension === "png" ? "image/png"
+      : ["jpg", "jpeg"].includes(extension) ? "image/jpeg"
+      : "application/octet-stream";
+    const bytes = await api.readDocument(path);
+    if (bytes[0] === 255 && bytes[1] === 216) mimeType = "image/jpeg";
+    else if (extension === "webp") mimeType = "image/webp";
+    const blob = new Blob([new Uint8Array(bytes)], { type: mimeType });
     return {
       path,
       title: fileName(path).replace(/^\d+_/, ""),
-      extension: fileName(path).split(".").pop()?.toLowerCase(),
+      extension,
       assetUrl: URL.createObjectURL(blob),
     };
   }
@@ -384,7 +420,7 @@ export async function renderDocuments(container, user, ctx) {
             <span class="badge badge-gray">${filteredDocs.length} / ${archiveDocs.length}</span>
             <button id="btn-toggle-general-filters" class="btn-secondary px-3 py-2"
               aria-expanded="${generalFiltersOpen ? "true" : "false"}">
-              الفلاتر${advancedFilterCount ? ` (${advancedFilterCount})` : ""}
+              فلاتر البحث${advancedFilterCount ? ` (${advancedFilterCount})` : ""}
             </button>
             <button id="btn-add-doc" class="btn-primary px-4 py-2">+ إضافة وثيقة</button>
           </div>
@@ -722,6 +758,7 @@ export async function renderDocuments(container, user, ctx) {
                       <button type="button" class="btn-secondary text-xs btn-manager-move" data-direction="down"
                         data-path="${escHtml(path)}" ${index === attachments.length - 1 ? "disabled" : ""} title="تنزيل المرفق درجة">↓</button>` : ""}
                     <button type="button" class="btn-secondary text-xs btn-manager-preview" data-path="${escHtml(path)}">استعراض</button>
+                    ${can(user, "documents.download") ? `<button type="button" class="btn-secondary text-xs btn-manager-download" data-path="${escHtml(path)}">تحميل</button>` : ""}
                     ${can(user, "documents.print") ? `<button type="button" class="btn-secondary text-xs btn-manager-print" data-path="${escHtml(path)}">طباعة</button>` : ""}
                     <button type="button" class="btn-danger text-xs btn-manager-delete" data-path="${escHtml(path)}">حذف</button>
                   </div>
@@ -761,11 +798,15 @@ export async function renderDocuments(container, user, ctx) {
           showToast(error?.message ?? "تعذر حذف جميع المرفقات", "error");
         }
       });
+      bindAttachmentScannerButtons(content, user, async () => { await refreshCurrentDocs(); renderManager(); });
       content.querySelectorAll(".btn-manager-preview").forEach(button => {
         button.addEventListener("click", async () => {
           try { await openDocumentPreview(button.dataset.path, fileName(button.dataset.path), attachments); }
           catch (error) { showToast(error?.message ?? "تعذر استعراض الوثيقة", "error"); }
         });
+      });
+      content.querySelectorAll(".btn-manager-download").forEach(button => {
+        button.addEventListener("click", () => downloadStoredFile(button.dataset.path));
       });
       content.querySelectorAll(".btn-manager-print").forEach(button => {
         button.addEventListener("click", async () => {
@@ -778,7 +819,7 @@ export async function renderDocuments(container, user, ctx) {
           const remaining = 20 - attachments.length;
           const selected = await open({
             multiple: true,
-            filters: [{ name: "ملفات الوثائق", extensions: ["jpg", "jpeg", "pdf"] }],
+            filters: [{ name: "ملفات الوثائق", extensions: DOCUMENT_EXTENSIONS }],
           });
           if (!selected) return;
           const files = Array.isArray(selected) ? selected : [selected];
@@ -964,6 +1005,17 @@ export async function renderDocuments(container, user, ctx) {
                   <span dir="ltr">${isEdit ? generalDocAttachments(doc).length : 0} / 20</span>
                 </span>
               </button>
+            </div>
+          </div>
+          <div id="d-scan-progress" style="display:none;align-items:center;gap:14px;padding:12px 14px;border:1px solid #245477;border-radius:10px;background:rgba(5,35,62,.75)">
+            <div id="d-scan-progress-bar" style="width:62px;height:62px;flex:none;display:grid;place-items:center;border-radius:50%;background:conic-gradient(#22c55e 0%,#0b2235 0);transition:background .35s ease">
+              <div style="width:46px;height:46px;display:grid;place-items:center;border-radius:50%;background:#071827;box-shadow:inset 0 0 8px rgba(0,0,0,.35)">
+                <span id="d-scan-progress-percent" dir="ltr" style="font-size:11px;font-weight:700;color:#7dd3fc">0%</span>
+              </div>
+            </div>
+            <div>
+              <p style="font-size:12px;font-weight:700;color:#dbeafe;margin-bottom:3px">المسح الضوئي</p>
+              <span id="d-scan-progress-label" style="font-size:11px;color:#93c5fd">جاري بدء المسح الضوئي...</span>
             </div>
           </div>
           <div class="flex gap-3">
@@ -1171,7 +1223,7 @@ export async function renderDocuments(container, user, ctx) {
       }
       const selected = await open({
         multiple: true,
-        filters: [{ name: "ملفات الوثائق", extensions: ["jpg", "jpeg", "pdf"] }],
+        filters: [{ name: "ملفات الوثائق", extensions: DOCUMENT_EXTENSIONS }],
       });
       if (!selected) return;
       const files = Array.isArray(selected) ? selected : [selected];
@@ -1191,25 +1243,67 @@ export async function renderDocuments(container, user, ctx) {
       }
       const button = el.querySelector("#d-scan-attachment");
       button.disabled = true;
+      let deviceId;
       try {
-        const scannedPath = await api.scanDocument();
+        deviceId = await api.selectScannerDevice();
+      } catch (error) {
+        button.disabled = false;
+        showToast(error?.message ?? String(error || "تعذر اختيار الماسح الضوئي"), "error");
+        return;
+      }
+      const progress = el.querySelector("#d-scan-progress");
+      const progressBar = el.querySelector("#d-scan-progress-bar");
+      const progressLabel = el.querySelector("#d-scan-progress-label");
+      const progressPercent = el.querySelector("#d-scan-progress-percent");
+      let percent = 5;
+      const updateProgress = (value, label) => {
+        percent = value;
+        progress.style.display = "flex";
+        const progressColor = progress.dataset.error === "true" ? "#dc2626" : "#22c55e";
+        progressBar.style.background = `conic-gradient(${progressColor} ${value}%,#0b2235 ${value}%)`;
+        progressPercent.textContent = `${value}%`;
+        progressLabel.textContent = label;
+      };
+      updateProgress(percent, "جاري انتظار الماسح الضوئي...");
+      const progressTimer = setInterval(() => {
+        if (percent >= 90) return;
+        const next = Math.min(90, percent + (percent < 55 ? 7 : 3));
+        updateProgress(next, next < 55 ? "جاري مسح الوثيقة..." : "جاري معالجة الصورة...");
+      }, 700);
+      try {
+        const scannedPath = await api.scanDocument(deviceId);
+        updateProgress(94, "جاري حفظ الوثيقة تلقائياً...");
         if (isEdit) {
+          await updateCurrentDoc(doc.id, collectDocData());
           await uploadCurrentDocFile(doc.id, scannedPath);
           await refreshCurrentDocs();
-          showToast("تم مسح الوثيقة وإضافتها إلى المرفقات");
+          activeDocFormGuard = null;
+          clearInterval(progressTimer);
+          updateProgress(100, "اكتمل المسح والحفظ بنجاح");
+          showToast("تم مسح الوثيقة وحفظها تلقائياً");
+          await new Promise(resolve => setTimeout(resolve, 650));
           showDocForm(currentDocs().find(item => item.id === doc.id));
           return;
         }
-        pendingAttachments = [...new Set([...pendingAttachments, scannedPath])].slice(0, 20);
-        formDirty = true;
-        const badge = el.querySelector("#d-manage-attachments .badge");
-        badge.classList.add("badge-green");
-        badge.classList.remove("badge-gray");
-        badge.querySelector("[dir='ltr']").textContent = `${pendingAttachments.length} / 20`;
-        showToast("تم مسح الوثيقة وستُرفع بعد الحفظ");
+        const created = await createCurrentDoc(collectDocData());
+        const filesToUpload = [...new Set([...pendingAttachments, scannedPath])].slice(0, 20);
+        for (const file of filesToUpload) await uploadCurrentDocFile(created.id, file);
+        pendingAttachments = [];
+        await refreshCurrentDocs();
+        activeDocFormGuard = null;
+        clearInterval(progressTimer);
+        updateProgress(100, "اكتمل المسح والحفظ بنجاح");
+        showToast("تم مسح الوثيقة وإنشاؤها وحفظها تلقائياً");
+        await new Promise(resolve => setTimeout(resolve, 650));
+        showDocForm(currentDocs().find(item => item.id === created.id));
       } catch (error) {
+        clearInterval(progressTimer);
+        progress.style.borderColor = "#7f1d1d";
+        progress.dataset.error = "true";
+        updateProgress(100, "تعذر إكمال عملية المسح");
         showToast(error?.message ?? String(error || "تعذر استخدام الماسح الضوئي"), "error");
       } finally {
+        clearInterval(progressTimer);
         button.disabled = false;
       }
     });
@@ -1289,13 +1383,13 @@ export async function renderDocuments(container, user, ctx) {
       try {
         const selected = await open({
           multiple: true,
-          filters: [{ name: "ملفات الوثائق", extensions: ["jpg", "jpeg", "pdf"] }],
+          filters: [{ name: "ملفات الوثائق", extensions: DOCUMENT_EXTENSIONS }],
         });
         if (!selected) return;
         const files = Array.isArray(selected) ? selected : [selected];
         if (!(await confirmAction(`تأكيد رفع ${files.length} وثيقة للموظف؟`))) return;
         for (const file of files) {
-          await api.uploadAttachment(empId, file);
+          await api.uploadDocumentAttachment(empId, file);
         }
         employees = await api.listEmployees();
         showToast(`تم رفع ${files.length} وثيقة`);
@@ -1318,10 +1412,7 @@ export async function renderDocuments(container, user, ctx) {
     });
     el.querySelectorAll(".btn-download-emp-doc").forEach(btn => {
       btn.addEventListener("click", async () => {
-        const destination = await open({ directory: true, multiple: false });
-        if (!destination) return;
-        try { showToast(`تم تنزيل الوثيقة إلى ${await api.downloadDocument(btn.dataset.path, destination)}`); }
-        catch (err) { showToast(err?.message ?? "تعذر تنزيل الوثيقة", "error"); }
+        await downloadStoredFile(btn.dataset.path);
       });
     });
   }

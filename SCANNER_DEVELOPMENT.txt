@@ -1,0 +1,118 @@
+AutoHR attachment editor - Production manual-only behavior (2026-10-08)
+
+Final requested behavior
+The user changed scope to remove automatic Smart/offline processing from Production and
+retain manual boundary selection and rotation. Automatic-localization work is no longer
+a Production deliverable. No further detector accuracy work is required for this request.
+
+Implementation
+- Production title and upload choice: manual attachment boundary selection and rotation.
+- Four manually draggable/keyboard-adjustable corners, zoom, Fit and reset remain.
+- Perspective cropping uses the selected original-resolution corners.
+- 90-degree output rotation, result preview, explicit save/cancel and original preservation remain.
+- Production hides re-detection, confidence controls, contrast enhancement and diagnostics.
+- Production never starts automatic detection from legacy saved auto_detect=true settings.
+- Rust build policy forces auto_detect=false and enhancement=0 outside debug builds.
+- Direct automatic re-detection commands are rejected outside debug builds.
+- Backend provides automatic_detection_available; the UI also requires import.meta.env.DEV.
+- Development can retain experimental detection/debug tools. They are unavailable in the
+  standard Production release configuration. The manual editor label is used in both modes.
+- The existing shared attachment bridge remains; employee, ID and archive attachments use
+  the same manual crop/rotation implementation and association/save permissions.
+
+Source files changed for the manual-only request
+src-tauri/src/scanner.rs: build policy, capability response, settings normalization and
+  re-detection guard; policy regression test.
+src/attachments/scanner.js: generic editor labels, manual fallback independent of supplied
+  detection confidence, conditional Development controls, loading/manual instructions.
+src/attachments/settings.js: generic settings label and Production manual-only controls.
+src/screens/audit.js: scanner settings audit label matches manual crop/rotation feature.
+tests/scanner.spec.js: updated labels and Production-mode component tests.
+SCANNER_DEVELOPMENT.txt: this report rewritten around final scope.
+Earlier scanner fixes and private diagnostic fixtures remain in the Development workspace.
+Private image artifacts are excluded through .gitignore/.scanner-local.
+
+Verification approach
+Rust tests exercise the build policy with Production=false-development inputs, including
+legacy auto_detect=true and enhancement=2. Scanner integration tests use isolated databases
+and temporary files to verify association, original preservation, permissions and rollback.
+Browser tests compile only the component in memory with import.meta.env.DEV=false and use
+mocked IPC. This checks Production UI behavior without creating an application build,
+installer, release files or production database access. The manual editor ignores injected
+trusted detection corners, starts from full-image manual corners, sends manually edited
+corners and rotation=90 to render, and enables save only after result preview.
+Production settings tests verify that automatic detection/contrast controls cannot be
+re-enabled, while JPEG quality is preserved. The complete test results follow below.
+
+Development execution
+  cargo test -p autohr --lib --offline
+  npm run test:scanner:ui
+For manual Production-mode component verification only:
+  npx playwright test -g 'Production'
+For desktop Development: npm run tauri:dev.
+Development now uses %APPDATA%/CNSArch-Development for its database, attachments and backups.
+Release continues to use %APPDATA%/CNSArch. Development does not import legacy Documents
+attachments. A Development-only Tauri config supplies the isolated asset scope and the
+window title AutoHR (Development). No separate Windows account is required now.
+
+Deployment status
+Source modifications and Development verification only. No Tauri Production Build,
+frontend application build, EXE/MSI creation, deployment, installed-application update,
+production settings write or release publication was performed. The installed Production
+application is unchanged; this behavior applies when a future approved release is built.
+
+Final check results
+- Rust complete Development suite: 25 passed, 0 failed, 1 private-image test ignored (91.70s).
+- Browser coverage: 38 cases verified passing; 1 private-image case skipped. The affected
+  settings and Production tests were rerun together after updating the expected label:
+  3 passed, 0 failed (7.4s). Production component checks passed without an application build.
+- Isolated scanner storage/codec integration checks: 2 passed.
+- Whitespace check on modified tracked scanner-related files: clean.
+
+Development launch verification
+- npm run tauri:dev launched target/debug/autohr.exe with title AutoHR (Development).
+- CNSArch-Development/database.db created; production application was left running unchanged.
+- development_data_path_is_isolated test passed.
+- Additional files changed for safe Dev launch: src-tauri/src/db.rs,
+  src-tauri/src/services.rs, src-tauri/tauri.dev.conf.json, package.json.
+
+Latest UI removal request
+- Removed re-detection button and its event handler from the shared attachment editor in
+  both Development and Production.
+- Removed the attachment crop/rotation settings card and its mounting/import from About.
+- Deleted unused src/attachments/settings.js; no remaining source imports or button references.
+- Manual corner dragging, zoom/Fit, crop preview, rotation and approval remain available.
+- Updated UI regressions verify settings absence and preservation of the company-logo upload.
+
+Rotation preview fix
+- Rotation automatically renders the updated crop and keeps the previous preview visible until its replacement is decoded.
+- Saving is disabled during rendering or after failure; the original and selected corners stay unchanged.
+- Regression covers 90/180/270/0 degrees, delayed rendering, failure and retry.
+
+Documents-only removal
+- General/outgoing uploads now call their normal upload commands directly.
+- Employee attachments uploaded from Documents use a direct upload bridge.
+- Removed crop/rotation controls from document previews and both archive/employee document lists.
+- Attachment processing remains available in other application screens.
+
+Single apply/save action
+- Removed the separate save-processed-with-original button.
+- Apply crop/reprocess renders successfully before approving upload/save and closing the editor.
+- Rotation remains preview-only; processing failures leave the editor open without saving.
+
+Live preview
+- Source preview pixels are mapped through a perspective transform into a bounded 480px preview.
+- Corner dragging, keyboard edits, reset and rotation schedule local preview updates with requestAnimationFrame.
+- Preview edits do not call backend render/save; Apply still renders original resolution before saving.
+
+Employee attachment controls
+- Personal photo has its own scan-path binding, independent of download permission.
+- Added employee-photo deletion command guarded by employees.edit, audit logging, metadata cleanup and UI confirmation.
+- Verified processing for photo, national/residence cards, badges, passport, ration card and spouse/family images.
+- UI suite: 42 passed, 1 skipped; additional all-types regression passed. Isolated Rust photo deletion test passed.
+
+Archive processing enabled again by request
+- General/outgoing image uploads use the shared live crop/rotation editor.
+- Existing archive images expose reprocessing in attachment management.
+- Shared copy omits the phrase requested for removal; Apply performs final rendering and save.
+- Five archive/upload regressions passed.

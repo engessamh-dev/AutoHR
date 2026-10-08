@@ -1,0 +1,3 @@
+# SQLite runtime sidecars are not application source changes.
+resources/*.db-wal
+resources/*.db-shm

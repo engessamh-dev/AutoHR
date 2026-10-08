@@ -9,6 +9,34 @@ pub type AppResult<T> = Result<T, AppError>;
 pub const MAX_DOCUMENT_SIZE: u64 = 20 * 1024 * 1024;
 pub const MAX_IMAGE_SIZE: u64 = 5 * 1024 * 1024;
 
+fn office_upload_type(source: &Path, extension: &str) -> Option<(&'static str, &'static str)> {
+    match extension {
+        "doc" => Some(("doc", "application/msword")),
+        "xls" => Some(("xls", "application/vnd.ms-excel")),
+        "ppt" => Some(("ppt", "application/vnd.ms-powerpoint")),
+        "docx" | "xlsx" | "pptx" => {
+            let file = File::open(source).ok()?;
+            let mut archive = zip::ZipArchive::new(file).ok()?;
+            let required_dir = match extension {
+                "docx" => "word/",
+                "xlsx" => "xl/",
+                "pptx" => "ppt/",
+                _ => return None,
+            };
+            let valid = archive.by_name("[Content_Types].xml").is_ok()
+                && (0..archive.len()).any(|index| archive.by_index(index).is_ok_and(|entry| entry.name().starts_with(required_dir)));
+            if !valid { return None; }
+            Some(match extension {
+                "docx" => ("docx", "application/vnd.openxmlformats-officedocument.wordprocessingml.document"),
+                "xlsx" => ("xlsx", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"),
+                "pptx" => ("pptx", "application/vnd.openxmlformats-officedocument.presentationml.presentation"),
+                _ => return None,
+            })
+        }
+        _ => None,
+    }
+}
+
 pub struct ValidatedUpload {
     pub original_name: String,
     pub extension: &'static str,
@@ -24,7 +52,7 @@ pub fn safe_relative_path(relative_path: &str) -> AppResult<&Path> {
     Ok(path)
 }
 
-pub fn validate_upload(source_path: &str, allow_pdf: bool, allow_png: bool, max_size: u64) -> AppResult<ValidatedUpload> {
+pub fn validate_upload(source_path: &str, allow_pdf: bool, _allow_png: bool, max_size: u64) -> AppResult<ValidatedUpload> {
     let source = Path::new(source_path);
     let metadata = std::fs::metadata(source).map_err(|_| AppError::Validation("The selected file could not be read".into()))?;
     if !metadata.is_file() || metadata.len() == 0 {
@@ -36,17 +64,27 @@ pub fn validate_upload(source_path: &str, allow_pdf: bool, allow_png: bool, max_
     let original_name = source.file_name().and_then(|n| n.to_str())
         .filter(|name| !name.is_empty()).ok_or_else(|| AppError::Validation("The selected filename is invalid".into()))?.to_string();
     let supplied_extension = source.extension().and_then(|e| e.to_str()).unwrap_or("").to_ascii_lowercase();
-    let mut signature = [0u8; 8];
+    let mut signature = [0u8; 12];
     let mut file = File::open(source).map_err(|_| AppError::Validation("The selected file could not be read".into()))?;
     let read = file.read(&mut signature).map_err(|_| AppError::Validation("The selected file could not be read".into()))?;
+    let legacy_office_signature = [0xd0, 0xcf, 0x11, 0xe0, 0xa1, 0xb1, 0x1a, 0xe1];
+    let office_type = if allow_pdf && ((read >= 4 && &signature[..4] == b"PK\x03\x04") || (read >= 8 && signature[..8] == legacy_office_signature)) {
+        office_upload_type(source, &supplied_extension)
+    } else {
+        None
+    };
     let (extension, mime_type) = if read >= 5 && &signature[..5] == b"%PDF-" && allow_pdf {
         ("pdf", "application/pdf")
     } else if read >= 3 && signature[..3] == [0xff, 0xd8, 0xff] {
         ("jpg", "image/jpeg")
-    } else if read >= 8 && signature == [0x89, b'P', b'N', b'G', 0x0d, 0x0a, 0x1a, 0x0a] && allow_png {
+    } else if read >= 8 && signature[..8] == [0x89, b'P', b'N', b'G', 0x0d, 0x0a, 0x1a, 0x0a] {
         ("png", "image/png")
+    } else if read >= 12 && &signature[..4] == b"RIFF" && &signature[8..12] == b"WEBP" {
+        ("webp", "image/webp")
+    } else if let Some(office_type) = office_type {
+        office_type
     } else {
-        return Err(AppError::Validation("Only valid PDF or image files are allowed".into()));
+        return Err(AppError::Validation("Only valid PDF, image, Word, Excel, or PowerPoint files are allowed".into()));
     };
     if supplied_extension != extension && !(extension == "jpg" && supplied_extension == "jpeg") {
         return Err(AppError::Validation("The file extension does not match its contents".into()));
@@ -59,21 +97,52 @@ pub fn random_filename(extension: &str) -> String {
     OsRng.fill_bytes(&mut bytes);
     format!("{}.{}", hex::encode(bytes), extension)
 }
+fn copy_new_file(source: &Path, destination: &Path) -> AppResult<()> {
+    let mut input = File::open(source).map_err(|e| AppError::Other(e.to_string()))?;
+    let mut output = std::fs::OpenOptions::new().write(true).create_new(true).open(destination)
+        .map_err(|e| AppError::Other(e.to_string()))?;
+    if let Err(error) = std::io::copy(&mut input, &mut output).and_then(|_| output.sync_all()) {
+        drop(output); std::fs::remove_file(destination).ok();
+        return Err(AppError::Other(error.to_string()));
+    }
+    Ok(())
+}
 
 pub fn copy_validated_upload(conn: &Connection, source_path: &str, destination_dir: &Path, relative_dir: &str,
     allow_pdf: bool, allow_png: bool, max_size: u64) -> AppResult<String> {
     let upload = validate_upload(source_path, allow_pdf, allow_png, max_size)?;
+    let scanned_original = crate::scanner::original_for_stage(source_path).map(|(path, owner)| {
+        let meta = validate_upload(path.to_str().ok_or_else(|| AppError::Validation("Invalid original path".into()))?, false, true, max_size)?;
+        Ok::<_, AppError>((path, owner, meta))
+    }).transpose()?;
     std::fs::create_dir_all(destination_dir).map_err(|e| AppError::Other(e.to_string()))?;
     let filename = random_filename(upload.extension);
     let destination = destination_dir.join(&filename);
-    std::fs::copy(source_path, &destination).map_err(|e| AppError::Other(e.to_string()))?;
     let rel = format!("{}/{}", relative_dir.trim_end_matches('/'), filename);
+    let original_rel = scanned_original.as_ref().map(|(_,_,meta)|format!("{}/{}",relative_dir.trim_end_matches('/'),random_filename(meta.extension)));
+    if let Some(original_path)=&original_rel { crate::scanner::register_pending_files(conn,&[rel.clone(),original_path.clone()])?; }
+    copy_new_file(Path::new(source_path), &destination)?;
     if let Err(error) = conn.execute(
         "INSERT OR REPLACE INTO document_metadata(stored_path,original_name,mime_type,size_bytes) VALUES(?1,?2,?3,?4)",
         params![rel, upload.original_name, upload.mime_type, upload.size as i64],
     ) {
         std::fs::remove_file(destination).ok();
         return Err(error.into());
+    }
+    if let Some((original, owner, meta)) = scanned_original {
+        let original_rel = original_rel.expect("scanned uploads register their original path");
+        let original_dest = storage_path(conn).join(&original_rel);
+        let result = (|| -> AppResult<()> {
+            copy_new_file(&original, &original_dest)?;
+            conn.execute("UPDATE document_metadata SET original_name=?1, original_path=?2 WHERE stored_path=?3", params![meta.original_name, original_rel, rel])?;
+            crate::scanner::audit_processing(conn, &owner, &rel)?;
+            Ok(())
+        })();
+        if let Err(error) = result {
+            std::fs::remove_file(&destination).ok(); std::fs::remove_file(&original_dest).ok();
+            conn.execute("DELETE FROM document_metadata WHERE stored_path=?1", params![rel]).ok();
+            return Err(error);
+        }
     }
     Ok(rel)
 }
@@ -136,7 +205,7 @@ fn upload_sided_card_attachment(
     if let Some(old) = previous {
         if old != rel {
             if let Ok(path) = safe_relative_path(&old) {
-                std::fs::remove_file(storage_path(conn).join(path)).ok();
+                crate::scanner::remove_replaced(conn, source_path, path);
             }
         }
     }
@@ -159,7 +228,7 @@ fn delete_sided_card_attachment(
     )?;
     if let Some(relative_path) = existing {
         let path = safe_relative_path(&relative_path)?;
-        std::fs::remove_file(storage_path(conn).join(path)).ok();
+        crate::scanner::cleanup_metadata_file(conn, &path.to_string_lossy());
     }
     Ok(())
 }
@@ -173,6 +242,10 @@ pub fn upload_national_card_attachment(
 ) -> AppResult<String> {
     let column = national_card_column(side)?;
     upload_sided_card_attachment(conn, employee_id, side, source_path, column, "NationalCard")
+}
+
+pub fn delete_employee_photo(conn: &Connection, employee_id: i64) -> AppResult<()> {
+    delete_sided_card_attachment(conn, employee_id, "photo_path")
 }
 
 pub fn delete_national_card_attachment(
@@ -246,7 +319,7 @@ pub fn upload_family_national_card_attachment(
     if let Some(old) = previous {
         if old != rel {
             if let Ok(path) = safe_relative_path(&old) {
-                std::fs::remove_file(storage_path(conn).join(path)).ok();
+                crate::scanner::remove_replaced(conn, source_path, path);
             }
         }
     }
@@ -274,7 +347,7 @@ pub fn delete_family_national_card_attachment(
     }
     if let Some(relative_path) = existing {
         let path = safe_relative_path(&relative_path)?;
-        std::fs::remove_file(storage_path(conn).join(path)).ok();
+        crate::scanner::cleanup_metadata_file(conn, &path.to_string_lossy());
     }
     Ok(())
 }
@@ -338,7 +411,7 @@ pub fn upload_spouse_national_card_attachment(
     if let Some(old) = previous {
         if old != rel {
             if let Ok(path) = safe_relative_path(&old) {
-                std::fs::remove_file(storage_path(conn).join(path)).ok();
+                crate::scanner::remove_replaced(conn, source_path, path);
             }
         }
     }
@@ -369,7 +442,7 @@ pub fn delete_spouse_national_card_attachment(
     }
     if let Some(relative_path) = existing {
         let path = safe_relative_path(&relative_path)?;
-        std::fs::remove_file(storage_path(conn).join(path)).ok();
+        crate::scanner::cleanup_metadata_file(conn, &path.to_string_lossy());
     }
     Ok(())
 }
@@ -464,7 +537,7 @@ pub fn upload_passport_attachment(
     for old in paths {
         if old != rel {
             if let Ok(path) = safe_relative_path(&old) {
-                std::fs::remove_file(storage_path(conn).join(path)).ok();
+                crate::scanner::remove_replaced(conn, source_path, path);
             }
         }
     }
@@ -500,7 +573,7 @@ pub fn delete_passport_attachment(
         "DELETE FROM employee_attachments WHERE employee_id=?1 AND kind='passport' AND file_path=?2",
         params![employee_id, relative_path],
     )?;
-    std::fs::remove_file(storage_path(conn).join(rel_path)).ok();
+    crate::scanner::cleanup_metadata_file(conn, &rel_path.to_string_lossy());
     Ok(())
 }
 
@@ -538,7 +611,7 @@ pub fn upload_ration_card_attachment(
     for old in paths {
         if old != rel {
             if let Ok(path) = safe_relative_path(&old) {
-                std::fs::remove_file(storage_path(conn).join(path)).ok();
+                crate::scanner::remove_replaced(conn, source_path, path);
             }
         }
     }
@@ -574,7 +647,7 @@ pub fn delete_ration_card_attachment(
         "DELETE FROM employee_attachments WHERE employee_id=?1 AND kind='ration_card' AND file_path=?2",
         params![employee_id, relative_path],
     )?;
-    std::fs::remove_file(storage_path(conn).join(rel_path)).ok();
+    crate::scanner::cleanup_metadata_file(conn, &rel_path.to_string_lossy());
     Ok(())
 }
 
@@ -623,7 +696,7 @@ pub fn delete_attachment(conn: &Connection, employee_id: i64, relative_path: &st
         "DELETE FROM employee_attachments WHERE employee_id=?1 AND kind='general' AND file_path=?2",
         params![employee_id, relative_path],
     )?;
-    std::fs::remove_file(storage_path(conn).join(rel_path)).ok();
+    crate::scanner::cleanup_metadata_file(conn, &rel_path.to_string_lossy());
     Ok(())
 }
 

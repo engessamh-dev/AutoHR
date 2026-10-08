@@ -155,11 +155,9 @@ fn migrate_employee_repeating_data(conn: &Connection) -> SqlResult<()> {
     Ok(())
 }
 
-/// Returns the writable DB path: %APPDATA%/CNSArch/database.db
+/// Development and release use separate writable data roots.
 pub fn db_path() -> PathBuf {
-    let base = dirs::data_dir()
-        .unwrap_or_else(|| PathBuf::from("."))
-        .join("CNSArch");
+    let base = crate::services::app_data_path();
     fs::create_dir_all(&base).ok();
     base.join("database.db")
 }
@@ -226,7 +224,9 @@ fn migrate(conn: &Connection) -> SqlResult<()> {
         ("photo_path",           "TEXT"),
         ("mother_name",          "TEXT"),
         ("father_birthplace",    "TEXT"),
+        ("father_birthdate",     "TEXT"),
         ("mother_birthplace",    "TEXT"),
+        ("mother_birthdate",     "TEXT"),
         ("gender",               "TEXT"),
         ("birthdate",            "TEXT"),
         ("birthplace",           "TEXT"),
@@ -516,6 +516,7 @@ fn migrate(conn: &Connection) -> SqlResult<()> {
         INSERT OR IGNORE INTO app_settings(key,value) VALUES('storage_destination','');
         INSERT OR IGNORE INTO app_settings(key,value) VALUES('document_types','[\"أمر إداري\",\"كتاب رسمي\",\"منشور\",\"تعميم\",\"عقد\",\"محضر اجتماع\",\"أخرى\"]');
     ")?;
+    crate::scanner::ensure_metadata_columns(conn)?;
     for definition in [
         "user_id INTEGER",
         "role TEXT NOT NULL DEFAULT 'unknown'",
@@ -576,6 +577,12 @@ fn migrate(conn: &Connection) -> SqlResult<()> {
     }
     migrate_employee_repeating_data(conn)?;
     Ok(())
+}
+
+#[cfg(test)]
+pub(crate) fn initialize_test(conn: &Connection) -> SqlResult<()> {
+    conn.execute_batch(include_str!("../../database/schema.sql"))?;
+    migrate(conn)
 }
 
 pub fn open() -> SqlResult<Connection> {

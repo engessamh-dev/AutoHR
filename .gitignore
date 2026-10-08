@@ -8,3 +8,11 @@ target/
 node_modules/
 
 .env
+test-results/
+playwright-report/
+
+# Private scanner verification images and diagnostics
+.scanner-local/
+
+# Local database audit artifacts may contain attachment paths
+verification/

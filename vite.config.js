@@ -18,9 +18,12 @@ export default defineConfig({
       // Ignore ALL build output folders so Vite never tries to watch
       // locked .exe files produced by Cargo on Windows
       ignored: [
+        "**/src-tauri/**",
         "**/src-tauri/target/**",
         "**/target/**",
         "**/node_modules/**",
+        "**/verification/**",
+        "**/.scanner-local/**",
       ],
     },
   },

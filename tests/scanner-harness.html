@@ -1,0 +1,50 @@
+<!doctype html><html lang="ar" dir="rtl"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Scanner synthetic acceptance</title></head>
+<body style="background:#111;color:white"><button id="previous-focus">عودة</button><div id="root"></div>
+<script type="module">
+import "../src/styles/main.css";
+import { api } from "../src/api.js";
+import { reprocessAttachment } from "../src/attachments/scanner.js";
+import { bindAttachmentScannerButtons } from "../src/attachments/integration.js";
+import { renderEmployees } from "../src/screens/employees.js";
+import { renderDocuments } from "../src/screens/documents.js";
+import { renderAbout } from "../src/screens/about.js";
+const canvas=document.createElement("canvas");canvas.width=640;canvas.height=480;
+const ctx=canvas.getContext("2d");ctx.fillStyle="#334155";ctx.fillRect(0,0,640,480);ctx.fillStyle="#fff";ctx.fillRect(100,70,440,340);ctx.fillStyle="#111";ctx.font="24px sans-serif";ctx.fillText("SYNTHETIC DOCUMENT",125,130);
+const bytes=Array.from(new Uint8Array(await (await fetch(canvas.toDataURL("image/jpeg"))).arrayBuffer()));
+window.calls=[];window.result=null;window.failure=null;window.reliable=true;window.failRender=false;window.failSave=false;
+window.settings={enabled:true,auto_detect:true,enhancement:0,confidence_threshold:.65,quality:94};
+const employee={photo_path:"Files/Employees/1/Photo/photo.jpg",photo_full_path:"synthetic-photo",id:1,full_name:"Synthetic Employee",gender:"ذكر",marital_status:"متزوج",is_active:1,civil_id_front_path:"Files/Employees/1/Documents/NationalCard/card.jpg",civil_id_front_full_path:"synthetic",spouses:JSON.stringify([{name:"Synthetic Spouse"}]),family_members:JSON.stringify([{name:"Synthetic Family"}]),vehicles:"[]",attachment_paths:"[]"};
+const doc={id:1,title:"Synthetic Document",attachment_paths:["Files/GeneralDocs/1/document.jpg"],employee_ids:[]};
+const permissions=["dashboard.view","employees.view","employees.edit","employees.create","documents.view","documents.upload","documents.download","documents.delete","documents.print","documents.manage","settings.manage"];
+window.__TAURI_INTERNALS__={convertFileSrc:()=>canvas.toDataURL("image/jpeg"),invoke:async(command,args)=>{
+  window.calls.push({command,args});
+  if(command==="cmd_scanner_settings")return window.settings;
+  if(command==="cmd_set_scanner_settings"){window.settings=args.settings;return;}
+  if(command==="cmd_scanner_prepare")return window.prepared || {token:"synthetic-token",width:640,height:480,corners:[[100,70],[540,70],[540,410],[100,410]],confidence:window.reliable?.92:0,reliable:window.reliable,preview:bytes,settings:window.settings};
+  if(command==="cmd_scanner_detect")return {corners:[[100,70],[540,70],[540,410],[100,410]],confidence:.92,reliable:true};
+  if(command==="cmd_scanner_render"){if(window.holdRender)await new Promise(resolve=>{window.releaseRender=resolve;});if(window.failRender)throw "Injected processing failure";return window.renderBytes || bytes;}
+  if(command==="cmd_scanner_upload" || command==="cmd_scanner_save_existing"){if(window.failSave)throw "Injected database/Audit failure";return "Files/Synthetic/result.jpg";}
+  if(command==="cmd_scanner_release")return;
+  if(command==="cmd_scanner_versions")return {original:bytes,processed:bytes};
+  if(command.startsWith("cmd_upload_"))return "original-upload-result";
+  if(command==="plugin:dialog|open")return "synthetic.png";
+  if(command==="cmd_list_employees")return [employee];
+  if(command==="cmd_get_employee")return employee;
+  if(command==="cmd_delete_employee_photo"){employee.photo_path=null;employee.photo_full_path=null;return;}
+  if(command==="cmd_get_company_config")return {company_name:"Synthetic Company",department_name:"Test",division_name:""};
+  if(command==="cmd_list_general_docs" || command==="cmd_list_outgoing_docs")return [doc];
+  if(command==="cmd_audit_document_view")return;
+  if(command==="cmd_get_storage_path" || command==="cmd_get_backup_path")return "synthetic path";
+  throw new Error("Unmocked command: "+command);
+}};
+window.runUpload=(method,args)=>{window.result=null;window.failure=null;window.pending=api[method](...args).then(value=>{window.result=value;}).catch(error=>{window.failure=String(error);});};
+window.runExisting=path=>{window.result=null;window.failure=null;window.pending=reprocessAttachment(path).then(value=>{window.result=value;}).catch(error=>{window.failure=String(error);});};
+window.bindExisting=(path,permissions)=>{document.querySelector("#root").innerHTML=`<div><button data-path="${path}">مرفق</button></div>`;bindAttachmentScannerButtons(document.querySelector("#root"),{permissions});};
+window.renderActual=async screen=>{
+  const root=document.querySelector("#root"),user={permissions};
+  if(screen==="employees")await renderEmployees(root,user,{});
+  else if(screen==="about")await renderAbout(root,user,{});
+  else await renderDocuments(root,user,{archiveTab:screen,initialManageAttachmentDocId:1,manageAttachmentDocId:1});
+};
+window.ready=true;
+</script></body></html>

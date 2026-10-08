@@ -2,7 +2,9 @@
  * screens/employees.js — Full Iraqi HR form with tabbed slide panel
  */
 import { api } from "../api.js";
+import { bindAttachmentScannerButtons } from "../attachments/integration.js";
 import { convertFileSrc } from "@tauri-apps/api/core";
+import { open, save } from "@tauri-apps/plugin-dialog";
 import { showToast, formatDate, escHtml, debounce, confirmAction, confirmSaveChanges } from "../utils.js";
 import { can } from "../permissions.js";
 
@@ -14,6 +16,39 @@ let _panelDirty = false;
 let _skipNextSaveConfirmation = false;
 let _currentUser = null;
 let _companyConfig = null;
+const DOCUMENT_EXTENSIONS = ["jpg", "jpeg", "png", "webp", "pdf", "doc", "docx", "xls", "xlsx", "ppt", "pptx"];
+
+async function downloadEmployeeAttachment(path) {
+  const fileName = (await api.getDocumentDownloadName(path)).replace(/^\d+_/, "");
+  const extension = fileName.includes(".") ? fileName.split(".").pop() : "";
+  const destination = await save({
+    title: "حفظ الملف باسم",
+    defaultPath: fileName,
+    ...(extension ? { filters: [{ name: "الملف", extensions: [extension] }] } : {}),
+  });
+  if (!destination) return;
+  try {
+    const savedPath = await api.downloadDocument(path, destination);
+    showToast(`تم تحميل الملف إلى ${savedPath}`);
+  } catch (error) {
+    showToast(error?.message ?? "تعذر تحميل الملف", "error");
+  }
+}
+
+function bindAttachmentDownloadButtons(container) {
+  bindAttachmentScannerButtons(container, _currentUser, async path => {
+    if (!_panelDraft?.id) return;
+    if (_activeTab === "family") {
+      if (path.includes("/Spouses/")) await refreshSpouseAttachments(_panelDraft.id);
+      else await refreshFamilyAttachments(_panelDraft.id);
+    } else await refreshDocumentAttachments(_panelDraft.id);
+  }, () => {
+    if (_panelDirty) throw new Error("احفظ التعديلات الحالية قبل إعادة معالجة المرفق");
+  });
+  container.querySelectorAll(".btn-download-attachment").forEach(button => {
+    button.addEventListener("click", () => downloadEmployeeAttachment(button.dataset.path));
+  });
+}
 
 export async function renderEmployees(container, user, ctx) {
   _currentUser = user;
@@ -250,8 +285,8 @@ function sidedCardAttachment(label, side, path, fullPath, canUpload, cardType = 
   const name = path?.split(/[/\\]/).pop();
   const extension = name?.split(".").pop()?.toLowerCase();
   const assetUrl = fullPath ? convertFileSrc(fullPath) : "";
-  const preview = assetUrl && ["jpg", "jpeg"].includes(extension)
-    ? `<img src="${escHtml(assetUrl)}" alt="${label}" style="display:block;max-width:100%;height:auto;border:1px solid #2d2d2d;border-radius:6px;margin:0 auto 9px" />`
+  const preview = assetUrl && ["jpg", "jpeg", "png", "webp"].includes(extension)
+    ? `<img data-scan-path="${escHtml(path)}" src="${escHtml(assetUrl)}" alt="${label}" style="display:block;max-width:100%;height:auto;border:1px solid #2d2d2d;border-radius:6px;margin:0 auto 9px" />`
     : assetUrl && extension === "pdf"
       ? `<iframe src="${escHtml(assetUrl)}" title="${label}" style="display:block;width:100%;height:220px;background:#fff;border:1px solid #2d2d2d;border-radius:6px;margin-bottom:9px"></iframe>`
       : "";
@@ -265,6 +300,7 @@ function sidedCardAttachment(label, side, path, fullPath, canUpload, cardType = 
       <button type="button" class="btn-secondary text-xs px-2 py-1 btn-upload-sided-card" data-card-type="${cardType}" data-side="${side}">
         ${name ? "استبدال" : "رفع"}
       </button>
+      ${name && can(_currentUser, "documents.download") ? `<button type="button" class="btn-secondary text-xs px-2 py-1 btn-download-attachment" data-path="${escHtml(path)}">تحميل</button>` : ""}
       ${name ? `<button type="button" class="btn-danger text-xs px-2 py-1 btn-delete-sided-card" data-card-type="${cardType}" data-side="${side}">حذف</button>` : ""}
     </div>` : `<p style="font-size:11px;color:#6b7280">احفظ سجل الموظف أولاً</p>`}
   </div>`;
@@ -279,8 +315,8 @@ function passportAttachments(emp) {
   const name = path?.split(/[/\\]/).pop();
   const extension = name?.split(".").pop()?.toLowerCase();
   const assetUrl = fullPath ? convertFileSrc(fullPath) : "";
-  const preview = assetUrl && ["jpg", "jpeg"].includes(extension)
-    ? `<img src="${escHtml(assetUrl)}" alt="${escHtml(name)}" style="display:block;max-width:100%;height:auto;border:1px solid #2d2d2d;border-radius:6px;margin:0 auto 9px" />`
+  const preview = assetUrl && ["jpg", "jpeg", "png", "webp"].includes(extension)
+    ? `<img data-scan-path="${escHtml(path)}" src="${escHtml(assetUrl)}" alt="${escHtml(name)}" style="display:block;max-width:100%;height:auto;border:1px solid #2d2d2d;border-radius:6px;margin:0 auto 9px" />`
     : assetUrl && extension === "pdf"
       ? `<iframe src="${escHtml(assetUrl)}" title="${escHtml(name)}" style="display:block;width:100%;height:220px;background:#fff;border:1px solid #2d2d2d;border-radius:6px;margin-bottom:9px"></iframe>`
       : "";
@@ -297,6 +333,7 @@ function passportAttachments(emp) {
         <p style="font-size:11px;color:#9ca3af;word-break:break-all;margin-bottom:8px">${escHtml(name)}</p>
         <div style="display:flex;align-items:center;gap:6px">
           <button type="button" id="btn-upload-passport" class="btn-secondary text-xs px-2 py-1">استبدال</button>
+          ${can(_currentUser, "documents.download") ? `<button type="button" class="btn-secondary text-xs px-2 py-1 btn-download-attachment" data-path="${escHtml(path)}">تحميل</button>` : ""}
           <button type="button" class="btn-danger text-xs px-2 py-1 btn-delete-passport" data-path="${escHtml(path)}">حذف</button>
         </div>
       </div>`}
@@ -312,8 +349,8 @@ function rationCardAttachments(emp) {
   const name = path?.split(/[/\\]/).pop();
   const extension = name?.split(".").pop()?.toLowerCase();
   const assetUrl = fullPath ? convertFileSrc(fullPath) : "";
-  const preview = assetUrl && ["jpg", "jpeg"].includes(extension)
-    ? `<img src="${escHtml(assetUrl)}" alt="${escHtml(name)}" style="display:block;max-width:100%;height:auto;border:1px solid #2d2d2d;border-radius:6px;margin:0 auto 9px" />`
+  const preview = assetUrl && ["jpg", "jpeg", "png", "webp"].includes(extension)
+    ? `<img data-scan-path="${escHtml(path)}" src="${escHtml(assetUrl)}" alt="${escHtml(name)}" style="display:block;max-width:100%;height:auto;border:1px solid #2d2d2d;border-radius:6px;margin:0 auto 9px" />`
     : assetUrl && extension === "pdf"
       ? `<iframe src="${escHtml(assetUrl)}" title="${escHtml(name)}" style="display:block;width:100%;height:220px;background:#fff;border:1px solid #2d2d2d;border-radius:6px;margin-bottom:9px"></iframe>`
       : "";
@@ -330,6 +367,7 @@ function rationCardAttachments(emp) {
         <p style="font-size:11px;color:#9ca3af;word-break:break-all;margin-bottom:8px">${escHtml(name)}</p>
         <div style="display:flex;align-items:center;gap:6px">
           <button type="button" id="btn-upload-ration-card" class="btn-secondary text-xs px-2 py-1">استبدال</button>
+          ${can(_currentUser, "documents.download") ? `<button type="button" class="btn-secondary text-xs px-2 py-1 btn-download-attachment" data-path="${escHtml(path)}">تحميل</button>` : ""}
           <button type="button" class="btn-danger text-xs px-2 py-1 btn-delete-ration-card" data-path="${escHtml(path)}">حذف</button>
         </div>
       </div>`}
@@ -339,13 +377,17 @@ function rationCardAttachments(emp) {
 function personalPhotoDocument(emp) {
   const assetUrl = emp?.photo_full_path ? convertFileSrc(emp.photo_full_path) : "";
   return `<div style="grid-column:span 2;display:flex;justify-content:center">
-    <div style="width:min(260px,100%);text-align:center;padding:14px;background:#181818;border:1px solid #2d2d2d;border-radius:8px">
+    <div class="employee-photo-card" style="width:min(260px,100%);text-align:center;padding:14px;background:#181818;border:1px solid #2d2d2d;border-radius:8px">
       <p style="font-size:13px;font-weight:700;color:#d1d5db;margin-bottom:10px">الصورة الشخصية</p>
       ${assetUrl
-        ? `<img src="${escHtml(assetUrl)}" alt="الصورة الشخصية" style="display:block;width:150px;height:180px;object-fit:cover;border:1px solid #2d2d2d;border-radius:8px;margin:0 auto 10px;background:#0b1220" />`
+        ? `<img data-scan-path="${escHtml(emp.photo_path || "")}" src="${escHtml(assetUrl)}" alt="الصورة الشخصية" style="display:block;width:150px;height:180px;object-fit:cover;border:1px solid #2d2d2d;border-radius:8px;margin:0 auto 10px;background:#0b1220" />`
         : `<div style="display:grid;place-items:center;width:150px;height:180px;border:1px dashed #374151;border-radius:8px;margin:0 auto 10px;color:#6b7280;background:#0b1220;font-size:12px">لا توجد صورة</div>`}
       ${emp?.id
-        ? `<button type="button" id="btn-upload-photo" class="btn-secondary text-xs px-3 py-1.5">${assetUrl ? "استبدال الصورة" : "رفع صورة"}</button>`
+        ? `<div class="employee-photo-actions">
+            <button type="button" id="btn-upload-photo" class="btn-secondary text-xs px-3 py-1.5">${assetUrl ? "استبدال الصورة" : "رفع صورة"}</button>
+            ${emp.photo_path && can(_currentUser, "employees.edit") ? `<button type="button" id="btn-delete-photo" class="btn-danger text-xs px-3 py-1.5">حذف الصورة</button>` : ""}
+            ${emp.photo_path && can(_currentUser, "documents.download") ? `<button type="button" class="btn-secondary text-xs px-3 py-1.5 btn-download-attachment" data-path="${escHtml(emp.photo_path)}">تحميل</button>` : ""}
+          </div>`
         : `<p style="font-size:11px;color:#6b7280">احفظ سجل الموظف أولاً</p>`}
     </div>
   </div>`;
@@ -456,8 +498,8 @@ function printableAttachment(label, path, fullPath) {
   const name = path.split(/[/\\]/).pop();
   const extension = name?.split(".").pop()?.toLowerCase();
   const assetUrl = convertFileSrc(fullPath);
-  const content = ["jpg", "jpeg"].includes(extension)
-    ? `<img src="${escHtml(assetUrl)}" alt="${escHtml(label)}" />`
+  const content = ["jpg", "jpeg", "png", "webp"].includes(extension)
+    ? `<img data-scan-path="${escHtml(path)}" src="${escHtml(assetUrl)}" alt="${escHtml(label)}" />`
     : extension === "pdf"
       ? `<object data="${escHtml(assetUrl)}" type="application/pdf"></object>`
       : "";
@@ -652,8 +694,12 @@ function tabContent(tab, emp) {
         ${field("اسم الأم الرباعي واللقب", "mother_name", emp, {span:true})}
         ${field("الجنس", "gender", emp, {type:"select", options:[["","—"],["ذكر","ذكر"],["أنثى","أنثى"]]})}
         ${field("الحالة الاجتماعية", "marital_status", emp, {type:"select", options:[["","—"],["أعزب","أعزب"],["متزوج","متزوج"],["مطلق","مطلق"],["أرمل","أرمل"]]})}
-        ${field("مواليد الأب ومحل الولادة", "father_birthplace", emp)}
-        ${field("مواليد الأم ومحل الولادة", "mother_birthplace", emp)}
+        ${field("تاريخ ولادة الموظف", "birthdate", emp, {date:true})}
+        ${field("محل ولادة الموظف", "birthplace", emp)}
+        ${field("تاريخ ولادة الأب", "father_birthdate", emp, {date:true})}
+        ${field("محل ولادة الأب", "father_birthplace", emp)}
+        ${field("تاريخ ولادة الأم", "mother_birthdate", emp, {date:true})}
+        ${field("محل ولادة الأم", "mother_birthplace", emp)}
         ${field("فصيلة الدم", "blood_type", emp, {type:"select", options:[["","—"],["A+","A+"],["A-","A-"],["B+","B+"],["B-","B-"],["AB+","AB+"],["AB-","AB-"],["O+","O+"],["O-","O-"]]})}
         ${field("رقم الهاتف", "phone", emp, {ltr:true})}
         ${field("البريد الإلكتروني", "email", emp, {ltr:true})}
@@ -837,7 +883,9 @@ function renderPanel(emp) {
       full_name:             g("full_name") || "",
       mother_name:           g("mother_name"),
       father_birthplace:     g("father_birthplace"),
+      father_birthdate:      g("father_birthdate"),
       mother_birthplace:     g("mother_birthplace"),
+      mother_birthdate:      g("mother_birthdate"),
       gender:                g("gender"),
       birthdate:             g("birthdate"),
       birthplace:            g("birthplace"),
@@ -968,13 +1016,25 @@ function attachTabEvents(emp) {
 
   if (_activeTab === "documents" && emp) {
     api.auditDocumentView(emp.id, "employee_documents").catch(() => {});
+    bindAttachmentDownloadButtons(panel);
+    panel.querySelector("#btn-delete-photo")?.addEventListener("click", async event => {
+      const button = event.currentTarget;
+      try {
+        if (!(await confirmAction("تأكيد حذف الصورة الشخصية؟"))) return;
+        button.disabled = true;
+        await api.deleteEmployeePhoto(emp.id);
+        await refreshDocumentAttachments(emp.id);
+        showToast("تم حذف الصورة الشخصية");
+      } catch (error) { showToast(error?.message ?? String(error), "error"); }
+      finally { button.disabled = false; }
+    });
     panel.querySelector("#btn-upload-photo")?.addEventListener("click", async () => {
       try {
         collectVisiblePanelFields(panel);
         const { open } = await import("@tauri-apps/plugin-dialog");
         const selected = await open({
           multiple: false,
-          filters: [{ name: "الصورة الشخصية", extensions: ["jpg", "jpeg", "png"] }],
+          filters: [{ name: "الصورة الشخصية", extensions: ["jpg", "jpeg", "png", "webp"] }],
         });
         if (!selected) return;
         if (!(await confirmAction("تأكيد رفع الصورة الشخصية؟"))) return;
@@ -997,7 +1057,7 @@ function attachTabEvents(emp) {
           const { open } = await import("@tauri-apps/plugin-dialog");
           const selected = await open({
             multiple: false,
-            filters: [{ name: `ملفات ${cardName}`, extensions: ["jpg", "jpeg", "pdf"] }],
+            filters: [{ name: `ملفات ${cardName}`, extensions: DOCUMENT_EXTENSIONS }],
           });
           if (!selected) return;
           if (!(await confirmAction(`تأكيد رفع ${btn.dataset.side === "front" ? "الوجه الأمامي" : "الوجه الخلفي"} لـ${cardName}؟`))) return;
@@ -1038,7 +1098,7 @@ function attachTabEvents(emp) {
         const { open } = await import("@tauri-apps/plugin-dialog");
         const selected = await open({
           multiple: false,
-          filters: [{ name: "نسخة جواز السفر", extensions: ["jpg", "jpeg", "pdf"] }],
+          filters: [{ name: "نسخة جواز السفر", extensions: DOCUMENT_EXTENSIONS }],
         });
         if (!selected) return;
         if (!(await confirmAction("تأكيد رفع نسخة جواز السفر؟"))) return;
@@ -1066,7 +1126,7 @@ function attachTabEvents(emp) {
         const { open } = await import("@tauri-apps/plugin-dialog");
         const selected = await open({
           multiple: false,
-          filters: [{ name: "نسخة البطاقة التموينية", extensions: ["jpg", "jpeg", "pdf"] }],
+          filters: [{ name: "نسخة البطاقة التموينية", extensions: DOCUMENT_EXTENSIONS }],
         });
         if (!selected) return;
         if (!(await confirmAction("تأكيد رفع نسخة البطاقة التموينية؟"))) return;
@@ -1104,6 +1164,7 @@ function attachTabEvents(emp) {
       addSpouseRow(config);
     });
     renderFamilyList(emp);
+    bindAttachmentDownloadButtons(panel);
     panel.querySelector("#btn-add-member")?.addEventListener("click", () => {
       markPanelDirty();
       addFamilyRow();
@@ -1233,7 +1294,7 @@ function renderSpouseList(emp) {
         const { open } = await import("@tauri-apps/plugin-dialog");
         const selected = await open({
           multiple: false,
-          filters: [{ name: "مرفق البطاقة الوطنية", extensions: ["jpg", "jpeg", "pdf"] }],
+          filters: [{ name: "مرفق البطاقة الوطنية", extensions: DOCUMENT_EXTENSIONS }],
         });
         if (!selected) return;
         const sideName = btn.dataset.side === "front" ? "الوجه الأمامي" : "الوجه الخلفي";
@@ -1268,8 +1329,8 @@ function spouseAttachmentCard(label, side, spouse, spouseIndex, maxSpouses = 4) 
   const name = path?.split(/[/\\]/).pop();
   const extension = name?.split(".").pop()?.toLowerCase();
   const assetUrl = fullPath ? convertFileSrc(fullPath) : "";
-  const preview = assetUrl && ["jpg", "jpeg"].includes(extension)
-    ? `<img src="${escHtml(assetUrl)}" alt="${escHtml(label)}" style="display:block;max-width:100%;height:auto;border:1px solid #2d2d2d;border-radius:6px;margin:0 auto 8px" />`
+  const preview = assetUrl && ["jpg", "jpeg", "png", "webp"].includes(extension)
+    ? `<img data-scan-path="${escHtml(path)}" src="${escHtml(assetUrl)}" alt="${escHtml(label)}" style="display:block;max-width:100%;height:auto;border:1px solid #2d2d2d;border-radius:6px;margin:0 auto 8px" />`
     : assetUrl && extension === "pdf"
       ? `<iframe src="${escHtml(assetUrl)}" title="${escHtml(label)}" style="display:block;width:100%;height:160px;background:#fff;border:1px solid #2d2d2d;border-radius:6px;margin-bottom:8px"></iframe>`
       : "";
@@ -1280,6 +1341,7 @@ function spouseAttachmentCard(label, side, spouse, spouseIndex, maxSpouses = 4) 
     <p style="font-size:10px;color:${name ? "#9ca3af" : "#6b7280"};word-break:break-all;margin-bottom:8px">${name ? escHtml(name) : "لم يرفع ملف"}</p>
     ${canUpload ? `<div style="display:flex;gap:6px;flex-wrap:wrap">
       <button type="button" class="btn-secondary text-xs px-2 py-1 btn-upload-spouse-card" data-spouse-index="${spouseIndex}" data-side="${side}">${name ? "استبدال" : "رفع"}</button>
+      ${name && can(_currentUser, "documents.download") ? `<button type="button" class="btn-secondary text-xs px-2 py-1 btn-download-attachment" data-path="${escHtml(path)}">تحميل</button>` : ""}
       ${name ? `<button type="button" class="btn-danger text-xs px-2 py-1 btn-delete-spouse-card" data-spouse-index="${spouseIndex}" data-side="${side}">حذف</button>` : ""}
     </div>` : `<p style="font-size:10px;color:#6b7280">احفظ سجل الموظف أولاً</p>`}
   </div>`;
@@ -1403,7 +1465,7 @@ function renderFamilyList(emp) {
         const { open } = await import("@tauri-apps/plugin-dialog");
         const selected = await open({
           multiple: false,
-          filters: [{ name: "مرفق البطاقة الوطنية", extensions: ["jpg", "jpeg", "pdf"] }],
+          filters: [{ name: "مرفق البطاقة الوطنية", extensions: DOCUMENT_EXTENSIONS }],
         });
         if (!selected) return;
         const sideName = btn.dataset.side === "front" ? "الوجه الأمامي" : "الوجه الخلفي";
@@ -1438,8 +1500,8 @@ function familyAttachmentCard(label, side, member, memberIndex) {
   const name = path?.split(/[/\\]/).pop();
   const extension = name?.split(".").pop()?.toLowerCase();
   const assetUrl = fullPath ? convertFileSrc(fullPath) : "";
-  const preview = assetUrl && ["jpg", "jpeg"].includes(extension)
-    ? `<img src="${escHtml(assetUrl)}" alt="${escHtml(label)}" style="display:block;max-width:100%;height:auto;border:1px solid #2d2d2d;border-radius:6px;margin:0 auto 8px" />`
+  const preview = assetUrl && ["jpg", "jpeg", "png", "webp"].includes(extension)
+    ? `<img data-scan-path="${escHtml(path)}" src="${escHtml(assetUrl)}" alt="${escHtml(label)}" style="display:block;max-width:100%;height:auto;border:1px solid #2d2d2d;border-radius:6px;margin:0 auto 8px" />`
     : assetUrl && extension === "pdf"
       ? `<iframe src="${escHtml(assetUrl)}" title="${escHtml(label)}" style="display:block;width:100%;height:160px;background:#fff;border:1px solid #2d2d2d;border-radius:6px;margin-bottom:8px"></iframe>`
       : "";
@@ -1450,6 +1512,7 @@ function familyAttachmentCard(label, side, member, memberIndex) {
     <p style="font-size:10px;color:${name ? "#9ca3af" : "#6b7280"};word-break:break-all;margin-bottom:8px">${name ? escHtml(name) : "لم يرفع ملف"}</p>
     ${canUpload ? `<div style="display:flex;gap:6px;flex-wrap:wrap">
       <button type="button" class="btn-secondary text-xs px-2 py-1 btn-upload-family-card" data-member-index="${memberIndex}" data-side="${side}">${name ? "استبدال" : "رفع"}</button>
+      ${name && can(_currentUser, "documents.download") ? `<button type="button" class="btn-secondary text-xs px-2 py-1 btn-download-attachment" data-path="${escHtml(path)}">تحميل</button>` : ""}
       ${name ? `<button type="button" class="btn-danger text-xs px-2 py-1 btn-delete-family-card" data-member-index="${memberIndex}" data-side="${side}">حذف</button>` : ""}
     </div>` : `<p style="font-size:10px;color:#6b7280">احفظ سجل الموظف أولاً</p>`}
   </div>`;
