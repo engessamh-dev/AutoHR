@@ -398,11 +398,16 @@ pub fn assert_permission(conn: &Connection, username: &str, permission: &str) ->
 }
 
 pub fn app_data_path() -> std::path::PathBuf {
+    #[cfg(test)]
+    if let Some(root) = TEST_APP_DATA_ROOT.with(|value| value.borrow().clone()) { return root; }
     dirs::data_dir().unwrap_or_else(|| std::path::PathBuf::from(".")).join(if cfg!(debug_assertions) { "CNSArch-Development" } else { "CNSArch" })
 }
 
 #[cfg(test)]
 thread_local! { pub(crate) static TEST_STORAGE_ROOT: std::cell::RefCell<Option<std::path::PathBuf>> = const { std::cell::RefCell::new(None) }; }
+
+#[cfg(test)]
+thread_local! { static TEST_APP_DATA_ROOT: std::cell::RefCell<Option<PathBuf>> = const { std::cell::RefCell::new(None) }; }
 
 pub fn storage_path(_conn: &Connection) -> std::path::PathBuf {
     #[cfg(test)]
@@ -2072,8 +2077,15 @@ fn create_backup_archive(
     zip.finish().map_err(|e| AppError::Other(e.to_string()))?;
     progress(backup_progress(90, "جاري تشفير النسخة الاحتياطية..."));
     let plaintext = std::fs::read(archive.path()).map_err(|e| AppError::Other(e.to_string()))?;
-    std::fs::write(path, encrypt_backup(&plaintext, password, BACKUP_MAGIC_V2)?)
+    // Verify bytes read back from the destination volume before publishing the backup.
+    let mut pending = tempfile::NamedTempFile::new_in(path.parent().ok_or_else(|| AppError::Validation("Invalid backup destination".into()))?)
         .map_err(|e| AppError::Other(e.to_string()))?;
+    pending.write_all(&encrypt_backup(&plaintext, password, BACKUP_MAGIC_V2)?)
+        .map_err(|e| AppError::Other(e.to_string()))?;
+    pending.as_file().sync_all().map_err(|e| AppError::Other(e.to_string()))?;
+    progress(backup_progress(94, "جاري فحص SHA-256 وفك الضغط وتجربة الاستعادة المؤقتة..."));
+    verify_written_backup(pending.path(), password)?;
+    pending.persist_noclobber(path).map_err(|e| AppError::Other(e.to_string()))?;
     progress(backup_progress(100, "اكتمل إنشاء النسخة الاحتياطية"));
     Ok(())
 }
@@ -2328,7 +2340,11 @@ where
 }
 
 fn validate_database(path: &Path) -> AppResult<()> {
-    let source_conn = Connection::open(path)?;
+    let source_conn = Connection::open_with_flags(path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)?;
+    validate_database_connection(&source_conn)
+}
+
+fn validate_database_connection(source_conn: &Connection) -> AppResult<()> {
     source_conn.query_row("PRAGMA integrity_check", [], |r| r.get::<_, String>(0))
         .and_then(|result| if result == "ok" { Ok(result) } else { Err(rusqlite::Error::InvalidQuery) })?;
     let required_tables: i64 = source_conn.query_row(
@@ -2462,7 +2478,32 @@ fn extract_and_validate_backup(plaintext: &[u8], staging: &Path) -> AppResult<Ba
     }
     validate_database(&staging.join("database.db"))?;
     validate_backup_references(&staging.join("database.db"), staging)?;
+    trial_restore_database(&staging.join("database.db"))?;
     Ok(manifest)
+}
+
+// Exercise the real SQLite restore API in isolation before touching live data.
+fn trial_restore_database(source: &Path) -> AppResult<()> {
+    let trial = tempfile::tempdir().map_err(|e| AppError::Other(e.to_string()))?;
+    let mut conn = Connection::open(trial.path().join("trial.db"))?;
+    conn.restore(rusqlite::DatabaseName::Main, source, None::<fn(rusqlite::backup::Progress)>)?;
+    crate::scanner::ensure_metadata_columns(&conn)?;
+    validate_database_connection(&conn)
+}
+
+fn verify_written_backup(path: &Path, password: &str) -> AppResult<()> {
+    let size = std::fs::metadata(path).map_err(|e| AppError::Other(e.to_string()))?.len();
+    if size == 0 || size > MAX_BACKUP_SIZE {
+        return Err(AppError::Validation("The backup file is empty or too large".into()));
+    }
+    let encrypted = std::fs::read(path).map_err(|e| AppError::Other(e.to_string()))?;
+    let (legacy, plaintext) = decrypt_backup(&encrypted, password)?;
+    if legacy {
+        return Err(AppError::Validation("Full backup verification requires a v2 backup".into()));
+    }
+    let staging = tempfile::tempdir().map_err(|e| AppError::Other(e.to_string()))?;
+    extract_and_validate_backup(&plaintext, staging.path())?;
+    Ok(())
 }
 
 pub fn restore_backup_with_progress<F>(conn: &mut Connection, user: &str, source_path: &str, password: &str, mut progress: F) -> AppResult<()>
@@ -2487,7 +2528,7 @@ where
     if is_legacy {
         return Err(AppError::Validation("This legacy database-only backup cannot safely restore attachments. Use an AutoHR v2 full backup.".into()));
     }
-    progress(backup_progress(28, "جاري استخراج النسخة والتحقق من سلامتها..."));
+    progress(backup_progress(28, "جاري فحص SHA-256 وفك الضغط وتجربة الاستعادة المؤقتة..."));
     let staging = tempfile::tempdir_in(app_data_path()).map_err(|e| AppError::Other(e.to_string()))?;
     extract_and_validate_backup(&plaintext, staging.path())?;
     progress(backup_progress(40, "جاري حفظ سجل التدقيق الحالي..."));
@@ -2644,6 +2685,56 @@ pub fn set_document_types(conn: &Connection, user: &str, types: &[String]) -> Ap
 mod phase3_security_tests {
     use super::*;
 
+    #[test]
+    fn daily_backup_after_employee_change_is_verified_and_not_repeated() {
+        let dir = tempfile::tempdir().unwrap();
+        struct ResetRoot;
+        impl Drop for ResetRoot {
+            fn drop(&mut self) { TEST_APP_DATA_ROOT.with(|root| *root.borrow_mut() = None); }
+        }
+        TEST_APP_DATA_ROOT.with(|root| *root.borrow_mut() = Some(dir.path().to_path_buf()));
+        let _reset = ResetRoot;
+        let conn = Connection::open(dir.path().join("database.db")).unwrap();
+        conn.execute_batch(include_str!("../../database/schema.sql")).unwrap();
+        conn.execute("INSERT INTO users(username,password,role) VALUES('testadmin','unused','system_admin')", []).unwrap();
+        set_setting(&conn, "auto_backup_daily_enabled", "1").unwrap();
+        set_setting(&conn, "auto_backup_password", "strong-password").unwrap();
+        // No data changes means no backup.
+        assert!(run_due_automatic_backups_with_progress(&conn, |_| {}).unwrap().is_empty());
+        conn.execute("INSERT INTO employees(id,full_name) VALUES(1,'Before change')", []).unwrap();
+        log_activity(&conn, "testadmin", "CREATE_EMPLOYEE", Some("employee"), Some(1), None, None);
+        assert_eq!(run_due_automatic_backups_with_progress(&conn, |_| {}).unwrap(), vec!["يومي"]);
+        let first_path = get_setting(&conn, "auto_backup_last_daily_path").unwrap().unwrap();
+        verify_written_backup(Path::new(&first_path), "strong-password").unwrap();
+        // Login/logout and reading documents must not cause another backup.
+        for action in ["LOGIN", "LOGOUT", "VIEW_DOCUMENT"] {
+            log_activity(&conn, "testadmin", action, Some("employee"), Some(1), None, None);
+        }
+        assert!(run_due_automatic_backups_with_progress(&conn, |_| {}).unwrap().is_empty());
+        std::thread::sleep(std::time::Duration::from_millis(1100));
+        conn.execute("UPDATE employees SET full_name='After change' WHERE id=1", []).unwrap();
+        log_activity(&conn, "testadmin", "UPDATE_EMPLOYEE", Some("employee"), Some(1), None, None);
+        assert_eq!(run_due_automatic_backups_with_progress(&conn, |_| {}).unwrap(), vec!["يومي"]);
+        let second_path = get_setting(&conn, "auto_backup_last_daily_path").unwrap().unwrap();
+        assert_ne!(first_path, second_path);
+        assert!(Path::new(&first_path).is_file());
+        let encrypted = std::fs::read(&second_path).unwrap();
+        let (_, plaintext) = decrypt_backup(&encrypted, "strong-password").unwrap();
+        let staging = tempfile::tempdir().unwrap();
+        extract_and_validate_backup(&plaintext, staging.path()).unwrap();
+        let restored = Connection::open(staging.path().join("database.db")).unwrap();
+        let name: String = restored.query_row("SELECT full_name FROM employees WHERE id=1", [], |r| r.get(0)).unwrap();
+        assert_eq!(name, "After change");
+        assert!(run_due_automatic_backups_with_progress(&conn, |_| {}).unwrap().is_empty());
+        conn.execute("UPDATE employees SET full_name='Disabled backup' WHERE id=1", []).unwrap();
+        log_activity(&conn, "testadmin", "UPDATE_EMPLOYEE", Some("employee"), Some(1), None, None);
+        set_setting(&conn, "auto_backup_daily_enabled", "0").unwrap();
+        assert!(run_due_automatic_backups_with_progress(&conn, |_| {}).unwrap().is_empty());
+        set_setting(&conn, "auto_backup_daily_enabled", "1").unwrap();
+        set_setting(&conn, "auto_backup_password", "").unwrap();
+        assert!(run_due_automatic_backups_with_progress(&conn, |_| {}).unwrap().is_empty());
+    }
+
     fn backup_test_archive(hash_override: Option<&str>) -> Vec<u8> {
         let dir = tempfile::tempdir().unwrap();
         let db_path = dir.path().join("database.db");
@@ -2684,6 +2775,36 @@ mod phase3_security_tests {
             writer.write_all(&bytes).unwrap();
         }
         writer.finish().unwrap().into_inner()
+    }
+
+    #[test]
+    fn written_backup_verification_roundtrip_and_corruption() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("test.autohrbak");
+        let encrypted = encrypt_backup(&backup_test_archive(None), "strong-password", BACKUP_MAGIC_V2).unwrap();
+        std::fs::write(&path, &encrypted).unwrap();
+        verify_written_backup(&path, "strong-password").unwrap();
+        assert!(verify_written_backup(&path, "wrong-password").is_err());
+        let mut damaged = encrypted;
+        *damaged.last_mut().unwrap() ^= 1;
+        std::fs::write(&path, damaged).unwrap();
+        assert!(verify_written_backup(&path, "strong-password").is_err());
+        let invalid = encrypt_backup(&backup_test_archive(Some("invalid-hash")), "strong-password", BACKUP_MAGIC_V2).unwrap();
+        std::fs::write(&path, invalid).unwrap();
+        assert!(verify_written_backup(&path, "strong-password").is_err());
+    }
+
+    #[test]
+    fn trial_restore_rejects_invalid_database_and_leaves_source_unchanged() {
+        let dir = tempfile::tempdir().unwrap();
+        let staging = dir.path().join("staging");
+        extract_and_validate_backup(&backup_test_archive(None), &staging).unwrap();
+        let source = staging.join("database.db");
+        let before = sha256_file(&source).unwrap();
+        trial_restore_database(&source).unwrap();
+        assert_eq!(before, sha256_file(&source).unwrap());
+        std::fs::write(&source, b"damaged SQLite database").unwrap();
+        assert!(trial_restore_database(&source).is_err());
     }
 
     #[test]

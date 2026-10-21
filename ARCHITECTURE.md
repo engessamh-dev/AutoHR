@@ -95,6 +95,14 @@ snapshot, the managed attachment/document data tree, and a SHA-256 manifest. Res
 staging, validates all database relationships and referenced files, creates a full pre-restore backup,
 then swaps the data directory and database before requiring re-authentication.
 
+All backup categories write to a temporary file on the destination volume and sync it to disk.
+Before publishing the final filename, the application reads that file back, authenticates/decrypts it,
+decompresses every entry, checks manifest sizes and SHA-256 hashes, validates SQLite integrity and
+foreign keys, and checks referenced attachments. Verification also restores SQLite into an isolated
+temporary database and validates the restored database. Failed verification removes the temporary
+backup and does not report success. Existing final backup files are never overwritten.
+The same isolated restore trial runs when opening a backup for restoration, before changing live data.
+
 ---
 
 ## Build
