@@ -1140,10 +1140,10 @@ mod report_export_tests {
     use super::*;
 
     #[test]
-    fn shipped_config_has_updater_placeholder_until_a_real_key_is_added() {
+    fn shipped_config_has_a_real_updater_public_key() {
         let config: serde_json::Value = serde_json::from_str(include_str!("../tauri.conf.json")).unwrap();
         let updater = &config["plugins"]["updater"];
-        assert!(updater["pubkey"].is_string());
+        assert!(is_real_pubkey(updater["pubkey"].as_str().unwrap()), "the real public key must be configured");
         assert!(!is_real_pubkey("REPLACE_WITH_PUBLIC_KEY_FROM_TAURI_SIGNER_GENERATE"));
         assert!(!is_real_pubkey("  "));
         assert!(is_real_pubkey("dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk="));
