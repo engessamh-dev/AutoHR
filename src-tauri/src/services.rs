@@ -359,25 +359,18 @@ pub fn role_permissions(role: &str) -> &'static [&'static str] {
             "dashboard.view", "employees.view", "employees.create", "employees.edit", "employees.delete",
             "documents.view", "documents.manage", "documents.upload", "documents.download", "documents.delete", "documents.print",
             "users.manage", "users.assign_system_admin", "audit.view", "settings.manage", "backups.manage",
-            "hr.dashboard.view", "hr.employees.view", "hr.employees.manage", "hr.rules.view", "hr.rules.manage",
-            "hr.appreciations.manage", "hr.penalties.manage", "hr.reports.view", "hr.audit.view", "hr.override.manage",
         ],
         "archive_admin" => &[
             "dashboard.view", "employees.view", "employees.create", "employees.edit", "employees.delete",
             "documents.view", "documents.manage", "documents.upload", "documents.download", "documents.delete", "documents.print",
             "users.manage", "audit.view", "settings.manage", "backups.manage",
-            "hr.dashboard.view", "hr.employees.view", "hr.employees.manage", "hr.rules.view", "hr.rules.manage",
-            "hr.appreciations.manage", "hr.penalties.manage", "hr.reports.view", "hr.audit.view", "hr.override.manage",
         ],
         "archive_officer" => &[
             "dashboard.view", "employees.view", "employees.create", "employees.edit",
             "documents.view", "documents.upload", "documents.download", "documents.print", "audit.view",
-            "hr.dashboard.view", "hr.employees.view", "hr.employees.manage",
-            "hr.appreciations.manage", "hr.penalties.manage", "hr.reports.view",
         ],
         "viewer" => &[
             "dashboard.view", "employees.view", "documents.view", "documents.print",
-            "hr.dashboard.view", "hr.employees.view", "hr.rules.view", "hr.reports.view",
         ],
         _ => &[],
     }
@@ -599,9 +592,66 @@ fn normalize_document_types(types: &[String]) -> Vec<String> {
 }
 
 // ── Auth ───────────────────────────────────────────────────────────────────
+const LOGIN_MAX_FAILURES: u32 = 5;
+const LOGIN_LOCKOUT: std::time::Duration = std::time::Duration::from_secs(5 * 60);
+
+/// Failed sign-in attempts per username, kept in memory for the running process.
+static LOGIN_FAILURES: std::sync::Mutex<Option<std::collections::HashMap<String, (u32, std::time::Instant)>>> =
+    std::sync::Mutex::new(None);
+
+fn login_key(username: &str) -> String {
+    username.trim().to_lowercase()
+}
+
+fn login_locked_remaining(username: &str) -> Option<std::time::Duration> {
+    let mut guard = LOGIN_FAILURES.lock().unwrap_or_else(|e| e.into_inner());
+    let map = guard.get_or_insert_with(Default::default);
+    let key = login_key(username);
+    let (count, last) = *map.get(&key)?;
+    if count < LOGIN_MAX_FAILURES { return None; }
+    let elapsed = last.elapsed();
+    if elapsed >= LOGIN_LOCKOUT {
+        map.remove(&key);
+        return None;
+    }
+    Some(LOGIN_LOCKOUT - elapsed)
+}
+
+fn record_login_failure(username: &str) {
+    let mut guard = LOGIN_FAILURES.lock().unwrap_or_else(|e| e.into_inner());
+    let entry = guard.get_or_insert_with(Default::default)
+        .entry(login_key(username))
+        .or_insert((0, std::time::Instant::now()));
+    entry.0 = entry.0.saturating_add(1);
+    entry.1 = std::time::Instant::now();
+}
+
+fn clear_login_failures(username: &str) {
+    let mut guard = LOGIN_FAILURES.lock().unwrap_or_else(|e| e.into_inner());
+    if let Some(map) = guard.as_mut() { map.remove(&login_key(username)); }
+}
+
+/// Arabic count agreement for minutes: 1 دقيقة واحدة, 2 دقيقتين, 3-10 دقائق, 11+ دقيقة.
+fn arabic_minutes(minutes: u64) -> String {
+    match minutes {
+        1 => "دقيقة واحدة".into(),
+        2 => "دقيقتين".into(),
+        3..=10 => format!("{minutes} دقائق"),
+        _ => format!("{minutes} دقيقة"),
+    }
+}
+
 pub fn login(conn: &Connection, username: &str, password: &str) -> AppResult<User> {
     if username.trim().is_empty() || username.len() > 64 || password.is_empty() || password.len() > 256 {
         return Err(AppError::Validation("Enter a valid username and password".into()));
+    }
+    if let Some(remaining) = login_locked_remaining(username) {
+        log_audit(conn, Some(username), "LOGIN", Some("session"), None, None, "Failure", Some("Account temporarily locked"));
+        let minutes = remaining.as_secs().div_ceil(60).max(1);
+        return Err(AppError::Validation(format!(
+            "تم إيقاف تسجيل الدخول لهذا الحساب مؤقتًا بسبب تكرار المحاولات الفاشلة. حاول بعد {}.",
+            arabic_minutes(minutes)
+        )));
     }
     let row = match conn.query_row(
         "SELECT id,username,password,role,must_change_password,created_at FROM users WHERE username=?1",
@@ -613,14 +663,17 @@ pub fn login(conn: &Connection, username: &str, password: &str) -> AppResult<Use
     ) {
         Ok(row) => row,
         Err(_) => {
+            record_login_failure(username);
             log_audit(conn, Some(username), "LOGIN", Some("session"), None, None, "Failure", Some("Unknown username"));
             return Err(AppError::Unauthorized);
         }
     };
     if !verify_password(password, &row.2)? {
+        record_login_failure(username);
         log_audit(conn, Some(username), "LOGIN", Some("session"), None, None, "Failure", Some("Invalid password"));
         return Err(AppError::Unauthorized);
     }
+    clear_login_failures(username);
     if !row.2.starts_with("$2") {
         conn.execute("UPDATE users SET password=?1 WHERE id=?2", params![hash_password(password)?, row.0])?;
     }
@@ -1358,9 +1411,11 @@ pub fn update_general_doc(conn: &Connection, id: i64, data: &GeneralDocData, use
     assert_permission(conn, username, "documents.manage")?;
     validate_document_data(data)?;
     let tx = conn.unchecked_transaction()?;
-    tx.execute("UPDATE general_docs SET title=?1,doc_type=NULL,doc_number=?2,issue_date=?3,issuer=?4,doc_count=?5,margin=?6,is_internal_memo=?7,hr_effect_type=?8,hr_affects_promotion=?9,hr_affects_allowance=?10,hr_effect_months=?11,hr_effect_days=?12,notes=?13,updated_at=datetime('now') WHERE id=?14",
+    // The HR effect fields are no longer edited from the UI. They are intentionally left out of
+    // this UPDATE so that values already stored on existing documents are preserved.
+    tx.execute("UPDATE general_docs SET title=?1,doc_type=NULL,doc_number=?2,issue_date=?3,issuer=?4,doc_count=?5,margin=?6,is_internal_memo=?7,notes=?8,updated_at=datetime('now') WHERE id=?9",
         params![data.title.trim(),data.doc_number,data.issue_date,data.issuer,data.doc_count,data.margin,data.is_internal_memo,
-            data.hr_effect_type.as_deref().unwrap_or("none"),data.hr_affects_promotion,data.hr_affects_allowance,data.hr_effect_months,data.hr_effect_days,data.notes,id])?;
+            data.notes,id])?;
     if tx.changes() == 0 { return Err(AppError::NotFound); }
     replace_general_doc_employees(&tx, id, &data.employee_ids)?;
     log_activity(&tx, username, "UPDATE_DOC", Some("general_doc"), Some(id), Some(data.title.trim()), None);
@@ -1660,7 +1715,7 @@ pub fn create_user(conn: &Connection, caller: &str, data: &UserData) -> AppResul
     validate_new_password(&data.password)?;
     let count: i64 = conn.query_row("SELECT COUNT(*) FROM users", [], |r| r.get(0))?;
     if count >= 10 { return Err(AppError::Validation("Max 10 users".into())); }
-    conn.execute("INSERT INTO users(username,password,role,must_change_password) VALUES(?1,?2,?3,0)",
+    conn.execute("INSERT INTO users(username,password,role,must_change_password) VALUES(?1,?2,?3,1)",
         params![data.username.trim(), hash_password(&data.password)?, data.role])?;
     let id = conn.last_insert_rowid();
     log_activity(conn, caller, "CREATE_USER", Some("user"), Some(id), Some(data.username.trim()), None);
@@ -1677,9 +1732,11 @@ pub fn create_user(conn: &Connection, caller: &str, data: &UserData) -> AppResul
 
 pub fn delete_user(conn: &Connection, caller: &str, id: i64) -> AppResult<()> {
     assert_permission(conn, caller, "users.manage")?;
-    let username: String = conn.query_row("SELECT username FROM users WHERE id=?1", params![id], |r| r.get(0))
-        .map_err(|_| AppError::NotFound)?;
+    let (username, role): (String, String) = conn.query_row(
+        "SELECT username,role FROM users WHERE id=?1", params![id], |r| Ok((r.get(0)?, r.get(1)?))
+    ).map_err(|_| AppError::NotFound)?;
     if username == "sysadmin" { return Err(AppError::Validation("Cannot delete sysadmin".into())); }
+    if role == "system_admin" { assert_permission(conn, caller, "users.assign_system_admin")?; }
     conn.execute("DELETE FROM users WHERE id=?1", params![id])?;
     log_activity(conn, caller, "DELETE_USER", Some("user"), Some(id), Some(&username), None);
     Ok(())
@@ -1829,6 +1886,61 @@ mod auth_tests {
         ).unwrap();
         assert!(assert_permission(&conn, "archiveadmin", "users.manage").is_ok());
         assert!(assert_permission(&conn, "archiveadmin", "users.assign_system_admin").is_err());
+    }
+
+    #[test]
+    fn archive_admin_cannot_delete_system_admin() {
+        let conn = auth_db();
+        for (name, role) in [("archiveadmin2", "archive_admin"), ("secondadmin", "system_admin"), ("officer1", "archive_officer")] {
+            conn.execute(
+                "INSERT INTO users(username,password,role) VALUES(?1,?2,?3)",
+                params![name, hash_password("admin-password").unwrap(), role],
+            ).unwrap();
+        }
+        let id = |name: &str| conn.query_row("SELECT id FROM users WHERE username=?1", params![name], |r| r.get::<_, i64>(0)).unwrap();
+        assert!(matches!(delete_user(&conn, "archiveadmin2", id("secondadmin")), Err(AppError::Unauthorized)));
+        assert!(delete_user(&conn, "archiveadmin2", id("officer1")).is_ok());
+        let remaining: i64 = conn.query_row("SELECT COUNT(*) FROM users WHERE username='secondadmin'", [], |r| r.get(0)).unwrap();
+        assert_eq!(remaining, 1);
+    }
+
+    #[test]
+    fn repeated_failed_logins_lock_the_username_temporarily() {
+        let conn = auth_db();
+        conn.execute(
+            "INSERT INTO users(username,password,role) VALUES('lockme',?1,'viewer')",
+            params![hash_password("correct-password").unwrap()],
+        ).unwrap();
+        for _ in 0..LOGIN_MAX_FAILURES {
+            assert!(matches!(login(&conn, "lockme", "wrong-password"), Err(AppError::Unauthorized)));
+        }
+        // Even the correct password is refused while locked.
+        assert!(matches!(login(&conn, "LockMe", "correct-password"), Err(AppError::Validation(_))));
+        clear_login_failures("lockme");
+        assert!(login(&conn, "lockme", "correct-password").is_ok());
+    }
+
+    #[test]
+    fn lockout_minutes_use_arabic_number_agreement() {
+        assert_eq!(arabic_minutes(1), "دقيقة واحدة");
+        assert_eq!(arabic_minutes(2), "دقيقتين");
+        assert_eq!(arabic_minutes(5), "5 دقائق");
+        assert_eq!(arabic_minutes(11), "11 دقيقة");
+    }
+
+    #[test]
+    fn successful_login_resets_failure_count() {
+        let conn = auth_db();
+        conn.execute(
+            "INSERT INTO users(username,password,role) VALUES('resetme',?1,'viewer')",
+            params![hash_password("correct-password").unwrap()],
+        ).unwrap();
+        for _ in 0..LOGIN_MAX_FAILURES - 1 {
+            assert!(login(&conn, "resetme", "wrong-password").is_err());
+        }
+        assert!(login(&conn, "resetme", "correct-password").is_ok());
+        assert!(login(&conn, "resetme", "wrong-password").is_err());
+        assert!(login(&conn, "resetme", "correct-password").is_ok());
     }
 
     #[test]
@@ -2922,6 +3034,36 @@ mod phase3_security_tests {
         move_general_doc_attachment(&conn, 7, "third.pdf", "down").unwrap();
         assert_eq!(ordered(), vec!["first.pdf", "second.pdf", "third.pdf"]);
     }
+}
+
+#[cfg(test)]
+#[test]
+fn updating_a_general_doc_preserves_stored_hr_effect() {
+    let conn = Connection::open_in_memory().unwrap();
+    crate::db::initialize_test(&conn).unwrap();
+    conn.execute(
+        "INSERT INTO users(username,password,role) VALUES('docadmin',?1,'archive_admin')",
+        params![hash_password("admin-password").unwrap()],
+    ).unwrap();
+    conn.execute(
+        "INSERT INTO general_docs(title,hr_effect_type,hr_affects_promotion,hr_affects_allowance,hr_effect_months,hr_effect_days)
+         VALUES('Legacy','appreciation',1,0,3,10)",
+        [],
+    ).unwrap();
+    let id = conn.last_insert_rowid();
+    let data = GeneralDocData {
+        title: "Edited".into(), doc_type: None, doc_number: None, issue_date: None, issuer: None,
+        doc_count: None, margin: None, is_internal_memo: false,
+        hr_effect_type: None, hr_affects_promotion: false, hr_affects_allowance: false,
+        hr_effect_months: 0, hr_effect_days: 0, notes: None, employee_ids: vec![],
+    };
+    update_general_doc(&conn, id, &data, "docadmin").unwrap();
+    let stored: (String, String, i64, i64, i64, i64) = conn.query_row(
+        "SELECT title,hr_effect_type,hr_affects_promotion,hr_affects_allowance,hr_effect_months,hr_effect_days FROM general_docs WHERE id=?1",
+        params![id],
+        |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?)),
+    ).unwrap();
+    assert_eq!(stored, ("Edited".into(), "appreciation".into(), 1, 0, 3, 10));
 }
 
 #[cfg(test)]

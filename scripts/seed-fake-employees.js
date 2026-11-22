@@ -1,19 +1,31 @@
 #!/usr/bin/env node
 import Database from "better-sqlite3";
 import { existsSync, readFileSync } from "fs";
-import { dirname, join } from "path";
+import { basename, dirname, join, resolve } from "path";
 import { fileURLToPath } from "url";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const root = join(__dirname, "..");
 const schemaPath = join(root, "database", "schema.sql");
 const bundledDb = join(root, "src-tauri", "resources", "database.db");
-const runtimeDb = process.env.APPDATA ? join(process.env.APPDATA, "CNSArch", "database.db") : null;
+// Fake data must never reach the production data root (%APPDATA%\CNSArch).
+// Only the Development runtime database may be targeted, and only on request.
+const includeDevRuntime = process.argv.includes("--dev-runtime");
+const devRuntimeDb = process.env.APPDATA ? join(process.env.APPDATA, "CNSArch-Development", "database.db") : null;
+
+function assertNotProduction(dbPath) {
+  const parent = basename(dirname(resolve(dbPath))).toLowerCase();
+  if (parent === "cnsarch") {
+    console.error(`Refusing to seed fake employees into the production database: ${dbPath}`);
+    process.exit(1);
+  }
+}
 
 const targets = [
   ["bundled", bundledDb],
-  ...(runtimeDb && existsSync(runtimeDb) ? [["runtime", runtimeDb]] : []),
+  ...(includeDevRuntime && devRuntimeDb && existsSync(devRuntimeDb) ? [["development", devRuntimeDb]] : []),
 ];
+for (const [, dbPath] of targets) assertNotProduction(dbPath);
 
 const grades = ["الدرجة الرابعة", "الدرجة الخامسة", "الدرجة السادسة", "الدرجة السابعة", "الدرجة الثامنة", "الدرجة التاسعة", "الدرجة العاشرة"];
 const departments = [

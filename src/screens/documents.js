@@ -1,7 +1,7 @@
 /**
  * documents.js — General + per-employee document archive
  */
-import { bindAttachmentScannerButtons } from "../attachments/integration.js";
+import { isScannable, reprocessAttachment } from "../attachments/scanner.js";
 import { api }       from "../api.js";
 import { showToast, escHtml, confirmAction, confirmSaveChanges } from "../utils.js";
 import { open, save } from "@tauri-apps/plugin-dialog";
@@ -86,12 +86,6 @@ export async function renderDocuments(container, user, ctx) {
 
   function generalDocAttachments(doc) {
     return doc?.attachment_paths ?? [];
-  }
-
-  function hrEffectTypeLabel(type) {
-    if (type === "appreciation") return "شكر وتقدير";
-    if (type === "penalty") return "عقوبة";
-    return "لا يؤثر";
   }
 
   async function saveDocumentTypes(types) {
@@ -381,8 +375,8 @@ export async function renderDocuments(container, user, ctx) {
       <div style="display:flex;gap:8px;border-bottom:1px solid #2d2d2d;padding-bottom:0">
         ${[["general","📂 الوارد"],["outgoing","📤 الصادر"]].map(([id, label]) => `
           <button class="doc-tab" data-tab="${id}" style="padding:8px 16px;border:none;cursor:pointer;
-            font-size:13px;border-bottom:2px solid ${activeTab===id?"#5da12c":"transparent"};
-            background:transparent;color:${activeTab===id?"#5da12c":"#9ca3af"};
+            font-size:13px;border-bottom:2px solid ${activeTab===id?"#24a9ff":"transparent"};
+            background:transparent;color:${activeTab===id?"#24a9ff":"#9ca3af"};
             font-weight:${activeTab===id?"700":"400"}">${label}</button>`).join("")}
       </div>
 
@@ -504,14 +498,13 @@ export async function renderDocuments(container, user, ctx) {
               <th class="table-header">الهامش</th>
               <th class="table-header">مذكرة داخلية</th>
               <th class="table-header">الموظفون المرتبطون</th>
-              <th class="table-header">ملف</th>
-              <th class="table-header">إجراء</th>
+              <th class="table-header">المرفقات</th>
             </tr></thead>
             <tbody>
               ${archiveDocs.length === 0
-                ? `<tr><td colspan="10" class="table-cell text-center text-gray-500 py-8">لا توجد وثائق</td></tr>`
+                ? `<tr><td colspan="9" class="table-cell text-center text-gray-500 py-8">لا توجد وثائق</td></tr>`
                 : filteredDocs.length === 0
-                  ? `<tr><td colspan="10" class="table-cell text-center text-gray-500 py-8">لا توجد نتائج مطابقة</td></tr>`
+                  ? `<tr><td colspan="9" class="table-cell text-center text-gray-500 py-8">لا توجد نتائج مطابقة</td></tr>`
                   : filteredDocs.map(d => `
                   <tr class="table-row general-doc-row" data-id="${d.id}" title="اضغط لتعديل الوثيقة">
                     <td class="table-cell font-medium text-gray-100">${escHtml(d.title || "—")}</td>
@@ -533,14 +526,9 @@ export async function renderDocuments(container, user, ctx) {
                         <span class="badge ${generalDocAttachments(d).length ? "badge-green" : "badge-gray"}"
                           style="gap:6px;font-size:12px;padding:5px 11px">
                           <span>📎</span>
-                          <span dir="ltr">${generalDocAttachments(d).length} / 20</span>
+                          <span dir="ltr">${generalDocAttachments(d).length}</span>
                         </span>
                       </button>
-                    </td>
-                    <td class="table-cell">
-                      <div class="flex gap-2 flex-wrap">
-                        <button class="btn-danger text-xs px-2 py-1 btn-del-doc" data-id="${d.id}">حذف</button>
-                      </div>
                     </td>
                   </tr>`).join("")}
             </tbody>
@@ -548,9 +536,7 @@ export async function renderDocuments(container, user, ctx) {
         </div>
       </div>`;
     if (!can(user, "documents.manage")) el.querySelectorAll("#btn-add-doc,#btn-save-doc").forEach(node => node.remove());
-    if (!can(user, "documents.delete")) el.querySelectorAll(".btn-del-doc,.btn-manager-delete").forEach(node => node.remove());
-    if (!can(user, "documents.upload")) el.querySelectorAll("#attachment-manager-add").forEach(node => node.remove());
-
+    if (!can(user, "documents.delete")) 
     el.querySelector("#btn-toggle-general-filters")?.addEventListener("click", () => {
       generalFiltersOpen = !generalFiltersOpen;
       renderGeneral();
@@ -657,18 +643,6 @@ export async function renderDocuments(container, user, ctx) {
       });
     });
 
-    el.querySelectorAll(".btn-del-doc").forEach(btn => {
-      btn.addEventListener("click", async () => {
-        if (!(await confirmAction("تأكيد حذف الوثيقة؟"))) return;
-        try {
-          await deleteCurrentDoc(parseInt(btn.dataset.id, 10));
-          await refreshCurrentDocs();
-          showToast("تم حذف الوثيقة");
-          renderGeneral();
-        } catch (err) { showToast(err?.message ?? "خطأ", "error"); }
-      });
-    });
-
     el.querySelectorAll(".btn-manage-doc-attachments").forEach(btn => {
       btn.addEventListener("click", () => openAttachmentManager(parseInt(btn.dataset.id, 10)));
     });
@@ -676,30 +650,39 @@ export async function renderDocuments(container, user, ctx) {
     restoreFocus();
   }
 
+  function attachmentKind(path) {
+    const ext = fileName(path).split(".").pop()?.toLowerCase() ?? "";
+    if (ext === "pdf") return { ext, label: "ملف PDF", short: "PDF", image: false };
+    if (["jpg", "jpeg", "png", "webp"].includes(ext)) return { ext, label: `صورة ${ext.toUpperCase()}`, short: ext.toUpperCase(), image: true };
+    if (["doc", "docx"].includes(ext)) return { ext, label: "ملف Word", short: "DOC", image: false };
+    if (["xls", "xlsx"].includes(ext)) return { ext, label: "ملف Excel", short: "XLS", image: false };
+    if (["ppt", "pptx"].includes(ext)) return { ext, label: "ملف PowerPoint", short: "PPT", image: false };
+    return { ext, label: ext ? `ملف ${ext.toUpperCase()}` : "ملف", short: ext.toUpperCase().slice(0, 4) || "FILE", image: false };
+  }
+
   function openAttachmentManager(docId, returnToTable = true) {
+    const thumbCache = new Map();
+    let closeMenu = () => {};
     const overlay = document.createElement("div");
     overlay.setAttribute("dir", "rtl");
-    overlay.style.cssText = `
-      position:fixed;inset:0;z-index:10000;background:rgba(0,0,0,.66);
-      display:flex;align-items:center;justify-content:center;padding:20px;
-    `;
+    overlay.className = "att-overlay";
     overlay.innerHTML = `
-      <div style="width:min(620px,100%);max-height:min(720px,calc(100vh - 40px));background:#1f1f1f;
-        border:1px solid #2d2d2d;border-radius:12px;box-shadow:0 18px 60px rgba(0,0,0,.5);
-        display:flex;flex-direction:column;overflow:hidden">
-        <div style="display:flex;align-items:center;justify-content:space-between;gap:12px;padding:15px 18px;border-bottom:1px solid #2d2d2d">
-          <div>
-            <p style="font-size:15px;font-weight:700;color:#f3f4f6">مرفقات الوثيقة</p>
-            <p id="attachment-manager-title" style="font-size:11px;color:#6b7280;margin-top:3px"></p>
+      <div class="att-dialog" role="dialog" aria-modal="true" aria-labelledby="attachment-manager-heading">
+        <div class="att-head">
+          <div class="att-head-text">
+            <p id="attachment-manager-heading" class="att-title">مرفقات الوثيقة</p>
+            <p id="attachment-manager-title" class="att-subtitle"></p>
           </div>
-          <button type="button" id="attachment-manager-close" class="btn-secondary">إغلاق</button>
+          <button type="button" id="attachment-manager-close" class="att-icon-btn" title="إغلاق (Esc)" aria-label="إغلاق">✕</button>
         </div>
-        <div id="attachment-manager-content" style="padding:16px;overflow:auto"></div>
+        <div id="attachment-manager-content" class="att-body"></div>
       </div>`;
     document.body.append(overlay);
 
     const close = () => {
+      closeMenu();
       document.removeEventListener("keydown", onKeyDown);
+      thumbCache.forEach(url => { if (url) URL.revokeObjectURL(url); });
       overlay.remove();
       if (returnToTable) {
         renderGeneral();
@@ -711,109 +694,215 @@ export async function renderDocuments(container, user, ctx) {
           badge.classList.toggle("badge-green", count > 0);
           badge.classList.toggle("badge-gray", count === 0);
           const countText = badge.querySelector("[dir='ltr']");
-          if (countText) countText.textContent = `${count} / 20`;
+          if (countText) countText.textContent = String(count);
         }
       }
     };
-    const onKeyDown = event => { if (event.key === "Escape") close(); };
+    const onKeyDown = event => {
+      if (event.key !== "Escape") return;
+      if (overlay.querySelector(".att-menu")) { closeMenu(); return; }
+      close();
+    };
     overlay.querySelector("#attachment-manager-close").addEventListener("click", close);
     overlay.addEventListener("click", event => { if (event.target === overlay) close(); });
     document.addEventListener("keydown", onKeyDown);
 
+    // One floating menu at a time, positioned next to the button that opened it.
+    const openMenu = (anchor, items) => {
+      const wasOpenFor = overlay.querySelector(".att-menu")?.dataset.anchorId;
+      closeMenu();
+      if (wasOpenFor && wasOpenFor === anchor.dataset.menuId) return;
+      const menu = document.createElement("div");
+      menu.className = "att-menu";
+      menu.setAttribute("role", "menu");
+      menu.dataset.anchorId = anchor.dataset.menuId;
+      items.forEach(item => {
+        if (item === "sep") { menu.append(Object.assign(document.createElement("hr"))); return; }
+        const button = document.createElement("button");
+        button.type = "button";
+        button.setAttribute("role", "menuitem");
+        button.className = item.danger ? "att-menu-item att-menu-danger" : "att-menu-item";
+        button.textContent = item.label;
+        button.disabled = Boolean(item.disabled);
+        button.addEventListener("click", async () => { closeMenu(); await item.run(); });
+        menu.append(button);
+      });
+      overlay.append(menu);
+      const rect = anchor.getBoundingClientRect();
+      const menuRect = menu.getBoundingClientRect();
+      const top = rect.bottom + 4 + menuRect.height > window.innerHeight - 8 ? rect.top - menuRect.height - 4 : rect.bottom + 4;
+      menu.style.top = `${Math.max(8, top)}px`;
+      menu.style.left = `${Math.max(8, Math.min(rect.left, window.innerWidth - menuRect.width - 8))}px`;
+      anchor.setAttribute("aria-expanded", "true");
+      const onOutside = event => { if (!menu.contains(event.target) && event.target !== anchor) closeMenu(); };
+      setTimeout(() => document.addEventListener("click", onOutside, true));
+      closeMenu = () => {
+        document.removeEventListener("click", onOutside, true);
+        anchor.setAttribute("aria-expanded", "false");
+        menu.remove();
+        closeMenu = () => {};
+      };
+      menu.querySelector("button:not(:disabled)")?.focus();
+    };
+
+    const loadThumbnails = async () => {
+      const images = [...overlay.querySelectorAll(".att-thumb[data-thumb-path]")];
+      for (const holder of images) {
+        const path = holder.dataset.thumbPath;
+        if (!thumbCache.has(path)) {
+          try { thumbCache.set(path, (await loadDocumentAsset(path)).assetUrl); }
+          catch { thumbCache.set(path, ""); }
+        }
+        const url = thumbCache.get(path);
+        if (url && holder.isConnected) holder.innerHTML = `<img src="${escHtml(url)}" alt="">`;
+      }
+    };
+
     const renderManager = () => {
+      closeMenu();
       const doc = currentDocs().find(item => item.id === docId);
       if (!doc) { close(); return; }
       const attachments = generalDocAttachments(doc);
       overlay.querySelector("#attachment-manager-title").textContent = doc.title || "وثيقة بدون جهة مصدرة";
       const content = overlay.querySelector("#attachment-manager-content");
+      const canUpload = can(user, "documents.upload");
+      const canPrint = can(user, "documents.print");
+      const canDelete = can(user, "documents.delete");
+      const canDownload = can(user, "documents.download");
+      const canManage = can(user, "documents.manage");
+      const atLimit = attachments.length >= 20;
       content.innerHTML = `
-        <div style="display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:14px">
-          <span class="badge ${attachments.length ? "badge-green" : "badge-gray"}" style="gap:6px;padding:5px 11px">
-            <span>📎</span><span dir="ltr">${attachments.length} / 20</span>
-          </span>
-          <div style="display:flex;align-items:center;gap:7px;flex-wrap:wrap">
-            ${attachments.length ? `<button type="button" id="attachment-manager-preview-all" class="btn-secondary">استعراض الكل</button>` : ""}
-            ${attachments.length && can(user, "documents.print") ? `<button type="button" id="attachment-manager-print-all" class="btn-secondary">طباعة الكل</button>` : ""}
-            ${attachments.length && can(user, "documents.delete") ? `<button type="button" id="attachment-manager-delete-all" class="btn-danger">حذف الكل</button>` : ""}
-            ${attachments.length < 20
-              ? `<button type="button" id="attachment-manager-add" class="btn-secondary">إضافة ملفات</button>`
-              : `<span style="font-size:11px;color:#6b7280">تم الوصول إلى الحد الأقصى</span>`}
-          </div>
+        <div class="att-toolbar">
+          <span class="att-count"><b dir="ltr">${attachments.length}</b> ${attachments.length === 1 ? "ملف" : "ملفات"} من 20</span>
+          ${attachments.length ? `<button type="button" id="attachment-manager-preview-all" class="btn-secondary att-btn">استعراض الكل</button>` : ""}
+          ${canUpload ? (atLimit
+            ? `<span class="att-limit">تم الوصول إلى الحد الأقصى</span>`
+            : `<button type="button" id="attachment-manager-add" class="btn-primary att-btn">＋ إضافة ملفات</button>`) : ""}
+          ${attachments.length && (canPrint || canDownload || canDelete)
+            ? `<button type="button" id="attachment-manager-more" class="att-icon-btn" data-menu-id="all" aria-haspopup="menu" aria-expanded="false" title="إجراءات على كل المرفقات" aria-label="إجراءات على كل المرفقات">⋯</button>`
+            : ""}
         </div>
-        <div style="border:1px solid #2d2d2d;border-radius:9px;overflow:hidden">
-          ${attachments.length
-            ? attachments.map((path, index) => `
-                <div style="display:flex;align-items:center;justify-content:space-between;gap:12px;
-                  padding:10px 12px;border-bottom:${index < attachments.length - 1 ? "1px solid #2d2d2d" : "none"}">
-                  <div style="display:flex;align-items:center;gap:8px;min-width:0">
-                    <span style="color:#5da12c">📎</span>
-                    <span style="font-size:12px;color:#d1d5db;word-break:break-all">
-                      ${escHtml(fileName(path).replace(/^\d+_/, ""))}
-                    </span>
-                  </div>
-                  <div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap">
-                    ${can(user, "documents.manage") ? `
-                      <button type="button" class="btn-secondary text-xs btn-manager-move" data-direction="up"
-                        data-path="${escHtml(path)}" ${index === 0 ? "disabled" : ""} title="رفع المرفق درجة">↑</button>
-                      <button type="button" class="btn-secondary text-xs btn-manager-move" data-direction="down"
-                        data-path="${escHtml(path)}" ${index === attachments.length - 1 ? "disabled" : ""} title="تنزيل المرفق درجة">↓</button>` : ""}
-                    <button type="button" class="btn-secondary text-xs btn-manager-preview" data-path="${escHtml(path)}">استعراض</button>
-                    ${can(user, "documents.download") ? `<button type="button" class="btn-secondary text-xs btn-manager-download" data-path="${escHtml(path)}">تحميل</button>` : ""}
-                    ${can(user, "documents.print") ? `<button type="button" class="btn-secondary text-xs btn-manager-print" data-path="${escHtml(path)}">طباعة</button>` : ""}
-                    <button type="button" class="btn-danger text-xs btn-manager-delete" data-path="${escHtml(path)}">حذف</button>
-                  </div>
-                </div>`).join("")
-            : `<p style="padding:28px;text-align:center;color:#6b7280;font-size:13px">لا توجد مرفقات لهذه الوثيقة</p>`}
-        </div>`;
+        ${attachments.length ? `
+          <ul class="att-list">
+            ${attachments.map((path, index) => {
+              const kind = attachmentKind(path);
+              return `
+                <li class="att-row" data-index="${index}" tabindex="0" title="اضغط للاستعراض">
+                  <span class="att-thumb ${kind.image ? "" : `att-thumb-file att-thumb-${escHtml(kind.ext)}`}" ${kind.image ? `data-thumb-path="${escHtml(path)}"` : ""}>${escHtml(kind.short)}</span>
+                  <span class="att-info">
+                    <span class="att-name">مرفق ${index + 1}</span>
+                    <span class="att-meta">${escHtml(kind.label)}</span>
+                  </span>
+                  <span class="att-actions">
+                    <button type="button" class="att-icon-btn att-act-preview" title="استعراض" aria-label="استعراض مرفق ${index + 1}">
+                      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M2 12s3.6-7 10-7 10 7 10 7-3.6 7-10 7S2 12 2 12Z"/><circle cx="12" cy="12" r="3"/></svg>
+                    </button>
+                    ${canPrint ? `<button type="button" class="att-icon-btn att-act-print" title="طباعة" aria-label="طباعة مرفق ${index + 1}">
+                      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 9V3h10v6M7 17H4v-6a2 2 0 0 1 2-2h12a2 2 0 0 1 2 2v6h-3M7 14h10v7H7z"/></svg>
+                    </button>` : ""}
+                    <button type="button" class="att-icon-btn att-act-more" data-menu-id="row-${index}" aria-haspopup="menu" aria-expanded="false" title="مزيد من الإجراءات" aria-label="مزيد من الإجراءات لمرفق ${index + 1}">⋯</button>
+                  </span>
+                </li>`;
+            }).join("")}
+          </ul>`
+          : `<div class="att-empty">
+              <p>لا توجد مرفقات لهذه الوثيقة</p>
+              ${canUpload ? `<p class="att-empty-hint">اضغط «إضافة ملفات» لرفع PDF أو صور (حتى 20 ملفاً)</p>` : ""}
+            </div>`}`;
 
-      if (!can(user, "documents.upload")) content.querySelector("#attachment-manager-add")?.remove();
-      if (!can(user, "documents.delete")) content.querySelectorAll(".btn-manager-delete").forEach(node => node.remove());
-      content.querySelectorAll(".btn-manager-move").forEach(button => {
-        button.addEventListener("click", async () => {
-          try {
-            await moveCurrentDocAttachment(docId, button.dataset.path, button.dataset.direction);
-            await refreshCurrentDocs();
-            renderManager();
-          } catch (error) { showToast(error?.message ?? "تعذر تغيير ترتيب المرفق", "error"); }
-        });
-      });
-      content.querySelector("#attachment-manager-preview-all")?.addEventListener("click", async () => {
-        try { await openAllDocumentsPreview(attachments, doc.title); }
-        catch (error) { showToast(error?.message ?? "تعذر استعراض المرفقات", "error"); }
-      });
-      content.querySelector("#attachment-manager-print-all")?.addEventListener("click", async () => {
-        try { await printAllDocuments(attachments, doc.title); }
-        catch (error) { showToast(error?.message ?? "تعذرت طباعة المرفقات", "error"); }
-      });
-      content.querySelector("#attachment-manager-delete-all")?.addEventListener("click", async () => {
-        if (!(await confirmAction(`تأكيد حذف جميع مرفقات الوثيقة (${attachments.length} ملف)؟ لا يمكن التراجع عن هذا الإجراء.`))) return;
-        try {
-          for (const path of attachments) await deleteCurrentDocAttachment(docId, path);
+      const runSafely = async (task, fallback) => {
+        try { await task(); }
+        catch (error) { showToast(error?.message ?? fallback, "error"); }
+      };
+      const previewAt = index => runSafely(
+        () => openDocumentPreview(attachments[index], fileName(attachments[index]), attachments),
+        "تعذر استعراض الوثيقة");
+      const printAt = index => runSafely(
+        () => printDocument(attachments[index], fileName(attachments[index])),
+        "تعذرت طباعة الوثيقة");
+      const moveAt = (index, direction) => runSafely(async () => {
+        await moveCurrentDocAttachment(docId, attachments[index], direction);
+        await refreshCurrentDocs();
+        renderManager();
+      }, "تعذر تغيير ترتيب المرفق");
+      const deleteAt = index => runSafely(async () => {
+        if (!(await confirmAction(`تأكيد حذف «مرفق ${index + 1}»؟`))) return;
+        const path = attachments[index];
+        await deleteCurrentDocAttachment(docId, path);
+        if (thumbCache.get(path)) URL.revokeObjectURL(thumbCache.get(path));
+        thumbCache.delete(path);
+        await refreshCurrentDocs();
+        showToast("تم حذف المرفق");
+        renderManager();
+      }, "تعذر حذف المرفق");
+      const reprocessAt = index => runSafely(async () => {
+        const path = attachments[index];
+        if (await reprocessAttachment(path)) {
+          if (thumbCache.get(path)) URL.revokeObjectURL(thumbCache.get(path));
+          thumbCache.delete(path);
+          showToast("حُفظت النسخة المعالجة مع الحفاظ على الأصل");
           await refreshCurrentDocs();
-          showToast(`تم حذف جميع مرفقات الوثيقة (${attachments.length} ملف)`);
           renderManager();
-        } catch (error) {
-          await refreshCurrentDocs();
-          renderManager();
-          showToast(error?.message ?? "تعذر حذف جميع المرفقات", "error");
         }
-      });
-      bindAttachmentScannerButtons(content, user, async () => { await refreshCurrentDocs(); renderManager(); });
-      content.querySelectorAll(".btn-manager-preview").forEach(button => {
-        button.addEventListener("click", async () => {
-          try { await openDocumentPreview(button.dataset.path, fileName(button.dataset.path), attachments); }
-          catch (error) { showToast(error?.message ?? "تعذر استعراض الوثيقة", "error"); }
+      }, "تعذرت معالجة الصورة");
+
+      content.querySelectorAll(".att-row").forEach(row => {
+        const index = Number(row.dataset.index);
+        row.addEventListener("click", event => { if (!event.target.closest("button")) previewAt(index); });
+        row.addEventListener("keydown", event => {
+          if (event.target !== row) return;
+          if (event.key === "Enter" || event.key === " ") { event.preventDefault(); previewAt(index); }
+        });
+        row.querySelector(".att-act-preview")?.addEventListener("click", () => previewAt(index));
+        row.querySelector(".att-act-print")?.addEventListener("click", () => printAt(index));
+        row.querySelector(".att-act-more")?.addEventListener("click", event => {
+          const path = attachments[index];
+          const items = [];
+          if (canDownload) items.push({ label: "تحميل", run: () => downloadStoredFile(path) });
+          if (canUpload && isScannable(path)) items.push({ label: "قص وتدوير الصورة", run: () => reprocessAt(index) });
+          if (canManage && attachments.length > 1) {
+            if (items.length) items.push("sep");
+            items.push({ label: "نقل لأعلى", disabled: index === 0, run: () => moveAt(index, "up") });
+            items.push({ label: "نقل لأسفل", disabled: index === attachments.length - 1, run: () => moveAt(index, "down") });
+          }
+          if (canDelete) {
+            if (items.length) items.push("sep");
+            items.push({ label: "حذف المرفق", danger: true, run: () => deleteAt(index) });
+          }
+          if (!items.length) items.push({ label: "لا توجد إجراءات إضافية", disabled: true, run: () => {} });
+          openMenu(event.currentTarget, items);
         });
       });
-      content.querySelectorAll(".btn-manager-download").forEach(button => {
-        button.addEventListener("click", () => downloadStoredFile(button.dataset.path));
+
+      content.querySelector("#attachment-manager-preview-all")?.addEventListener("click", () => runSafely(
+        () => openAllDocumentsPreview(attachments, doc.title), "تعذر استعراض المرفقات"));
+
+      content.querySelector("#attachment-manager-more")?.addEventListener("click", event => {
+        const items = [];
+        if (canPrint) items.push({ label: "طباعة الكل", run: () => runSafely(() => printAllDocuments(attachments, doc.title), "تعذرت طباعة المرفقات") });
+        if (canDelete) {
+          if (items.length) items.push("sep");
+          items.push({
+            label: "حذف كل المرفقات…",
+            danger: true,
+            run: async () => {
+              if (!(await confirmAction(`تأكيد حذف جميع مرفقات الوثيقة (${attachments.length} ملف)؟ لا يمكن التراجع عن هذا الإجراء.`))) return;
+              try {
+                for (const path of attachments) await deleteCurrentDocAttachment(docId, path);
+                await refreshCurrentDocs();
+                showToast(`تم حذف جميع مرفقات الوثيقة (${attachments.length} ملف)`);
+                renderManager();
+              } catch (error) {
+                await refreshCurrentDocs();
+                renderManager();
+                showToast(error?.message ?? "تعذر حذف جميع المرفقات", "error");
+              }
+            },
+          });
+        }
+        openMenu(event.currentTarget, items);
       });
-      content.querySelectorAll(".btn-manager-print").forEach(button => {
-        button.addEventListener("click", async () => {
-          try { await printDocument(button.dataset.path, fileName(button.dataset.path)); }
-          catch (error) { showToast(error?.message ?? "تعذرت طباعة الوثيقة", "error"); }
-        });
-      });
+
       content.querySelector("#attachment-manager-add")?.addEventListener("click", async () => {
         try {
           const remaining = 20 - attachments.length;
@@ -835,17 +924,7 @@ export async function renderDocuments(container, user, ctx) {
         } catch (err) { showToast(err?.message ?? "خطأ", "error"); }
       });
 
-      content.querySelectorAll(".btn-manager-delete").forEach(button => {
-        button.addEventListener("click", async () => {
-          if (!(await confirmAction("تأكيد حذف مرفق الوثيقة؟"))) return;
-          try {
-            await deleteCurrentDocAttachment(docId, button.dataset.path);
-            await refreshCurrentDocs();
-            showToast("تم حذف المرفق");
-            renderManager();
-          } catch (err) { showToast(err?.message ?? "خطأ", "error"); }
-        });
-      });
+      loadThumbnails();
     };
 
     renderManager();
@@ -858,13 +937,6 @@ export async function renderDocuments(container, user, ctx) {
     let formDirty = false;
     const selectedEmployeeIds = new Set(doc?.employee_ids ?? []);
     const hasEmployeeLinks = selectedEmployeeIds.size > 0;
-    const initialHrEffectType = isOutgoing() ? "none" : (doc?.hr_effect_type ?? "none");
-    const hasHrEffect = initialHrEffectType !== "none";
-    const initialHrScope = doc?.hr_affects_promotion && !doc?.hr_affects_allowance
-      ? "promotion"
-      : !doc?.hr_affects_promotion && doc?.hr_affects_allowance
-        ? "allowance"
-        : "both";
     el.innerHTML = `
       <div id="doc-form-stage" style="min-height:calc(100vh - 190px);padding:20px 0 20px 56px">
         <div id="doc-form-card" class="card max-w-2xl space-y-4">
@@ -894,49 +966,6 @@ export async function renderDocuments(container, user, ctx) {
                 <button type="button" id="d-delete-subject" class="btn-danger px-3" title="حذف الموضوع من القائمة">-</button>
               </div>
             </div>
-            ${!isOutgoing() ? `<label style="display:flex;align-items:center;gap:8px;cursor:pointer;font-size:13px;color:#d1d5db;grid-column:1 / -1">
-              <input id="d-has-hr-effect" type="checkbox" ${hasHrEffect ? "checked" : ""}
-                style="width:16px;height:16px;accent-color:#5da12c" />
-              هل الوثيقة لها تأثير على الترفيع والمرحلة؟
-            </label>` : ""}
-            ${!isOutgoing() ? `<div id="d-hr-effect-section" style="border-top:1px solid #2d2d2d;padding-top:12px;display:${hasHrEffect ? "block" : "none"};grid-column:1 / -1">
-              <p style="font-size:12px;font-weight:700;color:#d1d5db;margin-bottom:4px">تأثير الكتاب على العلاوات والترقيات</p>
-              <p id="d-hr-effect-hint" style="font-size:11px;color:#9ca3af;margin-bottom:10px">
-                ${initialHrEffectType === "penalty" ? "سيتم تأخير الترقية والعلاوة بهذه المدة." : "سيتم تقريب الترقية والعلاوة بهذه المدة."}
-              </p>
-              <div style="margin-bottom:12px">
-                <p style="font-size:11px;color:#6b7280;margin-bottom:6px">نوع التأثير</p>
-                <select id="d-hr-effect-type" class="input-field">
-                  ${[
-                    ["appreciation", "شكر وتقدير / تقريب الاستحقاق"],
-                    ["penalty", "عقوبة / تأخير الاستحقاق"],
-                  ].map(([value, label]) => `<option value="${value}" ${initialHrEffectType === value ? "selected" : ""}>${label}</option>`).join("")}
-                </select>
-              </div>
-              <div style="margin-bottom:12px">
-                <p style="font-size:11px;color:#6b7280;margin-bottom:6px">نطاق التأثير</p>
-                <div style="display:flex;gap:8px;flex-wrap:wrap">
-                  ${[
-                    ["promotion", "الترقية فقط"],
-                    ["allowance", "العلاوة فقط"],
-                    ["both", "الترقية والعلاوة"],
-                  ].map(([value, label]) => `<label class="btn-secondary text-xs px-3 py-2" style="cursor:pointer">
-                    <input class="d-hr-effect-scope" type="radio" name="d-hr-effect-scope" value="${value}" ${initialHrScope === value ? "checked" : ""} style="margin-left:6px;accent-color:#5da12c" />
-                    ${label}
-                  </label>`).join("")}
-                </div>
-              </div>
-              <div class="grid grid-cols-2 gap-3">
-                <div>
-                  <p style="font-size:11px;color:#6b7280;margin-bottom:4px">الأشهر</p>
-                  <input id="d-hr-effect-months" class="input-field" type="number" min="0" value="${escHtml(doc?.hr_effect_months ?? 0)}" />
-                </div>
-                <div>
-                  <p style="font-size:11px;color:#6b7280;margin-bottom:4px">الأيام</p>
-                  <input id="d-hr-effect-days" class="input-field" type="number" min="0" value="${escHtml(doc?.hr_effect_days ?? 0)}" />
-                </div>
-              </div>
-            </div>` : ""}
             <div>
               <p style="font-size:11px;color:#6b7280;margin-bottom:4px">تاريخ الإصدار</p>
               <input id="d-date" class="input-field" type="date" value="${escHtml(doc?.issue_date ?? "")}" />
@@ -956,13 +985,13 @@ export async function renderDocuments(container, user, ctx) {
           </div>
           <label style="display:flex;align-items:center;gap:8px;cursor:pointer;font-size:13px;color:#d1d5db">
             <input id="d-internal-memo" type="checkbox" ${doc?.is_internal_memo ? "checked" : ""}
-              style="width:16px;height:16px;accent-color:#5da12c" />
+              style="width:16px;height:16px;accent-color:#24a9ff" />
             مذكرة داخلية
           </label>
           <div style="border-top:1px solid #2d2d2d;padding-top:12px">
             <label style="display:flex;align-items:center;gap:8px;cursor:pointer;font-size:13px;color:#d1d5db">
               <input id="d-has-employees" type="checkbox" ${hasEmployeeLinks ? "checked" : ""}
-                style="width:16px;height:16px;accent-color:#5da12c" />
+                style="width:16px;height:16px;accent-color:#24a9ff" />
               هل لهذه الوثيقة ارتباط بموظفي الشعبة/الوحدة؟
             </label>
             <div id="d-employee-linking" class="space-y-3" style="display:${hasEmployeeLinks ? "block" : "none"};margin-top:12px">
@@ -977,7 +1006,7 @@ export async function renderDocuments(container, user, ctx) {
                     style="display:flex;align-items:center;gap:9px;padding:9px 11px;border-bottom:1px solid #252525;cursor:pointer">
                     <input class="d-employee-checkbox" type="checkbox" value="${employee.id}"
                       ${selectedEmployeeIds.has(employee.id) ? "checked" : ""}
-                      style="width:15px;height:15px;accent-color:#5da12c" />
+                      style="width:15px;height:15px;accent-color:#24a9ff" />
                     <span style="font-size:12px;color:#d1d5db">${escHtml(employee.full_name)}</span>
                     <span style="font-size:11px;color:#6b7280" dir="ltr">${escHtml(employee.employee_number ?? "")}</span>
                   </label>`).join("") || `<p style="padding:12px;color:#6b7280;font-size:12px">لا يوجد موظفون</p>`}
@@ -1002,7 +1031,7 @@ export async function renderDocuments(container, user, ctx) {
                 <span class="badge ${isEdit && generalDocAttachments(doc).length ? "badge-green" : "badge-gray"}"
                   style="gap:6px;font-size:12px;padding:5px 11px">
                   <span>📎</span>
-                  <span dir="ltr">${isEdit ? generalDocAttachments(doc).length : 0} / 20</span>
+                  <span dir="ltr">${isEdit ? generalDocAttachments(doc).length : 0}</span>
                 </span>
               </button>
             </div>
@@ -1020,6 +1049,7 @@ export async function renderDocuments(container, user, ctx) {
           </div>
           <div class="flex gap-3">
             <button id="btn-save-doc" class="btn-primary flex-1">حفظ</button>
+            ${isEdit && can(user, "documents.delete") ? `<button id="btn-delete-doc" class="btn-danger px-4">حذف الوثيقة</button>` : ""}
             <button id="btn-cancel-doc" class="btn-secondary">إلغاء</button>
           </div>
         </div>
@@ -1054,28 +1084,11 @@ export async function renderDocuments(container, user, ctx) {
     const subjectMenu = el.querySelector("#d-subject-menu");
     const showSubjectMenu = () => subjectMenu?.classList.remove("hidden");
     const hideSubjectMenu = () => subjectMenu?.classList.add("hidden");
-    const hrEffectCheckbox = el.querySelector("#d-has-hr-effect");
-    const syncHrEffectSection = () => {
-      const enabled = Boolean(hrEffectCheckbox?.checked);
-      const type = el.querySelector("#d-hr-effect-type")?.value || "appreciation";
-      const section = el.querySelector("#d-hr-effect-section");
-      const hint = el.querySelector("#d-hr-effect-hint");
-      if (!section) return;
-      section.style.display = enabled ? "block" : "none";
-      if (hint) {
-        const scope = el.querySelector(".d-hr-effect-scope:checked")?.value || "both";
-        const scopeText = scope === "promotion" ? "الترقية" : scope === "allowance" ? "العلاوة" : "الترقية والعلاوة";
-        hint.textContent = type === "penalty"
-          ? `سيتم تأخير ${scopeText} بهذه المدة.`
-          : `سيتم تقريب ${scopeText} بهذه المدة.`;
-      }
-    };
     const bindSubjectOptions = () => {
       el.querySelectorAll(".d-subject-option").forEach(button => {
         button.addEventListener("mousedown", event => event.preventDefault());
         button.addEventListener("click", () => {
           subjectInput.value = button.dataset.value || "";
-          syncHrEffectSection();
           formDirty = true;
           hideSubjectMenu();
         });
@@ -1084,9 +1097,6 @@ export async function renderDocuments(container, user, ctx) {
     bindSubjectOptions();
     subjectInput?.addEventListener("focus", showSubjectMenu);
     subjectInput?.addEventListener("click", showSubjectMenu);
-    hrEffectCheckbox?.addEventListener("change", syncHrEffectSection);
-    el.querySelector("#d-hr-effect-type")?.addEventListener("change", syncHrEffectSection);
-    el.querySelectorAll(".d-hr-effect-scope").forEach(input => input.addEventListener("change", syncHrEffectSection));
     subjectInput?.addEventListener("keydown", event => {
       if (event.key === "ArrowDown") showSubjectMenu();
       if (event.key === "Escape") hideSubjectMenu();
@@ -1128,9 +1138,6 @@ export async function renderDocuments(container, user, ctx) {
 
     const collectDocData = () => {
       const issuer = el.querySelector("#d-issuer")?.value.trim() || null;
-      const hasEffect = !isOutgoing() && Boolean(el.querySelector("#d-has-hr-effect")?.checked);
-      const hrEffectType = hasEffect ? (el.querySelector("#d-hr-effect-type")?.value || "appreciation") : "none";
-      const hrScope = el.querySelector(".d-hr-effect-scope:checked")?.value || "both";
       return {
         title: el.querySelector("#d-title")?.value.trim() || "",
         doc_type: null,
@@ -1141,11 +1148,6 @@ export async function renderDocuments(container, user, ctx) {
         margin: el.querySelector("#d-margin")?.value.trim() || null,
         is_internal_memo: Boolean(el.querySelector("#d-internal-memo")?.checked),
         notes: el.querySelector("#d-notes")?.value.trim() || null,
-        hr_effect_type: hrEffectType,
-        hr_affects_promotion: hasEffect && (hrScope === "promotion" || hrScope === "both"),
-        hr_affects_allowance: hasEffect && (hrScope === "allowance" || hrScope === "both"),
-        hr_effect_months: hasEffect ? Number(el.querySelector("#d-hr-effect-months")?.value || 0) : 0,
-        hr_effect_days: hasEffect ? Number(el.querySelector("#d-hr-effect-days")?.value || 0) : 0,
         employee_ids: el.querySelector("#d-has-employees")?.checked
           ? [...el.querySelectorAll(".d-employee-checkbox:checked")]
               .map(checkbox => parseInt(checkbox.value, 10))
@@ -1232,7 +1234,7 @@ export async function renderDocuments(container, user, ctx) {
       const badge = el.querySelector("#d-manage-attachments .badge");
       badge.classList.toggle("badge-green", pendingAttachments.length > 0);
       badge.classList.toggle("badge-gray", pendingAttachments.length === 0);
-      badge.querySelector("[dir='ltr']").textContent = `${pendingAttachments.length} / 20`;
+      badge.querySelector("[dir='ltr']").textContent = String(pendingAttachments.length);
       showToast(`تم اختيار ${pendingAttachments.length} مرفق وسيتم رفعها بعد الحفظ`);
     });
     el.querySelector("#d-scan-attachment")?.addEventListener("click", async () => {
@@ -1310,6 +1312,16 @@ export async function renderDocuments(container, user, ctx) {
 
     el.querySelector("#btn-cancel-doc").addEventListener("click", () => closeDocForm());
     el.querySelector("#btn-save-doc")?.addEventListener("click", () => saveDoc(false));
+    el.querySelector("#btn-delete-doc")?.addEventListener("click", async () => {
+      if (!(await confirmAction("تأكيد حذف الوثيقة؟ لا يمكن التراجع عن هذا الإجراء."))) return;
+      try {
+        await deleteCurrentDoc(doc.id);
+        await refreshCurrentDocs();
+        activeDocFormGuard = null;
+        showToast("تم حذف الوثيقة");
+        renderGeneral();
+      } catch (err) { showToast(err?.message ?? "خطأ", "error"); }
+    });
   }
 
   function renderEmployeeDocs() {
@@ -1425,8 +1437,8 @@ export async function renderDocuments(container, user, ctx) {
       activeTab = btn.dataset.tab;
       container.querySelectorAll(".doc-tab").forEach(b => {
         const a = b.dataset.tab === activeTab;
-        b.style.borderBottomColor = a ? "#5da12c" : "transparent";
-        b.style.color = a ? "#5da12c" : "#9ca3af";
+        b.style.borderBottomColor = a ? "#24a9ff" : "transparent";
+        b.style.color = a ? "#24a9ff" : "#9ca3af";
         b.style.fontWeight = a ? "700" : "400";
       });
       renderGeneral();

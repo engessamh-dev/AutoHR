@@ -81,6 +81,14 @@ export async function renderEmployees(container, user, ctx) {
   container.querySelector("#btn-add-emp").addEventListener("click", () => openPanel(null));
   container.querySelector("#emp-overlay").addEventListener("click", () => closePanel());
   if (!can(user, "employees.create")) container.querySelector("#btn-add-emp")?.remove();
+
+  // Opened from another screen (e.g. a document alert): jump straight to that employee's tab.
+  if (ctx?.openEmployeeId != null) {
+    const target = _employees.find(e => Number(e.id) === Number(ctx.openEmployeeId));
+    if (target) {
+      openPanel(target, ctx.openEmployeeTab ?? "basic");
+    }
+  }
 }
 
 function filtered() {
@@ -131,8 +139,8 @@ function renderTable() {
     }));
 }
 
-function openPanel(emp) {
-  _activeTab = "basic";
+function openPanel(emp, tab = "basic") {
+  _activeTab = TABS.some(t => t.id === tab) ? tab : "basic";
   _panelDraft = emp ? { ...emp } : { is_active: 1, spouses: "[]", family_members: "[]", vehicles: "[]" };
   _panelDirty = false;
   document.getElementById("emp-panel").style.transform = "translateX(0)";
@@ -277,7 +285,7 @@ function fixedCompanyField(label, id, value) {
 
 function sectionTitle(title) {
   return `<div style="grid-column:span 2;border-bottom:1px solid #2d2d2d;padding-bottom:6px;margin-top:8px">
-    <p style="font-size:12px;font-weight:700;color:#5da12c;text-transform:uppercase;letter-spacing:.08em">${title}</p>
+    <p style="font-size:12px;font-weight:700;color:#24a9ff;text-transform:uppercase;letter-spacing:.08em">${title}</p>
   </div>`;
 }
 
@@ -654,7 +662,7 @@ function openDocumentsPrintDialog(emp) {
         <p style="font-size:12px;color:#9ca3af;margin-bottom:12px">أزل التأشير عن المستمسكات التي لا تريد ظهورها في الطباعة.</p>
         ${visiblePrintableDocumentDefinitions(emp).map(definition => `
           <label style="display:flex;align-items:center;gap:8px;padding:9px 6px;border-bottom:1px solid #2d2d2d;cursor:pointer">
-            <input type="checkbox" class="docs-print-choice" value="${definition.id}" checked style="width:16px;height:16px;accent-color:#5da12c" />
+            <input type="checkbox" class="docs-print-choice" value="${definition.id}" checked style="width:16px;height:16px;accent-color:#24a9ff" />
             <span style="font-size:13px;color:#e5e7eb">${escHtml(printableDefinitionTitle(definition, emp))}</span>
           </label>`).join("")}
       </aside>
@@ -721,7 +729,7 @@ function tabContent(tab, emp) {
         ${sectionTitle("معلومات إضافية")}
         ${field("ملاحظات", "notes", emp, {type:"textarea", span:true})}
         <div style="grid-column:span 2;display:flex;align-items:center;gap:8px">
-          <input id="f-is_active" type="checkbox" style="width:16px;height:16px;accent-color:#5da12c"
+          <input id="f-is_active" type="checkbox" style="width:16px;height:16px;accent-color:#24a9ff"
                  ${(!emp || emp.is_active) ? "checked" : ""} />
           <label for="f-is_active" style="font-size:14px;color:#d1d5db">موظف نشط</label>
         </div>
@@ -823,8 +831,8 @@ function renderPanel(emp) {
         <button class="tab-btn" data-tab="${t.id}" style="
           white-space:nowrap;padding:6px 10px;border-radius:6px;font-size:12px;border:none;
           cursor:pointer;transition:all .15s;
-          background:${_activeTab===t.id ? "#5da12c20" : "transparent"};
-          color:${_activeTab===t.id ? "#5da12c" : "#9ca3af"};
+          background:${_activeTab===t.id ? "rgba(36,169,255,.14)" : "transparent"};
+          color:${_activeTab===t.id ? "#24a9ff" : "#9ca3af"};
           font-weight:${_activeTab===t.id ? "700" : "400"}">
           ${t.label}
         </button>`).join("")}
@@ -850,8 +858,8 @@ function renderPanel(emp) {
       _activeTab = btn.dataset.tab;
       panel.querySelectorAll(".tab-btn").forEach(b => {
         const active = b.dataset.tab === _activeTab;
-        b.style.background = active ? "#5da12c20" : "transparent";
-        b.style.color       = active ? "#5da12c"   : "#9ca3af";
+        b.style.background = active ? "rgba(36,169,255,.14)" : "transparent";
+        b.style.color       = active ? "#24a9ff"   : "#9ca3af";
         b.style.fontWeight  = active ? "700"        : "400";
       });
       document.getElementById("tab-content").innerHTML = tabContent(_activeTab, _panelDraft ?? draft);
@@ -1352,7 +1360,7 @@ function spouseRowHtml(spouse = {}, index = Date.now(), config = { itemLabel: "�
   return `<div class="spouse-row" data-national-card-front-path="${escHtml(spouse.national_card_front_path ?? "")}" data-national-card-back-path="${escHtml(spouse.national_card_back_path ?? "")}" style="background:#181818;border:1px solid #2d2d2d;border-radius:8px;
     padding:10px;margin-bottom:8px;display:grid;grid-template-columns:1fr 1fr;gap:8px">
     <div style="grid-column:span 2;display:flex;justify-content:space-between;align-items:center">
-      <p style="font-size:11px;color:#5da12c;font-weight:700">${config.itemLabel} رقم ${number}</p>
+      <p style="font-size:11px;color:#24a9ff;font-weight:700">${config.itemLabel} رقم ${number}</p>
       <button class="btn-remove-spouse btn-danger" style="font-size:11px;padding:2px 8px">حذف</button>
     </div>
     <div style="grid-column:span 2">
@@ -1406,7 +1414,7 @@ function spouseRowHtml(spouse = {}, index = Date.now(), config = { itemLabel: "�
       <input class="input-field sp-marriage" type="date" value="${spouse.marriage_date??""}" />
     </div>
     <div style="grid-column:span 2;border-top:1px solid #2d2d2d;padding-top:8px;margin-top:2px">
-      <p style="font-size:11px;color:#5da12c;font-weight:700;margin-bottom:8px">مرفقات البطاقة الوطنية</p>
+      <p style="font-size:11px;color:#24a9ff;font-weight:700;margin-bottom:8px">مرفقات البطاقة الوطنية</p>
       <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px">
         ${spouseAttachmentCard("الوجه الأمامي", "front", spouse, index, config.max)}
         ${spouseAttachmentCard("الوجه الخلفي", "back", spouse, index, config.max)}
@@ -1522,7 +1530,7 @@ function familyRowHtml(m = {}, i = Date.now()) {
   return `<div class="family-row" data-national-card-front-path="${escHtml(m.national_card_front_path ?? "")}" data-national-card-back-path="${escHtml(m.national_card_back_path ?? "")}" style="background:#181818;border:1px solid #2d2d2d;border-radius:8px;
     padding:10px;margin-bottom:8px;display:grid;grid-template-columns:1fr 1fr;gap:8px">
     <div style="grid-column:span 2;display:flex;justify-content:space-between;align-items:center">
-      <p style="font-size:11px;color:#5da12c;font-weight:700">فرد رقم ${typeof i === "number" && i < 100 ? i+1 : ""}</p>
+      <p style="font-size:11px;color:#24a9ff;font-weight:700">فرد رقم ${typeof i === "number" && i < 100 ? i+1 : ""}</p>
       <button class="btn-remove-member btn-danger" style="font-size:11px;padding:2px 8px">حذف</button>
     </div>
     <div style="grid-column:span 2">
@@ -1568,7 +1576,7 @@ function familyRowHtml(m = {}, i = Date.now()) {
       <input class="input-field fm-birthdate" type="date" value="${m.birthdate??""}" />
     </div>
     <div style="grid-column:span 2;border-top:1px solid #2d2d2d;padding-top:8px;margin-top:2px">
-      <p style="font-size:11px;color:#5da12c;font-weight:700;margin-bottom:8px">مرفقات البطاقة الوطنية</p>
+      <p style="font-size:11px;color:#24a9ff;font-weight:700;margin-bottom:8px">مرفقات البطاقة الوطنية</p>
       <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px">
         ${familyAttachmentCard("الوجه الأمامي", "front", m, i)}
         ${familyAttachmentCard("الوجه الخلفي", "back", m, i)}
@@ -1611,7 +1619,7 @@ function vehicleRowHtml(vehicle = {}, index = Date.now()) {
   return `<div class="vehicle-row" style="background:#181818;border:1px solid #2d2d2d;border-radius:8px;
     padding:10px;margin-bottom:10px;display:grid;grid-template-columns:1fr 1fr;gap:8px">
     <div style="grid-column:span 2;display:flex;justify-content:space-between;align-items:center">
-      <p style="font-size:11px;color:#5da12c;font-weight:700">مركبة رقم ${number}</p>
+      <p style="font-size:11px;color:#24a9ff;font-weight:700">مركبة رقم ${number}</p>
       <button type="button" class="btn-remove-vehicle btn-danger" style="font-size:11px;padding:2px 8px">حذف</button>
     </div>
     ${vehicleInput("رقم اللوحة", "vehicle-plate", vehicle.plate, true)}

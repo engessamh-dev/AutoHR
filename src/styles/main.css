@@ -64,9 +64,8 @@
     overflow: hidden;
     line-height: 1.25;
     overflow-wrap: anywhere;
-    text-align: center;
     -webkit-box-orient: vertical;
-    -webkit-line-clamp: 2;
+    -webkit-line-clamp: 1;
   }
   .sidebar-company-subtitle {
     overflow: hidden;
@@ -507,9 +506,8 @@
   }
   .nav-item:hover { background: rgba(36, 169, 255, 0.11); }
   .nav-item.active {
-    @apply text-autohr-green font-medium border border-autohr-green/30;
-    background: linear-gradient(90deg, rgba(36, 169, 255, 0.22), rgba(36, 169, 255, 0.06));
-    box-shadow: inset 3px 0 #24a9ff, 0 0 15px rgba(36, 169, 255, 0.08);
+    @apply text-autohr-green font-medium;
+    background: rgba(36, 169, 255, 0.14);
   }
 
   .table-header {
@@ -615,3 +613,127 @@
 .employee-photo-actions .smart-scanner-actions button{order:3;grid-column:1/-1}
 .employee-photo-actions #btn-delete-photo{order:4;grid-column:1/-1}
 .employee-photo-actions #btn-upload-photo:only-child{grid-column:1/-1}
+
+/* ── Document attachments dialog ───────────────────────────────────────── */
+.att-overlay{position:fixed;inset:0;z-index:10000;background:rgba(0,0,0,.66);display:flex;align-items:center;justify-content:center;padding:20px}
+.att-dialog{width:min(620px,100%);max-height:min(720px,calc(100vh - 40px));background:#1f1f1f;border:1px solid #2d2d2d;border-radius:12px;box-shadow:0 18px 60px rgba(0,0,0,.5);display:flex;flex-direction:column;overflow:hidden}
+.att-head{display:flex;align-items:flex-start;gap:12px;padding:15px 18px 10px}
+.att-head-text{flex:1;min-width:0}
+.att-title{font-size:15px;font-weight:700;color:#f3f4f6}
+.att-subtitle{font-size:12px;color:#9ca3af;margin-top:2px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.att-body{display:flex;flex-direction:column;min-height:0;overflow:auto}
+.att-toolbar{display:flex;align-items:center;gap:8px;padding:0 18px 12px;border-bottom:1px solid #2d2d2d;position:sticky;top:0;background:#1f1f1f;z-index:1}
+.att-count{margin-inline-end:auto;font-size:13px;color:#9ca3af}
+.att-count b{color:#f3f4f6;font-weight:700}
+.att-limit{font-size:12px;color:#9ca3af}
+.att-btn{padding:6px 14px;font-size:13px;white-space:nowrap}
+.att-icon-btn{width:34px;height:34px;flex:none;display:inline-grid;place-items:center;border-radius:8px;border:1px solid transparent;background:transparent;color:#9ca3af;font-size:17px;line-height:1;cursor:pointer;transition:background .12s,color .12s}
+.att-icon-btn:hover,.att-icon-btn[aria-expanded="true"]{background:#2b2f35;color:#f3f4f6}
+.att-icon-btn svg{width:18px;height:18px;fill:none;stroke:currentColor;stroke-width:1.8;stroke-linecap:round;stroke-linejoin:round}
+.att-list{list-style:none;margin:0;padding:6px 8px 10px;display:flex;flex-direction:column;gap:2px}
+.att-row{display:grid;grid-template-columns:44px minmax(0,1fr) auto;align-items:center;gap:12px;padding:7px 10px;border-radius:10px;cursor:pointer}
+.att-row:hover,.att-row:focus-visible{background:#262a2f}
+.att-row:focus-visible{outline:2px solid #3f9cdb;outline-offset:-2px}
+.att-thumb{width:44px;height:54px;border-radius:6px;overflow:hidden;display:grid;place-items:center;background:#d1d5db;color:#4b5563;font-size:10px;font-weight:700;letter-spacing:.02em}
+.att-thumb img{width:100%;height:100%;object-fit:cover;display:block}
+.att-thumb-file{background:#e5e7eb}
+.att-thumb-pdf{background:#f6d5d3;color:#a3322b}
+.att-thumb-doc,.att-thumb-docx{background:#d6e4f7;color:#1f4e8c}
+.att-thumb-xls,.att-thumb-xlsx{background:#d5eedc;color:#1d6b3a}
+.att-thumb-ppt,.att-thumb-pptx{background:#f7e0cf;color:#9a4a14}
+.att-info{display:flex;flex-direction:column;min-width:0}
+.att-name{font-size:14px;font-weight:600;color:#e5e7eb}
+.att-meta{font-size:12px;color:#9ca3af}
+.att-actions{display:flex;align-items:center;gap:2px;opacity:.6;transition:opacity .12s}
+.att-row:hover .att-actions,.att-row:focus-within .att-actions{opacity:1}
+.att-empty{padding:32px 18px;text-align:center;color:#9ca3af;font-size:13px}
+.att-empty-hint{font-size:12px;color:#6b7280;margin-top:4px}
+.att-menu{position:fixed;z-index:10001;min-width:190px;padding:6px;background:#2a2e34;border:1px solid #3a4047;border-radius:10px;box-shadow:0 12px 32px rgba(0,0,0,.55)}
+.att-menu hr{border:0;border-top:1px solid #3a4047;margin:5px 2px}
+.att-menu-item{display:block;width:100%;text-align:start;padding:7px 10px;border:0;border-radius:6px;background:transparent;color:#e5e7eb;font-size:13.5px;cursor:pointer}
+.att-menu-item:hover:not(:disabled),.att-menu-item:focus-visible{background:#353b42;outline:none}
+.att-menu-item:disabled{opacity:.4;cursor:default}
+.att-menu-danger{color:#f87171}
+
+/* ── Sidebar: icons, admin section, user footer, collapsible rail ──────── */
+.app-sidebar{width:15rem;overflow:hidden;transition:width .2s ease}
+.sidebar-brand-wrap{padding:14px 14px}
+.sidebar-brand{display:flex;align-items:center;gap:10px;min-height:36px}
+.sidebar-brand-text{display:flex;flex-direction:column;justify-content:center}
+.sidebar-nav{padding:8px;display:flex;flex-direction:column;gap:2px;overflow-y:auto;overflow-x:hidden}
+.nav-item{white-space:nowrap;gap:10px}
+.nav-icon{width:19px;height:19px;flex:none;fill:none;stroke:currentColor;stroke-width:1.7;stroke-linecap:round;stroke-linejoin:round;opacity:.85}
+.nav-item.active .nav-icon{opacity:1}
+.nav-label{overflow:hidden;text-overflow:ellipsis}
+.nav-section{display:flex;align-items:center;gap:8px;margin:12px 4px 4px;padding-top:10px;border-top:1px solid rgba(83,157,214,.25)}
+.nav-section-label{font-size:11px;font-weight:600;color:#6b7f95;letter-spacing:.02em;padding-inline-start:8px;white-space:nowrap}
+.sidebar-footer{padding:10px;display:flex;flex-direction:column;gap:8px}
+.sidebar-user{display:flex;align-items:center;gap:10px;padding:4px 4px}
+.sidebar-user-avatar{width:34px;height:34px;flex:none;border-radius:999px;display:grid;place-items:center;background:rgba(36,169,255,.16);color:#7cc4ff;font-weight:700;font-size:14px}
+.sidebar-user-name{font-size:13px;font-weight:600;color:#e5e7eb;text-align:start;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.sidebar-user-role{font-size:11px;color:#8b9bb0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.sidebar-user-text{display:flex;flex-direction:column}
+.sidebar-logout{display:flex;align-items:center;justify-content:center;gap:8px;width:100%;padding:8px 10px;font-size:13px;white-space:nowrap}
+.sidebar-logout .nav-icon{width:17px;height:17px}
+.sidebar-toggle{width:36px;height:36px;flex:none;display:grid;place-items:center;border-radius:8px;border:1px solid transparent;background:transparent;color:#9fb3c8;cursor:pointer;transition:background .15s,color .15s}
+.sidebar-toggle:hover{background:rgba(36,169,255,.12);color:#fff}
+.sidebar-toggle-icon{width:20px;height:20px;fill:none;stroke:currentColor;stroke-width:1.8;stroke-linecap:round}
+
+/* Collapsed: a 64px icon rail; labels become tooltips (title attributes). */
+.sidebar-collapsed .app-sidebar{width:4rem}
+.sidebar-collapsed .sidebar-brand-wrap{padding:14px 0}
+.sidebar-collapsed .sidebar-brand{justify-content:center}
+.sidebar-collapsed .sidebar-brand-text,
+.sidebar-collapsed .nav-label,
+.sidebar-collapsed .nav-section-label,
+.sidebar-collapsed .sidebar-user-text{display:none}
+.sidebar-collapsed .nav-item{justify-content:center;padding-inline:0}
+.sidebar-collapsed .nav-section{margin-inline:6px}
+.sidebar-collapsed .sidebar-footer{padding:10px 8px;align-items:center}
+.sidebar-collapsed .sidebar-user{justify-content:center;padding:4px 0}
+.sidebar-collapsed .sidebar-logout{width:40px;height:36px;padding:0}
+@media (prefers-reduced-motion: reduce){.app-sidebar{transition:none}}
+.nav-section.hidden{display:none}
+
+/* ── Settings & About screens ──────────────────────────────────────────── */
+.settings-screen{max-width:56rem}
+.settings-tabs{display:flex;gap:4px;border-bottom:1px solid rgba(83,157,214,.3)}
+.settings-tab{padding:9px 16px;font-size:14px;color:#9fb3c8;background:transparent;border:0;border-bottom:2px solid transparent;margin-bottom:-1px;cursor:pointer;white-space:nowrap}
+.settings-tab:hover{color:#fff}
+.settings-tab[aria-selected="true"]{color:#24a9ff;border-bottom-color:#24a9ff;font-weight:600}
+.settings-panel.hidden{display:none}
+.settings-company{display:grid;grid-template-columns:auto minmax(0,1fr);gap:28px;align-items:start}
+@media (max-width:640px){.settings-company{grid-template-columns:1fr}}
+.settings-logo-col{display:flex;flex-direction:column;align-items:center;gap:8px;text-align:center}
+.settings-logo{width:96px;height:96px;border-radius:12px;object-fit:cover;border:1px solid rgba(83,157,214,.42)}
+.settings-logo-fallback,.about-logo-fallback{display:grid;place-items:center;background:rgba(36,169,255,.14);color:#24a9ff;font-weight:700;font-size:22px}
+.settings-path-row{display:flex;align-items:center;justify-content:space-between;gap:16px;padding:12px 0}
+.settings-path-row + .settings-path-row{border-top:1px solid rgba(83,157,214,.25)}
+.settings-path-label{font-size:13px;font-weight:600;color:#d1d5db}
+.settings-path-value{font-size:13px;color:#9fb3c8;overflow-wrap:anywhere;text-align:start;margin-top:2px}
+.about-card{max-width:36rem;display:flex;gap:20px;align-items:flex-start}
+.about-logo{width:72px;height:72px;flex:none;border-radius:14px;object-fit:cover}
+.about-facts{display:grid;grid-template-columns:auto 1fr;gap:6px 16px;margin-top:16px;font-size:13px}
+.about-facts > div{display:contents}
+.about-facts dt{color:#8b9bb0}
+.about-facts dd{color:#e5e7eb;margin:0}
+
+/* ── Login message slot ────────────────────────────────────────────────── */
+/* Sits at the bottom of the login card, under the unit name, in otherwise
+   empty space, so nothing moves and no field or button is covered.
+   Sized from the artboard so it scales with it. */
+.login-artboard{container-type:inline-size}
+.login-message{position:absolute;top:80.6%;left:37.4%;width:25.2%;height:4.2%;z-index:3;display:flex;align-items:center;justify-content:center;gap:.4em;margin:0;padding:0 .8em;border-radius:.45em;font-size:clamp(.62rem,.98cqw,.85rem);line-height:1.2;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;text-align:center;font-family:"Segoe UI","Cairo","Noto Sans Arabic",Tahoma,Arial,sans-serif;border:1px solid rgba(248,113,113,.45);background:rgba(60,12,18,.95);color:#fecaca}
+.login-message.hidden{display:none}
+.login-message[data-kind="info"]{border-color:rgba(56,189,248,.4);background:rgba(4,30,58,.96);color:#bae6fd}
+.login-message[data-kind="caps"]{border-color:rgba(251,191,36,.45);background:rgba(55,38,6,.95);color:#fde68a}
+input.login-hotspot.login-field-invalid{box-shadow:inset 0 0 0 2px rgba(248,113,113,.85);border-radius:.8rem}
+.login-hotspot-submit:disabled{cursor:not-allowed}
+
+/* ── Filter chips (document alerts) ────────────────────────────────────── */
+.filter-chips{display:flex;gap:6px;flex-wrap:wrap}
+.filter-chip{display:inline-flex;align-items:center;gap:6px;padding:5px 12px;border-radius:999px;border:1px solid rgba(83,157,214,.42);background:transparent;color:#c7d6e6;font-size:13px;cursor:pointer}
+.filter-chip:hover{background:rgba(36,169,255,.1)}
+.filter-chip[aria-pressed="true"]{background:rgba(36,169,255,.18);border-color:#24a9ff;color:#fff}
+.filter-chip-count{font-size:11px;padding:0 6px;border-radius:999px;background:rgba(255,255,255,.1)}
+.alert-row:focus-visible{outline:2px solid #3f9cdb;outline-offset:-2px}

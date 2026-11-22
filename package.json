@@ -13,6 +13,7 @@
     "tauri:build": "tauri build",
     "seed-db": "node scripts/seed-database.js",
     "seed-fake-employees": "node scripts/seed-fake-employees.js",
+    "seed-fake-employees:dev": "node scripts/seed-fake-employees.js --dev-runtime",
     "sync-version": "node scripts/sync-version.js",
     "version:patch": "npm version patch --no-git-tag-version && npm run sync-version",
     "version:minor": "npm version minor --no-git-tag-version && npm run sync-version",
@@ -28,7 +29,7 @@
     "esbuild": "^0.28.1",
     "postcss": "^8.5.29",
     "tailwindcss": "^4.3.3",
-    "vite": "^8.0.16"
+    "vite": "^8.3.8"
   },
   "dependencies": {
     "@tauri-apps/api": "^2.2.0",

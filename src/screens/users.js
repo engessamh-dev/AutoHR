@@ -188,7 +188,6 @@ export async function renderUsers(container, user) {
             <thead><tr>
               <th class="table-header">اسم المستخدم</th>
               <th class="table-header">الدور</th>
-              <th class="table-header">تغيير كلمة المرور</th>
               <th class="table-header">الإجراءات</th>
             </tr></thead>
             <tbody>
@@ -202,13 +201,11 @@ export async function renderUsers(container, user) {
                       <div>
                         <p class="font-medium text-gray-100" dir="ltr">${escHtml(item.username)}</p>
                         ${item.username === "sysadmin" ? `<p class="text-xs text-gray-500">مستخدم النظام الأساسي</p>` : ""}
+                        ${item.must_change_password ? `<span class="badge badge-amber mt-1">بانتظار تغيير كلمة المرور</span>` : ""}
                       </div>
                     </div>
                   </td>
                   <td class="table-cell"><span class="badge ${roleBadgeClass(item.role)}">${escHtml(roleLabels[item.role])}</span></td>
-                  <td class="table-cell">${item.must_change_password
-                    ? `<span class="badge badge-green">مطلوب</span>`
-                    : `<span class="badge badge-gray">غير مطلوب</span>`}</td>
                   <td class="table-cell">
                     <div class="flex gap-2 flex-wrap">
                       ${item.username !== "sysadmin" || canAssignSystemAdmin
@@ -219,7 +216,7 @@ export async function renderUsers(container, user) {
                         : `<span class="text-xs text-gray-500 self-center">لا يمكن حذف مستخدم النظام</span>`}
                     </div>
                   </td>
-                </tr>`).join("") : `<tr><td colspan="4" class="table-cell text-center text-gray-500 py-10">لا توجد نتائج مطابقة</td></tr>`}
+                </tr>`).join("") : `<tr><td colspan="3" class="table-cell text-center text-gray-500 py-10">لا توجد نتائج مطابقة</td></tr>`}
             </tbody>
           </table>
         </div>

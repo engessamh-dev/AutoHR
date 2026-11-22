@@ -10,9 +10,9 @@ import { renderReports }    from "./screens/reports.js";
 import { renderDocuments }  from "./screens/documents.js";
 import { renderUsers }     from "./screens/users.js";
 import { renderAbout }     from "./screens/about.js";
+import { renderSettings }  from "./screens/settings.js";
 import { renderAudit }     from "./screens/audit.js";
-import { renderHr }        from "./screens/hr.js";
-import { can }             from "./permissions.js";
+import { can, roleLabels } from "./permissions.js";
 import { formatAppVersion } from "./version.js";
 import { isPermissionGranted, requestPermission, sendNotification } from "@tauri-apps/plugin-notification";
 import { listen } from "@tauri-apps/api/event";
@@ -24,14 +24,14 @@ const i18n = {
   username: "اسم المستخدم", password: "كلمة المرور",
   login: "تسجيل الدخول", logout: "تسجيل الخروج",
   user: "المستخدم",
-  nav_dashboard: "لوحة التحكم العامة",
+  nav_dashboard: "الرئيسية",
   nav_document_alerts: "تنبيهات المستمسكات",
-  nav_employees: "دليل الموظفين وإدارتهم",
+  nav_employees: "الموظفون",
   nav_reports: "التقارير",
   nav_documents: "أرشيف الوثائق",
-  nav_hr: "الترقيات والعلاوات",
   nav_users:     "المستخدمين والصلاحيات",
   nav_audit:     "سجل النظام",
+  nav_settings:  "الإعدادات",
   nav_about:     "حول النظام",
   loginError:    "اسم المستخدم أو كلمة المرور غير صحيحة",
 };
@@ -52,19 +52,48 @@ function applyLang() {
   });
   // update sidebar nav labels
   const navMap = {
-    dashboard: "nav_dashboard", employees: "nav_employees", reports: "nav_reports", documents: "nav_documents", hr: "nav_hr",
-    users: "nav_users", audit: "nav_audit", about: "nav_about",
-  };
-  const navIcons = {
-    dashboard: "▦", employees: "👥", reports: "📈", documents: "📁", hr: "↑",
-    users: "👤", audit: "📋", about: "ℹ",
+    dashboard: "nav_dashboard", employees: "nav_employees", reports: "nav_reports", documents: "nav_documents",
+    users: "nav_users", audit: "nav_audit", settings: "nav_settings", about: "nav_about",
   };
   document.querySelectorAll(".nav-item[data-screen]").forEach(el => {
     const screen = el.dataset.screen;
-    if (navMap[screen]) {
-      el.textContent = `${navIcons[screen] ?? ""} ${t(navMap[screen])}`.trim();
-    }
+    if (!navMap[screen]) return;
+    const label = el.querySelector(".nav-label");
+    if (label) label.textContent = t(navMap[screen]);
+    el.title = t(navMap[screen]);
   });
+}
+
+// ── Collapsible sidebar ────────────────────────────────────────────────────
+const SIDEBAR_STATE_KEY = "autohr.sidebarCollapsed";
+
+function readSidebarCollapsed() {
+  try { return localStorage.getItem(SIDEBAR_STATE_KEY) === "1"; }
+  catch { return false; }
+}
+
+function setSidebarCollapsed(collapsed) {
+  document.getElementById("app-shell")?.classList.toggle("sidebar-collapsed", collapsed);
+  const toggle = document.getElementById("btn-toggle-sidebar");
+  if (toggle) {
+    const label = collapsed ? "إظهار القائمة الجانبية" : "طي القائمة الجانبية";
+    toggle.setAttribute("aria-expanded", String(!collapsed));
+    toggle.setAttribute("aria-label", label);
+    toggle.title = `${label} (Ctrl+B)`;
+  }
+  try { localStorage.setItem(SIDEBAR_STATE_KEY, collapsed ? "1" : "0"); } catch { /* non-fatal */ }
+}
+
+function toggleSidebar() {
+  setSidebarCollapsed(!document.getElementById("app-shell")?.classList.contains("sidebar-collapsed"));
+}
+
+function renderSidebarUser(user) {
+  document.getElementById("current-user").textContent = user.username;
+  const role = user.username === "sysadmin" ? "مسؤول النظام" : (roleLabels[user.role] ?? user.role ?? "");
+  document.getElementById("current-user-role").textContent = role;
+  document.getElementById("sidebar-user-avatar").textContent = (user.username || "?").trim().charAt(0).toUpperCase();
+  document.getElementById("sidebar-user").title = role ? `${user.username} · ${role}` : user.username;
 }
 
 function applyAppVersion() {
@@ -102,7 +131,7 @@ function openAutomaticBackupProgress() {
         <span id="auto-backup-progress-percent" class="badge badge-gray">0%</span>
       </div>
       <div style="height:10px;background:#111827;border-radius:999px;overflow:hidden;border:1px solid #374151">
-        <div id="auto-backup-progress-bar" style="height:100%;width:0%;background:#5da12c;transition:width .2s ease"></div>
+        <div id="auto-backup-progress-bar" style="height:100%;width:0%;background:#24a9ff;transition:width .2s ease"></div>
       </div>
       <p id="auto-backup-progress-message" style="font-size:12px;color:#9ca3af;margin:12px 0 0">جاري فحص النسخ التلقائية...</p>
     </div>`;
@@ -220,8 +249,8 @@ const screenRenderers = {
   employees: renderEmployees,
   reports: renderReports,
   documents: renderDocuments,
-  hr: renderHr,
   users:     renderUsers,
+  settings:  renderSettings,
   audit:     renderAudit,
   about:     renderAbout,
 };
@@ -234,8 +263,8 @@ async function navigateTo(screen, options = {}) {
   }
 
   // RBAC guard
-  const required = { users: "users.manage", audit: "audit.view", hr: "hr.dashboard.view" };
-  if (required[screen] && !can(currentUser, required[screen])) {
+  const required = { users: ["users.manage"], audit: ["audit.view"], settings: ["settings.manage", "backups.manage"] };
+  if (required[screen] && !required[screen].some(permission => can(currentUser, permission))) {
     document.getElementById("screen-container").innerHTML = `
       <div class="flex flex-col items-center justify-center h-full text-gray-500">
         <p class="text-5xl mb-4">🔒</p>
@@ -252,8 +281,8 @@ async function navigateTo(screen, options = {}) {
   });
 
   const titleMap = {
-    dashboard: "nav_dashboard", documentAlerts: "nav_document_alerts", employees: "nav_employees", reports: "nav_reports", documents: "nav_documents", hr: "nav_hr",
-    users: "nav_users", audit: "nav_audit", about: "nav_about",
+    dashboard: "nav_dashboard", documentAlerts: "nav_document_alerts", employees: "nav_employees", reports: "nav_reports", documents: "nav_documents",
+    users: "nav_users", audit: "nav_audit", settings: "nav_settings", about: "nav_about",
   };
   document.getElementById("page-title").textContent = t(titleMap[screen] ?? screen);
 
@@ -274,10 +303,14 @@ async function navigateTo(screen, options = {}) {
 // ── Login ──────────────────────────────────────────────────────────────────
 async function enterApp(user) {
   currentUser = user;
-  document.getElementById("current-user").textContent = user.username;
-  document.getElementById("nav-users")?.classList.toggle("hidden", !can(user, "users.manage"));
-  document.getElementById("nav-audit")?.classList.toggle("hidden", !can(user, "audit.view"));
-  document.getElementById("nav-hr")?.classList.toggle("hidden", !can(user, "hr.dashboard.view"));
+  renderSidebarUser(user);
+  const canManageUsers = can(user, "users.manage");
+  const canViewAudit = can(user, "audit.view");
+  document.getElementById("nav-users")?.classList.toggle("hidden", !canManageUsers);
+  document.getElementById("nav-audit")?.classList.toggle("hidden", !canViewAudit);
+  const canOpenSettings = can(user, "settings.manage") || can(user, "backups.manage");
+  document.getElementById("nav-settings")?.classList.toggle("hidden", !canOpenSettings);
+  document.getElementById("nav-admin-section")?.classList.toggle("hidden", !canManageUsers && !canViewAudit && !canOpenSettings);
   document.getElementById("login-screen").classList.add("hidden");
   document.getElementById("password-change-screen").classList.add("hidden");
   document.getElementById("app-shell").classList.remove("hidden");
@@ -288,10 +321,76 @@ async function enterApp(user) {
   notifyDocumentAlerts();
 }
 
+// ── Login messages ─────────────────────────────────────────────────────────
+// One fixed slot at the bottom of the card, under the unit name, so a message
+// never covers the fields, the login button or the "forgot password" link.
+let loginLockoutTimer = null;
+let loginBusy = false;
+
+function showLoginMessage(text, kind = "error", field = null) {
+  const slot = document.getElementById("login-error");
+  slot.textContent = text;
+  slot.dataset.kind = kind;
+  slot.setAttribute("role", kind === "error" ? "alert" : "status");
+  slot.classList.remove("hidden");
+  document.querySelectorAll("#login-username, #login-password").forEach(input => {
+    input.classList.toggle("login-field-invalid", kind === "error" && input.id === `login-${field}`);
+  });
+}
+
+function clearLoginMessage() {
+  if (loginLockoutTimer) return;
+  const slot = document.getElementById("login-error");
+  slot.classList.add("hidden");
+  slot.textContent = "";
+  document.querySelectorAll(".login-field-invalid").forEach(input => input.classList.remove("login-field-invalid"));
+}
+
+function setLoginBusy(busy) {
+  loginBusy = busy;
+  const submit = document.querySelector(".login-hotspot-submit");
+  if (submit) submit.disabled = busy || Boolean(loginLockoutTimer);
+  document.getElementById("login-form")?.setAttribute("aria-busy", String(busy));
+}
+
+function lockoutMinutes(message) {
+  if (message.includes("دقيقة واحدة")) return 1;
+  if (message.includes("دقيقتين")) return 2;
+  return Number(message.match(/(\d+)/)?.[1] ?? 5);
+}
+
+function startLoginLockout(minutes) {
+  let remaining = Math.max(1, minutes) * 60;
+  const tick = () => {
+    const mm = String(Math.floor(remaining / 60)).padStart(2, "0");
+    const ss = String(remaining % 60).padStart(2, "0");
+    showLoginMessage(`الحساب موقوف مؤقتاً. حاول بعد ${mm}:${ss}`, "error");
+    remaining -= 1;
+  };
+  if (loginLockoutTimer) clearInterval(loginLockoutTimer);
+  tick();
+  loginLockoutTimer = setInterval(() => {
+    if (remaining < 0) {
+      clearInterval(loginLockoutTimer);
+      loginLockoutTimer = null;
+      clearLoginMessage();
+      setLoginBusy(false);
+      document.getElementById("login-password")?.focus();
+      return;
+    }
+    tick();
+  }, 1000);
+  setLoginBusy(false);
+}
+
 async function doLogin(username, password) {
+  if (loginBusy || loginLockoutTimer) return;
+  setLoginBusy(true);
+  showLoginMessage("جارٍ التحقق…", "info");
   try {
     const user = await api.login(username, password);
     currentUser = user;
+    clearLoginMessage();
     document.getElementById("login-screen").classList.add("hidden");
     if (user.must_change_password) {
       document.getElementById("password-change-screen").classList.remove("hidden");
@@ -300,9 +399,19 @@ async function doLogin(username, password) {
     }
     await enterApp(user);
   } catch (err) {
-    const errEl = document.getElementById("login-error");
-    errEl.textContent = t("loginError");
-    errEl.classList.remove("hidden");
+    const message = typeof err === "string" ? err : String(err?.message ?? err ?? "");
+    if (message.startsWith("تم إيقاف تسجيل الدخول")) {
+      startLoginLockout(lockoutMinutes(message));
+    } else if (message === "You are not authorized to perform this action") {
+      showLoginMessage(t("loginError"), "error", "password");
+      const password = document.getElementById("login-password");
+      password.value = "";
+      password.focus();
+    } else {
+      showLoginMessage("تعذر تسجيل الدخول بسبب خطأ في النظام. حاول مرة أخرى.", "error");
+    }
+  } finally {
+    setLoginBusy(false);
   }
 }
 
@@ -323,7 +432,7 @@ async function doLogout() {
   document.getElementById("login-screen").classList.remove("hidden");
   document.getElementById("login-username").value = "";
   document.getElementById("login-password").value = "";
-  document.getElementById("login-error").classList.add("hidden");
+  clearLoginMessage();
   document.getElementById("password-change-form").reset();
   document.getElementById("password-change-error").classList.add("hidden");
 }
@@ -352,7 +461,9 @@ document.addEventListener("DOMContentLoaded", () => {
     e.preventDefault();
     const u = document.getElementById("login-username").value.trim();
     const p = document.getElementById("login-password").value;
-    if (u && p) doLogin(u, p);
+    if (!u) { showLoginMessage("أدخل اسم المستخدم", "error", "username"); document.getElementById("login-username").focus(); return; }
+    if (!p) { showLoginMessage("أدخل كلمة المرور", "error", "password"); document.getElementById("login-password").focus(); return; }
+    doLogin(u, p);
   });
 
   const loginPassword = document.getElementById("login-password");
@@ -365,8 +476,21 @@ document.addEventListener("DOMContentLoaded", () => {
     loginPassword.focus();
   });
 
+  const syncCapsLock = event => {
+    if (typeof event.getModifierState !== "function") return;
+    const slot = document.getElementById("login-error");
+    const capsOn = event.getModifierState("CapsLock");
+    if (capsOn && (slot.classList.contains("hidden") || slot.dataset.kind === "caps")) {
+      showLoginMessage("تنبيه: مفتاح Caps Lock مفعّل", "caps");
+    } else if (!capsOn && slot.dataset.kind === "caps") {
+      clearLoginMessage();
+    }
+  };
+  loginPassword.addEventListener("keydown", syncCapsLock);
+  loginPassword.addEventListener("keyup", syncCapsLock);
+
   document.getElementById("btn-forgot-password").addEventListener("click", () => {
-    showToast("لاستعادة كلمة المرور، تواصل مع مسؤول النظام لإصدار كلمة مرور مؤقتة آمنة.");
+    showLoginMessage("تواصل مع مسؤول النظام لإصدار كلمة مرور مؤقتة.", "info");
   });
 
   document.querySelectorAll("#login-username, #login-password").forEach(input => {
@@ -376,7 +500,7 @@ document.addEventListener("DOMContentLoaded", () => {
     };
     input.addEventListener("input", () => {
       syncPlaceholder();
-      document.getElementById("login-error").classList.add("hidden");
+      clearLoginMessage();
     });
     input.addEventListener("change", syncPlaceholder);
     syncPlaceholder();
@@ -405,7 +529,16 @@ document.addEventListener("DOMContentLoaded", () => {
   });
 
   // Logout buttons
-  document.getElementById("btn-logout-top").addEventListener("click",  doLogout);
+  // Collapsible sidebar: ☰ button and Ctrl+B, state remembered between sessions.
+  setSidebarCollapsed(readSidebarCollapsed());
+  document.getElementById("btn-toggle-sidebar").addEventListener("click", toggleSidebar);
+  document.addEventListener("keydown", event => {
+    if (!(event.ctrlKey || event.metaKey) || event.altKey || event.shiftKey) return;
+    if (event.code !== "KeyB" && event.key?.toLowerCase() !== "b") return;
+    if (document.getElementById("app-shell")?.classList.contains("hidden")) return;
+    event.preventDefault();
+    toggleSidebar();
+  });
   document.getElementById("btn-logout-side").addEventListener("click", doLogout);
   document.getElementById("btn-password-change-logout").addEventListener("click", doLogout);
 

@@ -8,6 +8,7 @@ import { bindAttachmentScannerButtons } from "../src/attachments/integration.js"
 import { renderEmployees } from "../src/screens/employees.js";
 import { renderDocuments } from "../src/screens/documents.js";
 import { renderAbout } from "../src/screens/about.js";
+import { renderSettings } from "../src/screens/settings.js";
 const canvas=document.createElement("canvas");canvas.width=640;canvas.height=480;
 const ctx=canvas.getContext("2d");ctx.fillStyle="#334155";ctx.fillRect(0,0,640,480);ctx.fillStyle="#fff";ctx.fillRect(100,70,440,340);ctx.fillStyle="#111";ctx.font="24px sans-serif";ctx.fillText("SYNTHETIC DOCUMENT",125,130);
 const bytes=Array.from(new Uint8Array(await (await fetch(canvas.toDataURL("image/jpeg"))).arrayBuffer()));
@@ -33,6 +34,7 @@ window.__TAURI_INTERNALS__={convertFileSrc:()=>canvas.toDataURL("image/jpeg"),in
   if(command==="cmd_delete_employee_photo"){employee.photo_path=null;employee.photo_full_path=null;return;}
   if(command==="cmd_get_company_config")return {company_name:"Synthetic Company",department_name:"Test",division_name:""};
   if(command==="cmd_list_general_docs" || command==="cmd_list_outgoing_docs")return [doc];
+  if(command==="cmd_read_document")return bytes;
   if(command==="cmd_audit_document_view")return;
   if(command==="cmd_get_storage_path" || command==="cmd_get_backup_path")return "synthetic path";
   throw new Error("Unmocked command: "+command);
@@ -44,6 +46,7 @@ window.renderActual=async screen=>{
   const root=document.querySelector("#root"),user={permissions};
   if(screen==="employees")await renderEmployees(root,user,{});
   else if(screen==="about")await renderAbout(root,user,{});
+  else if(screen==="settings")await renderSettings(root,user,{});
   else await renderDocuments(root,user,{archiveTab:screen,initialManageAttachmentDocId:1,manageAttachmentDocId:1});
 };
 window.ready=true;
