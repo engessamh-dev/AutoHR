@@ -69,6 +69,7 @@ export const api = {
   scanDocument: (deviceId) => invoke("cmd_scan_document", { deviceId }),
 
   // Activity log
+  openManagedFolder: (kind) => invoke("cmd_open_managed_folder", { kind }),
   listActivityLog: (limit) => invoke("cmd_list_activity_log", { limit: limit ?? 50 }),
 
   // Users

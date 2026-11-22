@@ -184,19 +184,20 @@ export async function renderSettings(container, user, ctx) {
       </section>
 
       <section class="card settings-panel space-y-1" data-settings-panel="storage">
+        <p class="text-xs text-gray-500">مواقع الحفظ ثابتة يديرها النظام لحماية البيانات، ولا يمكن تغييرها.</p>
         <div class="settings-path-row">
           <div class="min-w-0">
             <p class="settings-path-label">مجلد البيانات والمرفقات</p>
             <p id="storage-path-text" class="settings-path-value" dir="ltr">${escHtml(storagePath || "AppData/Roaming/CNSArch/Data (افتراضي)")}</p>
           </div>
-          <button id="btn-pick-storage" type="button" class="btn-secondary whitespace-nowrap">تغيير…</button>
+          <button id="btn-open-storage" type="button" class="btn-secondary whitespace-nowrap">فتح المجلد</button>
         </div>
         <div class="settings-path-row">
           <div class="min-w-0">
             <p class="settings-path-label">مجلد النسخ الاحتياطية</p>
             <p id="backup-path-text" class="settings-path-value" dir="ltr">${escHtml(backupPath || "Documents/GCANS Backups (افتراضي)")}</p>
           </div>
-          <button id="btn-pick-backup" type="button" class="btn-secondary whitespace-nowrap">تغيير…</button>
+          <button id="btn-open-backup" type="button" class="btn-secondary whitespace-nowrap">فتح المجلد</button>
         </div>
       </section>` : ""}
 
@@ -284,22 +285,16 @@ export async function renderSettings(container, user, ctx) {
     }
   });
 
-  // Choosing a folder saves it straight away, after one confirmation.
-  const bindPathPicker = (buttonId, textId, question, save, successMessage) => {
+  // The data and backup folders are fixed by the backend for safety, so they
+  // are shown read-only with a button that opens them in Windows Explorer.
+  const bindOpenFolder = (buttonId, kind) => {
     container.querySelector(buttonId)?.addEventListener("click", async () => {
-      let dir = null;
-      try { dir = await open({ directory: true, multiple: false }); } catch { return; }
-      if (!dir) return;
-      if (!(await confirmAction(`${question}\n${dir}`))) return;
-      try {
-        await save(dir);
-        container.querySelector(textId).textContent = dir;
-        showToast(successMessage);
-      } catch (err) { showToast(err?.message ?? "خطأ", "error"); }
+      try { await api.openManagedFolder(kind); }
+      catch (err) { showToast(err?.message ?? "تعذر فتح المجلد", "error"); }
     });
   };
-  bindPathPicker("#btn-pick-storage", "#storage-path-text", "تأكيد تغيير مجلد البيانات والمرفقات إلى:", path => api.setStoragePath(path), "تم حفظ مجلد البيانات");
-  bindPathPicker("#btn-pick-backup", "#backup-path-text", "تأكيد تغيير مجلد النسخ الاحتياطية إلى:", path => api.setBackupPath(path), "تم حفظ مجلد النسخ الاحتياطية");
+  bindOpenFolder("#btn-open-storage", "data");
+  bindOpenFolder("#btn-open-backup", "backups");
 
   container.querySelector("#btn-create-backup")?.addEventListener("click", async () => {
     const password = await requestBackupPassword({

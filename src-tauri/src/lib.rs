@@ -618,6 +618,28 @@ fn cmd_scan_document(state: State<DbState>, sess: State<SessionState>, device_id
     let user = authorize(&conn, &sess, "settings.manage")?;
     set_backup_path(&conn, &user, &path)
 }
+/// Opens one of the managed folders (data or backups) in Windows Explorer.
+/// The path is resolved here, never taken from the frontend.
+#[tauri::command] fn cmd_open_managed_folder(state: State<DbState>, sess: State<SessionState>, kind: String) -> Result<(), AppError> {
+    let conn = state.0.lock().unwrap();
+    authorize(&conn, &sess, "settings.manage")?;
+    let path = match kind.as_str() {
+        "data" => { ensure_storage_layout(&conn).ok(); storage_path(&conn) }
+        "backups" => { ensure_backup_layout(&conn).ok(); backup_path(&conn) }
+        _ => return Err(AppError::Validation("Unknown folder".into())),
+    };
+    drop(conn);
+    #[cfg(not(target_os = "windows"))]
+    { let _ = path; return Err(AppError::Validation("Opening folders is supported on Windows only".into())); }
+    #[cfg(target_os = "windows")]
+    {
+        std::process::Command::new("explorer.exe")
+            .arg(&path)
+            .spawn()
+            .map_err(|error| AppError::Other(error.to_string()))?;
+        Ok(())
+    }
+}
 #[tauri::command] fn cmd_get_auto_backup_settings(state: State<DbState>, sess: State<SessionState>) -> Result<AutoBackupSettings, AppError> {
     let conn = state.0.lock().unwrap();
     let user = authorize(&conn, &sess, "backups.manage")?;
@@ -778,7 +800,7 @@ pub fn run() {
             cmd_select_scanner_device, cmd_scan_document,
             cmd_list_activity_log,
             cmd_list_users, cmd_create_user, cmd_delete_user, cmd_update_user_role, cmd_reset_user_password,
-            cmd_get_storage_path, cmd_set_storage_path, cmd_get_backup_path, cmd_set_backup_path,
+            cmd_get_storage_path, cmd_set_storage_path, cmd_get_backup_path, cmd_set_backup_path, cmd_open_managed_folder,
             cmd_get_auto_backup_settings, cmd_set_auto_backup_settings,
             cmd_run_due_auto_backups, cmd_exit_app,
             cmd_get_document_types, cmd_set_document_types,

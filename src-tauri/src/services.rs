@@ -1715,7 +1715,7 @@ pub fn create_user(conn: &Connection, caller: &str, data: &UserData) -> AppResul
     validate_new_password(&data.password)?;
     let count: i64 = conn.query_row("SELECT COUNT(*) FROM users", [], |r| r.get(0))?;
     if count >= 10 { return Err(AppError::Validation("Max 10 users".into())); }
-    conn.execute("INSERT INTO users(username,password,role,must_change_password) VALUES(?1,?2,?3,0)",
+    conn.execute("INSERT INTO users(username,password,role,must_change_password) VALUES(?1,?2,?3,1)",
         params![data.username.trim(), hash_password(&data.password)?, data.role])?;
     let id = conn.last_insert_rowid();
     log_activity(conn, caller, "CREATE_USER", Some("user"), Some(id), Some(data.username.trim()), None);
