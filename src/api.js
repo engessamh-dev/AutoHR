@@ -14,7 +14,6 @@ export const api = {
   getCompanyConfig:    ()           => invoke("cmd_get_company_config"),
   getPublicCompanyConfig: ()        => invoke("cmd_get_public_company_config"),
   updateCompanyConfig: (data)       => invoke("cmd_update_company_config", { data }),
-  uploadCompanyLogo:   (path)       => uploadWithScanner("cmd_upload_company_logo", { sourcePath: path }),
 
   // Employees
   listEmployees:    ()         => invoke("cmd_list_employees"),

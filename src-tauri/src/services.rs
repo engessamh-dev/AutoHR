@@ -735,23 +735,9 @@ pub fn update_company_config(conn: &Connection, user: &str, data: &CompanyConfig
     get_company_config(conn)
 }
 
-pub fn upload_company_logo(conn: &Connection, user: &str, source_path: &str) -> AppResult<CompanyConfig> {
-    assert_permission(conn, user, "settings.manage")?;
-    ensure_storage_layout(conn)?;
-    let previous: Option<String> = conn.query_row(
-        "SELECT logo_path FROM company_config WHERE id=1", [], |r| r.get(0)
-    )?;
-    let dir = storage_path(conn).join("Branding");
-    let rel = crate::files::copy_validated_upload(conn, source_path, &dir, "Branding", false, true, crate::files::MAX_IMAGE_SIZE)?;
-    conn.execute("UPDATE company_config SET logo_path=?1 WHERE id=1", params![rel])?;
-    if let Some(previous) = previous {
-        if let Ok(path) = crate::files::safe_relative_path(&previous) {
-            crate::scanner::remove_replaced(conn, source_path, path);
-        }
-    }
-    log_activity(conn, user, "UPLOAD_COMPANY_LOGO", Some("company_config"), Some(1), None, None);
-    get_company_config(conn)
-}
+// The company logo is a fixed asset bundled with the frontend (src/assets/branding).
+// There is deliberately no command to replace it; `logo_path` is kept only for
+// backward compatibility with databases created by earlier releases.
 
 // ── Employee number ────────────────────────────────────────────────────────
 pub fn next_employee_number(conn: &Connection) -> AppResult<String> {

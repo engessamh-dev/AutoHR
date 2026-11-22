@@ -2,7 +2,6 @@ import { test, expect } from "@playwright/test";
 import { readFileSync } from "node:fs";
 import { build } from "esbuild";
 const targets = [
-  ["uploadCompanyLogo", ["synthetic.png"], "cmd_upload_company_logo"],
   ["uploadEmployeePhoto", [1, "synthetic.png"], "cmd_upload_employee_photo"],
   ["uploadAttachment", [1, "synthetic.png"], "cmd_upload_attachment"],
   ["uploadNationalCardAttachment", [1, "front", "synthetic.png"], "cmd_upload_national_card_attachment"],
@@ -153,13 +152,14 @@ for(const [method, command] of [["uploadDocumentAttachment","cmd_upload_attachme
   expect(await page.evaluate(()=>window.calls)).toEqual([{command,args:command === "cmd_upload_attachment" ? {employeeId:1,sourcePath:"synthetic.png"} : {docId:1,sourcePath:"synthetic.png"}}]);
   await expect(page.locator(".smart-scanner-overlay")).toHaveCount(0);
 });
-test("settings screen removes attachment processing settings and preserves logo upload",async({page})=>{
+test("settings screen removes attachment processing settings and shows the fixed company logo",async({page})=>{
   await page.evaluate(()=>window.renderActual("settings"));
   await expect(page.locator("#scanner-settings")).toHaveCount(0);
   for (const selector of ["[data-confidence]","[data-auto]","[data-quality]","[data-enhancement]"]) await expect(page.locator(selector)).toHaveCount(0);
-  await page.locator("#btn-upload-logo").click();await page.getByRole("button",{name:"\u062a\u0623\u0643\u064a\u062f",exact:true}).click();
-  await page.locator('[data-choice="scan"]').click();await expect(page.locator("[data-process]")).toBeVisible();
-  await expect(page.locator("[data-detect]")).toHaveCount(0);await page.locator("[data-cancel]").click();
+  // The company logo is bundled and fixed: no upload button, and the image is the built-in asset.
+  await expect(page.locator("#btn-upload-logo")).toHaveCount(0);
+  await expect(page.locator("#logo-preview")).toHaveAttribute("src",/company-logo-256/);
+  expect(await page.evaluate(()=>window.calls.filter(c=>c.command==="cmd_upload_company_logo").length)).toBe(0);
 });
 test("existing employee document opens the same editor and preserves its association",async({page})=>{
   await page.evaluate(()=>window.renderActual("employees"));await page.locator('.table-row[data-id="1"]').click();await page.locator('.tab-btn[data-tab="documents"]').click();
@@ -260,7 +260,7 @@ test("actual image backend result fits shared scanner preview", async ({page}) =
 
 // Compile only a component in memory with its Production feature flag. No app/release build.
 async function productionModule(page, entry, key) {
-  const result=await build({entryPoints:[entry],bundle:true,write:false,format:"esm",platform:"browser",define:{"import.meta.env.DEV":"false","import.meta.env.VITE_APP_VERSION":JSON.stringify("1.0.1")}});
+  const result=await build({entryPoints:[entry],bundle:true,write:false,format:"esm",platform:"browser",loader:{".png":"dataurl"},define:{"import.meta.env.DEV":"false","import.meta.env.VITE_APP_VERSION":JSON.stringify("1.0.1")}});
   await page.evaluate(async ({code,key})=>{
     const url=URL.createObjectURL(new Blob([code],{type:"text/javascript"}));
     try { window[key]=await import(url); } finally { URL.revokeObjectURL(url); }
