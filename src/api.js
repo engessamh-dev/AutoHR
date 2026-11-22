@@ -95,6 +95,10 @@ export const api = {
   checkSetupFolders: (dataRoot, backupRoot) => invoke("cmd_check_setup_folders", { dataRoot, backupRoot }),
   completeSetup: (dataRoot, backupRoot) => invoke("cmd_complete_setup", { dataRoot, backupRoot }),
   retryDataFolder: () => invoke("cmd_retry_data_folder"),
+
+  // Application updates (administrators only; checked in Rust)
+  checkForUpdate: () => invoke("cmd_check_for_update"),
+  installUpdate: (password) => invoke("cmd_install_update", { password }),
   getAutoBackupSettings: () => invoke("cmd_get_auto_backup_settings"),
   setAutoBackupSettings: (data) => invoke("cmd_set_auto_backup_settings", { data }),
   runDueAutoBackups: () => invoke("cmd_run_due_auto_backups"),

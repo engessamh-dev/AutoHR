@@ -7,6 +7,7 @@ import { open }      from "@tauri-apps/plugin-dialog";
 import { convertFileSrc } from "@tauri-apps/api/core";
 import { can }       from "../permissions.js";
 import { listen }    from "@tauri-apps/api/event";
+import { APP_VERSION } from "../version.js";
 
 let activeSettingsTab = null;
 
@@ -156,6 +157,7 @@ export async function renderSettings(container, user, ctx) {
     canSettings && { id: "company", label: "الجهة والشعار" },
     canSettings && { id: "storage", label: "مواقع الحفظ" },
     canBackups && { id: "backup", label: "النسخ الاحتياطي" },
+    canSettings && canBackups && { id: "updates", label: "التحديثات" },
   ].filter(Boolean);
   if (!tabs.length) {
     container.innerHTML = `<div class="card text-gray-400">لا توجد إعدادات متاحة لهذا المستخدم.</div>`;
@@ -267,6 +269,17 @@ export async function renderSettings(container, user, ctx) {
         </div>
       </div>
       </section>` : ""}
+
+      ${canSettings && canBackups ? `<section class="card settings-panel space-y-3" data-settings-panel="updates">
+        <p class="section-title">تحديث البرنامج</p>
+        <p class="text-xs text-gray-400 leading-6">يتحقق البرنامج من وجود إصدار جديد موقّع. قبل التثبيت تُنشأ نسخة احتياطية مشفرة ويُتحقق منها، ولا يُثبَّت أي ملف لا يحمل توقيع المطوّر.</p>
+        <p id="update-status" class="text-sm text-gray-300">الإصدار الحالي: —</p>
+        <div id="update-notes" class="hidden text-xs text-gray-400 whitespace-pre-line border border-autohr-border rounded-lg p-3"></div>
+        <div class="flex gap-3">
+          <button id="btn-check-update" type="button" class="btn-secondary">التحقق من التحديثات</button>
+          <button id="btn-install-update" type="button" class="btn-primary hidden">تثبيت التحديث</button>
+        </div>
+      </section>` : ""}
     </div>`;
 
   const showTab = id => {
@@ -355,6 +368,53 @@ export async function renderSettings(container, user, ctx) {
       progress.update({ percent: 100, message: "تم النقل والتحقق. سيتم إعادة تسجيل الدخول." });
       showToast("تم نقل مجلد البيانات بنجاح. الموقع القديم بقي كما هو.");
       setTimeout(() => window.location.reload(), 1500);
+    } catch (err) {
+      showToast(err?.message ?? String(err), "error");
+      progress.close();
+    } finally {
+      if (unlisten) unlisten();
+    }
+  });
+
+  const updateStatus = container.querySelector("#update-status");
+  const installButton = container.querySelector("#btn-install-update");
+  container.querySelector("#btn-check-update")?.addEventListener("click", async event => {
+    const button = event.currentTarget;
+    button.disabled = true;
+    updateStatus.textContent = "جاري التحقق...";
+    installButton.classList.add("hidden");
+    const notes = container.querySelector("#update-notes");
+    notes.classList.add("hidden");
+    try {
+      const info = await api.checkForUpdate();
+      if (!info.configured) {
+        updateStatus.textContent = `الإصدار الحالي: ${info.current_version} — التحديث التلقائي غير مُعد بعد في هذه النسخة.`;
+      } else if (info.available) {
+        updateStatus.textContent = `يوجد إصدار جديد: ${info.version} (الإصدار الحالي ${info.current_version})`;
+        if (info.notes) { notes.textContent = info.notes; notes.classList.remove("hidden"); }
+        installButton.classList.remove("hidden");
+      } else {
+        updateStatus.textContent = `الإصدار الحالي ${info.current_version} هو الأحدث.`;
+      }
+    } catch (err) {
+      updateStatus.textContent = `الإصدار الحالي: ${APP_VERSION} — ${err?.message ?? String(err)}`;
+    } finally {
+      button.disabled = false;
+    }
+  });
+  installButton?.addEventListener("click", async () => {
+    if (!(await confirmAction("سيتم إنشاء نسخة احتياطية ثم تنزيل التحديث وتثبيته، وسيُغلق البرنامج ويُعاد فتحه. هل تريد المتابعة؟"))) return;
+    const password = await requestBackupPassword({
+      title: "نسخة احتياطية قبل التحديث",
+      message: "أدخل كلمة مرور للنسخة الاحتياطية التي تُنشأ قبل التحديث (8 أحرف على الأقل).",
+      minLength: 8,
+    });
+    if (!password) return;
+    const progress = openBackupProgress({ title: "تحديث البرنامج", message: "جاري التحضير..." });
+    let unlisten = null;
+    try {
+      unlisten = await listen("update-progress", event => progress.update(event.payload));
+      await api.installUpdate(password);
     } catch (err) {
       showToast(err?.message ?? String(err), "error");
       progress.close();
