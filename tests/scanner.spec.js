@@ -132,7 +132,8 @@ for (const [selector,command] of [
 });
 for(const screen of ["general","outgoing"])test(`archive supports live processing and upload: ${screen}`,async({page})=>{
   await page.evaluate(screen=>window.renderActual(screen),screen);
-  await page.locator("[data-scanner-for] button").click();
+  await page.locator(".att-act-more").first().click();
+  await page.getByRole("menuitem",{name:"قص وتدوير الصورة"}).click();
   await expect(page.locator("[data-result]")).toBeVisible();
   await expect(page.locator("[data-save]")).toHaveCount(0);
   await page.locator("[data-process]").click();

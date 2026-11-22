@@ -33,6 +33,7 @@ window.__TAURI_INTERNALS__={convertFileSrc:()=>canvas.toDataURL("image/jpeg"),in
   if(command==="cmd_delete_employee_photo"){employee.photo_path=null;employee.photo_full_path=null;return;}
   if(command==="cmd_get_company_config")return {company_name:"Synthetic Company",department_name:"Test",division_name:""};
   if(command==="cmd_list_general_docs" || command==="cmd_list_outgoing_docs")return [doc];
+  if(command==="cmd_read_document")return bytes;
   if(command==="cmd_audit_document_view")return;
   if(command==="cmd_get_storage_path" || command==="cmd_get_backup_path")return "synthetic path";
   throw new Error("Unmocked command: "+command);

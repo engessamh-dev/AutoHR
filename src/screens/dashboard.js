@@ -4,7 +4,7 @@
  */
 import { api }        from "../api.js";
 import { buildDocumentAlerts } from "./document-alerts.js";
-import { confirmAction, escHtml, formatDate } from "../utils.js";
+import { escHtml, formatDate } from "../utils.js";
 
 export async function renderDashboard(container, user, ctx) {
   const [employees, incomingDocs, outgoingDocs] = await Promise.all([
@@ -52,16 +52,12 @@ export async function renderDashboard(container, user, ctx) {
               <span class="badge ${d.attachment_paths?.length ? "badge-green" : "badge-gray"}"
                 style="gap:6px;font-size:12px;padding:5px 11px">
                 <span>📎</span>
-                <span dir="ltr">${d.attachment_paths?.length ?? 0} / 20</span>
+                <span dir="ltr">${d.attachment_paths?.length ?? 0}</span>
               </span>
             </button>
           </td>
-          <td class="table-cell">
-            <button type="button" class="btn-danger text-xs px-2 py-1 dashboard-doc-delete"
-              data-archive-tab="${archiveTab}" data-doc-id="${d.id}">حذف</button>
-          </td>
         </tr>`)
-      .join("") || `<tr><td colspan="6" class="table-cell text-center text-gray-500">${emptyLabel}</td></tr>`;
+      .join("") || `<tr><td colspan="5" class="table-cell text-center text-gray-500">${emptyLabel}</td></tr>`;
   }
 
   container.innerHTML = `<div class="space-y-5">
@@ -124,7 +120,6 @@ export async function renderDashboard(container, user, ctx) {
             <th class="table-header">إلى</th>
             <th class="table-header">تاريخ الإصدار</th>
             <th class="table-header">المرفقات</th>
-            <th class="table-header">إجراء</th>
           </tr></thead>
           <tbody>${recentDocsRows(incomingDocs, "لا توجد وثائق واردة", "general")}</tbody>
         </table>
@@ -142,7 +137,6 @@ export async function renderDashboard(container, user, ctx) {
             <th class="table-header">إلى</th>
             <th class="table-header">تاريخ الإصدار</th>
             <th class="table-header">المرفقات</th>
-            <th class="table-header">إجراء</th>
           </tr></thead>
           <tbody>${recentDocsRows(outgoingDocs, "لا توجد وثائق صادرة", "outgoing")}</tbody>
         </table>
@@ -161,21 +155,6 @@ export async function renderDashboard(container, user, ctx) {
         editDocId: parseInt(row.dataset.docId, 10),
         compactArchiveMode: true,
       });
-    });
-  });
-  container.querySelectorAll(".dashboard-doc-delete").forEach(button => {
-    button.addEventListener("click", async event => {
-      event.stopPropagation();
-      if (!(await confirmAction("تأكيد حذف الوثيقة؟"))) return;
-      try {
-        const id = parseInt(button.dataset.docId, 10);
-        if (button.dataset.archiveTab === "outgoing") await api.deleteOutgoingDoc(id);
-        else await api.deleteGeneralDoc(id);
-        ctx.showToast("تم حذف الوثيقة");
-        await renderDashboard(container, user, ctx);
-      } catch (error) {
-        ctx.showToast(error?.message ?? "تعذر حذف الوثيقة", "error");
-      }
     });
   });
   container.querySelectorAll(".dashboard-doc-attachments").forEach(button => {
