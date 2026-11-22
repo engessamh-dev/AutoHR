@@ -776,7 +776,8 @@ async fn cmd_move_data_folder(window: Window, state: State<'_, DbState>, sess: S
         let state = app.state::<DbState>();
         let mut guard = state.0.lock().unwrap_or_else(|e| e.into_inner());
         let conn = guard.as_ref().ok_or(AppError::Unauthorized)?;
-        let moved = storage::relocate_data(conn, &user, &password, std::path::Path::new(path.trim()), &mut |progress| {
+        let old_root = paths::data_root();
+        let (moved, safety) = storage::relocate_data(conn, &user, &password, std::path::Path::new(path.trim()), &mut |progress| {
             let _ = progress_window.emit("move-data-progress", progress);
         })?;
         // Switch to the verified copy. If it cannot be opened, stay on the old folder.
@@ -784,6 +785,8 @@ async fn cmd_move_data_folder(window: Window, state: State<'_, DbState>, sess: S
         paths::set_current(Some(moved.clone()));
         match db::open_at(&moved.data_root.join(paths::DATABASE_FILE), false) {
             Ok(new_conn) => {
+                log_activity(&new_conn, &user, "MOVE_DATA_FOLDER", Some("settings"), None, moved.data_root.to_str(),
+                    Some(&format!("from {} ; safety backup {safety}", old_root.display())));
                 activate_database(&app, &new_conn);
                 *guard = Some(new_conn);
                 Ok(storage::storage_status())

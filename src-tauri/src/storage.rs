@@ -250,7 +250,7 @@ pub fn relocate_data(
     password: &str,
     new_root: &Path,
     progress: &mut dyn FnMut(BackupProgress),
-) -> AppResult<AppPaths> {
+) -> AppResult<(AppPaths, String)> {
     assert_permission(conn, user, "settings.manage")?;
     assert_permission(conn, user, "backups.manage")?;
     let old_root = paths::data_root();
@@ -288,17 +288,9 @@ pub fn relocate_data(
 
     let updated = AppPaths { data_root: new_root.to_path_buf(), backup_root };
     paths::write_config(&updated)?;
-    log_activity(
-        conn,
-        user,
-        "MOVE_DATA_FOLDER",
-        Some("settings"),
-        None,
-        new_root.to_str(),
-        Some(&format!("from {} ; safety backup {safety}", old_root.display())),
-    );
+    // The caller writes the audit entry into the NEW database once it is open.
     progress(backup_progress(100, "تم نقل البيانات والتحقق منها. الموقع القديم بقي كما هو ولم يُحذف."));
-    Ok(updated)
+    Ok((updated, safety))
 }
 
 #[cfg(test)]
@@ -387,7 +379,7 @@ mod tests {
         std::fs::write(data.join("Data/Temp/scratch.tmp"), b"x").unwrap();
 
         let new_root = env.root.join("new-data");
-        let moved = relocate_data(&conn, &user, "Backup-Pass-2026", &new_root, &mut |_| {}).unwrap();
+        let (moved, _) = relocate_data(&conn, &user, "Backup-Pass-2026", &new_root, &mut |_| {}).unwrap();
         assert_eq!(moved.data_root, new_root);
         assert_eq!(std::fs::read(new_root.join("Data/Files/Employees/1/card.pdf")).unwrap(), b"%PDF-1.4 test attachment");
         assert!(!new_root.join("Data/Temp/scratch.tmp").exists());
