@@ -153,8 +153,8 @@ for(const [method, command] of [["uploadDocumentAttachment","cmd_upload_attachme
   expect(await page.evaluate(()=>window.calls)).toEqual([{command,args:command === "cmd_upload_attachment" ? {employeeId:1,sourcePath:"synthetic.png"} : {docId:1,sourcePath:"synthetic.png"}}]);
   await expect(page.locator(".smart-scanner-overlay")).toHaveCount(0);
 });
-test("about screen removes attachment processing settings and preserves logo upload",async({page})=>{
-  await page.evaluate(()=>window.renderActual("about"));
+test("settings screen removes attachment processing settings and preserves logo upload",async({page})=>{
+  await page.evaluate(()=>window.renderActual("settings"));
   await expect(page.locator("#scanner-settings")).toHaveCount(0);
   for (const selector of ["[data-confidence]","[data-auto]","[data-quality]","[data-enhancement]"]) await expect(page.locator(selector)).toHaveCount(0);
   await page.locator("#btn-upload-logo").click();await page.getByRole("button",{name:"\u062a\u0623\u0643\u064a\u062f",exact:true}).click();
@@ -290,10 +290,10 @@ test("Production manual editor ignores detected corners and only crops after app
   expect(await page.evaluate(()=>window.calls.filter(c=>c.command==="cmd_scanner_upload").length)).toBe(1);
 });
 
-test("Production about screen has no attachment processing settings", async ({page})=>{
-  await productionModule(page,"src/screens/about.js","productionAbout");
+test("Production settings screen has no attachment processing settings", async ({page})=>{
+  await productionModule(page,"src/screens/settings.js","productionSettings");
   await page.evaluate(async()=>{
-    await window.productionAbout.renderAbout(document.querySelector("#root"),{permissions:["settings.manage"]},{});
+    await window.productionSettings.renderSettings(document.querySelector("#root"),{permissions:["settings.manage"]},{});
   });
   await expect(page.locator("#scanner-settings")).toHaveCount(0);
   for(const selector of ["[data-auto]","[data-confidence]","[data-enhancement]","[data-quality]"])await expect(page.locator(selector)).toHaveCount(0);
