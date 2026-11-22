@@ -1,5 +1,5 @@
 // lib.rs — GCANS v2.0
-mod db; mod services; mod files; mod scanner; mod paths; mod storage;
+mod db; mod names; mod services; mod files; mod scanner; mod paths; mod storage;
 mod scanner_commands;
 use scanner_commands::*;
 #[cfg(test)] mod scanner_tests;
@@ -401,6 +401,16 @@ fn cmd_scan_document(state: State<DbState>, sess: State<SessionState>, device_id
     let conn = state.conn()?;
     let user = authorize(&conn, &sess, "employees.edit")?;
     update_employee(&conn, id, &data, &user)
+}
+#[tauri::command] fn cmd_list_name_review(state: State<DbState>, sess: State<SessionState>) -> Result<Vec<names::ReviewItem>, AppError> {
+    let conn = state.conn()?;
+    let user = authorize(&conn, &sess, "employees.edit")?;
+    list_name_review(&conn, &user)
+}
+#[tauri::command] fn cmd_save_name_review(state: State<DbState>, sess: State<SessionState>, employee_id: i64, owner: String, index: i64, field: String, parts: serde_json::Value) -> Result<String, AppError> {
+    let conn = state.conn()?;
+    let user = authorize(&conn, &sess, "employees.edit")?;
+    save_name_review(&conn, employee_id, &owner, index, &field, &parts, &user)
 }
 #[tauri::command] fn cmd_delete_employee(state: State<DbState>, sess: State<SessionState>, id: i64) -> Result<(), AppError> {
     let conn = state.conn()?;
@@ -1100,6 +1110,7 @@ pub fn run() {
             cmd_next_employee_number,
             cmd_list_employees, cmd_get_employee,
             cmd_create_employee, cmd_update_employee, cmd_delete_employee,
+            cmd_list_name_review, cmd_save_name_review,
             cmd_upload_employee_photo, cmd_delete_employee_photo,
             cmd_upload_national_card_attachment, cmd_delete_national_card_attachment,
             cmd_upload_family_national_card_attachment, cmd_delete_family_national_card_attachment,
