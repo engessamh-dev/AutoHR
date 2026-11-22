@@ -11,6 +11,7 @@ import { renderDocuments }  from "./screens/documents.js";
 import { renderUsers }     from "./screens/users.js";
 import { renderAbout }     from "./screens/about.js";
 import { renderSettings }  from "./screens/settings.js";
+import { runStartupGate } from "./screens/setup.js";
 import { renderAudit }     from "./screens/audit.js";
 import { can, roleLabels } from "./permissions.js";
 import { formatAppVersion } from "./version.js";
@@ -438,10 +439,9 @@ async function doLogout() {
 }
 
 // ── Bootstrap ──────────────────────────────────────────────────────────────
-document.addEventListener("DOMContentLoaded", () => {
+document.addEventListener("DOMContentLoaded", async () => {
   applyLang();
   applyAppVersion();
-  applyLoginBranding();
   getCurrentWindow().onCloseRequested(async event => {
     if (isClosingWindow) return;
     event.preventDefault();
@@ -455,6 +455,10 @@ document.addEventListener("DOMContentLoaded", () => {
       await api.exitApp();
     }
   });
+
+  // First run or unavailable data folder: choose folders before the login screen.
+  await runStartupGate();
+  applyLoginBranding();
 
   // Login form
   document.getElementById("login-form").addEventListener("submit", e => {

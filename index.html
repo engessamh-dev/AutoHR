@@ -28,6 +28,38 @@
     </main>
   </div>
 
+  <div id="setup-screen" class="hidden min-h-screen flex items-center justify-center" dir="rtl">
+    <div class="card w-full max-w-2xl mx-4 shadow-2xl space-y-4">
+      <div>
+        <h1 id="setup-title" class="text-xl font-bold mb-2">إعداد مواقع حفظ البيانات</h1>
+        <p id="setup-intro" class="text-sm text-gray-400 leading-7">اختر أين تُحفظ قاعدة البيانات والمرفقات، وأين تُحفظ النسخ الاحتياطية. يُفضّل أن يكون مجلد البيانات على قرص غير قرص النظام C، وأن تكون النسخ الاحتياطية على قرص آخر أو مجلد شبكة. يمكن تغيير الموقعين لاحقًا من الإعدادات.</p>
+      </div>
+      <form id="setup-form" class="space-y-4">
+        <div>
+          <label class="section-title" for="setup-data-root">مجلد البيانات والمرفقات</label>
+          <div class="flex gap-2">
+            <input id="setup-data-root" class="input-field flex-1" dir="ltr" placeholder="D:\AutoHR-Data" autocomplete="off" />
+            <button id="setup-pick-data" type="button" class="btn-secondary whitespace-nowrap">اختيار…</button>
+          </div>
+        </div>
+        <div id="setup-backup-group">
+          <label class="section-title" for="setup-backup-root">مجلد النسخ الاحتياطية</label>
+          <div class="flex gap-2">
+            <input id="setup-backup-root" class="input-field flex-1" dir="ltr" placeholder="E:\AutoHR-Backups" autocomplete="off" />
+            <button id="setup-pick-backup" type="button" class="btn-secondary whitespace-nowrap">اختيار…</button>
+          </div>
+        </div>
+        <div id="setup-warnings" class="space-y-2"></div>
+        <p id="setup-error" class="text-autohr-red text-sm hidden" role="alert"></p>
+        <div class="flex gap-3 flex-wrap">
+          <button id="setup-submit" type="submit" class="btn-primary px-6">حفظ ومتابعة</button>
+          <button id="setup-retry" type="button" class="btn-secondary hidden">إعادة المحاولة</button>
+          <button id="setup-exit" type="button" class="btn-secondary">إغلاق البرنامج</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
   <div id="password-change-screen" class="hidden min-h-screen flex items-center justify-center">
     <div class="card w-full max-w-md mx-4 shadow-2xl">
       <h1 class="text-xl font-bold mb-2">تغيير كلمة المرور مطلوب</h1>

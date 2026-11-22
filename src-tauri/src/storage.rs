@@ -1,0 +1,455 @@
+//! Choosing, moving and checking the data and backup folders.
+//!
+//! Every operation here is copy-then-verify: the old location is never deleted, and the
+//! configuration only switches after the new copy has been proven identical.
+use std::path::{Path, PathBuf};
+
+use rusqlite::{Connection, OpenFlags};
+use serde::Serialize;
+
+use crate::paths::{self, AppPaths, DATABASE_FILE};
+use crate::services::{
+    assert_permission, backup_progress, create_backup_archive, create_backup_at, ensure_backup_layout,
+    log_activity, sha256_file, verify_written_backup, AppError, AppResult, BackupProgress,
+};
+
+fn io_err(error: std::io::Error) -> AppError {
+    AppError::Other(error.to_string())
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct StorageStatus {
+    pub data_root: String,
+    pub backup_root: String,
+    pub backup_reachable: bool,
+    pub legacy_location: bool,
+    pub warnings: Vec<String>,
+}
+
+/// Reports where data and backups live, with non-blocking warnings for the Settings screen.
+pub fn storage_status() -> StorageStatus {
+    let current = AppPaths { data_root: paths::data_root(), backup_root: paths::backup_root() };
+    let backup_reachable = current.backup_root.is_dir() && paths::ensure_writable(&current.backup_root).is_ok();
+    let legacy_location = paths::is_legacy_location(&current);
+    let mut warnings = Vec::new();
+    if !backup_reachable {
+        warnings.push("مجلد النسخ الاحتياطية غير متاح حاليًا (قرص غير موصول أو مجلد شبكة غير متصل). العمل مستمر، لكن النسخ التلقائي لن يعمل حتى يعود المجلد أو تختار مجلدًا آخر.".into());
+    }
+    if legacy_location {
+        warnings.push("البيانات محفوظة في الموقع القديم داخل قرص النظام (AppData). يمكنك نقلها إلى قرص آخر من زر «نقل مجلد البيانات».".into());
+    }
+    if let Ok(mut pair) = paths::validate_pair(&current.data_root, &current.backup_root) {
+        warnings.append(&mut pair);
+    }
+    StorageStatus {
+        data_root: current.data_root.to_string_lossy().into_owned(),
+        backup_root: current.backup_root.to_string_lossy().into_owned(),
+        backup_reachable,
+        legacy_location,
+        warnings,
+    }
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct SetupCheck {
+    pub warnings: Vec<String>,
+    /// The chosen data folder already holds an AutoHR database that will be used as is.
+    pub existing_database: bool,
+}
+
+/// Validates the two folders chosen on first run (or after the data folder went missing).
+/// With `require_existing`, the data folder must already contain a database: used when the
+/// configured folder disappeared, so that a new empty database is never created by mistake.
+pub fn check_setup(data_root: &Path, backup_root: &Path, require_existing: bool) -> AppResult<SetupCheck> {
+    let warnings = paths::validate_pair(data_root, backup_root)?;
+    let existing_database = data_root.join(DATABASE_FILE).is_file();
+    if require_existing && !existing_database {
+        return Err(AppError::Validation(format!(
+            "لم يتم العثور على قاعدة بيانات AutoHR في {}. اختر المجلد الذي يحتوي على الملف {DATABASE_FILE}.",
+            data_root.display()
+        )));
+    }
+    if !existing_database && data_root.join("Data").exists() {
+        return Err(AppError::Validation(
+            "المجلد المختار يحتوي على مجلد Data بدون قاعدة بيانات. اختر مجلدًا فارغًا أو مجلد بيانات AutoHR كاملًا.".into(),
+        ));
+    }
+    if existing_database {
+        let probe = Connection::open_with_flags(data_root.join(DATABASE_FILE), OpenFlags::SQLITE_OPEN_READ_ONLY)?;
+        let ok: String = probe.query_row("PRAGMA quick_check", [], |r| r.get(0))?;
+        if ok != "ok" {
+            return Err(AppError::Validation("قاعدة البيانات الموجودة في المجلد المختار تالفة ولا يمكن استخدامها.".into()));
+        }
+    }
+    Ok(SetupCheck { warnings, existing_database })
+}
+
+/// Finishes first-run setup: creates or opens the database in the chosen folder, prepares
+/// the backup folder, then records both in config.json. Returns the open connection.
+pub fn complete_setup(data_root: &Path, backup_root: &Path, require_existing: bool) -> AppResult<Connection> {
+    check_setup(data_root, backup_root, require_existing)?;
+    paths::ensure_writable(data_root)?;
+    let backup_ok = paths::ensure_writable(backup_root).is_ok();
+    let chosen = AppPaths { data_root: data_root.to_path_buf(), backup_root: backup_root.to_path_buf() };
+    paths::set_current(Some(chosen.clone()));
+    let opened = crate::db::open_at(&data_root.join(DATABASE_FILE), !require_existing).map_err(AppError::from);
+    let conn = match opened {
+        Ok(conn) => conn,
+        Err(error) => {
+            paths::set_current(None);
+            return Err(error);
+        }
+    };
+    if backup_ok {
+        ensure_backup_layout(&conn).ok();
+    }
+    if let Err(error) = paths::write_config(&chosen) {
+        paths::set_current(None);
+        return Err(error);
+    }
+    Ok(conn)
+}
+
+/// Changes only the backup folder. Old backups stay where they are.
+pub fn change_backup_root(conn: &Connection, user: &str, new_root: &Path) -> AppResult<StorageStatus> {
+    assert_permission(conn, user, "settings.manage")?;
+    let data_root = paths::data_root();
+    paths::validate_pair(&data_root, new_root)?;
+    paths::ensure_writable(new_root)?;
+    let updated = AppPaths { data_root, backup_root: new_root.to_path_buf() };
+    paths::write_config(&updated)?;
+    paths::set_current(Some(updated));
+    ensure_backup_layout(conn)?;
+    log_activity(conn, user, "CHANGE_BACKUP_FOLDER", Some("settings"), None, new_root.to_str(), None);
+    Ok(storage_status())
+}
+
+/// Writes a fresh, verified encrypted backup straight into any folder the user picks
+/// (USB stick, network share). Works even while the configured backup folder is offline.
+pub fn export_backup_to(
+    conn: &Connection,
+    user: &str,
+    password: &str,
+    folder: &Path,
+    progress: &mut dyn FnMut(BackupProgress),
+) -> AppResult<String> {
+    assert_permission(conn, user, "backups.manage")?;
+    if folder.as_os_str().is_empty() || !folder.is_absolute() {
+        return Err(AppError::Validation("اختر مجلدًا صالحًا لحفظ النسخة".into()));
+    }
+    if paths::is_same_or_inside(folder, &paths::data_root()) {
+        return Err(AppError::Validation("لا يمكن تصدير النسخة إلى داخل مجلد البيانات نفسه. اختر قرصًا أو مجلدًا آخر.".into()));
+    }
+    paths::ensure_writable(folder)?;
+    let stamp = chrono::Local::now().format("%Y-%m-%d_%H%M%S");
+    let path = folder.join(format!("autohr_export_{stamp}.autohrbak"));
+    if path.exists() {
+        return Err(AppError::Validation("يوجد ملف بنفس الاسم في المجلد المختار. أعد المحاولة بعد ثانية.".into()));
+    }
+    create_backup_archive(conn, password, &path, progress)?;
+    progress(backup_progress(98, "جاري التحقق من النسخة المصدّرة..."));
+    if let Err(error) = verify_written_backup(&path, password) {
+        std::fs::remove_file(&path).ok();
+        return Err(error);
+    }
+    log_activity(conn, user, "EXPORT_BACKUP", Some("backup"), None, path.to_str(), None);
+    progress(backup_progress(100, "تم تصدير النسخة الاحتياطية والتحقق منها"));
+    Ok(path.to_string_lossy().into_owned())
+}
+
+/// Lists every regular file under `root` (relative paths), skipping the Temp folder.
+fn list_files(root: &Path) -> AppResult<Vec<PathBuf>> {
+    let mut files = Vec::new();
+    let mut pending = vec![PathBuf::new()];
+    while let Some(relative) = pending.pop() {
+        let dir = root.join(&relative);
+        if !dir.exists() {
+            continue;
+        }
+        for entry in std::fs::read_dir(&dir).map_err(io_err)? {
+            let entry = entry.map_err(io_err)?;
+            let child = relative.join(entry.file_name());
+            if relative.as_os_str().is_empty() && entry.file_name() == "Temp" {
+                continue;
+            }
+            let kind = entry.file_type().map_err(io_err)?;
+            if kind.is_dir() {
+                pending.push(child);
+            } else if kind.is_file() {
+                files.push(child);
+            }
+        }
+    }
+    files.sort();
+    Ok(files)
+}
+
+/// Copies the database and the Data tree to `new_root`, then proves the copy is identical.
+fn copy_and_verify(conn: &Connection, old_root: &Path, new_root: &Path, progress: &mut dyn FnMut(BackupProgress)) -> AppResult<()> {
+    let new_db = new_root.join(DATABASE_FILE);
+    progress(backup_progress(40, "جاري نسخ قاعدة البيانات إلى الموقع الجديد..."));
+    conn.backup(rusqlite::DatabaseName::Main, &new_db, None)?;
+
+    let old_data = old_root.join("Data");
+    let new_data = new_root.join("Data");
+    let files = list_files(&old_data)?;
+    let total = files.len().max(1);
+    for (index, relative) in files.iter().enumerate() {
+        let target = new_data.join(relative);
+        if let Some(parent) = target.parent() {
+            std::fs::create_dir_all(parent).map_err(io_err)?;
+        }
+        std::fs::copy(old_data.join(relative), &target).map_err(io_err)?;
+        if index % 25 == 0 {
+            let percent = (45 + index * 35 / total) as u8;
+            progress(backup_progress(percent, "جاري نسخ المرفقات..."));
+        }
+    }
+    std::fs::create_dir_all(new_data.join("Temp")).map_err(io_err)?;
+
+    progress(backup_progress(82, "جاري التحقق من تطابق الملفات..."));
+    for relative in &files {
+        let (old_size, old_hash) = sha256_file(&old_data.join(relative))?;
+        let (new_size, new_hash) = sha256_file(&new_data.join(relative))?;
+        if old_size != new_size || old_hash != new_hash {
+            return Err(AppError::Other(format!("الملف المنسوخ لا يطابق الأصل: {}", relative.display())));
+        }
+    }
+    progress(backup_progress(92, "جاري التحقق من سلامة قاعدة البيانات المنسوخة..."));
+    let copy = Connection::open_with_flags(&new_db, OpenFlags::SQLITE_OPEN_READ_ONLY)?;
+    let integrity: String = copy.query_row("PRAGMA integrity_check", [], |r| r.get(0))?;
+    if integrity != "ok" {
+        return Err(AppError::Other("فشل فحص سلامة قاعدة البيانات المنسوخة".into()));
+    }
+    let count = |c: &Connection, table: &str| -> AppResult<i64> {
+        Ok(c.query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |r| r.get(0))?)
+    };
+    for table in ["employees", "users", "general_docs"] {
+        if count(conn, table)? != count(&copy, table)? {
+            return Err(AppError::Other(format!("عدد السجلات في الجدول {table} لا يطابق الأصل")));
+        }
+    }
+    if crate::db::schema_version(conn)? != crate::db::schema_version(&copy)? {
+        return Err(AppError::Other("إصدار قاعدة البيانات المنسوخة لا يطابق الأصل".into()));
+    }
+    Ok(())
+}
+
+/// Moves the data folder (database + attachments) to `new_root`.
+///
+/// 1. the new folder must be empty or new, separate from the backup folder;
+/// 2. an encrypted, verified safety backup is written to `Backups/PreMove`;
+/// 3. database and files are copied and verified (size, SHA-256, integrity, row counts);
+/// 4. only then config.json switches to the new folder.
+///
+/// The old folder is left untouched. On any failure, only what this function created in
+/// the new folder is removed and the configuration does not change.
+pub fn relocate_data(
+    conn: &Connection,
+    user: &str,
+    password: &str,
+    new_root: &Path,
+    progress: &mut dyn FnMut(BackupProgress),
+) -> AppResult<AppPaths> {
+    assert_permission(conn, user, "settings.manage")?;
+    assert_permission(conn, user, "backups.manage")?;
+    let old_root = paths::data_root();
+    let backup_root = paths::backup_root();
+    paths::validate_pair(new_root, &backup_root)?;
+    if paths::is_same_or_inside(new_root, &old_root) || paths::is_same_or_inside(&old_root, new_root) {
+        return Err(AppError::Validation("اختر مجلدًا جديدًا منفصلًا عن مجلد البيانات الحالي".into()));
+    }
+    let existed = new_root.exists();
+    if existed {
+        let empty = std::fs::read_dir(new_root).map_err(io_err)?.next().is_none();
+        if !empty || paths::has_existing_data(new_root) {
+            return Err(AppError::Validation("يجب أن يكون المجلد الجديد فارغًا حتى لا تُخلط البيانات أو يُكتب فوق ملفات موجودة".into()));
+        }
+    }
+    paths::ensure_writable(new_root)?;
+
+    progress(backup_progress(2, "جاري إنشاء نسخة احتياطية للأمان قبل النقل..."));
+    let mut nested = |p: BackupProgress| progress(backup_progress(2 + (u16::from(p.percent) * 35 / 100) as u8, &p.message));
+    let safety = create_backup_at(conn, user, password, "PreMove", &mut nested).map_err(|error| {
+        AppError::Validation(format!("تعذر إنشاء نسخة الأمان قبل النقل، لذلك لم يتم النقل: {error}"))
+    })?;
+
+    if let Err(error) = copy_and_verify(conn, &old_root, new_root, progress) {
+        // Only remove what this function created; the folder was empty or new.
+        std::fs::remove_file(new_root.join(DATABASE_FILE)).ok();
+        std::fs::remove_file(new_root.join(format!("{DATABASE_FILE}-wal"))).ok();
+        std::fs::remove_file(new_root.join(format!("{DATABASE_FILE}-shm"))).ok();
+        std::fs::remove_dir_all(new_root.join("Data")).ok();
+        if !existed {
+            std::fs::remove_dir(new_root).ok();
+        }
+        return Err(AppError::Validation(format!("فشل نقل البيانات، ولم يتغير شيء وبقي البرنامج على المجلد الحالي: {error}")));
+    }
+
+    let updated = AppPaths { data_root: new_root.to_path_buf(), backup_root };
+    paths::write_config(&updated)?;
+    log_activity(
+        conn,
+        user,
+        "MOVE_DATA_FOLDER",
+        Some("settings"),
+        None,
+        new_root.to_str(),
+        Some(&format!("from {} ; safety backup {safety}", old_root.display())),
+    );
+    progress(backup_progress(100, "تم نقل البيانات والتحقق منها. الموقع القديم بقي كما هو ولم يُحذف."));
+    Ok(updated)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::services::TEST_APP_DATA_ROOT;
+
+    struct Env {
+        _dir: tempfile::TempDir,
+        root: PathBuf,
+    }
+
+    fn env() -> Env {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().to_path_buf();
+        TEST_APP_DATA_ROOT.with(|v| *v.borrow_mut() = Some(root.join("appdata")));
+        paths::set_current(None);
+        Env { _dir: dir, root }
+    }
+
+    fn admin(conn: &Connection) -> String {
+        conn.execute("UPDATE users SET must_change_password=0 WHERE username='sysadmin'", []).unwrap();
+        "sysadmin".into()
+    }
+
+    #[test]
+    fn setup_creates_database_and_config_then_startup_is_ready() {
+        let env = env();
+        let data = env.root.join("AutoHR-Data");
+        let backups = env.root.join("AutoHR-Backups");
+        assert_eq!(paths::resolve_startup().unwrap(), paths::StartupState::NeedsSetup);
+        let conn = complete_setup(&data, &backups, false).unwrap();
+        assert!(data.join(DATABASE_FILE).is_file());
+        assert!(backups.join("Daily").is_dir());
+        assert_eq!(crate::db::schema_version(&conn).unwrap(), crate::db::SCHEMA_VERSION);
+        drop(conn);
+        paths::set_current(None);
+        assert_eq!(
+            paths::resolve_startup().unwrap(),
+            paths::StartupState::Ready(AppPaths { data_root: data, backup_root: backups })
+        );
+    }
+
+    #[test]
+    fn missing_data_folder_never_creates_an_empty_database() {
+        let env = env();
+        let data = env.root.join("AutoHR-Data");
+        let backups = env.root.join("AutoHR-Backups");
+        drop(complete_setup(&data, &backups, false).unwrap());
+        std::fs::rename(&data, env.root.join("unplugged")).unwrap();
+        paths::set_current(None);
+        assert!(matches!(paths::resolve_startup().unwrap(), paths::StartupState::DataMissing(_)));
+        assert!(complete_setup(&data, &backups, true).is_err());
+        assert!(!data.join(DATABASE_FILE).exists());
+        assert!(crate::db::open_at(&data.join(DATABASE_FILE), false).is_err());
+        assert!(!data.join(DATABASE_FILE).exists());
+        // Pointing at the real folder again works.
+        let found = env.root.join("unplugged");
+        assert!(complete_setup(&found, &backups, true).is_ok());
+    }
+
+    #[test]
+    fn legacy_install_keeps_working_from_its_old_folder() {
+        let env = env();
+        let legacy = paths::legacy_paths();
+        std::fs::create_dir_all(&legacy.data_root).unwrap();
+        drop(crate::db::open_at(&legacy.data_root.join(DATABASE_FILE), true).unwrap());
+        let _ = env;
+        assert_eq!(paths::resolve_startup().unwrap(), paths::StartupState::Ready(legacy.clone()));
+        assert!(paths::config_path().is_file());
+        paths::set_current(Some(legacy));
+        assert!(storage_status().legacy_location);
+    }
+
+    #[test]
+    fn data_folder_move_copies_verifies_and_keeps_the_old_folder() {
+        let env = env();
+        let data = env.root.join("old-data");
+        let backups = env.root.join("backups");
+        let conn = complete_setup(&data, &backups, false).unwrap();
+        let user = admin(&conn);
+        let file = data.join("Data/Files/Employees/1/card.pdf");
+        std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+        std::fs::write(&file, b"%PDF-1.4 test attachment").unwrap();
+        std::fs::create_dir_all(data.join("Data/Temp")).unwrap();
+        std::fs::write(data.join("Data/Temp/scratch.tmp"), b"x").unwrap();
+
+        let new_root = env.root.join("new-data");
+        let moved = relocate_data(&conn, &user, "Backup-Pass-2026", &new_root, &mut |_| {}).unwrap();
+        assert_eq!(moved.data_root, new_root);
+        assert_eq!(std::fs::read(new_root.join("Data/Files/Employees/1/card.pdf")).unwrap(), b"%PDF-1.4 test attachment");
+        assert!(!new_root.join("Data/Temp/scratch.tmp").exists());
+        assert!(file.is_file(), "old data must stay");
+        assert!(data.join(DATABASE_FILE).is_file());
+        let safety: Vec<_> = list_files(&backups.join("PreMove")).unwrap();
+        assert_eq!(safety.len(), 1);
+        paths::set_current(None);
+        assert_eq!(
+            paths::resolve_startup().unwrap(),
+            paths::StartupState::Ready(AppPaths { data_root: new_root, backup_root: backups })
+        );
+    }
+
+    #[test]
+    fn data_folder_move_refuses_a_non_empty_target_and_changes_nothing() {
+        let env = env();
+        let data = env.root.join("old-data");
+        let backups = env.root.join("backups");
+        let conn = complete_setup(&data, &backups, false).unwrap();
+        let user = admin(&conn);
+        let target = env.root.join("busy");
+        std::fs::create_dir_all(&target).unwrap();
+        std::fs::write(target.join("someone-else.txt"), b"keep me").unwrap();
+        assert!(relocate_data(&conn, &user, "Backup-Pass-2026", &target, &mut |_| {}).is_err());
+        assert_eq!(std::fs::read(target.join("someone-else.txt")).unwrap(), b"keep me");
+        assert_eq!(paths::data_root(), data);
+        // Backup folder inside the target is also rejected.
+        assert!(relocate_data(&conn, &user, "Backup-Pass-2026", &backups.join("x"), &mut |_| {}).is_err());
+    }
+
+    #[test]
+    fn export_writes_a_verified_backup_outside_the_data_folder() {
+        let env = env();
+        let data = env.root.join("data");
+        let backups = env.root.join("backups");
+        let conn = complete_setup(&data, &backups, false).unwrap();
+        let user = admin(&conn);
+        let usb = env.root.join("usb");
+        let path = export_backup_to(&conn, &user, "Backup-Pass-2026", &usb, &mut |_| {}).unwrap();
+        assert!(Path::new(&path).is_file());
+        verify_written_backup(Path::new(&path), "Backup-Pass-2026").unwrap();
+        assert!(export_backup_to(&conn, &user, "Backup-Pass-2026", &data.join("Data"), &mut |_| {}).is_err());
+    }
+
+    #[test]
+    fn backup_folder_change_is_validated_and_saved() {
+        let env = env();
+        let data = env.root.join("data");
+        let backups = env.root.join("backups");
+        let conn = complete_setup(&data, &backups, false).unwrap();
+        let user = admin(&conn);
+        assert!(change_backup_root(&conn, &user, &data.join("Backups")).is_err());
+        let other = env.root.join("nas-backups");
+        let status = change_backup_root(&conn, &user, &other).unwrap();
+        assert!(status.backup_reachable);
+        assert!(other.join("Weekly").is_dir());
+        assert!(backups.is_dir(), "old backups stay");
+        paths::set_current(None);
+        assert_eq!(
+            paths::resolve_startup().unwrap(),
+            paths::StartupState::Ready(AppPaths { data_root: data, backup_root: other })
+        );
+    }
+}

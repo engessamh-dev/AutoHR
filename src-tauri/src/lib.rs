@@ -1,5 +1,5 @@
 // lib.rs — GCANS v2.0
-mod db; mod services; mod files; mod scanner;
+mod db; mod services; mod files; mod scanner; mod paths; mod storage;
 mod scanner_commands;
 use scanner_commands::*;
 #[cfg(test)] mod scanner_tests;
@@ -10,7 +10,84 @@ use std::sync::Mutex;
 use rusqlite::Connection;
 use rand::RngCore;
 
-struct DbState(Mutex<Connection>);
+/// The open database, or `None` while first-run setup is pending or the data folder is
+/// unreachable. Every command goes through `conn()`, which reports that state as an error
+/// instead of panicking.
+struct DbState(Mutex<Option<Connection>>);
+
+struct ConnGuard<'a>(std::sync::MutexGuard<'a, Option<Connection>>);
+
+impl std::ops::Deref for ConnGuard<'_> {
+    type Target = Connection;
+    fn deref(&self) -> &Connection {
+        self.0.as_ref().expect("checked in DbState::conn")
+    }
+}
+
+impl std::ops::DerefMut for ConnGuard<'_> {
+    fn deref_mut(&mut self) -> &mut Connection {
+        self.0.as_mut().expect("checked in DbState::conn")
+    }
+}
+
+impl DbState {
+    fn conn(&self) -> Result<ConnGuard<'_>, AppError> {
+        let guard = self.0.lock().unwrap_or_else(|e| e.into_inner());
+        if guard.is_none() {
+            return Err(AppError::Validation("قاعدة البيانات غير مفتوحة. أكمل إعداد مجلد البيانات أولًا.".into()));
+        }
+        Ok(ConnGuard(guard))
+    }
+}
+
+/// How the application started, reported to the frontend before the login screen.
+#[derive(Clone, serde::Serialize)]
+struct StartupStatus {
+    /// "ready", "needs_setup", "data_missing" or "open_failed".
+    state: String,
+    data_root: String,
+    backup_root: String,
+    message: String,
+    suggested_data_root: String,
+    suggested_backup_root: String,
+}
+
+struct StartupInfo(Mutex<StartupStatus>);
+
+fn suggested_roots() -> (String, String) {
+    #[cfg(target_os = "windows")]
+    {
+        let drives: Vec<String> = ["D", "E", "F", "G"].iter()
+            .filter(|d| std::path::Path::new(&format!("{d}:\\")).is_dir())
+            .map(|d| d.to_string()).collect();
+        let data = drives.first().map(|d| format!("{d}:\\AutoHR-Data")).unwrap_or_default();
+        let backup = drives.get(1).map(|d| format!("{d}:\\AutoHR-Backups")).unwrap_or_default();
+        (data, backup)
+    }
+    #[cfg(not(target_os = "windows"))]
+    { (String::new(), String::new()) }
+}
+
+fn startup_status(state: &str, message: String) -> StartupStatus {
+    let (suggested_data_root, suggested_backup_root) = suggested_roots();
+    let configured = paths::current();
+    StartupStatus {
+        state: state.into(),
+        data_root: configured.as_ref().map(|p| p.data_root.to_string_lossy().into_owned()).unwrap_or_default(),
+        backup_root: configured.as_ref().map(|p| p.backup_root.to_string_lossy().into_owned()).unwrap_or_default(),
+        message,
+        suggested_data_root,
+        suggested_backup_root,
+    }
+}
+
+/// Prepares folders and file scopes for a freshly opened database.
+fn activate_database(app: &AppHandle, conn: &Connection) {
+    ensure_storage_layout(conn).ok();
+    scanner::recover_pending_files(conn).ok();
+    ensure_backup_layout(conn).ok();
+    app.asset_protocol_scope().allow_directory(storage_path(conn), true).ok();
+}
 
 #[derive(Clone)]
 struct Session {
@@ -167,7 +244,7 @@ fn build_report_xlsx(headers: &[String], rows: &[Vec<String>]) -> AppResult<Vec<
 
 #[tauri::command]
 fn cmd_select_scanner_device(state: State<DbState>, sess: State<SessionState>) -> Result<String, AppError> {
-    let conn = state.0.lock().unwrap();
+    let conn = state.conn()?;
     authorize(&conn, &sess, "documents.upload")?;
     drop(conn);
 
@@ -196,7 +273,7 @@ fn cmd_select_scanner_device(state: State<DbState>, sess: State<SessionState>) -
 
 #[tauri::command]
 fn cmd_scan_document(state: State<DbState>, sess: State<SessionState>, device_id: String) -> Result<String, AppError> {
-    let conn = state.0.lock().unwrap();
+    let conn = state.conn()?;
     let user = authorize(&conn, &sess, "documents.upload")?;
     drop(conn);
 
@@ -254,14 +331,14 @@ fn cmd_scan_document(state: State<DbState>, sess: State<SessionState>, device_id
                 return Err(AppError::Validation(message));
             }
         }
-        let conn = state.0.lock().unwrap();
+        let conn = state.conn()?;
         log_activity(&conn, &user, "SCAN_DOCUMENT", Some("document"), None, output_path.to_str(), None);
         Ok(output_path.to_string_lossy().into_owned())
     }
 }
 
 #[tauri::command] fn cmd_login(state: State<DbState>, sess: State<SessionState>, username: String, password: String) -> Result<User, AppError> {
-    let conn = state.0.lock().unwrap();
+    let conn = state.conn()?;
     let user = login(&conn, &username, &password)?;
     *sess.0.lock().unwrap() = Some(Session {
         username,
@@ -270,14 +347,14 @@ fn cmd_scan_document(state: State<DbState>, sess: State<SessionState>, device_id
     Ok(user)
 }
 #[tauri::command] fn cmd_change_password(state: State<DbState>, sess: State<SessionState>, current_password: String, new_password: String) -> Result<User, AppError> {
-    let conn = state.0.lock().unwrap();
+    let conn = state.conn()?;
     let username = session_identity(&sess)?;
     let user = change_password(&conn, &username, &current_password, &new_password)?;
     *sess.0.lock().unwrap() = Some(Session { username, must_change_password: false });
     Ok(user)
 }
 #[tauri::command] fn cmd_logout(state: State<DbState>, sess: State<SessionState>) -> Result<(), AppError> {
-    let conn = state.0.lock().unwrap();
+    let conn = state.conn()?;
     let username = session_identity(&sess)?;
     logout(&conn, &username)?;
     scanner::clear_owner(&username);
@@ -285,343 +362,448 @@ fn cmd_scan_document(state: State<DbState>, sess: State<SessionState>, device_id
     Ok(())
 }
 #[tauri::command] fn cmd_get_company_config(state: State<DbState>, sess: State<SessionState>) -> Result<CompanyConfig, AppError> {
-    let conn = state.0.lock().unwrap();
+    let conn = state.conn()?;
     authorize(&conn, &sess, "dashboard.view")?;
     get_company_config(&conn)
 }
 #[tauri::command] fn cmd_get_public_company_config(state: State<DbState>) -> Result<CompanyConfig, AppError> {
-    get_company_config(&state.0.lock().unwrap())
+    get_company_config(&*state.conn()?)
 }
 #[tauri::command] fn cmd_update_company_config(state: State<DbState>, sess: State<SessionState>, data: CompanyConfigData) -> Result<CompanyConfig, AppError> {
     let user = session_user(&sess)?;
-    update_company_config(&state.0.lock().unwrap(), &user, &data)
+    update_company_config(&*state.conn()?, &user, &data)
 }
 #[tauri::command] fn cmd_upload_company_logo(state: State<DbState>, sess: State<SessionState>, source_path: String) -> Result<CompanyConfig, AppError> {
     let user = session_user(&sess)?;
-    upload_company_logo(&state.0.lock().unwrap(), &user, &source_path)
+    upload_company_logo(&*state.conn()?, &user, &source_path)
 }
 #[tauri::command] fn cmd_next_employee_number(state: State<DbState>, sess: State<SessionState>) -> Result<String, AppError> {
-    let conn = state.0.lock().unwrap();
+    let conn = state.conn()?;
     authorize(&conn, &sess, "employees.create")?;
     next_employee_number(&conn)
 }
 #[tauri::command] fn cmd_list_employees(state: State<DbState>, sess: State<SessionState>) -> Result<Vec<Employee>, AppError> {
-    let conn = state.0.lock().unwrap();
+    let conn = state.conn()?;
     authorize(&conn, &sess, "employees.view")?;
     list_employees(&conn)
 }
 #[tauri::command] fn cmd_get_employee(state: State<DbState>, sess: State<SessionState>, id: i64) -> Result<Employee, AppError> {
-    let conn = state.0.lock().unwrap();
+    let conn = state.conn()?;
     authorize(&conn, &sess, "employees.view")?;
     get_employee(&conn, id)
 }
 #[tauri::command] fn cmd_create_employee(state: State<DbState>, sess: State<SessionState>, data: EmployeeData) -> Result<Employee, AppError> {
-    let conn = state.0.lock().unwrap();
+    let conn = state.conn()?;
     let user = authorize(&conn, &sess, "employees.create")?;
     create_employee(&conn, &data, &user)
 }
 #[tauri::command] fn cmd_update_employee(state: State<DbState>, sess: State<SessionState>, id: i64, data: EmployeeData) -> Result<Employee, AppError> {
-    let conn = state.0.lock().unwrap();
+    let conn = state.conn()?;
     let user = authorize(&conn, &sess, "employees.edit")?;
     update_employee(&conn, id, &data, &user)
 }
 #[tauri::command] fn cmd_delete_employee(state: State<DbState>, sess: State<SessionState>, id: i64) -> Result<(), AppError> {
-    let conn = state.0.lock().unwrap();
+    let conn = state.conn()?;
     let user = authorize(&conn, &sess, "employees.delete")?;
     delete_employee(&conn, id, &user)
 }
 #[tauri::command] fn cmd_upload_employee_photo(state: State<DbState>, sess: State<SessionState>, employee_id: i64, source_path: String) -> Result<String, AppError> {
-    let conn = state.0.lock().unwrap();
+    let conn = state.conn()?;
     let user = authorize(&conn, &sess, "employees.edit")?;
     let result = upload_employee_photo(&conn, employee_id, &source_path)?;
     log_activity(&conn, &user, "UPLOAD_DOCUMENT", Some("employee"), Some(employee_id), Some(&result), Some("photo"));
     Ok(result)
 }
 #[tauri::command] fn cmd_delete_employee_photo(state: State<DbState>, sess: State<SessionState>, employee_id: i64) -> Result<(), AppError> {
-    let conn = state.0.lock().unwrap();
+    let conn = state.conn()?;
     let user = authorize(&conn, &sess, "employees.edit")?;
     files::delete_employee_photo(&conn, employee_id)?;
     log_activity(&conn, &user, "DELETE_DOCUMENT", Some("employee"), Some(employee_id), None, Some("photo"));
     Ok(())
 }
 #[tauri::command] fn cmd_upload_attachment(state: State<DbState>, sess: State<SessionState>, employee_id: i64, source_path: String) -> Result<String, AppError> {
-    let conn = state.0.lock().unwrap();
+    let conn = state.conn()?;
     let user = authorize(&conn, &sess, "documents.upload")?;
     let rel = files::upload_attachment(&conn, employee_id, &source_path)?;
     log_activity(&conn, &user, "UPLOAD_ATTACHMENT", Some("employee"), Some(employee_id), Some(&rel), None);
     Ok(rel)
 }
 #[tauri::command] fn cmd_upload_national_card_attachment(state: State<DbState>, sess: State<SessionState>, employee_id: i64, side: String, source_path: String) -> Result<String, AppError> {
-    let conn = state.0.lock().unwrap();
+    let conn = state.conn()?;
     let user = authorize(&conn, &sess, "documents.upload")?;
     let rel = files::upload_national_card_attachment(&conn, employee_id, &side, &source_path)?;
     log_activity(&conn, &user, "UPLOAD_NATIONAL_CARD_ATTACHMENT", Some("employee"), Some(employee_id), Some(&rel), Some(&side));
     Ok(rel)
 }
 #[tauri::command] fn cmd_delete_national_card_attachment(state: State<DbState>, sess: State<SessionState>, employee_id: i64, side: String) -> Result<(), AppError> {
-    let conn = state.0.lock().unwrap();
+    let conn = state.conn()?;
     let user = authorize(&conn, &sess, "documents.delete")?;
     files::delete_national_card_attachment(&conn, employee_id, &side)?;
     log_activity(&conn, &user, "DELETE_NATIONAL_CARD_ATTACHMENT", Some("employee"), Some(employee_id), None, Some(&side));
     Ok(())
 }
 #[tauri::command] fn cmd_upload_family_national_card_attachment(state: State<DbState>, sess: State<SessionState>, employee_id: i64, member_index: usize, side: String, source_path: String) -> Result<String, AppError> {
-    let conn = state.0.lock().unwrap();
+    let conn = state.conn()?;
     let user = authorize(&conn, &sess, "documents.upload")?;
     let rel = files::upload_family_national_card_attachment(&conn, employee_id, member_index, &side, &source_path)?;
     log_activity(&conn, &user, "UPLOAD_FAMILY_NATIONAL_CARD_ATTACHMENT", Some("employee"), Some(employee_id), Some(&rel), Some(&format!("{}:{}", member_index, side)));
     Ok(rel)
 }
 #[tauri::command] fn cmd_delete_family_national_card_attachment(state: State<DbState>, sess: State<SessionState>, employee_id: i64, member_index: usize, side: String) -> Result<(), AppError> {
-    let conn = state.0.lock().unwrap();
+    let conn = state.conn()?;
     let user = authorize(&conn, &sess, "documents.delete")?;
     files::delete_family_national_card_attachment(&conn, employee_id, member_index, &side)?;
     log_activity(&conn, &user, "DELETE_FAMILY_NATIONAL_CARD_ATTACHMENT", Some("employee"), Some(employee_id), None, Some(&format!("{}:{}", member_index, side)));
     Ok(())
 }
 #[tauri::command] fn cmd_upload_spouse_national_card_attachment(state: State<DbState>, sess: State<SessionState>, employee_id: i64, spouse_index: usize, side: String, source_path: String) -> Result<String, AppError> {
-    let conn = state.0.lock().unwrap();
+    let conn = state.conn()?;
     let user = authorize(&conn, &sess, "documents.upload")?;
     let rel = files::upload_spouse_national_card_attachment(&conn, employee_id, spouse_index, &side, &source_path)?;
     log_activity(&conn, &user, "UPLOAD_SPOUSE_NATIONAL_CARD_ATTACHMENT", Some("employee"), Some(employee_id), Some(&rel), Some(&format!("{}:{}", spouse_index, side)));
     Ok(rel)
 }
 #[tauri::command] fn cmd_delete_spouse_national_card_attachment(state: State<DbState>, sess: State<SessionState>, employee_id: i64, spouse_index: usize, side: String) -> Result<(), AppError> {
-    let conn = state.0.lock().unwrap();
+    let conn = state.conn()?;
     let user = authorize(&conn, &sess, "documents.delete")?;
     files::delete_spouse_national_card_attachment(&conn, employee_id, spouse_index, &side)?;
     log_activity(&conn, &user, "DELETE_SPOUSE_NATIONAL_CARD_ATTACHMENT", Some("employee"), Some(employee_id), None, Some(&format!("{}:{}", spouse_index, side)));
     Ok(())
 }
 #[tauri::command] fn cmd_upload_residence_card_attachment(state: State<DbState>, sess: State<SessionState>, employee_id: i64, side: String, source_path: String) -> Result<String, AppError> {
-    let conn = state.0.lock().unwrap();
+    let conn = state.conn()?;
     let user = authorize(&conn, &sess, "documents.upload")?;
     let rel = files::upload_residence_card_attachment(&conn, employee_id, &side, &source_path)?;
     log_activity(&conn, &user, "UPLOAD_RESIDENCE_CARD_ATTACHMENT", Some("employee"), Some(employee_id), Some(&rel), Some(&side));
     Ok(rel)
 }
 #[tauri::command] fn cmd_delete_residence_card_attachment(state: State<DbState>, sess: State<SessionState>, employee_id: i64, side: String) -> Result<(), AppError> {
-    let conn = state.0.lock().unwrap();
+    let conn = state.conn()?;
     let user = authorize(&conn, &sess, "documents.delete")?;
     files::delete_residence_card_attachment(&conn, employee_id, &side)?;
     log_activity(&conn, &user, "DELETE_RESIDENCE_CARD_ATTACHMENT", Some("employee"), Some(employee_id), None, Some(&side));
     Ok(())
 }
 #[tauri::command] fn cmd_upload_airport_badge_attachment(state: State<DbState>, sess: State<SessionState>, employee_id: i64, side: String, source_path: String) -> Result<String, AppError> {
-    let conn = state.0.lock().unwrap();
+    let conn = state.conn()?;
     let user = authorize(&conn, &sess, "documents.upload")?;
     let rel = files::upload_airport_badge_attachment(&conn, employee_id, &side, &source_path)?;
     log_activity(&conn, &user, "UPLOAD_AIRPORT_BADGE_ATTACHMENT", Some("employee"), Some(employee_id), Some(&rel), Some(&side));
     Ok(rel)
 }
 #[tauri::command] fn cmd_delete_airport_badge_attachment(state: State<DbState>, sess: State<SessionState>, employee_id: i64, side: String) -> Result<(), AppError> {
-    let conn = state.0.lock().unwrap();
+    let conn = state.conn()?;
     let user = authorize(&conn, &sess, "documents.delete")?;
     files::delete_airport_badge_attachment(&conn, employee_id, &side)?;
     log_activity(&conn, &user, "DELETE_AIRPORT_BADGE_ATTACHMENT", Some("employee"), Some(employee_id), None, Some(&side));
     Ok(())
 }
 #[tauri::command] fn cmd_upload_ministry_badge_attachment(state: State<DbState>, sess: State<SessionState>, employee_id: i64, side: String, source_path: String) -> Result<String, AppError> {
-    let conn = state.0.lock().unwrap();
+    let conn = state.conn()?;
     let user = authorize(&conn, &sess, "documents.upload")?;
     let rel = files::upload_ministry_badge_attachment(&conn, employee_id, &side, &source_path)?;
     log_activity(&conn, &user, "UPLOAD_MINISTRY_BADGE_ATTACHMENT", Some("employee"), Some(employee_id), Some(&rel), Some(&side));
     Ok(rel)
 }
 #[tauri::command] fn cmd_delete_ministry_badge_attachment(state: State<DbState>, sess: State<SessionState>, employee_id: i64, side: String) -> Result<(), AppError> {
-    let conn = state.0.lock().unwrap();
+    let conn = state.conn()?;
     let user = authorize(&conn, &sess, "documents.delete")?;
     files::delete_ministry_badge_attachment(&conn, employee_id, &side)?;
     log_activity(&conn, &user, "DELETE_MINISTRY_BADGE_ATTACHMENT", Some("employee"), Some(employee_id), None, Some(&side));
     Ok(())
 }
 #[tauri::command] fn cmd_upload_passport_attachment(state: State<DbState>, sess: State<SessionState>, employee_id: i64, source_path: String) -> Result<String, AppError> {
-    let conn = state.0.lock().unwrap();
+    let conn = state.conn()?;
     let user = authorize(&conn, &sess, "documents.upload")?;
     let rel = files::upload_passport_attachment(&conn, employee_id, &source_path)?;
     log_activity(&conn, &user, "UPLOAD_PASSPORT_ATTACHMENT", Some("employee"), Some(employee_id), Some(&rel), None);
     Ok(rel)
 }
 #[tauri::command] fn cmd_delete_passport_attachment(state: State<DbState>, sess: State<SessionState>, employee_id: i64, relative_path: String) -> Result<(), AppError> {
-    let conn = state.0.lock().unwrap();
+    let conn = state.conn()?;
     let user = authorize(&conn, &sess, "documents.delete")?;
     files::delete_passport_attachment(&conn, employee_id, &relative_path)?;
     log_activity(&conn, &user, "DELETE_PASSPORT_ATTACHMENT", Some("employee"), Some(employee_id), Some(&relative_path), None);
     Ok(())
 }
 #[tauri::command] fn cmd_upload_ration_card_attachment(state: State<DbState>, sess: State<SessionState>, employee_id: i64, source_path: String) -> Result<String, AppError> {
-    let conn = state.0.lock().unwrap();
+    let conn = state.conn()?;
     let user = authorize(&conn, &sess, "documents.upload")?;
     let rel = files::upload_ration_card_attachment(&conn, employee_id, &source_path)?;
     log_activity(&conn, &user, "UPLOAD_RATION_CARD_ATTACHMENT", Some("employee"), Some(employee_id), Some(&rel), None);
     Ok(rel)
 }
 #[tauri::command] fn cmd_delete_ration_card_attachment(state: State<DbState>, sess: State<SessionState>, employee_id: i64, relative_path: String) -> Result<(), AppError> {
-    let conn = state.0.lock().unwrap();
+    let conn = state.conn()?;
     let user = authorize(&conn, &sess, "documents.delete")?;
     files::delete_ration_card_attachment(&conn, employee_id, &relative_path)?;
     log_activity(&conn, &user, "DELETE_RATION_CARD_ATTACHMENT", Some("employee"), Some(employee_id), Some(&relative_path), None);
     Ok(())
 }
 #[tauri::command] fn cmd_delete_attachment(state: State<DbState>, sess: State<SessionState>, employee_id: i64, relative_path: String) -> Result<(), AppError> {
-    let conn = state.0.lock().unwrap();
+    let conn = state.conn()?;
     let user = authorize(&conn, &sess, "documents.delete")?;
     files::delete_attachment(&conn, employee_id, &relative_path)?;
     log_activity(&conn, &user, "DELETE_ATTACHMENT", Some("employee"), Some(employee_id), Some(&relative_path), None);
     Ok(())
 }
 #[tauri::command] fn cmd_list_grade_history(state: State<DbState>, sess: State<SessionState>, employee_id: i64) -> Result<Vec<GradeHistory>, AppError> {
-    let conn = state.0.lock().unwrap();
+    let conn = state.conn()?;
     authorize(&conn, &sess, "employees.view")?;
     list_grade_history(&conn, employee_id)
 }
 #[tauri::command] fn cmd_add_grade_history(state: State<DbState>, sess: State<SessionState>, employee_id: i64, data: GradeHistoryData) -> Result<GradeHistory, AppError> {
-    let conn = state.0.lock().unwrap();
+    let conn = state.conn()?;
     let user = authorize(&conn, &sess, "employees.edit")?;
     add_grade_history(&conn, employee_id, &data, &user)
 }
 #[tauri::command] fn cmd_delete_grade_history(state: State<DbState>, sess: State<SessionState>, id: i64) -> Result<(), AppError> {
-    let conn = state.0.lock().unwrap();
+    let conn = state.conn()?;
     authorize(&conn, &sess, "employees.edit")?;
     delete_grade_history(&conn, id)
 }
 #[tauri::command] fn cmd_list_general_docs(state: State<DbState>, sess: State<SessionState>) -> Result<Vec<GeneralDoc>, AppError> {
-    let conn = state.0.lock().unwrap();
+    let conn = state.conn()?;
     authorize(&conn, &sess, "documents.view")?;
     list_general_docs(&conn)
 }
 #[tauri::command] fn cmd_create_general_doc(state: State<DbState>, sess: State<SessionState>, data: GeneralDocData) -> Result<GeneralDoc, AppError> {
-    let conn = state.0.lock().unwrap();
+    let conn = state.conn()?;
     let user = authorize(&conn, &sess, "documents.manage")?;
     create_general_doc(&conn, &data, &user)
 }
 #[tauri::command] fn cmd_update_general_doc(state: State<DbState>, sess: State<SessionState>, id: i64, data: GeneralDocData) -> Result<GeneralDoc, AppError> {
-    let conn = state.0.lock().unwrap();
+    let conn = state.conn()?;
     let user = authorize(&conn, &sess, "documents.manage")?;
     update_general_doc(&conn, id, &data, &user)
 }
 #[tauri::command] fn cmd_delete_general_doc(state: State<DbState>, sess: State<SessionState>, id: i64) -> Result<(), AppError> {
-    let conn = state.0.lock().unwrap();
+    let conn = state.conn()?;
     let user = authorize(&conn, &sess, "documents.delete")?;
     delete_general_doc(&conn, id, &user)
 }
 #[tauri::command] fn cmd_upload_general_doc_file(state: State<DbState>, sess: State<SessionState>, doc_id: i64, source_path: String) -> Result<String, AppError> {
-    let conn = state.0.lock().unwrap();
+    let conn = state.conn()?;
     let user = authorize(&conn, &sess, "documents.upload")?;
     let path = upload_general_doc_file(&conn, doc_id, &source_path)?;
     log_activity(&conn, &user, "UPLOAD_DOCUMENT", Some("general_doc"), Some(doc_id), Some(&path), None);
     Ok(path)
 }
 #[tauri::command] fn cmd_delete_general_doc_attachment(state: State<DbState>, sess: State<SessionState>, doc_id: i64, relative_path: String) -> Result<(), AppError> {
-    let conn = state.0.lock().unwrap();
+    let conn = state.conn()?;
     let user = authorize(&conn, &sess, "documents.delete")?;
     delete_general_doc_attachment(&conn, doc_id, &relative_path)?;
     log_activity(&conn, &user, "DELETE_DOCUMENT", Some("general_doc"), Some(doc_id), Some(&relative_path), None);
     Ok(())
 }
 #[tauri::command] fn cmd_move_general_doc_attachment(state: State<DbState>, sess: State<SessionState>, doc_id: i64, relative_path: String, direction: String) -> Result<(), AppError> {
-    let conn = state.0.lock().unwrap();
+    let conn = state.conn()?;
     let user = authorize(&conn, &sess, "documents.manage")?;
     move_general_doc_attachment(&conn, doc_id, &relative_path, &direction)?;
     log_activity(&conn, &user, "REORDER_DOCUMENT_ATTACHMENT", Some("general_doc"), Some(doc_id), Some(&relative_path), Some(&direction));
     Ok(())
 }
 #[tauri::command] fn cmd_list_outgoing_docs(state: State<DbState>, sess: State<SessionState>) -> Result<Vec<GeneralDoc>, AppError> {
-    let conn = state.0.lock().unwrap();
+    let conn = state.conn()?;
     authorize(&conn, &sess, "documents.view")?;
     list_outgoing_docs(&conn)
 }
 #[tauri::command] fn cmd_create_outgoing_doc(state: State<DbState>, sess: State<SessionState>, data: GeneralDocData) -> Result<GeneralDoc, AppError> {
-    let conn = state.0.lock().unwrap();
+    let conn = state.conn()?;
     let user = authorize(&conn, &sess, "documents.manage")?;
     create_outgoing_doc(&conn, &data, &user)
 }
 #[tauri::command] fn cmd_update_outgoing_doc(state: State<DbState>, sess: State<SessionState>, id: i64, data: GeneralDocData) -> Result<GeneralDoc, AppError> {
-    let conn = state.0.lock().unwrap();
+    let conn = state.conn()?;
     let user = authorize(&conn, &sess, "documents.manage")?;
     update_outgoing_doc(&conn, id, &data, &user)
 }
 #[tauri::command] fn cmd_delete_outgoing_doc(state: State<DbState>, sess: State<SessionState>, id: i64) -> Result<(), AppError> {
-    let conn = state.0.lock().unwrap();
+    let conn = state.conn()?;
     let user = authorize(&conn, &sess, "documents.delete")?;
     delete_outgoing_doc(&conn, id, &user)
 }
 #[tauri::command] fn cmd_upload_outgoing_doc_file(state: State<DbState>, sess: State<SessionState>, doc_id: i64, source_path: String) -> Result<String, AppError> {
-    let conn = state.0.lock().unwrap();
+    let conn = state.conn()?;
     let user = authorize(&conn, &sess, "documents.upload")?;
     let path = upload_outgoing_doc_file(&conn, doc_id, &source_path)?;
     log_activity(&conn, &user, "UPLOAD_DOCUMENT", Some("outgoing_doc"), Some(doc_id), Some(&path), None);
     Ok(path)
 }
 #[tauri::command] fn cmd_delete_outgoing_doc_attachment(state: State<DbState>, sess: State<SessionState>, doc_id: i64, relative_path: String) -> Result<(), AppError> {
-    let conn = state.0.lock().unwrap();
+    let conn = state.conn()?;
     let user = authorize(&conn, &sess, "documents.delete")?;
     delete_outgoing_doc_attachment(&conn, doc_id, &relative_path)?;
     log_activity(&conn, &user, "DELETE_DOCUMENT", Some("outgoing_doc"), Some(doc_id), Some(&relative_path), None);
     Ok(())
 }
 #[tauri::command] fn cmd_move_outgoing_doc_attachment(state: State<DbState>, sess: State<SessionState>, doc_id: i64, relative_path: String, direction: String) -> Result<(), AppError> {
-    let conn = state.0.lock().unwrap();
+    let conn = state.conn()?;
     let user = authorize(&conn, &sess, "documents.manage")?;
     move_outgoing_doc_attachment(&conn, doc_id, &relative_path, &direction)?;
     log_activity(&conn, &user, "REORDER_DOCUMENT_ATTACHMENT", Some("outgoing_doc"), Some(doc_id), Some(&relative_path), Some(&direction));
     Ok(())
 }
 #[tauri::command] fn cmd_list_activity_log(state: State<DbState>, sess: State<SessionState>, limit: i64) -> Result<Vec<ActivityLog>, AppError> {
-    let conn = state.0.lock().unwrap();
+    let conn = state.conn()?;
     authorize(&conn, &sess, "audit.view")?;
     list_activity_log(&conn, limit)
 }
 #[tauri::command] fn cmd_list_users(state: State<DbState>, sess: State<SessionState>) -> Result<Vec<User>, AppError> {
-    let conn = state.0.lock().unwrap();
+    let conn = state.conn()?;
     authorize(&conn, &sess, "users.manage")?;
     list_users(&conn)
 }
 #[tauri::command] fn cmd_create_user(state: State<DbState>, sess: State<SessionState>, data: UserData) -> Result<User, AppError> {
     let user = session_user(&sess)?;
-    create_user(&state.0.lock().unwrap(), &user, &data)
+    create_user(&*state.conn()?, &user, &data)
 }
 #[tauri::command] fn cmd_delete_user(state: State<DbState>, sess: State<SessionState>, id: i64) -> Result<(), AppError> {
     let user = session_user(&sess)?;
-    delete_user(&state.0.lock().unwrap(), &user, id)
+    delete_user(&*state.conn()?, &user, id)
 }
 #[tauri::command] fn cmd_update_user_role(state: State<DbState>, sess: State<SessionState>, id: i64, data: UserRoleData) -> Result<User, AppError> {
-    let conn = state.0.lock().unwrap();
+    let conn = state.conn()?;
     let user = authorize(&conn, &sess, "users.manage")?;
     update_user_role(&conn, &user, id, &data.role)
 }
 #[tauri::command] fn cmd_reset_user_password(state: State<DbState>, sess: State<SessionState>, id: i64, data: PasswordResetData) -> Result<(), AppError> {
-    let conn = state.0.lock().unwrap();
+    let conn = state.conn()?;
     let user = authorize(&conn, &sess, "users.manage")?;
     reset_user_password(&conn, &user, id, &data.password)
 }
 #[tauri::command] fn cmd_get_storage_path(state: State<DbState>, sess: State<SessionState>) -> Result<String, AppError> {
-    let conn = state.0.lock().unwrap();
+    let conn = state.conn()?;
     authorize(&conn, &sess, "settings.manage")?;
     get_storage_path(&conn)
 }
-#[tauri::command] fn cmd_set_storage_path(app: AppHandle, state: State<DbState>, sess: State<SessionState>, path: String) -> Result<(), AppError> {
-    let conn = state.0.lock().unwrap();
-    let user = authorize(&conn, &sess, "settings.manage")?;
-    set_storage_path(&conn, &user, &path)?;
-    app.asset_protocol_scope()
-        .allow_directory(storage_path(&conn), true)
-        .map_err(|e| AppError::Other(e.to_string()))
-}
 #[tauri::command] fn cmd_get_backup_path(state: State<DbState>, sess: State<SessionState>) -> Result<String, AppError> {
-    let conn = state.0.lock().unwrap();
+    let conn = state.conn()?;
     authorize(&conn, &sess, "settings.manage")?;
     get_backup_path(&conn)
 }
-#[tauri::command] fn cmd_set_backup_path(state: State<DbState>, sess: State<SessionState>, path: String) -> Result<(), AppError> {
-    let conn = state.0.lock().unwrap();
+#[tauri::command] fn cmd_get_startup_status(info: State<StartupInfo>) -> StartupStatus {
+    info.0.lock().unwrap_or_else(|e| e.into_inner()).clone()
+}
+/// Only usable while no database is open (first run, or the data folder went missing).
+fn setup_allowed(state: &State<DbState>, info: &State<StartupInfo>) -> Result<bool, AppError> {
+    if state.0.lock().unwrap_or_else(|e| e.into_inner()).is_some() {
+        return Err(AppError::Unauthorized);
+    }
+    let current = info.0.lock().unwrap_or_else(|e| e.into_inner()).state.clone();
+    match current.as_str() {
+        "needs_setup" => Ok(false),
+        "data_missing" | "open_failed" => Ok(true),
+        _ => Err(AppError::Unauthorized),
+    }
+}
+#[tauri::command] fn cmd_check_setup_folders(state: State<DbState>, info: State<StartupInfo>, data_root: String, backup_root: String) -> Result<storage::SetupCheck, AppError> {
+    let require_existing = setup_allowed(&state, &info)?;
+    storage::check_setup(std::path::Path::new(data_root.trim()), std::path::Path::new(backup_root.trim()), require_existing)
+}
+#[tauri::command] fn cmd_complete_setup(app: AppHandle, state: State<DbState>, info: State<StartupInfo>, data_root: String, backup_root: String) -> Result<StartupStatus, AppError> {
+    let require_existing = setup_allowed(&state, &info)?;
+    let conn = storage::complete_setup(std::path::Path::new(data_root.trim()), std::path::Path::new(backup_root.trim()), require_existing)?;
+    activate_database(&app, &conn);
+    *state.0.lock().unwrap_or_else(|e| e.into_inner()) = Some(conn);
+    let status = startup_status("ready", String::new());
+    *info.0.lock().unwrap_or_else(|e| e.into_inner()) = status.clone();
+    Ok(status)
+}
+/// Tries the configured data folder again, for example after plugging the disk back in.
+#[tauri::command] fn cmd_retry_data_folder(app: AppHandle, state: State<DbState>, info: State<StartupInfo>) -> Result<StartupStatus, AppError> {
+    setup_allowed(&state, &info)?;
+    let status = match paths::resolve_startup()? {
+        paths::StartupState::Ready(found) => {
+            paths::set_current(Some(found));
+            match db::open() {
+                Ok(conn) => {
+                    activate_database(&app, &conn);
+                    *state.0.lock().unwrap_or_else(|e| e.into_inner()) = Some(conn);
+                    startup_status("ready", String::new())
+                }
+                Err(error) => startup_status("open_failed", error.to_string()),
+            }
+        }
+        paths::StartupState::DataMissing(found) => {
+            paths::set_current(Some(found));
+            startup_status("data_missing", "ما زال مجلد البيانات غير متاح.".into())
+        }
+        paths::StartupState::NeedsSetup => startup_status("needs_setup", String::new()),
+    };
+    *info.0.lock().unwrap_or_else(|e| e.into_inner()) = status.clone();
+    Ok(status)
+}
+#[tauri::command] fn cmd_get_storage_status(state: State<DbState>, sess: State<SessionState>) -> Result<storage::StorageStatus, AppError> {
+    let conn = state.conn()?;
+    authorize(&conn, &sess, "settings.manage")?;
+    Ok(storage::storage_status())
+}
+#[tauri::command] fn cmd_change_backup_folder(state: State<DbState>, sess: State<SessionState>, path: String) -> Result<storage::StorageStatus, AppError> {
+    let conn = state.conn()?;
     let user = authorize(&conn, &sess, "settings.manage")?;
-    set_backup_path(&conn, &user, &path)
+    storage::change_backup_root(&conn, &user, std::path::Path::new(path.trim()))
+}
+#[tauri::command]
+async fn cmd_export_backup_to(window: Window, state: State<'_, DbState>, sess: State<'_, SessionState>, folder: String, password: String) -> Result<String, AppError> {
+    let user = {
+        let conn = state.conn()?;
+        authorize(&conn, &sess, "backups.manage")?
+    };
+    let app = window.app_handle().clone();
+    let progress_window = window.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let state = app.state::<DbState>();
+        let conn = state.conn()?;
+        storage::export_backup_to(&conn, &user, &password, std::path::Path::new(folder.trim()), &mut |progress| {
+            let _ = progress_window.emit("backup-progress", progress);
+        })
+    })
+    .await
+    .map_err(|error| AppError::Other(error.to_string()))?
+}
+/// Moves database and attachments to a new folder, verifies the copy, then reopens the
+/// database there. The old folder is kept. Everyone must sign in again afterwards.
+#[tauri::command]
+async fn cmd_move_data_folder(window: Window, state: State<'_, DbState>, sess: State<'_, SessionState>, path: String, password: String) -> Result<storage::StorageStatus, AppError> {
+    let user = {
+        let conn = state.conn()?;
+        authorize(&conn, &sess, "settings.manage")?
+    };
+    let app = window.app_handle().clone();
+    let progress_window = window.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let state = app.state::<DbState>();
+        let mut guard = state.0.lock().unwrap_or_else(|e| e.into_inner());
+        let conn = guard.as_ref().ok_or(AppError::Unauthorized)?;
+        let moved = storage::relocate_data(conn, &user, &password, std::path::Path::new(path.trim()), &mut |progress| {
+            let _ = progress_window.emit("move-data-progress", progress);
+        })?;
+        // Switch to the verified copy. If it cannot be opened, stay on the old folder.
+        let previous = paths::current();
+        paths::set_current(Some(moved.clone()));
+        match db::open_at(&moved.data_root.join(paths::DATABASE_FILE), false) {
+            Ok(new_conn) => {
+                activate_database(&app, &new_conn);
+                *guard = Some(new_conn);
+                Ok(storage::storage_status())
+            }
+            Err(error) => {
+                paths::set_current(previous.clone());
+                if let Some(previous) = previous { paths::write_config(&previous).ok(); }
+                Err(AppError::Validation(format!("تم النسخ لكن تعذر فتح قاعدة البيانات في الموقع الجديد، وبقي البرنامج على الموقع القديم: {error}")))
+            }
+        }
+    })
+    .await
+    .map_err(|error| AppError::Other(error.to_string()))??;
+    *sess.0.lock().unwrap() = None;
+    Ok(storage::storage_status())
 }
 /// Opens one of the managed folders (data or backups) in Windows Explorer.
 /// The path is resolved here, never taken from the frontend.
 #[tauri::command] fn cmd_open_managed_folder(state: State<DbState>, sess: State<SessionState>, kind: String) -> Result<(), AppError> {
-    let conn = state.0.lock().unwrap();
+    let conn = state.conn()?;
     authorize(&conn, &sess, "settings.manage")?;
     let path = match kind.as_str() {
         "data" => { ensure_storage_layout(&conn).ok(); storage_path(&conn) }
@@ -641,12 +823,12 @@ fn cmd_scan_document(state: State<DbState>, sess: State<SessionState>, device_id
     }
 }
 #[tauri::command] fn cmd_get_auto_backup_settings(state: State<DbState>, sess: State<SessionState>) -> Result<AutoBackupSettings, AppError> {
-    let conn = state.0.lock().unwrap();
+    let conn = state.conn()?;
     let user = authorize(&conn, &sess, "backups.manage")?;
     get_auto_backup_settings(&conn, &user)
 }
 #[tauri::command] fn cmd_set_auto_backup_settings(state: State<DbState>, sess: State<SessionState>, data: AutoBackupSettingsData) -> Result<AutoBackupSettings, AppError> {
-    let conn = state.0.lock().unwrap();
+    let conn = state.conn()?;
     let user = authorize(&conn, &sess, "backups.manage")?;
     set_auto_backup_settings(&conn, &user, &data)
 }
@@ -654,7 +836,10 @@ fn cmd_scan_document(state: State<DbState>, sess: State<SessionState>, device_id
 async fn cmd_run_due_auto_backups(window: Window) -> Result<Vec<String>, AppError> {
     let progress_window = window.clone();
     tauri::async_runtime::spawn_blocking(move || {
-        let conn = db::open().map_err(AppError::from)?;
+        // Never migrates or creates anything: it only runs against an already open,
+        // up-to-date database, and quietly does nothing during setup.
+        if !db::db_path().is_file() { return Ok(Vec::new()); }
+        let conn = db::open_existing().map_err(AppError::from)?;
         match run_due_automatic_backups_with_progress(&conn, move |progress| {
             let _ = progress_window.emit("auto-backup-progress", progress);
         }) {
@@ -673,25 +858,25 @@ fn cmd_exit_app(app: AppHandle) {
     app.exit(0);
 }
 #[tauri::command] fn cmd_get_document_types(state: State<DbState>, sess: State<SessionState>) -> Result<Vec<String>, AppError> {
-    let conn = state.0.lock().unwrap();
+    let conn = state.conn()?;
     authorize(&conn, &sess, "documents.view")?;
     get_document_types(&conn)
 }
 #[tauri::command] fn cmd_set_document_types(state: State<DbState>, sess: State<SessionState>, types: Vec<String>) -> Result<Vec<String>, AppError> {
     let user = session_user(&sess)?;
-    set_document_types(&state.0.lock().unwrap(), &user, &types)
+    set_document_types(&*state.conn()?, &user, &types)
 }
 #[tauri::command]
 async fn cmd_create_backup(window: Window, state: State<'_, DbState>, sess: State<'_, SessionState>, password: String) -> Result<String, AppError> {
     let user = {
-        let conn = state.0.lock().unwrap();
+        let conn = state.conn()?;
         authorize(&conn, &sess, "backups.manage")?
     };
     let app = window.app_handle().clone();
     let progress_window = window.clone();
     tauri::async_runtime::spawn_blocking(move || {
         let state = app.state::<DbState>();
-        let conn = state.0.lock().unwrap();
+        let conn = state.conn()?;
         create_backup_with_progress(&conn, &user, &password, move |progress| {
             let _ = progress_window.emit("backup-progress", progress);
         })
@@ -702,14 +887,14 @@ async fn cmd_create_backup(window: Window, state: State<'_, DbState>, sess: Stat
 #[tauri::command]
 async fn cmd_restore_backup(window: Window, state: State<'_, DbState>, sess: State<'_, SessionState>, source_path: String, password: String) -> Result<(), AppError> {
     let user = {
-        let conn = state.0.lock().unwrap();
+        let conn = state.conn()?;
         authorize(&conn, &sess, "backups.manage")?
     };
     let app = window.app_handle().clone();
     let progress_window = window.clone();
     tauri::async_runtime::spawn_blocking(move || {
         let state = app.state::<DbState>();
-        let mut conn = state.0.lock().unwrap();
+        let mut conn = state.conn()?;
         restore_backup_with_progress(&mut conn, &user, &source_path, &password, move |progress| {
             let _ = progress_window.emit("restore-progress", progress);
         })
@@ -720,35 +905,35 @@ async fn cmd_restore_backup(window: Window, state: State<'_, DbState>, sess: Sta
     Ok(())
 }
 #[tauri::command] fn cmd_audit_document_view(state: State<DbState>, sess: State<SessionState>, employee_id: i64, document_name: String) -> Result<(), AppError> {
-    let conn = state.0.lock().unwrap(); let user = authorize(&conn, &sess, "documents.view")?;
+    let conn = state.conn()?; let user = authorize(&conn, &sess, "documents.view")?;
     log_activity(&conn, &user, "VIEW_DOCUMENT", Some("employee"), Some(employee_id), Some(&document_name), None); Ok(())
 }
 #[tauri::command] fn cmd_audit_document_download(state: State<DbState>, sess: State<SessionState>, employee_id: i64, document_name: String) -> Result<(), AppError> {
-    let conn = state.0.lock().unwrap(); let user = authorize(&conn, &sess, "documents.download")?;
+    let conn = state.conn()?; let user = authorize(&conn, &sess, "documents.download")?;
     log_activity(&conn, &user, "DOWNLOAD_DOCUMENT", Some("employee"), Some(employee_id), Some(&document_name), None); Ok(())
 }
 #[tauri::command] fn cmd_download_document(state: State<DbState>, sess: State<SessionState>, relative_path: String, destination_path: String) -> Result<String, AppError> {
-    let conn = state.0.lock().unwrap(); let user = authorize(&conn, &sess, "documents.download")?;
+    let conn = state.conn()?; let user = authorize(&conn, &sess, "documents.download")?;
     download_document(&conn, &user, &relative_path, &destination_path)
 }
 #[tauri::command] fn cmd_get_document_preview_path(state: State<DbState>, sess: State<SessionState>, relative_path: String) -> Result<String, AppError> {
-    let conn = state.0.lock().unwrap(); let user = authorize(&conn, &sess, "documents.view")?;
+    let conn = state.conn()?; let user = authorize(&conn, &sess, "documents.view")?;
     document_preview_path(&conn, &user, &relative_path)
 }
 #[tauri::command] fn cmd_read_document(state: State<DbState>, sess: State<SessionState>, relative_path: String) -> Result<Vec<u8>, AppError> {
-    let conn = state.0.lock().unwrap(); let user = authorize(&conn, &sess, "documents.view")?;
+    let conn = state.conn()?; let user = authorize(&conn, &sess, "documents.view")?;
     read_document(&conn, &user, &relative_path)
 }
 #[tauri::command] fn cmd_print_document(state: State<DbState>, sess: State<SessionState>, relative_path: String) -> Result<(), AppError> {
-    let conn = state.0.lock().unwrap(); let user = authorize(&conn, &sess, "documents.print")?;
+    let conn = state.conn()?; let user = authorize(&conn, &sess, "documents.print")?;
     print_document(&conn, &user, &relative_path)
 }
 #[tauri::command] fn cmd_print_employee_documents(state: State<DbState>, sess: State<SessionState>, employee_id: i64, document_names: Vec<String>) -> Result<(), AppError> {
-    let conn = state.0.lock().unwrap(); let user = authorize(&conn, &sess, "documents.print")?;
+    let conn = state.conn()?; let user = authorize(&conn, &sess, "documents.print")?;
     log_activity(&conn, &user, "PRINT_DOCUMENT", Some("employee"), Some(employee_id), Some(&document_names.join(", ")), None); Ok(())
 }
 #[tauri::command] fn cmd_save_report_xlsx(state: State<DbState>, sess: State<SessionState>, destination_path: String, headers: Vec<String>, rows: Vec<Vec<String>>) -> Result<(), AppError> {
-    let conn = state.0.lock().unwrap();
+    let conn = state.conn()?;
     authorize(&conn, &sess, "employees.view")?;
     let workbook = build_report_xlsx(&headers, &rows)?;
     std::fs::write(destination_path, workbook).map_err(|e| AppError::Other(e.to_string()))
@@ -759,18 +944,32 @@ pub fn scanner_self_test() -> Result<(), String> {
 }
 
 pub fn run() {
-    let conn = db::open().expect("Failed to open database");
-    ensure_storage_layout(&conn).ok();
-    scanner::recover_pending_files(&conn).ok();
-    ensure_backup_layout(&conn).ok();
-    let storage_root = storage_path(&conn);
+    let (conn, status) = match paths::resolve_startup() {
+        Ok(paths::StartupState::Ready(found)) => {
+            paths::set_current(Some(found));
+            match db::open() {
+                Ok(conn) => (Some(conn), startup_status("ready", String::new())),
+                Err(error) => (None, startup_status("open_failed", error.to_string())),
+            }
+        }
+        Ok(paths::StartupState::DataMissing(found)) => {
+            paths::set_current(Some(found));
+            (None, startup_status("data_missing", "مجلد البيانات المحدد غير متاح. صِل القرص أو مجلد الشبكة ثم أعد المحاولة، أو اختر المجلد الذي يحتوي على البيانات.".into()))
+        }
+        Ok(paths::StartupState::NeedsSetup) => (None, startup_status("needs_setup", String::new())),
+        Err(error) => (None, startup_status("open_failed", error.to_string())),
+    };
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_notification::init())
-        .manage(DbState(Mutex::new(conn)))
+        .manage(DbState(Mutex::new(None)))
         .manage(SessionState(Mutex::new(None)))
+        .manage(StartupInfo(Mutex::new(status)))
         .setup(move |app| {
-            app.asset_protocol_scope().allow_directory(&storage_root, true)?;
+            if let Some(conn) = conn {
+                activate_database(app.handle(), &conn);
+                *app.state::<DbState>().0.lock().unwrap() = Some(conn);
+            }
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -800,7 +999,9 @@ pub fn run() {
             cmd_select_scanner_device, cmd_scan_document,
             cmd_list_activity_log,
             cmd_list_users, cmd_create_user, cmd_delete_user, cmd_update_user_role, cmd_reset_user_password,
-            cmd_get_storage_path, cmd_set_storage_path, cmd_get_backup_path, cmd_set_backup_path, cmd_open_managed_folder,
+            cmd_get_storage_path, cmd_get_backup_path, cmd_open_managed_folder,
+            cmd_get_startup_status, cmd_check_setup_folders, cmd_complete_setup, cmd_retry_data_folder,
+            cmd_get_storage_status, cmd_change_backup_folder, cmd_export_backup_to, cmd_move_data_folder,
             cmd_get_auto_backup_settings, cmd_set_auto_backup_settings,
             cmd_run_due_auto_backups, cmd_exit_app,
             cmd_get_document_types, cmd_set_document_types,
