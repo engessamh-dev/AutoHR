@@ -23,9 +23,13 @@ npx tauri signer generate -w "$env:USERPROFILE\.tauri\autohr-updater.key"
 1. Bump the version: `npm run version:patch` (or set it), commit.
 2. Build signed artifacts:
    ```powershell
-   $env:TAURI_SIGNING_PRIVATE_KEY_PATH = "$env:USERPROFILE\.tauri\autohr-updater.key"
-   $env:TAURI_SIGNING_PRIVATE_KEY_PASSWORD = Read-Host -AsSecureString | ConvertFrom-SecureString -AsPlainText
+   # TAURI_SIGNING_PRIVATE_KEY must hold the key CONTENTS, not its path.
+   $env:TAURI_SIGNING_PRIVATE_KEY = Get-Content -Raw "$env:USERPROFILE\.tauri\autohr-updater.key"
+   $s = Read-Host "Key password" -AsSecureString
+   $env:TAURI_SIGNING_PRIVATE_KEY_PASSWORD = [Runtime.InteropServices.Marshal]::PtrToStringAuto([Runtime.InteropServices.Marshal]::SecureStringToBSTR($s))
    npm run tauri:release
+   # Afterwards, clear them from the session:
+   Remove-Item Env:TAURI_SIGNING_PRIVATE_KEY, Env:TAURI_SIGNING_PRIVATE_KEY_PASSWORD
    ```
    This produces in `target/release/bundle/nsis/` the installer `CNSArch_<v>_x64-setup.exe`
    and its signature `CNSArch_<v>_x64-setup.exe.sig`.
