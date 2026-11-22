@@ -164,6 +164,7 @@
     font-size: clamp(0.43rem, 0.78vw, 0.72rem);
     font-weight: 500;
     line-height: 1.1;
+    text-transform: uppercase;
     white-space: nowrap;
   }
   .login-subtitle-en::before,
