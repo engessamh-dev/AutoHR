@@ -64,9 +64,8 @@
     overflow: hidden;
     line-height: 1.25;
     overflow-wrap: anywhere;
-    text-align: center;
     -webkit-box-orient: vertical;
-    -webkit-line-clamp: 2;
+    -webkit-line-clamp: 1;
   }
   .sidebar-company-subtitle {
     overflow: hidden;
@@ -507,9 +506,8 @@
   }
   .nav-item:hover { background: rgba(36, 169, 255, 0.11); }
   .nav-item.active {
-    @apply text-autohr-green font-medium border border-autohr-green/30;
-    background: linear-gradient(90deg, rgba(36, 169, 255, 0.22), rgba(36, 169, 255, 0.06));
-    box-shadow: inset 3px 0 #24a9ff, 0 0 15px rgba(36, 169, 255, 0.08);
+    @apply text-autohr-green font-medium;
+    background: rgba(36, 169, 255, 0.14);
   }
 
   .table-header {
@@ -656,3 +654,43 @@
 .att-menu-item:hover:not(:disabled),.att-menu-item:focus-visible{background:#353b42;outline:none}
 .att-menu-item:disabled{opacity:.4;cursor:default}
 .att-menu-danger{color:#f87171}
+
+/* ── Sidebar: icons, admin section, user footer, collapsible rail ──────── */
+.app-sidebar{width:15rem;overflow:hidden;transition:width .2s ease}
+.sidebar-brand-wrap{padding:14px 14px}
+.sidebar-brand{display:flex;align-items:center;gap:10px;min-height:36px}
+.sidebar-brand-text{display:flex;flex-direction:column;justify-content:center}
+.sidebar-nav{padding:8px;display:flex;flex-direction:column;gap:2px;overflow-y:auto;overflow-x:hidden}
+.nav-item{white-space:nowrap;gap:10px}
+.nav-icon{width:19px;height:19px;flex:none;fill:none;stroke:currentColor;stroke-width:1.7;stroke-linecap:round;stroke-linejoin:round;opacity:.85}
+.nav-item.active .nav-icon{opacity:1}
+.nav-label{overflow:hidden;text-overflow:ellipsis}
+.nav-section{display:flex;align-items:center;gap:8px;margin:12px 4px 4px;padding-top:10px;border-top:1px solid rgba(83,157,214,.25)}
+.nav-section-label{font-size:11px;font-weight:600;color:#6b7f95;letter-spacing:.02em;padding-inline-start:8px;white-space:nowrap}
+.sidebar-footer{padding:10px;display:flex;flex-direction:column;gap:8px}
+.sidebar-user{display:flex;align-items:center;gap:10px;padding:4px 4px}
+.sidebar-user-avatar{width:34px;height:34px;flex:none;border-radius:999px;display:grid;place-items:center;background:rgba(36,169,255,.16);color:#7cc4ff;font-weight:700;font-size:14px}
+.sidebar-user-name{font-size:13px;font-weight:600;color:#e5e7eb;text-align:start;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.sidebar-user-role{font-size:11px;color:#8b9bb0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.sidebar-user-text{display:flex;flex-direction:column}
+.sidebar-logout{display:flex;align-items:center;justify-content:center;gap:8px;width:100%;padding:8px 10px;font-size:13px;white-space:nowrap}
+.sidebar-logout .nav-icon{width:17px;height:17px}
+.sidebar-toggle{width:36px;height:36px;flex:none;display:grid;place-items:center;border-radius:8px;border:1px solid transparent;background:transparent;color:#9fb3c8;cursor:pointer;transition:background .15s,color .15s}
+.sidebar-toggle:hover{background:rgba(36,169,255,.12);color:#fff}
+.sidebar-toggle-icon{width:20px;height:20px;fill:none;stroke:currentColor;stroke-width:1.8;stroke-linecap:round}
+
+/* Collapsed: a 64px icon rail; labels become tooltips (title attributes). */
+.sidebar-collapsed .app-sidebar{width:4rem}
+.sidebar-collapsed .sidebar-brand-wrap{padding:14px 0}
+.sidebar-collapsed .sidebar-brand{justify-content:center}
+.sidebar-collapsed .sidebar-brand-text,
+.sidebar-collapsed .nav-label,
+.sidebar-collapsed .nav-section-label,
+.sidebar-collapsed .sidebar-user-text{display:none}
+.sidebar-collapsed .nav-item{justify-content:center;padding-inline:0}
+.sidebar-collapsed .nav-section{margin-inline:6px}
+.sidebar-collapsed .sidebar-footer{padding:10px 8px;align-items:center}
+.sidebar-collapsed .sidebar-user{justify-content:center;padding:4px 0}
+.sidebar-collapsed .sidebar-logout{width:40px;height:36px;padding:0}
+@media (prefers-reduced-motion: reduce){.app-sidebar{transition:none}}
+.nav-section.hidden{display:none}

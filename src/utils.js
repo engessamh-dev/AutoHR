@@ -183,8 +183,20 @@ export function applyBranding(config) {
   const hdr  = document.getElementById("header-branding");
   const loginUnit = document.getElementById("login-unit-name");
 
-  if (co)   co.textContent   = config.company_name || "CNSArch";
-  if (dept) dept.textContent = [config.department_name, config.division_name].filter(Boolean).join(" · ");
+  // Sidebar shows a short name (a Latin acronym such as "GCAAN" when one is configured);
+  // the full company name stays in the tooltip, the page header and the About screen.
+  const companyName = config.company_name || "CNSArch";
+  const fields = [config.company_name, config.department_name, config.division_name].map(v => String(v ?? "").trim());
+  const acronym = fields.map(v => v.match(/\b[A-Z][A-Z0-9&.-]{1,9}\b/)?.[0]).find(Boolean) || "";
+  const shortName = acronym || companyName;
+  const subtitle = [config.department_name, config.division_name]
+    .map(v => String(v ?? "").trim())
+    .filter(v => v && v !== acronym)
+    .join(" · ");
+  if (co)   co.textContent   = shortName;
+  if (dept) dept.textContent = subtitle;
+  const brand = document.getElementById("sidebar-brand");
+  if (brand) brand.title = [companyName, config.department_name, config.division_name].filter(Boolean).join("\n");
   if (hdr)  hdr.textContent  = [config.company_name, config.department_name].filter(Boolean).join(" — ");
   if (loginUnit) loginUnit.textContent = config.division_name || "وحدة الاتمتة";
 

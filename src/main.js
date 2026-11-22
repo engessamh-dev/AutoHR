@@ -11,7 +11,7 @@ import { renderDocuments }  from "./screens/documents.js";
 import { renderUsers }     from "./screens/users.js";
 import { renderAbout }     from "./screens/about.js";
 import { renderAudit }     from "./screens/audit.js";
-import { can }             from "./permissions.js";
+import { can, roleLabels } from "./permissions.js";
 import { formatAppVersion } from "./version.js";
 import { isPermissionGranted, requestPermission, sendNotification } from "@tauri-apps/plugin-notification";
 import { listen } from "@tauri-apps/api/event";
@@ -23,9 +23,9 @@ const i18n = {
   username: "اسم المستخدم", password: "كلمة المرور",
   login: "تسجيل الدخول", logout: "تسجيل الخروج",
   user: "المستخدم",
-  nav_dashboard: "لوحة التحكم العامة",
+  nav_dashboard: "الرئيسية",
   nav_document_alerts: "تنبيهات المستمسكات",
-  nav_employees: "دليل الموظفين وإدارتهم",
+  nav_employees: "الموظفون",
   nav_reports: "التقارير",
   nav_documents: "أرشيف الوثائق",
   nav_users:     "المستخدمين والصلاحيات",
@@ -53,16 +53,45 @@ function applyLang() {
     dashboard: "nav_dashboard", employees: "nav_employees", reports: "nav_reports", documents: "nav_documents",
     users: "nav_users", audit: "nav_audit", about: "nav_about",
   };
-  const navIcons = {
-    dashboard: "▦", employees: "👥", reports: "📈", documents: "📁",
-    users: "👤", audit: "📋", about: "ℹ",
-  };
   document.querySelectorAll(".nav-item[data-screen]").forEach(el => {
     const screen = el.dataset.screen;
-    if (navMap[screen]) {
-      el.textContent = `${navIcons[screen] ?? ""} ${t(navMap[screen])}`.trim();
-    }
+    if (!navMap[screen]) return;
+    const label = el.querySelector(".nav-label");
+    if (label) label.textContent = t(navMap[screen]);
+    el.title = t(navMap[screen]);
   });
+}
+
+// ── Collapsible sidebar ────────────────────────────────────────────────────
+const SIDEBAR_STATE_KEY = "autohr.sidebarCollapsed";
+
+function readSidebarCollapsed() {
+  try { return localStorage.getItem(SIDEBAR_STATE_KEY) === "1"; }
+  catch { return false; }
+}
+
+function setSidebarCollapsed(collapsed) {
+  document.getElementById("app-shell")?.classList.toggle("sidebar-collapsed", collapsed);
+  const toggle = document.getElementById("btn-toggle-sidebar");
+  if (toggle) {
+    const label = collapsed ? "إظهار القائمة الجانبية" : "طي القائمة الجانبية";
+    toggle.setAttribute("aria-expanded", String(!collapsed));
+    toggle.setAttribute("aria-label", label);
+    toggle.title = `${label} (Ctrl+B)`;
+  }
+  try { localStorage.setItem(SIDEBAR_STATE_KEY, collapsed ? "1" : "0"); } catch { /* non-fatal */ }
+}
+
+function toggleSidebar() {
+  setSidebarCollapsed(!document.getElementById("app-shell")?.classList.contains("sidebar-collapsed"));
+}
+
+function renderSidebarUser(user) {
+  document.getElementById("current-user").textContent = user.username;
+  const role = user.username === "sysadmin" ? "مسؤول النظام" : (roleLabels[user.role] ?? user.role ?? "");
+  document.getElementById("current-user-role").textContent = role;
+  document.getElementById("sidebar-user-avatar").textContent = (user.username || "?").trim().charAt(0).toUpperCase();
+  document.getElementById("sidebar-user").title = role ? `${user.username} · ${role}` : user.username;
 }
 
 function applyAppVersion() {
@@ -271,9 +300,12 @@ async function navigateTo(screen, options = {}) {
 // ── Login ──────────────────────────────────────────────────────────────────
 async function enterApp(user) {
   currentUser = user;
-  document.getElementById("current-user").textContent = user.username;
-  document.getElementById("nav-users")?.classList.toggle("hidden", !can(user, "users.manage"));
-  document.getElementById("nav-audit")?.classList.toggle("hidden", !can(user, "audit.view"));
+  renderSidebarUser(user);
+  const canManageUsers = can(user, "users.manage");
+  const canViewAudit = can(user, "audit.view");
+  document.getElementById("nav-users")?.classList.toggle("hidden", !canManageUsers);
+  document.getElementById("nav-audit")?.classList.toggle("hidden", !canViewAudit);
+  document.getElementById("nav-admin-section")?.classList.toggle("hidden", !canManageUsers && !canViewAudit);
   document.getElementById("login-screen").classList.add("hidden");
   document.getElementById("password-change-screen").classList.add("hidden");
   document.getElementById("app-shell").classList.remove("hidden");
@@ -403,7 +435,16 @@ document.addEventListener("DOMContentLoaded", () => {
   });
 
   // Logout buttons
-  document.getElementById("btn-logout-top").addEventListener("click",  doLogout);
+  // Collapsible sidebar: ☰ button and Ctrl+B, state remembered between sessions.
+  setSidebarCollapsed(readSidebarCollapsed());
+  document.getElementById("btn-toggle-sidebar").addEventListener("click", toggleSidebar);
+  document.addEventListener("keydown", event => {
+    if (!(event.ctrlKey || event.metaKey) || event.altKey || event.shiftKey) return;
+    if (event.code !== "KeyB" && event.key?.toLowerCase() !== "b") return;
+    if (document.getElementById("app-shell")?.classList.contains("hidden")) return;
+    event.preventDefault();
+    toggleSidebar();
+  });
   document.getElementById("btn-logout-side").addEventListener("click", doLogout);
   document.getElementById("btn-password-change-logout").addEventListener("click", doLogout);
 
