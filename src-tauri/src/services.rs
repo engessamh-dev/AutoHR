@@ -1411,9 +1411,11 @@ pub fn update_general_doc(conn: &Connection, id: i64, data: &GeneralDocData, use
     assert_permission(conn, username, "documents.manage")?;
     validate_document_data(data)?;
     let tx = conn.unchecked_transaction()?;
-    tx.execute("UPDATE general_docs SET title=?1,doc_type=NULL,doc_number=?2,issue_date=?3,issuer=?4,doc_count=?5,margin=?6,is_internal_memo=?7,hr_effect_type=?8,hr_affects_promotion=?9,hr_affects_allowance=?10,hr_effect_months=?11,hr_effect_days=?12,notes=?13,updated_at=datetime('now') WHERE id=?14",
+    // The HR effect fields are no longer edited from the UI. They are intentionally left out of
+    // this UPDATE so that values already stored on existing documents are preserved.
+    tx.execute("UPDATE general_docs SET title=?1,doc_type=NULL,doc_number=?2,issue_date=?3,issuer=?4,doc_count=?5,margin=?6,is_internal_memo=?7,notes=?8,updated_at=datetime('now') WHERE id=?9",
         params![data.title.trim(),data.doc_number,data.issue_date,data.issuer,data.doc_count,data.margin,data.is_internal_memo,
-            data.hr_effect_type.as_deref().unwrap_or("none"),data.hr_affects_promotion,data.hr_affects_allowance,data.hr_effect_months,data.hr_effect_days,data.notes,id])?;
+            data.notes,id])?;
     if tx.changes() == 0 { return Err(AppError::NotFound); }
     replace_general_doc_employees(&tx, id, &data.employee_ids)?;
     log_activity(&tx, username, "UPDATE_DOC", Some("general_doc"), Some(id), Some(data.title.trim()), None);
@@ -3032,6 +3034,36 @@ mod phase3_security_tests {
         move_general_doc_attachment(&conn, 7, "third.pdf", "down").unwrap();
         assert_eq!(ordered(), vec!["first.pdf", "second.pdf", "third.pdf"]);
     }
+}
+
+#[cfg(test)]
+#[test]
+fn updating_a_general_doc_preserves_stored_hr_effect() {
+    let conn = Connection::open_in_memory().unwrap();
+    crate::db::initialize_test(&conn).unwrap();
+    conn.execute(
+        "INSERT INTO users(username,password,role) VALUES('docadmin',?1,'archive_admin')",
+        params![hash_password("admin-password").unwrap()],
+    ).unwrap();
+    conn.execute(
+        "INSERT INTO general_docs(title,hr_effect_type,hr_affects_promotion,hr_affects_allowance,hr_effect_months,hr_effect_days)
+         VALUES('Legacy','appreciation',1,0,3,10)",
+        [],
+    ).unwrap();
+    let id = conn.last_insert_rowid();
+    let data = GeneralDocData {
+        title: "Edited".into(), doc_type: None, doc_number: None, issue_date: None, issuer: None,
+        doc_count: None, margin: None, is_internal_memo: false,
+        hr_effect_type: None, hr_affects_promotion: false, hr_affects_allowance: false,
+        hr_effect_months: 0, hr_effect_days: 0, notes: None, employee_ids: vec![],
+    };
+    update_general_doc(&conn, id, &data, "docadmin").unwrap();
+    let stored: (String, String, i64, i64, i64, i64) = conn.query_row(
+        "SELECT title,hr_effect_type,hr_affects_promotion,hr_affects_allowance,hr_effect_months,hr_effect_days FROM general_docs WHERE id=?1",
+        params![id],
+        |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?)),
+    ).unwrap();
+    assert_eq!(stored, ("Edited".into(), "appreciation".into(), 1, 0, 3, 10));
 }
 
 #[cfg(test)]
