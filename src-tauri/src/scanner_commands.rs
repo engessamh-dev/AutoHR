@@ -7,7 +7,7 @@ pub(crate) fn cmd_get_document_download_name(
     sess: State<SessionState>,
     relative_path: String,
 ) -> Result<String, AppError> {
-    let conn = state.0.lock().unwrap();
+    let conn = state.conn()?;
     authorize(&conn, &sess, "documents.download")?;
     stored_document_path(&conn, &relative_path)?;
     scanner::export_name(&conn, &relative_path)
@@ -17,7 +17,7 @@ pub(crate) fn cmd_scanner_settings(
     state: State<DbState>,
     sess: State<SessionState>,
 ) -> Result<scanner::ScannerSettings, AppError> {
-    let conn = state.0.lock().unwrap();
+    let conn = state.conn()?;
     session_user(&sess)?;
     scanner::settings(&conn)
 }
@@ -27,7 +27,7 @@ pub(crate) fn cmd_set_scanner_settings(
     sess: State<SessionState>,
     settings: scanner::ScannerSettings,
 ) -> Result<(), AppError> {
-    let conn = state.0.lock().unwrap();
+    let conn = state.conn()?;
     let user = authorize(&conn, &sess, "settings.manage")?;
     scanner::set_settings(&conn, &user, settings)
 }
@@ -41,7 +41,7 @@ pub(crate) async fn cmd_scanner_prepare(
 ) -> Result<scanner::ScanPreview, AppError> {
     let target = relative_path.clone();
     let (owner, path, settings) = {
-        let conn = state.0.lock().unwrap();
+        let conn = state.conn()?;
         let owner = session_user(&sess)?;
         let path = if let Some(relative) = relative_path {
             scanner::associated_path(&conn, &owner, &relative, true)?;
@@ -80,7 +80,7 @@ pub(crate) async fn cmd_scanner_versions(
     relative_path: String,
 ) -> Result<scanner::Versions, AppError> {
     let (original, processed) = {
-        let conn = state.0.lock().unwrap();
+        let conn = state.conn()?;
         let owner = session_user(&sess)?;
         scanner::associated_path(&conn, &owner, &relative_path, false)?;
         (
@@ -118,7 +118,7 @@ pub(crate) fn cmd_scanner_save_existing(
     token: String,
     relative_path: String,
 ) -> Result<(), AppError> {
-    let conn = state.0.lock().unwrap();
+    let conn = state.conn()?;
     let owner = session_user(&sess)?;
     scanner::save_existing(&conn, &owner, &token, &relative_path)
 }
@@ -139,7 +139,7 @@ pub(crate) fn cmd_scanner_upload(
     command: String,
     context: ScanUploadContext,
 ) -> Result<serde_json::Value, AppError> {
-    let conn = state.0.lock().unwrap();
+    let conn = state.conn()?;
     let owner = session_user(&sess)?;
     scanner_upload(&conn, &owner, &token, &command, context)
 }

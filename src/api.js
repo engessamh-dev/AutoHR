@@ -84,9 +84,17 @@ export const api = {
 
   // Settings
   getStoragePath: ()     => invoke("cmd_get_storage_path"),
-  setStoragePath: (path) => invoke("cmd_set_storage_path", { path }),
   getBackupPath: ()      => invoke("cmd_get_backup_path"),
-  setBackupPath: (path)  => invoke("cmd_set_backup_path", { path }),
+  getStorageStatus: ()   => invoke("cmd_get_storage_status"),
+  changeBackupFolder: (path) => invoke("cmd_change_backup_folder", { path }),
+  moveDataFolder: (path, password) => invoke("cmd_move_data_folder", { path, password }),
+  exportBackupTo: (folder, password) => invoke("cmd_export_backup_to", { folder, password }),
+
+  // First run / data folder unavailable (only work while no database is open)
+  getStartupStatus: () => invoke("cmd_get_startup_status"),
+  checkSetupFolders: (dataRoot, backupRoot) => invoke("cmd_check_setup_folders", { dataRoot, backupRoot }),
+  completeSetup: (dataRoot, backupRoot) => invoke("cmd_complete_setup", { dataRoot, backupRoot }),
+  retryDataFolder: () => invoke("cmd_retry_data_folder"),
   getAutoBackupSettings: () => invoke("cmd_get_auto_backup_settings"),
   setAutoBackupSettings: (data) => invoke("cmd_set_auto_backup_settings", { data }),
   runDueAutoBackups: () => invoke("cmd_run_due_auto_backups"),

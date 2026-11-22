@@ -49,6 +49,26 @@ function openBackupProgress({ title = "إنشاء نسخة احتياطية", me
     close() {
       overlay.remove();
     },
+    // Keeps the result on screen (with the full file path) until the user closes it.
+    done(message, path = "") {
+      this.update({ percent: 100, message });
+      const box = overlay.firstElementChild;
+      if (path) {
+        const pathLine = document.createElement("p");
+        pathLine.dir = "ltr";
+        pathLine.style.cssText = "font-size:12px;color:#e5e7eb;background:#111827;border:1px solid #374151;border-radius:6px;padding:8px;margin:10px 0 0;word-break:break-all;user-select:text";
+        pathLine.textContent = path;
+        box.append(pathLine);
+      }
+      const ok = document.createElement("button");
+      ok.type = "button";
+      ok.className = "btn-primary";
+      ok.style.marginTop = "14px";
+      ok.textContent = "تم";
+      ok.addEventListener("click", () => overlay.remove());
+      box.append(ok);
+      ok.focus();
+    },
   };
 }
 
@@ -115,15 +135,13 @@ function requestBackupPassword({ title, message, minLength = 1 }) {
 export async function renderSettings(container, user, ctx) {
   const canSettings = can(user, "settings.manage");
   const canBackups = can(user, "backups.manage");
-  let storagePath = "";
-  let backupPath = "";
+  let storageStatus = null;
   let companyConfig = null;
   let autoBackup = null;
   if (canSettings) {
     try {
-      [storagePath, backupPath, companyConfig] = await Promise.all([
-        api.getStoragePath(),
-        api.getBackupPath(),
+      [storageStatus, companyConfig] = await Promise.all([
+        api.getStorageStatus(),
         api.getCompanyConfig(),
       ]);
     } catch {}
@@ -184,20 +202,27 @@ export async function renderSettings(container, user, ctx) {
       </section>
 
       <section class="card settings-panel space-y-1" data-settings-panel="storage">
-        <p class="text-xs text-gray-500">مواقع الحفظ ثابتة يديرها النظام لحماية البيانات، ولا يمكن تغييرها.</p>
+        <p class="text-xs text-gray-500">يمكن نقل مجلد البيانات أو تغيير مجلد النسخ الاحتياطية بأمان: يُنسخ كل شيء ويُتحقق منه أولًا، ويبقى الموقع القديم كما هو دون حذف.</p>
+        ${(storageStatus?.warnings || []).map(w => `<p class="settings-storage-warning text-xs" style="color:#fbbf24;background:rgba(251,191,36,.08);border:1px solid rgba(251,191,36,.3);border-radius:8px;padding:8px 10px;margin:6px 0">${escHtml(w)}</p>`).join("")}
         <div class="settings-path-row">
           <div class="min-w-0">
             <p class="settings-path-label">مجلد البيانات والمرفقات</p>
-            <p id="storage-path-text" class="settings-path-value" dir="ltr">${escHtml(storagePath || "AppData/Roaming/CNSArch/Data (افتراضي)")}</p>
+            <p id="storage-path-text" class="settings-path-value" dir="ltr">${escHtml(storageStatus?.data_root || "—")}</p>
           </div>
-          <button id="btn-open-storage" type="button" class="btn-secondary whitespace-nowrap">فتح المجلد</button>
+          <div class="flex gap-2">
+            <button id="btn-open-storage" type="button" class="btn-secondary whitespace-nowrap">فتح المجلد</button>
+            ${canBackups ? `<button id="btn-move-storage" type="button" class="btn-secondary whitespace-nowrap">نقل مجلد البيانات…</button>` : ""}
+          </div>
         </div>
         <div class="settings-path-row">
           <div class="min-w-0">
             <p class="settings-path-label">مجلد النسخ الاحتياطية</p>
-            <p id="backup-path-text" class="settings-path-value" dir="ltr">${escHtml(backupPath || "Documents/GCANS Backups (افتراضي)")}</p>
+            <p id="backup-path-text" class="settings-path-value" dir="ltr">${escHtml(storageStatus?.backup_root || "—")}</p>
           </div>
-          <button id="btn-open-backup" type="button" class="btn-secondary whitespace-nowrap">فتح المجلد</button>
+          <div class="flex gap-2">
+            <button id="btn-open-backup" type="button" class="btn-secondary whitespace-nowrap">فتح المجلد</button>
+            <button id="btn-change-backup" type="button" class="btn-secondary whitespace-nowrap">تغيير المجلد…</button>
+          </div>
         </div>
       </section>` : ""}
 
@@ -237,6 +262,7 @@ export async function renderSettings(container, user, ctx) {
         </div>
         <div class="flex gap-3">
           <button id="btn-create-backup" class="btn-primary">إنشاء نسخة احتياطية الآن</button>
+          <button id="btn-export-backup" class="btn-secondary">تصدير نسخة إلى…</button>
           <button id="btn-restore-backup" class="btn-danger">استعادة نسخة احتياطية…</button>
         </div>
       </div>
@@ -296,6 +322,70 @@ export async function renderSettings(container, user, ctx) {
   bindOpenFolder("#btn-open-storage", "data");
   bindOpenFolder("#btn-open-backup", "backups");
 
+  const pickFolder = title => open({ directory: true, multiple: false, title });
+
+  container.querySelector("#btn-change-backup")?.addEventListener("click", async () => {
+    const selected = await pickFolder("اختر مجلد النسخ الاحتياطية الجديد");
+    if (!selected) return;
+    if (!(await confirmAction(`سيتم حفظ النسخ الاحتياطية الجديدة في: ${selected} — النسخ القديمة تبقى في مكانها. هل تريد المتابعة؟`))) return;
+    try {
+      await api.changeBackupFolder(selected);
+      showToast("تم تغيير مجلد النسخ الاحتياطية");
+      renderSettings(container, user, ctx);
+    } catch (err) {
+      showToast(err?.message ?? String(err), "error");
+    }
+  });
+
+  container.querySelector("#btn-move-storage")?.addEventListener("click", async () => {
+    const selected = await pickFolder("اختر مجلدًا فارغًا لنقل البيانات إليه");
+    if (!selected) return;
+    if (!(await confirmAction(`سيتم نسخ قاعدة البيانات وجميع المرفقات إلى: ${selected} ثم التحقق منها قبل التحويل. يبقى المجلد الحالي كما هو دون حذف، وسيُطلب تسجيل الدخول من جديد. هل تريد المتابعة؟`))) return;
+    const password = await requestBackupPassword({
+      title: "نسخة أمان قبل النقل",
+      message: "قبل النقل تُنشأ نسخة احتياطية مشفرة للأمان. أدخل كلمة مرور لها (8 أحرف على الأقل) واحتفظ بها.",
+      minLength: 8,
+    });
+    if (!password) return;
+    const progress = openBackupProgress({ title: "نقل مجلد البيانات", message: "جاري التحضير..." });
+    let unlisten = null;
+    try {
+      unlisten = await listen("move-data-progress", event => progress.update(event.payload));
+      await api.moveDataFolder(selected, password);
+      progress.update({ percent: 100, message: "تم النقل والتحقق. سيتم إعادة تسجيل الدخول." });
+      showToast("تم نقل مجلد البيانات بنجاح. الموقع القديم بقي كما هو.");
+      setTimeout(() => window.location.reload(), 1500);
+    } catch (err) {
+      showToast(err?.message ?? String(err), "error");
+      progress.close();
+    } finally {
+      if (unlisten) unlisten();
+    }
+  });
+
+  container.querySelector("#btn-export-backup")?.addEventListener("click", async () => {
+    const selected = await pickFolder("اختر المجلد الذي ستُحفظ فيه النسخة (قرص خارجي أو مجلد شبكة)");
+    if (!selected) return;
+    const password = await requestBackupPassword({
+      title: "تصدير نسخة احتياطية",
+      message: "أدخل كلمة مرور للنسخة المصدّرة (8 أحرف على الأقل).",
+      minLength: 8,
+    });
+    if (!password) return;
+    const progress = openBackupProgress({ title: "تصدير نسخة احتياطية" });
+    let unlisten = null;
+    try {
+      unlisten = await listen("backup-progress", event => progress.update(event.payload));
+      const path = await api.exportBackupTo(selected, password);
+      progress.done("تم تصدير النسخة والتحقق منها بنجاح. مكان الملف:", path);
+    } catch (err) {
+      showToast(err?.message ?? String(err), "error");
+      progress.close();
+    } finally {
+      if (unlisten) unlisten();
+    }
+  });
+
   container.querySelector("#btn-create-backup")?.addEventListener("click", async () => {
     const password = await requestBackupPassword({
       title: "إنشاء نسخة احتياطية",
@@ -308,13 +398,12 @@ export async function renderSettings(container, user, ctx) {
     try {
       unlisten = await listen("backup-progress", event => progress.update(event.payload));
       const backup = await api.createBackup(password);
-      progress.update({ percent: 100, message: "اكتمل إنشاء النسخة الاحتياطية" });
-      showToast(`تم إنشاء النسخة: ${backup}`);
+      progress.done("اكتمل إنشاء النسخة الاحتياطية والتحقق منها. مكان الملف:", backup);
     } catch (err) {
       showToast(err?.message ?? "خطأ", "error");
+      progress.close();
     } finally {
       if (unlisten) unlisten();
-      setTimeout(() => progress.close(), 700);
     }
   });
   container.querySelector("#btn-save-auto-backup")?.addEventListener("click", async () => {

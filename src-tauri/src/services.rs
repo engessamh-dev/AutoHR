@@ -400,16 +400,16 @@ pub fn app_data_path() -> std::path::PathBuf {
 thread_local! { pub(crate) static TEST_STORAGE_ROOT: std::cell::RefCell<Option<std::path::PathBuf>> = const { std::cell::RefCell::new(None) }; }
 
 #[cfg(test)]
-thread_local! { static TEST_APP_DATA_ROOT: std::cell::RefCell<Option<PathBuf>> = const { std::cell::RefCell::new(None) }; }
+thread_local! { pub(crate) static TEST_APP_DATA_ROOT: std::cell::RefCell<Option<PathBuf>> = const { std::cell::RefCell::new(None) }; }
 
 pub fn storage_path(_conn: &Connection) -> std::path::PathBuf {
     #[cfg(test)]
     if let Some(root) = TEST_STORAGE_ROOT.with(|value| value.borrow().clone()) { return root; }
-    app_data_path().join("Data")
+    crate::paths::data_root().join("Data")
 }
 
 pub fn backup_path(_conn: &Connection) -> std::path::PathBuf {
-    app_data_path().join("Backups")
+    crate::paths::backup_root()
 }
 
 fn merge_legacy_dir(src: &Path, dst: &Path) -> std::io::Result<bool> {
@@ -1748,18 +1748,6 @@ pub fn get_storage_path(conn: &Connection) -> AppResult<String> {
     Ok(storage_path(conn).to_string_lossy().into_owned())
 }
 
-pub fn set_storage_path(conn: &Connection, user: &str, path: &str) -> AppResult<()> {
-    assert_permission(conn, user, "settings.manage")?;
-    if std::path::Path::new(path) != storage_path(conn) {
-        return Err(AppError::Validation("For security, files must remain in the managed CNSArch data directory".into()));
-    }
-    conn.execute("INSERT INTO app_settings(key,value) VALUES('storage_destination',?1)
-        ON CONFLICT(key) DO UPDATE SET value=excluded.value", params![path])?;
-    ensure_storage_layout(conn)?;
-    log_activity(conn, user, "CHANGE_SETTING", Some("settings"), None, Some("storage_destination"), None);
-    Ok(())
-}
-
 pub fn update_user_role(conn: &Connection, caller: &str, id: i64, role: &str) -> AppResult<User> {
     assert_permission(conn, caller, "users.manage")?;
     if !valid_role(role) { return Err(AppError::Validation("Invalid role".into())); }
@@ -1962,18 +1950,6 @@ pub fn get_backup_path(conn: &Connection) -> AppResult<String> {
     Ok(backup_path(conn).to_string_lossy().into_owned())
 }
 
-pub fn set_backup_path(conn: &Connection, user: &str, path: &str) -> AppResult<()> {
-    assert_permission(conn, user, "settings.manage")?;
-    if std::path::Path::new(path) != backup_path(conn) {
-        return Err(AppError::Validation("For security, backups must remain in the managed CNSArch backup directory".into()));
-    }
-    conn.execute("INSERT INTO app_settings(key,value) VALUES('backup_destination',?1)
-        ON CONFLICT(key) DO UPDATE SET value=excluded.value", params![path])?;
-    ensure_backup_layout(conn)?;
-    log_activity(conn, user, "CHANGE_SETTING", Some("settings"), None, Some("backup_destination"), None);
-    Ok(())
-}
-
 fn get_setting(conn: &Connection, key: &str) -> AppResult<Option<String>> {
     conn.query_row("SELECT value FROM app_settings WHERE key=?1", params![key], |r| r.get(0))
         .optional()
@@ -2057,7 +2033,7 @@ pub struct BackupProgress {
     pub message: String,
 }
 
-fn backup_progress(percent: u8, message: &str) -> BackupProgress {
+pub(crate) fn backup_progress(percent: u8, message: &str) -> BackupProgress {
     BackupProgress { percent, message: message.to_string() }
 }
 
@@ -2098,7 +2074,7 @@ fn decrypt_backup(encrypted: &[u8], password: &str) -> AppResult<(bool, Vec<u8>)
     Ok((magic == BACKUP_MAGIC_V1, plaintext))
 }
 
-fn sha256_file(path: &Path) -> AppResult<(u64, String)> {
+pub(crate) fn sha256_file(path: &Path) -> AppResult<(u64, String)> {
     let mut file = File::open(path).map_err(|e| AppError::Other(e.to_string()))?;
     let mut hash = Sha256::new();
     let mut size = 0u64;
@@ -2147,18 +2123,19 @@ fn collect_relative_file_paths(root: &Path, relative: &Path, files: &mut Vec<Str
     Ok(())
 }
 
-fn create_backup_archive(
+pub(crate) fn create_backup_archive(
     conn: &Connection,
     password: &str,
     path: &Path,
     progress: &mut dyn FnMut(BackupProgress),
 ) -> AppResult<()> {
     progress(backup_progress(3, "جاري تجهيز ملف النسخة الاحتياطية..."));
-    std::fs::create_dir_all(app_data_path()).map_err(|e| AppError::Other(e.to_string()))?;
-    let db_snapshot = tempfile::NamedTempFile::new_in(app_data_path()).map_err(|e| AppError::Other(e.to_string()))?;
+    let work_dir = crate::paths::data_root();
+    std::fs::create_dir_all(&work_dir).map_err(|e| AppError::Other(e.to_string()))?;
+    let db_snapshot = tempfile::NamedTempFile::new_in(&work_dir).map_err(|e| AppError::Other(e.to_string()))?;
     progress(backup_progress(8, "جاري نسخ قاعدة البيانات..."));
     conn.backup(rusqlite::DatabaseName::Main, db_snapshot.path(), None)?;
-    let archive = tempfile::NamedTempFile::new_in(app_data_path()).map_err(|e| AppError::Other(e.to_string()))?;
+    let archive = tempfile::NamedTempFile::new_in(&work_dir).map_err(|e| AppError::Other(e.to_string()))?;
     let mut zip = zip::ZipWriter::new(archive.reopen().map_err(|e| AppError::Other(e.to_string()))?);
     let options = zip::write::SimpleFileOptions::default()
         .compression_method(zip::CompressionMethod::Deflated);
@@ -2202,7 +2179,7 @@ fn create_backup_archive(
     Ok(())
 }
 
-fn create_backup_at(
+pub(crate) fn create_backup_at(
     conn: &Connection,
     user: &str,
     password: &str,
@@ -2599,11 +2576,13 @@ fn trial_restore_database(source: &Path) -> AppResult<()> {
     let trial = tempfile::tempdir().map_err(|e| AppError::Other(e.to_string()))?;
     let mut conn = Connection::open(trial.path().join("trial.db"))?;
     conn.restore(rusqlite::DatabaseName::Main, source, None::<fn(rusqlite::backup::Progress)>)?;
+    // Reject backups made by a newer AutoHR, and prove an older one upgrades cleanly.
+    crate::db::upgrade_restored(&conn)?;
     crate::scanner::ensure_metadata_columns(&conn)?;
     validate_database_connection(&conn)
 }
 
-fn verify_written_backup(path: &Path, password: &str) -> AppResult<()> {
+pub(crate) fn verify_written_backup(path: &Path, password: &str) -> AppResult<()> {
     let size = std::fs::metadata(path).map_err(|e| AppError::Other(e.to_string()))?.len();
     if size == 0 || size > MAX_BACKUP_SIZE {
         return Err(AppError::Validation("The backup file is empty or too large".into()));
@@ -2641,7 +2620,7 @@ where
         return Err(AppError::Validation("This legacy database-only backup cannot safely restore attachments. Use an AutoHR v2 full backup.".into()));
     }
     progress(backup_progress(28, "جاري فحص SHA-256 وفك الضغط وتجربة الاستعادة المؤقتة..."));
-    let staging = tempfile::tempdir_in(app_data_path()).map_err(|e| AppError::Other(e.to_string()))?;
+    let staging = tempfile::tempdir_in(crate::paths::data_root()).map_err(|e| AppError::Other(e.to_string()))?;
     extract_and_validate_backup(&plaintext, staging.path())?;
     progress(backup_progress(40, "جاري حفظ سجل التدقيق الحالي..."));
     let audit: Vec<AuditSnapshotRow> = {
@@ -2658,9 +2637,10 @@ where
     create_backup_at(conn, user, password, "PreRestore", &mut backup_progress_mapper)?;
     progress(backup_progress(65, "جاري تجهيز ملفات الاستعادة..."));
     let current_data = storage_path(conn);
-    let rollback_data = app_data_path().join("Data.restore.rollback");
-    let rollback_database = app_data_path().join("database.restore.rollback.db");
-    let restore_marker = app_data_path().join("restore.in_progress");
+    let data_root = crate::paths::data_root();
+    let rollback_data = data_root.join("Data.restore.rollback");
+    let rollback_database = data_root.join("database.restore.rollback.db");
+    let restore_marker = data_root.join("restore.in_progress");
     std::fs::remove_dir_all(&rollback_data).ok();
     std::fs::remove_file(&rollback_database).ok();
     progress(backup_progress(70, "جاري حفظ نسخة تراجع من قاعدة البيانات الحالية..."));
@@ -2678,13 +2658,15 @@ where
         return Err(AppError::Other(error.to_string()));
     }
     progress(backup_progress(86, "جاري استعادة قاعدة البيانات..."));
-    if let Err(error) = conn.restore(rusqlite::DatabaseName::Main, staging.path().join("database.db"), None::<fn(rusqlite::backup::Progress)>).and_then(|_|crate::scanner::ensure_metadata_columns(conn)) {
+    if let Err(error) = conn.restore(rusqlite::DatabaseName::Main, staging.path().join("database.db"), None::<fn(rusqlite::backup::Progress)>).map_err(AppError::from)
+        .and_then(|_| crate::db::upgrade_restored(conn).map_err(AppError::from))
+        .and_then(|_| crate::scanner::ensure_metadata_columns(conn).map_err(AppError::from)) {
         std::fs::remove_dir_all(&current_data).ok();
         if rollback_data.exists() { std::fs::rename(&rollback_data, &current_data).ok(); }
         conn.restore(rusqlite::DatabaseName::Main, &rollback_database, None::<fn(rusqlite::backup::Progress)>).ok();
         std::fs::remove_file(&rollback_database).ok();
         std::fs::remove_file(&restore_marker).ok();
-        return Err(error.into());
+        return Err(error);
     }
     progress(backup_progress(94, "جاري إعادة ربط سجل التدقيق..."));
     for row in audit {

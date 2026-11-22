@@ -155,11 +155,140 @@ fn migrate_employee_repeating_data(conn: &Connection) -> SqlResult<()> {
     Ok(())
 }
 
-/// Development and release use separate writable data roots.
+/// The database lives in the configured data folder (see `paths.rs`). Development and
+/// release use separate application folders, so they never share a configuration.
 pub fn db_path() -> PathBuf {
-    let base = crate::services::app_data_path();
+    let base = crate::paths::data_root();
     fs::create_dir_all(&base).ok();
-    base.join("database.db")
+    base.join(crate::paths::DATABASE_FILE)
+}
+
+/// Schema version stored in `PRAGMA user_version` after a successful upgrade.
+///
+/// * 0 — any database created before versioning existed (v1.0.0 to v1.0.3).
+/// * 1 — the schema produced by `migrate()` as of this release.
+///
+/// To change the schema later: bump this constant and add an `if from < N { ... }` step in
+/// `upgrade()`. Every upgrade of an existing database runs only after a verified
+/// pre-upgrade snapshot exists, and the snapshot is restored automatically if a step fails.
+pub const SCHEMA_VERSION: i64 = 1;
+
+#[derive(Debug)]
+pub enum OpenError {
+    Sql(rusqlite::Error),
+    /// The database file does not exist and creating a new one is not allowed.
+    Missing(PathBuf),
+    /// The database was written by a newer version of the application.
+    NewerSchema { found: i64, supported: i64 },
+    /// The pre-upgrade snapshot could not be written or verified, so nothing was changed.
+    Snapshot(String),
+    /// The upgrade failed. `restored` tells whether the snapshot was put back.
+    UpgradeFailed { from: i64, error: String, snapshot: PathBuf, restored: bool },
+}
+
+impl From<rusqlite::Error> for OpenError {
+    fn from(error: rusqlite::Error) -> Self { OpenError::Sql(error) }
+}
+
+impl std::fmt::Display for OpenError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            OpenError::Sql(error) => write!(f, "تعذر فتح قاعدة البيانات: {error}"),
+            OpenError::Missing(path) => write!(f, "لم يتم العثور على قاعدة البيانات في {}", path.display()),
+            OpenError::NewerSchema { found, supported } => write!(
+                f,
+                "قاعدة البيانات أُنشئت بإصدار أحدث من البرنامج (إصدار المخطط {found}، والمدعوم {supported}). ثبّت الإصدار الأحدث ولا تستخدم هذا الإصدار معها."
+            ),
+            OpenError::Snapshot(error) => write!(
+                f,
+                "تعذر إنشاء نسخة الأمان قبل ترقية قاعدة البيانات، لذلك لم تُعدَّل البيانات: {error}"
+            ),
+            OpenError::UpgradeFailed { from, error, snapshot, restored } => write!(
+                f,
+                "فشلت ترقية قاعدة البيانات من الإصدار {from}: {error}. {} نسخة الأمان: {}",
+                if *restored { "أُعيدت قاعدة البيانات إلى حالتها السابقة." } else { "تعذرت الإعادة التلقائية، استخدم نسخة الأمان يدويًا." },
+                snapshot.display()
+            ),
+        }
+    }
+}
+
+pub fn schema_version(conn: &Connection) -> SqlResult<i64> {
+    conn.query_row("PRAGMA user_version", [], |r| r.get(0))
+}
+
+fn integrity_ok(conn: &Connection) -> SqlResult<bool> {
+    let result: String = conn.query_row("PRAGMA integrity_check", [], |r| r.get(0))?;
+    Ok(result == "ok")
+}
+
+/// Copies the database with SQLite's backup API to `PreUpgrade`, preferring the backup
+/// folder and falling back to the data folder, then checks the copy's integrity.
+pub fn pre_upgrade_snapshot(conn: &Connection, from: i64) -> Result<PathBuf, String> {
+    let stamp = chrono::Local::now().format("%Y-%m-%d_%H%M%S");
+    let mut errors = Vec::new();
+    for dir in [crate::paths::backup_root().join("PreUpgrade"), crate::paths::data_root().join("PreUpgrade")] {
+        let attempt = (|| -> Result<PathBuf, String> {
+            fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+            let destination = dir.join(format!("database_v{from}_to_v{SCHEMA_VERSION}_{stamp}.db"));
+            if destination.exists() {
+                return Err(format!("{} already exists", destination.display()));
+            }
+            conn.backup(rusqlite::DatabaseName::Main, &destination, None).map_err(|e| e.to_string())?;
+            // Keep the snapshot a single self-contained file (no -wal / -shm beside it).
+            Connection::open(&destination)
+                .and_then(|copy| copy.pragma_update(None, "journal_mode", "DELETE"))
+                .map_err(|e| e.to_string())?;
+            let copy = Connection::open_with_flags(&destination, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)
+                .map_err(|e| e.to_string())?;
+            if !integrity_ok(&copy).map_err(|e| e.to_string())? {
+                return Err("integrity_check failed on the snapshot".into());
+            }
+            Ok(destination)
+        })();
+        match attempt {
+            Ok(path) => return Ok(path),
+            Err(error) => errors.push(format!("{}: {error}", dir.display())),
+        }
+    }
+    Err(errors.join("; "))
+}
+
+#[cfg(test)]
+thread_local! { static FAIL_UPGRADE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) }; }
+
+/// Brings a database from `from` up to `SCHEMA_VERSION`.
+fn upgrade(conn: &Connection, from: i64) -> SqlResult<()> {
+    if from < 1 {
+        conn.execute_batch(include_str!("../../database/schema.sql"))?;
+        migrate(conn)?;
+    }
+    // Future steps go here, for example: if from < 2 { ... }
+    #[cfg(test)]
+    if FAIL_UPGRADE.with(|flag| flag.get()) {
+        return Err(rusqlite::Error::InvalidQuery);
+    }
+    if !integrity_ok(conn)? {
+        return Err(rusqlite::Error::SqliteFailure(
+            rusqlite::ffi::Error::new(rusqlite::ffi::SQLITE_CORRUPT),
+            Some("integrity_check failed after upgrade".into()),
+        ));
+    }
+    conn.pragma_update(None, "user_version", SCHEMA_VERSION)?;
+    Ok(())
+}
+
+/// Upgrades a database that was just restored from a backup, if it is older. The restore
+/// itself keeps a rollback copy, so no extra snapshot is taken here.
+pub fn upgrade_restored(conn: &Connection) -> Result<(), OpenError> {
+    let version = schema_version(conn)?;
+    if version > SCHEMA_VERSION {
+        return Err(OpenError::NewerSchema { found: version, supported: SCHEMA_VERSION });
+    }
+    if version < SCHEMA_VERSION {
+        upgrade(conn, version)?;
+    }
+    Ok(())
 }
 
 fn migrate(conn: &Connection) -> SqlResult<()> {
@@ -585,21 +714,64 @@ pub(crate) fn initialize_test(conn: &Connection) -> SqlResult<()> {
     migrate(conn)
 }
 
-pub fn open() -> SqlResult<Connection> {
-    let path = db_path();
-    if let Some(base) = path.parent().map(PathBuf::from) {
-        recover_interrupted_restore(&base, &path);
+/// Opens (and if needed upgrades) the database in the configured data folder.
+/// `allow_create` is true only for a brand-new installation; otherwise a missing database
+/// is reported instead of silently creating an empty one.
+pub fn open_at(path: &Path, allow_create: bool) -> Result<Connection, OpenError> {
+    if !allow_create && !path.is_file() {
+        return Err(OpenError::Missing(path.to_path_buf()));
     }
-    let conn = Connection::open(&path)?;
-    conn.execute_batch(include_str!("../../database/schema.sql"))?;
+    if let Some(base) = path.parent() {
+        fs::create_dir_all(base).ok();
+        recover_interrupted_restore(base, path);
+    }
+    let existed = fs::metadata(path).map(|m| m.is_file() && m.len() > 0).unwrap_or(false);
+    let mut conn = Connection::open(path)?;
+    conn.pragma_update(None, "busy_timeout", 5000)?;
+    let version = schema_version(&conn)?;
+    if version > SCHEMA_VERSION {
+        return Err(OpenError::NewerSchema { found: version, supported: SCHEMA_VERSION });
+    }
     conn.pragma_update(None, "journal_mode", "WAL")?;
     conn.pragma_update(None, "foreign_keys", "ON")?;
-    conn.pragma_update(None, "busy_timeout", 5000)?;
-    migrate(&conn)?;
+    if version < SCHEMA_VERSION {
+        if existed {
+            let snapshot = pre_upgrade_snapshot(&conn, version).map_err(OpenError::Snapshot)?;
+            if let Err(error) = upgrade(&conn, version) {
+                let restored = conn
+                    .restore(rusqlite::DatabaseName::Main, &snapshot, None::<fn(rusqlite::backup::Progress)>)
+                    .is_ok();
+                return Err(OpenError::UpgradeFailed { from: version, error: error.to_string(), snapshot, restored });
+            }
+        } else {
+            upgrade(&conn, version)?;
+        }
+    }
     let user_count: i64 = conn.query_row("SELECT COUNT(*) FROM users", [], |r| r.get(0))?;
     if user_count == 0 {
         let password = bcrypt::hash("password", bcrypt::DEFAULT_COST).map_err(|_| rusqlite::Error::InvalidQuery)?;
         conn.execute("INSERT INTO users(username,password,role,must_change_password) VALUES('sysadmin',?1,'system_admin',1)", [password])?;
+    }
+    Ok(conn)
+}
+
+pub fn open() -> Result<Connection, OpenError> {
+    open_at(&db_path(), false)
+}
+
+/// A second connection to the live database for background work (automatic backups).
+/// It never creates, migrates or recovers anything.
+pub fn open_existing() -> Result<Connection, OpenError> {
+    let path = db_path();
+    if !path.is_file() {
+        return Err(OpenError::Missing(path));
+    }
+    let conn = Connection::open(&path)?;
+    conn.pragma_update(None, "busy_timeout", 5000)?;
+    conn.pragma_update(None, "foreign_keys", "ON")?;
+    let version = schema_version(&conn)?;
+    if version != SCHEMA_VERSION {
+        return Err(OpenError::NewerSchema { found: version, supported: SCHEMA_VERSION });
     }
     Ok(conn)
 }
@@ -626,5 +798,122 @@ mod recovery_tests {
         assert_eq!(fs::read(&database).unwrap(), b"old database");
         assert!(base.join("Data/old.txt").is_file());
         assert!(!base.join("restore.in_progress").exists());
+    }
+}
+
+impl From<OpenError> for crate::services::AppError {
+    fn from(error: OpenError) -> Self {
+        match error {
+            OpenError::Sql(e) => crate::services::AppError::Db(e),
+            other @ (OpenError::Missing(_) | OpenError::NewerSchema { .. }) => crate::services::AppError::Validation(other.to_string()),
+            other => crate::services::AppError::Other(other.to_string()),
+        }
+    }
+}
+
+#[cfg(test)]
+mod upgrade_tests {
+    use super::*;
+    use crate::paths::{self, AppPaths};
+
+    struct Env {
+        _dir: tempfile::TempDir,
+        db: PathBuf,
+        backups: PathBuf,
+    }
+
+    fn env() -> Env {
+        let dir = tempfile::tempdir().unwrap();
+        let data = dir.path().join("data");
+        let backups = dir.path().join("backups");
+        fs::create_dir_all(&data).unwrap();
+        paths::set_current(Some(AppPaths { data_root: data.clone(), backup_root: backups.clone() }));
+        Env { db: data.join(paths::DATABASE_FILE), backups, _dir: dir }
+    }
+
+    /// Builds a database exactly as an older AutoHR release would have, with test data.
+    fn old_database(path: &Path, schema: &str) {
+        let conn = Connection::open(path).unwrap();
+        conn.execute_batch(schema).unwrap();
+        let role = if schema.contains("'system_admin'") { "system_admin" } else { "master" };
+        conn.execute("INSERT INTO users(username,password,role) VALUES('old_admin','x',?1)", [role]).unwrap();
+        conn.execute("INSERT INTO employees(employee_number,full_name) VALUES('E-001','موظف تجريبي')", []).unwrap();
+        assert_eq!(schema_version(&conn).unwrap(), 0);
+    }
+
+    fn snapshots(backups: &Path) -> Vec<PathBuf> {
+        fs::read_dir(backups.join("PreUpgrade")).map(|entries| entries.map(|e| e.unwrap().path()).collect()).unwrap_or_default()
+    }
+
+    fn upgrade_keeps_data(schema: &str) {
+        let env = env();
+        old_database(&env.db, schema);
+        let conn = open_at(&env.db, false).unwrap();
+        assert_eq!(schema_version(&conn).unwrap(), SCHEMA_VERSION);
+        let name: String = conn.query_row("SELECT full_name FROM employees WHERE employee_number='E-001'", [], |r| r.get(0)).unwrap();
+        assert_eq!(name, "موظف تجريبي");
+        let flag: i64 = conn.query_row("SELECT must_change_password FROM users WHERE username='old_admin'", [], |r| r.get(0)).unwrap();
+        assert_eq!(flag, 0);
+        // Exactly one verified snapshot of the old database, holding the old data.
+        let taken = snapshots(&env.backups);
+        assert_eq!(taken.len(), 1);
+        let snap = Connection::open_with_flags(&taken[0], rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY).unwrap();
+        assert_eq!(schema_version(&snap).unwrap(), 0);
+        let count: i64 = snap.query_row("SELECT COUNT(*) FROM employees", [], |r| r.get(0)).unwrap();
+        assert_eq!(count, 1);
+        drop(conn);
+        // Opening again does not migrate or snapshot a second time.
+        drop(open_at(&env.db, false).unwrap());
+        assert_eq!(snapshots(&env.backups).len(), 1);
+    }
+
+    #[test]
+    fn upgrades_database_from_first_release_schema() {
+        upgrade_keeps_data(include_str!("test_fixtures/schema_initial_cca9a40.sql"));
+    }
+
+    #[test]
+    fn upgrades_database_from_release_with_hr_tables() {
+        upgrade_keeps_data(include_str!("test_fixtures/schema_hr_124eff9.sql"));
+    }
+
+    #[test]
+    fn failed_upgrade_restores_the_original_database() {
+        let env = env();
+        old_database(&env.db, include_str!("test_fixtures/schema_initial_cca9a40.sql"));
+        FAIL_UPGRADE.with(|flag| flag.set(true));
+        let result = open_at(&env.db, false);
+        FAIL_UPGRADE.with(|flag| flag.set(false));
+        match result {
+            Err(OpenError::UpgradeFailed { from: 0, restored: true, snapshot, .. }) => assert!(snapshot.is_file()),
+            Err(other) => panic!("unexpected error: {other}"),
+            Ok(_) => panic!("upgrade should have failed"),
+        }
+        let conn = Connection::open(&env.db).unwrap();
+        assert_eq!(schema_version(&conn).unwrap(), 0);
+        let columns: Vec<String> = conn.prepare("PRAGMA table_info(users)").unwrap()
+            .query_map([], |r| r.get::<_, String>(1)).unwrap().map(|c| c.unwrap()).collect();
+        assert!(!columns.iter().any(|c| c == "must_change_password"), "schema changes must be rolled back");
+        let count: i64 = conn.query_row("SELECT COUNT(*) FROM employees", [], |r| r.get(0)).unwrap();
+        assert_eq!(count, 1);
+    }
+
+    #[test]
+    fn database_from_a_newer_version_is_refused_untouched() {
+        let env = env();
+        drop(open_at(&env.db, true).unwrap());
+        let conn = Connection::open(&env.db).unwrap();
+        conn.pragma_update(None, "user_version", SCHEMA_VERSION + 5).unwrap();
+        drop(conn);
+        assert!(matches!(open_at(&env.db, false), Err(OpenError::NewerSchema { .. })));
+        let conn = Connection::open(&env.db).unwrap();
+        assert_eq!(schema_version(&conn).unwrap(), SCHEMA_VERSION + 5);
+    }
+
+    #[test]
+    fn missing_database_is_not_created() {
+        let env = env();
+        assert!(matches!(open_at(&env.db, false), Err(OpenError::Missing(_))));
+        assert!(!env.db.exists());
     }
 }

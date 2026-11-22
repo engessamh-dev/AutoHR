@@ -27,7 +27,9 @@ AutoHR/
     ├── resources/database.db       # Bundled seed DB (generated)
     └── src/
         ├── lib.rs                  # Tauri commands
-        ├── db.rs                   # %APPDATA%/AutoHR extraction
+        ├── db.rs                   # Open DB, versioned upgrades (PRAGMA user_version)
+        ├── paths.rs                # config.json: data + backup folder locations
+        ├── storage.rs              # First-run setup, safe data move, backup folder, export
         ├── services.rs             # Auth, RBAC, CRUD, documents
         ├── files.rs                # Backup, logo validation, attachments
         └── bin/seed_db.rs          # Rust alternative seeder
@@ -102,6 +104,27 @@ foreign keys, and checks referenced attachments. Verification also restores SQLi
 temporary database and validates the restored database. Failed verification removes the temporary
 backup and does not report success. Existing final backup files are never overwritten.
 The same isolated restore trial runs when opening a backup for restoration, before changing live data.
+
+## Storage Locations and Upgrades
+
+Folder locations live in `config.json` in the application's own AppData folder
+(`%APPDATA%\CNSArch`, or `CNSArch-Development` for dev builds), outside the database, so
+upgrading or reinstalling keeps them. `data_root` holds `database.db` and the `Data` tree
+(attachments, branding); `backup_root` holds `Daily/Weekly/Monthly/Manual/PreMove/PreUpgrade`.
+
+- First run with no config and no legacy database: the setup screen asks for both folders.
+  The backup folder may not be inside the data folder (or the reverse) nor inside the program folder.
+- Existing installs whose database is in `%APPDATA%\CNSArch` are recorded as is and keep working.
+- If the configured data folder is unreachable the app shows a recovery screen and never
+  creates a new empty database. An unreachable backup folder only shows a warning.
+- Moving the data folder (Settings → مواقع الحفظ): encrypted `PreMove` backup, copy database and
+  files, verify sizes, SHA-256, integrity and row counts, then switch config. The old folder is kept.
+- «تصدير نسخة إلى…» writes a fresh verified backup to any chosen folder.
+
+Schema upgrades are versioned with `PRAGMA user_version` (`db::SCHEMA_VERSION`). Before upgrading an
+existing database, a verified SQLite snapshot is written to `PreUpgrade`; if the upgrade fails the
+database is restored from it automatically. A database from a newer version is refused untouched.
+Restoring an older backup upgrades it; restoring a newer one is refused.
 
 ---
 
