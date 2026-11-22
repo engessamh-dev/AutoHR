@@ -11,7 +11,6 @@ import { renderDocuments }  from "./screens/documents.js";
 import { renderUsers }     from "./screens/users.js";
 import { renderAbout }     from "./screens/about.js";
 import { renderAudit }     from "./screens/audit.js";
-import { renderHr }        from "./screens/hr.js";
 import { can }             from "./permissions.js";
 import { formatAppVersion } from "./version.js";
 import { isPermissionGranted, requestPermission, sendNotification } from "@tauri-apps/plugin-notification";
@@ -29,7 +28,6 @@ const i18n = {
   nav_employees: "دليل الموظفين وإدارتهم",
   nav_reports: "التقارير",
   nav_documents: "أرشيف الوثائق",
-  nav_hr: "الترقيات والعلاوات",
   nav_users:     "المستخدمين والصلاحيات",
   nav_audit:     "سجل النظام",
   nav_about:     "حول النظام",
@@ -52,11 +50,11 @@ function applyLang() {
   });
   // update sidebar nav labels
   const navMap = {
-    dashboard: "nav_dashboard", employees: "nav_employees", reports: "nav_reports", documents: "nav_documents", hr: "nav_hr",
+    dashboard: "nav_dashboard", employees: "nav_employees", reports: "nav_reports", documents: "nav_documents",
     users: "nav_users", audit: "nav_audit", about: "nav_about",
   };
   const navIcons = {
-    dashboard: "▦", employees: "👥", reports: "📈", documents: "📁", hr: "↑",
+    dashboard: "▦", employees: "👥", reports: "📈", documents: "📁",
     users: "👤", audit: "📋", about: "ℹ",
   };
   document.querySelectorAll(".nav-item[data-screen]").forEach(el => {
@@ -220,7 +218,6 @@ const screenRenderers = {
   employees: renderEmployees,
   reports: renderReports,
   documents: renderDocuments,
-  hr: renderHr,
   users:     renderUsers,
   audit:     renderAudit,
   about:     renderAbout,
@@ -234,7 +231,7 @@ async function navigateTo(screen, options = {}) {
   }
 
   // RBAC guard
-  const required = { users: "users.manage", audit: "audit.view", hr: "hr.dashboard.view" };
+  const required = { users: "users.manage", audit: "audit.view" };
   if (required[screen] && !can(currentUser, required[screen])) {
     document.getElementById("screen-container").innerHTML = `
       <div class="flex flex-col items-center justify-center h-full text-gray-500">
@@ -252,7 +249,7 @@ async function navigateTo(screen, options = {}) {
   });
 
   const titleMap = {
-    dashboard: "nav_dashboard", documentAlerts: "nav_document_alerts", employees: "nav_employees", reports: "nav_reports", documents: "nav_documents", hr: "nav_hr",
+    dashboard: "nav_dashboard", documentAlerts: "nav_document_alerts", employees: "nav_employees", reports: "nav_reports", documents: "nav_documents",
     users: "nav_users", audit: "nav_audit", about: "nav_about",
   };
   document.getElementById("page-title").textContent = t(titleMap[screen] ?? screen);
@@ -277,7 +274,6 @@ async function enterApp(user) {
   document.getElementById("current-user").textContent = user.username;
   document.getElementById("nav-users")?.classList.toggle("hidden", !can(user, "users.manage"));
   document.getElementById("nav-audit")?.classList.toggle("hidden", !can(user, "audit.view"));
-  document.getElementById("nav-hr")?.classList.toggle("hidden", !can(user, "hr.dashboard.view"));
   document.getElementById("login-screen").classList.add("hidden");
   document.getElementById("password-change-screen").classList.add("hidden");
   document.getElementById("app-shell").classList.remove("hidden");
