@@ -74,7 +74,7 @@ export async function renderEmployees(container, user, ctx) {
       <div id="emp-table-wrap" class="card overflow-auto flex-1"></div>
     </div>
     <div id="emp-overlay" style="display:none;position:fixed;inset:0;z-index:40;background:rgba(0,0,0,0.5)"></div>
-    <div id="emp-panel" style="position:fixed;top:0;bottom:0;right:0;width:580px;z-index:50;
+    <div id="emp-panel" style="position:fixed;top:0;bottom:0;right:0;width:min(580px,100vw);z-index:50;
       background:#1f1f1f;border-left:1px solid #2d2d2d;box-shadow:-8px 0 32px rgba(0,0,0,0.5);
       display:flex;flex-direction:column;transform:translateX(100%);transition:transform 0.3s ease"></div>`;
 
@@ -1128,17 +1128,25 @@ function renderPanel(emp) {
     </div>
 
     <!-- Tab Content -->
-    <div id="tab-content" style="flex:1;overflow-y:auto;padding:16px 20px">
+    <div id="tab-content" style="flex:1;overflow-y:auto;padding:16px 20px 32px">
       ${tabContent(_activeTab, draft)}
     </div>
 
     <!-- Footer -->
-    <div style="flex-shrink:0;padding:12px 20px;border-top:1px solid #2d2d2d;display:flex;gap:10px">
-      <button id="panel-save" class="btn-primary" style="flex:1">حفظ</button>
+    <div class="emp-footer">
       <span id="panel-dirty" class="emp-dirty" hidden>● تغييرات غير محفوظة</span>
-      ${!isNew ? `<button id="panel-print-documents" class="btn-secondary" style="display:${_activeTab === "documents" ? "inline-flex" : "none"}">طباعة المستمسكات</button>` : ""}
-      ${!isNew ? `<button id="panel-delete" class="btn-danger">حذف</button>` : ""}
-      <button id="panel-cancel" class="btn-secondary">إلغاء</button>
+      <div class="emp-footer-bar">
+        <div class="emp-footer-main">
+          <button id="panel-save" class="btn-primary">حفظ</button>
+          <button id="panel-cancel" class="btn-secondary">إلغاء</button>
+        </div>
+        <div class="emp-footer-mid">
+          ${!isNew ? `<button id="panel-print-documents" class="btn-secondary" style="display:${_activeTab === "documents" ? "inline-flex" : "none"}">طباعة المستمسكات</button>` : ""}
+        </div>
+        <div class="emp-footer-end">
+          ${!isNew ? `<button id="panel-delete" class="btn-danger">حذف الموظف</button>` : ""}
+        </div>
+      </div>
     </div>`;
 
   // Tab switching
