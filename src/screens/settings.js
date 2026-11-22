@@ -262,9 +262,15 @@ export async function renderSettings(container, user, ctx) {
             <button id="btn-save-auto-backup" class="btn-secondary">حفظ إعدادات النسخ التلقائي</button>
           </div>
         </div>
-        <div class="flex gap-3">
+        <div class="flex gap-3 flex-wrap">
           <button id="btn-create-backup" class="btn-primary">إنشاء نسخة احتياطية الآن</button>
           <button id="btn-export-backup" class="btn-secondary">تصدير نسخة إلى…</button>
+        </div>
+      </div>
+      <div class="card space-y-3 mt-4" style="border-color:rgba(248,113,113,.45)">
+        <p class="section-title" style="color:#f87171">استعادة نسخة احتياطية</p>
+        <p class="text-xs text-gray-400 leading-6">تستبدل الاستعادة كل البيانات والمرفقات الحالية بمحتوى النسخة المختارة، وتضيع أي تغييرات أُجريت بعد تاريخ تلك النسخة. يُنصح بإنشاء نسخة احتياطية الآن قبل الاستعادة.</p>
+        <div>
           <button id="btn-restore-backup" class="btn-danger">استعادة نسخة احتياطية…</button>
         </div>
       </div>
@@ -491,7 +497,7 @@ export async function renderSettings(container, user, ctx) {
   });
   container.querySelector("#btn-restore-backup")?.addEventListener("click", async () => {
     const selected = await open({ multiple: false, filters: [{ name: "Encrypted AutoHR Backup", extensions: ["autohrbak"] }] });
-    if (!selected || !(await confirmAction("ستستبدل الاستعادة قاعدة البيانات الحالية. هل تريد المتابعة؟"))) return;
+    if (!selected || !(await confirmAction("ستُستبدل كل البيانات والمرفقات الحالية بمحتوى النسخة المختارة، وتضيع أي تغييرات بعد تاريخها. هل تريد المتابعة؟"))) return;
     const password = await requestBackupPassword({
       title: "استعادة نسخة احتياطية",
       message: "أدخل كلمة مرور النسخة الاحتياطية المحددة.",

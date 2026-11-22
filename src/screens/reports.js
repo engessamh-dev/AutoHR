@@ -294,9 +294,10 @@ export async function renderReports(container) {
 
       <div class="grid grid-cols-1 xl:grid-cols-[330px_1fr] gap-4 min-h-0 flex-1">
         <aside class="card p-4 overflow-auto">
-          <div class="flex items-center gap-2 mb-3">
-            <button type="button" id="report-select-all" class="btn-secondary text-xs px-2 py-1">تحديد الكل</button>
-            <button type="button" id="report-clear" class="btn-secondary text-xs px-2 py-1">مسح</button>
+          <p class="section-title mb-2">أعمدة التقرير</p>
+          <div class="flex items-center gap-2 mb-3 flex-wrap">
+            <button type="button" id="report-select-all" class="btn-secondary text-xs px-2 py-1">تحديد كل الأعمدة</button>
+            <button type="button" id="report-clear" class="btn-secondary text-xs px-2 py-1">إلغاء تحديد الأعمدة</button>
           </div>
           ${fieldGroups.map(group => `
             <section style="border-top:1px solid #2d2d2d;padding-top:10px;margin-top:10px">
@@ -323,7 +324,7 @@ export async function renderReports(container) {
     const employeeIds = [...chosenEmployeeIds];
     const rows = employees.filter(employee => chosenEmployeeIds.has(Number(employee.id)));
     const fields = columns.map(key => fieldDefs.find(field => field.key === key)).filter(Boolean);
-    container.querySelector("#report-summary").textContent = `الموظفون المحددون: ${rows.length} / ${employees.length}`;
+    container.querySelector("#report-summary").textContent = `الموظفون المحددون للتقرير: ${rows.length} / ${employees.length}`;
     container.querySelector("#report-table").innerHTML = fields.length
       ? `<table class="w-full">
           <thead><tr>
@@ -371,10 +372,17 @@ export async function renderReports(container) {
   container.querySelector("#report-save").addEventListener("click", () => {
     const state = render();
     saveConfig(state.columns, state.filters);
+    showToast("تم حفظ إعداد التقرير، وسيُستخدم عند فتح التقارير لاحقاً");
   });
+
+  const readyToOutput = state => {
+    if (!state.fields.length) { showToast("اختر عموداً واحداً على الأقل من «أعمدة التقرير»", "warn"); return false; }
+    if (!state.rows.length) { showToast("حدد موظفاً واحداً على الأقل من الجدول", "warn"); return false; }
+    return true;
+  };
   container.querySelector("#report-excel").addEventListener("click", async () => {
     const state = render();
-    if (!state.fields.length) return;
+    if (!readyToOutput(state)) return;
     try {
       await downloadExcel(state.rows, state.fields);
     } catch (error) {
@@ -383,7 +391,7 @@ export async function renderReports(container) {
   });
   container.querySelector("#report-print").addEventListener("click", () => {
     const state = render();
-    if (state.fields.length) printReport(state.rows, state.fields);
+    if (readyToOutput(state)) printReport(state.rows, state.fields);
   });
 
   render();

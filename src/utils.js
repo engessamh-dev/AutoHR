@@ -242,3 +242,30 @@ export function debounce(fn, ms = 300) {
   let t;
   return (...args) => { clearTimeout(t); t = setTimeout(() => fn(...args), ms); };
 }
+
+// ── Arabic number agreement ────────────────────────────────────────────────
+// 1 → «ملف واحد»، 2 → «ملفان»، 3–10 → «3 ملفات»، 11–99 → «11 ملفاً»، 100 → «100 ملف»
+export const AR_NOUNS = {
+  file:       { sing: "ملف",     one: "ملف واحد",     two: "ملفان",     few: "ملفات",     many: "ملفاً" },
+  attachment: { sing: "مرفق",    one: "مرفق واحد",    two: "مرفقان",    few: "مرفقات",    many: "مرفقاً" },
+  document:   { sing: "وثيقة",   one: "وثيقة واحدة",  two: "وثيقتان",   few: "وثائق",     many: "وثيقةً" },
+  day:        { sing: "يوم",     one: "يوم واحد",     two: "يومان",     few: "أيام",      many: "يوماً" },
+  user:       { sing: "مستخدم",  one: "مستخدم واحد",  two: "مستخدمان",  few: "مستخدمين",  many: "مستخدماً" },
+  employee:   { sing: "موظف",    one: "موظف واحد",    two: "موظفان",    few: "موظفين",    many: "موظفاً" },
+};
+
+/**
+ * Formats a count with the correctly agreeing Arabic noun.
+ * `forms` is an AR_NOUNS entry (or a key of it); pass `{ ...AR_NOUNS.file, two: "ملفين" }`
+ * where the sentence needs the genitive/accusative dual.
+ */
+export function arCount(count, forms) {
+  const f = typeof forms === "string" ? AR_NOUNS[forms] : forms;
+  const n = Math.abs(Math.trunc(Number(count) || 0));
+  if (n === 1) return f.one;
+  if (n === 2) return f.two;
+  const r = n % 100;
+  if (r >= 3 && r <= 10) return `${n} ${f.few}`;
+  if (r >= 11) return `${n} ${f.many}`;
+  return `${n} ${f.sing}`;
+}

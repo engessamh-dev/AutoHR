@@ -111,6 +111,7 @@ export async function renderAudit(container) {
         </td>
       </tr>`;
     }).join("") || `<tr><td colspan="5" class="table-cell text-center text-gray-500 py-8">${logs.length ? "لا توجد سجلات مطابقة" : "لا توجد سجلات"}</td></tr>`;
+    container.querySelector("#audit-clear").classList.toggle("hidden", !Object.values(state).some(Boolean));
     const more = container.querySelector("#audit-more");
     more.classList.toggle("hidden", logs.length < limit || limit >= MAX_LOGS);
     container.querySelector("#audit-cap").classList.toggle("hidden", !(limit >= MAX_LOGS && logs.length >= MAX_LOGS));
@@ -124,7 +125,10 @@ export async function renderAudit(container) {
       <div class="card space-y-3">
         <div class="flex items-center justify-between gap-3 flex-wrap">
           <p class="text-sm text-gray-400">سجل تدقيق غير قابل للتعديل لكل العمليات في النظام.</p>
-          <span id="audit-count" class="badge badge-gray"></span>
+          <div class="flex items-center gap-2">
+            <button type="button" id="audit-clear" class="btn-secondary text-xs px-3 py-1 hidden">مسح الفلاتر</button>
+            <span id="audit-count" class="badge badge-gray"></span>
+          </div>
         </div>
         <div class="grid grid-cols-1 md:grid-cols-[1.6fr_1.2fr_1.6fr_1fr_1fr] gap-3">
           <input id="audit-search" class="input-field" placeholder="بحث في السجل…" value="${escHtml(state.search)}" aria-label="بحث في السجل" />
@@ -167,6 +171,10 @@ export async function renderAudit(container) {
     bind("#audit-action", "action", "change");
     bind("#audit-from", "from", "change");
     bind("#audit-to", "to", "change");
+    container.querySelector("#audit-clear").addEventListener("click", () => {
+      Object.keys(state).forEach(key => { state[key] = ""; });
+      render();
+    });
     container.querySelector("#audit-more").addEventListener("click", async event => {
       event.currentTarget.disabled = true;
       limit = Math.min(MAX_LOGS, limit + PAGE_SIZE);
