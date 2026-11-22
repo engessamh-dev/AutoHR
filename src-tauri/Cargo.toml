@@ -43,3 +43,4 @@ zip                 = { version = "2", default-features = false, features = ["de
 tauri-plugin-notification = "2"
 image = { version = "0.25.10", default-features = false, features = ["jpeg", "png", "webp"] }
 imageproc = { version = "0.27.0", default-features = false }
+tauri-plugin-updater = "2"

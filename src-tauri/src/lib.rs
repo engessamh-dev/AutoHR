@@ -942,6 +942,124 @@ async fn cmd_restore_backup(window: Window, state: State<'_, DbState>, sess: Sta
     std::fs::write(destination_path, workbook).map_err(|e| AppError::Other(e.to_string()))
 }
 
+
+// ── Application updates ──────────────────────────────────────────────────────
+// Checking and installing run in Rust so that only an administrator can trigger them,
+// and so that a verified backup is always taken before an update is installed.
+
+#[derive(Clone, serde::Serialize)]
+struct UpdateInfo {
+    configured: bool,
+    available: bool,
+    current_version: String,
+    version: String,
+    notes: String,
+    date: String,
+}
+
+const UPDATER_PUBKEY_PLACEHOLDER: &str = "REPLACE_WITH_PUBLIC_KEY";
+
+fn is_real_pubkey(key: &str) -> bool {
+    !key.trim().is_empty() && !key.starts_with(UPDATER_PUBKEY_PLACEHOLDER)
+}
+
+fn updater_configured(app: &AppHandle) -> bool {
+    app.config().plugins.0.get("updater")
+        .and_then(|value| value.get("pubkey"))
+        .and_then(|value| value.as_str())
+        .is_some_and(is_real_pubkey)
+}
+
+fn update_error(error: tauri_plugin_updater::Error) -> AppError {
+    AppError::Validation(format!("تعذر التحقق من التحديثات. تأكد من الاتصال بالشبكة ثم أعد المحاولة. ({error})"))
+}
+
+#[tauri::command]
+async fn cmd_check_for_update(app: AppHandle, state: State<'_, DbState>, sess: State<'_, SessionState>) -> Result<UpdateInfo, AppError> {
+    {
+        let conn = state.conn()?;
+        authorize(&conn, &sess, "settings.manage")?;
+    }
+    let current_version = app.package_info().version.to_string();
+    let mut info = UpdateInfo {
+        configured: updater_configured(&app),
+        available: false,
+        current_version,
+        version: String::new(),
+        notes: String::new(),
+        date: String::new(),
+    };
+    if !info.configured {
+        return Ok(info);
+    }
+    use tauri_plugin_updater::UpdaterExt;
+    let update = app.updater().map_err(update_error)?.check().await.map_err(update_error)?;
+    if let Some(update) = update {
+        info.available = true;
+        info.version = update.version.clone();
+        info.notes = update.body.clone().unwrap_or_default();
+        info.date = update.date.map(|d| d.to_string()).unwrap_or_default();
+    }
+    Ok(info)
+}
+
+/// Takes a verified encrypted backup (Backups/PreUpdate), then downloads, verifies the
+/// signature of, and installs the update. Windows closes the app while the installer runs.
+#[tauri::command]
+async fn cmd_install_update(window: Window, state: State<'_, DbState>, sess: State<'_, SessionState>, password: String) -> Result<(), AppError> {
+    let user = {
+        let conn = state.conn()?;
+        let user = authorize(&conn, &sess, "settings.manage")?;
+        assert_permission(&conn, &user, "backups.manage")?;
+        user
+    };
+    let app = window.app_handle().clone();
+    if cfg!(debug_assertions) {
+        return Err(AppError::Validation("تثبيت التحديثات غير متاح في نسخة التطوير".into()));
+    }
+    if !updater_configured(&app) {
+        return Err(AppError::Validation("التحديث التلقائي غير مُعد بعد في هذه النسخة".into()));
+    }
+    use tauri_plugin_updater::UpdaterExt;
+    let update = app.updater().map_err(update_error)?.check().await.map_err(update_error)?
+        .ok_or_else(|| AppError::Validation("لا يوجد تحديث جديد".into()))?;
+
+    let backup_app = app.clone();
+    let progress_window = window.clone();
+    let version = update.version.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let state = backup_app.state::<DbState>();
+        let conn = state.conn()?;
+        create_backup_at(&conn, &user, &password, "PreUpdate", &mut |progress| {
+            let _ = progress_window.emit("update-progress", BackupProgress {
+                percent: progress.percent / 2,
+                message: format!("نسخة احتياطية قبل التحديث: {}", progress.message),
+            });
+        })?;
+        log_activity(&conn, &user, "INSTALL_UPDATE", Some("app"), None, Some(&version), None);
+        Ok::<_, AppError>(())
+    })
+    .await
+    .map_err(|error| AppError::Other(error.to_string()))??;
+
+    let progress_window = window.clone();
+    let mut downloaded: u64 = 0;
+    update.download_and_install(
+        |chunk, total| {
+            downloaded += chunk as u64;
+            let percent = total.filter(|t| *t > 0).map(|t| 50 + (downloaded * 45 / t) as u8).unwrap_or(60);
+            let _ = progress_window.emit("update-progress", BackupProgress {
+                percent: percent.min(95),
+                message: "جاري تنزيل التحديث والتحقق من توقيعه...".into(),
+            });
+        },
+        || {
+            let _ = window.emit("update-progress", BackupProgress { percent: 100, message: "جاري تثبيت التحديث...".into() });
+        },
+    ).await.map_err(|error| AppError::Validation(format!("فشل تنزيل التحديث أو التحقق من توقيعه، ولم يتغير شيء. ({error})")))?;
+    app.restart();
+}
+
 pub fn scanner_self_test() -> Result<(), String> {
     scanner::production_self_test().map_err(|error| error.to_string())
 }
@@ -965,6 +1083,7 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_notification::init())
+        .plugin(tauri_plugin_updater::Builder::new().build())
         .manage(DbState(Mutex::new(None)))
         .manage(SessionState(Mutex::new(None)))
         .manage(StartupInfo(Mutex::new(status)))
@@ -1005,6 +1124,7 @@ pub fn run() {
             cmd_get_storage_path, cmd_get_backup_path, cmd_open_managed_folder,
             cmd_get_startup_status, cmd_check_setup_folders, cmd_complete_setup, cmd_retry_data_folder,
             cmd_get_storage_status, cmd_change_backup_folder, cmd_export_backup_to, cmd_move_data_folder,
+            cmd_check_for_update, cmd_install_update,
             cmd_get_auto_backup_settings, cmd_set_auto_backup_settings,
             cmd_run_due_auto_backups, cmd_exit_app,
             cmd_get_document_types, cmd_set_document_types,
@@ -1018,6 +1138,20 @@ pub fn run() {
 #[cfg(test)]
 mod report_export_tests {
     use super::*;
+
+    #[test]
+    fn shipped_config_has_updater_placeholder_until_a_real_key_is_added() {
+        let config: serde_json::Value = serde_json::from_str(include_str!("../tauri.conf.json")).unwrap();
+        let updater = &config["plugins"]["updater"];
+        assert!(updater["pubkey"].is_string());
+        assert!(!is_real_pubkey("REPLACE_WITH_PUBLIC_KEY_FROM_TAURI_SIGNER_GENERATE"));
+        assert!(!is_real_pubkey("  "));
+        assert!(is_real_pubkey("dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk="));
+        // Endpoints must be HTTPS: the plugin refuses plain HTTP unless explicitly allowed.
+        for endpoint in updater["endpoints"].as_array().unwrap() {
+            assert!(endpoint.as_str().unwrap().starts_with("https://"));
+        }
+    }
     use std::io::Read;
 
     #[test]
