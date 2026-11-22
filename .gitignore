@@ -16,3 +16,14 @@ playwright-report/
 
 # Local database audit artifacts may contain attachment paths
 verification/
+
+# Release installers belong in GitHub Releases or the internal update server, not in Git.
+*.exe
+*.msi
+*.nsis.zip
+*.sig
+# SQLite runtime sidecars for the development fixture database.
+src-tauri/resources/*.db-wal
+src-tauri/resources/*.db-shm
+# Encrypted backups may contain real employee data.
+*.autohrbak

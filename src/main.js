@@ -301,7 +301,9 @@ async function doLogin(username, password) {
     await enterApp(user);
   } catch (err) {
     const errEl = document.getElementById("login-error");
-    errEl.textContent = t("loginError");
+    // A temporary lockout returns its own Arabic message; other failures stay generic.
+    const lockedMessage = typeof err === "string" && err.startsWith("تم إيقاف تسجيل الدخول") ? err : null;
+    errEl.textContent = lockedMessage ?? t("loginError");
     errEl.classList.remove("hidden");
   }
 }

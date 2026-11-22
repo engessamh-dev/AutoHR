@@ -3,19 +3,11 @@ echo ============================================
 echo  AutoHR - Clean Install
 echo ============================================
 
-REM Remove any leftover Cargo files from old extractions (not src-tauri ones)
-if exist "Cargo.lock" (
-    echo Removing stale Cargo.lock from root...
-    del /f Cargo.lock
-)
+REM Cargo.lock in the root is the workspace lock file. Keep it for reproducible builds.
 
-echo Installing Node dependencies...
-call npm install
-if errorlevel 1 ( echo npm install failed & pause & exit /b 1 )
-
-echo Installing better-sqlite3...
-call npm install better-sqlite3 --save-dev
-if errorlevel 1 ( echo better-sqlite3 install failed & pause & exit /b 1 )
+echo Installing Node dependencies from package-lock.json...
+call npm ci
+if errorlevel 1 ( echo npm ci failed & pause & exit /b 1 )
 
 echo Seeding database...
 call npm run seed-db
