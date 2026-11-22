@@ -45,6 +45,9 @@ function bindAttachmentDownloadButtons(container) {
   }, () => {
     if (_panelDirty) throw new Error("احفظ التعديلات الحالية قبل إعادة معالجة المرفق");
   });
+  container.querySelectorAll(".emp-tile-thumb > .smart-scanner-actions").forEach(group => {
+    group.closest(".emp-tile")?.querySelector(".emp-tile-menu")?.append(group);
+  });
   container.querySelectorAll(".btn-download-attachment").forEach(button => {
     button.addEventListener("click", () => downloadEmployeeAttachment(button.dataset.path));
   });
@@ -143,6 +146,7 @@ function openPanel(emp, tab = "basic") {
   _activeTab = TABS.some(t => t.id === tab) ? tab : "basic";
   _panelDraft = emp ? { ...emp } : { is_active: 1, spouses: "[]", family_members: "[]", vehicles: "[]" };
   _panelDirty = false;
+  _sectionState = new Map();
   document.getElementById("emp-panel").style.transform = "translateX(0)";
   document.getElementById("emp-overlay").style.display = "block";
   renderPanel(emp);
@@ -173,6 +177,7 @@ async function closePanel(force = false) {
 
 function markPanelDirty() {
   _panelDirty = true;
+  document.getElementById("panel-dirty")?.removeAttribute("hidden");
 }
 
 function collectVisiblePanelFields(panel) {
@@ -289,116 +294,330 @@ function sectionTitle(title) {
   </div>`;
 }
 
-function sidedCardAttachment(label, side, path, fullPath, canUpload, cardType = "national") {
+// ── Unified attachment tiles ────────────────────────────────────────────────
+const IMAGE_EXTENSIONS = ["jpg", "jpeg", "png", "webp"];
+
+function attachmentTile({ label, path, fullPath, canManage, upload, remove, lockedNote = "احفظ سجل الموظف أولاً" }) {
   const name = path?.split(/[/\\]/).pop();
   const extension = name?.split(".").pop()?.toLowerCase();
   const assetUrl = fullPath ? convertFileSrc(fullPath) : "";
-  const preview = assetUrl && ["jpg", "jpeg", "png", "webp"].includes(extension)
-    ? `<img data-scan-path="${escHtml(path)}" src="${escHtml(assetUrl)}" alt="${label}" style="display:block;max-width:100%;height:auto;border:1px solid #2d2d2d;border-radius:6px;margin:0 auto 9px" />`
-    : assetUrl && extension === "pdf"
-      ? `<iframe src="${escHtml(assetUrl)}" title="${label}" style="display:block;width:100%;height:220px;background:#fff;border:1px solid #2d2d2d;border-radius:6px;margin-bottom:9px"></iframe>`
-      : "";
-  return `<div style="padding:10px 12px;background:#181818;border:1px solid #2d2d2d;border-radius:8px">
-    <p style="font-size:12px;font-weight:700;color:#d1d5db;margin-bottom:5px">${label}</p>
-    ${preview}
-    <p style="font-size:11px;color:${name ? "#9ca3af" : "#6b7280"};margin-bottom:9px;word-break:break-all">
-      ${name ? escHtml(name) : "لم يُرفع ملف"}
-    </p>
-    ${canUpload ? `<div style="display:flex;gap:6px">
-      <button type="button" class="btn-secondary text-xs px-2 py-1 btn-upload-sided-card" data-card-type="${cardType}" data-side="${side}">
-        ${name ? "استبدال" : "رفع"}
-      </button>
-      ${name && can(_currentUser, "documents.download") ? `<button type="button" class="btn-secondary text-xs px-2 py-1 btn-download-attachment" data-path="${escHtml(path)}">تحميل</button>` : ""}
-      ${name ? `<button type="button" class="btn-danger text-xs px-2 py-1 btn-delete-sided-card" data-card-type="${cardType}" data-side="${side}">حذف</button>` : ""}
-    </div>` : `<p style="font-size:11px;color:#6b7280">احفظ سجل الموظف أولاً</p>`}
+  const isImage = Boolean(assetUrl) && IMAGE_EXTENSIONS.includes(extension);
+  const viewKind = isImage ? "image" : assetUrl && extension === "pdf" ? "pdf" : "";
+  const thumb = isImage
+    ? `<img data-scan-path="${escHtml(path)}" src="${escHtml(assetUrl)}" alt="${escHtml(label)}" loading="lazy" />`
+    : name ? `<span class="emp-tile-file">${escHtml((extension || "ملف").toUpperCase())}</span>`
+    : `<span>لا يوجد ملف</span>`;
+  const action = name
+    ? `<button type="button" class="emp-tile-more" aria-haspopup="menu" aria-label="خيارات ${escHtml(label)}">⋯</button>`
+    : canManage
+      ? `<button type="button" class="emp-tile-upload ${upload.cls}" ${upload.attrs}>+ رفع</button>`
+      : `<span class="emp-tile-note">${lockedNote}</span>`;
+  const menu = name ? `<div class="emp-tile-menu" role="menu">
+      ${viewKind ? `<button type="button" role="menuitem" class="emp-menu-item emp-view-attachment" data-url="${escHtml(assetUrl)}" data-kind="${viewKind}" data-title="${escHtml(label)}">عرض</button>` : ""}
+      ${canManage ? `<button type="button" role="menuitem" class="emp-menu-item ${upload.cls}" ${upload.attrs}>استبدال</button>` : ""}
+      ${can(_currentUser, "documents.download") ? `<button type="button" role="menuitem" class="emp-menu-item btn-download-attachment" data-path="${escHtml(path)}">تحميل</button>` : ""}
+      ${canManage ? `<button type="button" role="menuitem" class="emp-menu-item is-danger ${remove.cls}" ${remove.attrs}>حذف</button>` : ""}
+    </div>` : "";
+  return `<div class="emp-tile ${name ? "has-file" : "is-empty"}" title="${escHtml(name ?? "")}">
+    <div class="emp-tile-thumb">${thumb}</div>
+    <div class="emp-tile-cap"><span>${escHtml(label)}</span>${action}</div>
+    ${menu}
   </div>`;
 }
 
-function passportAttachments(emp) {
-  let paths = [];
-  try { paths = JSON.parse(emp?.passport_attachment_paths ?? "[]"); } catch {}
-  const fullPaths = emp?.passport_attachment_full_paths ?? [];
-  const path = paths[0];
-  const fullPath = fullPaths[0];
-  const name = path?.split(/[/\\]/).pop();
-  const extension = name?.split(".").pop()?.toLowerCase();
-  const assetUrl = fullPath ? convertFileSrc(fullPath) : "";
-  const preview = assetUrl && ["jpg", "jpeg", "png", "webp"].includes(extension)
-    ? `<img data-scan-path="${escHtml(path)}" src="${escHtml(assetUrl)}" alt="${escHtml(name)}" style="display:block;max-width:100%;height:auto;border:1px solid #2d2d2d;border-radius:6px;margin:0 auto 9px" />`
-    : assetUrl && extension === "pdf"
-      ? `<iframe src="${escHtml(assetUrl)}" title="${escHtml(name)}" style="display:block;width:100%;height:220px;background:#fff;border:1px solid #2d2d2d;border-radius:6px;margin-bottom:9px"></iframe>`
-      : "";
-  return `<div style="grid-column:span 2">
-    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px">
-      <p style="font-size:12px;color:#9ca3af">${path ? "نسخة الجواز مرفوعة" : "لم تُرفع نسخة الجواز"}</p>
-      ${emp?.id
-        ? (path ? "" : `<button type="button" id="btn-upload-passport" class="btn-secondary text-xs px-3 py-1.5">رفع نسخة…</button>`)
-        : `<p style="font-size:11px;color:#6b7280">احفظ سجل الموظف أولاً</p>`}
+function sidedCardTile(label, side, path, fullPath, canUpload, cardType = "national") {
+  const attrs = `data-card-type="${cardType}" data-side="${side}"`;
+  return attachmentTile({
+    label, path, fullPath, canManage: canUpload,
+    upload: { cls: "btn-upload-sided-card", attrs },
+    remove: { cls: "btn-delete-sided-card", attrs },
+  });
+}
+
+function firstJsonPath(value) {
+  try { return JSON.parse(value ?? "[]")[0]; } catch { return undefined; }
+}
+
+function passportTile(emp) {
+  const path = firstJsonPath(emp?.passport_attachment_paths);
+  return attachmentTile({
+    label: "نسخة الجواز", path, fullPath: emp?.passport_attachment_full_paths?.[0], canManage: Boolean(emp?.id),
+    upload: { cls: "", attrs: `id="btn-upload-passport"` },
+    remove: { cls: "btn-delete-passport", attrs: `data-path="${escHtml(path ?? "")}"` },
+  });
+}
+
+function rationCardTile(emp) {
+  const path = firstJsonPath(emp?.ration_card_attachment_paths);
+  return attachmentTile({
+    label: "نسخة البطاقة", path, fullPath: emp?.ration_card_attachment_full_paths?.[0], canManage: Boolean(emp?.id),
+    upload: { cls: "", attrs: `id="btn-upload-ration-card"` },
+    remove: { cls: "btn-delete-ration-card", attrs: `data-path="${escHtml(path ?? "")}"` },
+  });
+}
+
+function openAttachmentViewer(url, kind, title) {
+  const overlay = document.createElement("div");
+  overlay.className = "emp-viewer";
+  overlay.setAttribute("role", "dialog");
+  overlay.setAttribute("aria-modal", "true");
+  overlay.setAttribute("aria-label", title);
+  overlay.innerHTML = `<div class="emp-viewer-box">
+    <div class="emp-viewer-head"><span>${escHtml(title)}</span><button type="button" class="emp-viewer-close" aria-label="إغلاق">✕</button></div>
+    ${kind === "pdf" ? `<iframe src="${escHtml(url)}" title="${escHtml(title)}"></iframe>` : `<img src="${escHtml(url)}" alt="${escHtml(title)}" />`}
+  </div>`;
+  const onKey = event => { if (event.key === "Escape") { event.stopPropagation(); close(); } };
+  const close = () => { overlay.remove(); document.removeEventListener("keydown", onKey, true); };
+  overlay.addEventListener("click", event => {
+    if (event.target === overlay || event.target.closest(".emp-viewer-close")) close();
+  });
+  document.addEventListener("keydown", onKey, true);
+  document.body.append(overlay);
+  overlay.querySelector(".emp-viewer-close").focus();
+}
+
+// ── Personal photo (panel header) ───────────────────────────────────────────
+function employeeInitials(name) {
+  return String(name ?? "").trim().split(/\s+/).filter(Boolean).slice(0, 2).map(word => word[0]).join(".");
+}
+
+function headerPhotoHtml(emp) {
+  const assetUrl = emp?.photo_path && emp?.photo_full_path ? convertFileSrc(emp.photo_full_path) : "";
+  const face = assetUrl
+    ? `<img data-scan-path="${escHtml(emp.photo_path)}" src="${escHtml(assetUrl)}" alt="الصورة الشخصية" />`
+    : `<span>${escHtml(employeeInitials(emp?.full_name)) || "—"}</span>`;
+  if (!emp?.id) return `<div class="emp-avatar is-static" title="احفظ سجل الموظف أولاً لإضافة صورة">${face}</div>`;
+  return `<div class="employee-photo-card emp-avatar-wrap">
+    <button type="button" id="emp-avatar-btn" class="emp-avatar" aria-haspopup="menu" title="الصورة الشخصية">
+      ${face}<span class="emp-avatar-edit" aria-hidden="true">✎</span>
+    </button>
+    <div class="emp-avatar-menu employee-photo-actions" role="menu">
+      ${assetUrl ? `<button type="button" role="menuitem" class="emp-menu-item emp-view-attachment" data-url="${escHtml(assetUrl)}" data-kind="image" data-title="الصورة الشخصية">عرض</button>` : ""}
+      <button type="button" role="menuitem" id="btn-upload-photo" class="emp-menu-item">${assetUrl ? "استبدال الصورة" : "رفع صورة"}</button>
+      ${emp.photo_path && can(_currentUser, "documents.download") ? `<button type="button" role="menuitem" class="emp-menu-item btn-download-attachment" data-path="${escHtml(emp.photo_path)}">تحميل</button>` : ""}
+      ${emp.photo_path && can(_currentUser, "employees.edit") ? `<button type="button" role="menuitem" id="btn-delete-photo" class="emp-menu-item is-danger">حذف الصورة</button>` : ""}
     </div>
-    ${!path ? `<p style="text-align:center;color:#6b7280;padding:18px;font-size:12px;background:#181818;border:1px solid #2d2d2d;border-radius:8px">لا توجد نسخة للجواز</p>` : `
-      <div style="padding:10px 12px;background:#181818;border:1px solid #2d2d2d;border-radius:8px">
-        ${preview}
-        <p style="font-size:11px;color:#9ca3af;word-break:break-all;margin-bottom:8px">${escHtml(name)}</p>
-        <div style="display:flex;align-items:center;gap:6px">
-          <button type="button" id="btn-upload-passport" class="btn-secondary text-xs px-2 py-1">استبدال</button>
-          ${can(_currentUser, "documents.download") ? `<button type="button" class="btn-secondary text-xs px-2 py-1 btn-download-attachment" data-path="${escHtml(path)}">تحميل</button>` : ""}
-          <button type="button" class="btn-danger text-xs px-2 py-1 btn-delete-passport" data-path="${escHtml(path)}">حذف</button>
-        </div>
-      </div>`}
   </div>`;
 }
 
-function rationCardAttachments(emp) {
-  let paths = [];
-  try { paths = JSON.parse(emp?.ration_card_attachment_paths ?? "[]"); } catch {}
-  const fullPaths = emp?.ration_card_attachment_full_paths ?? [];
-  const path = paths[0];
-  const fullPath = fullPaths[0];
-  const name = path?.split(/[/\\]/).pop();
-  const extension = name?.split(".").pop()?.toLowerCase();
-  const assetUrl = fullPath ? convertFileSrc(fullPath) : "";
-  const preview = assetUrl && ["jpg", "jpeg", "png", "webp"].includes(extension)
-    ? `<img data-scan-path="${escHtml(path)}" src="${escHtml(assetUrl)}" alt="${escHtml(name)}" style="display:block;max-width:100%;height:auto;border:1px solid #2d2d2d;border-radius:6px;margin:0 auto 9px" />`
-    : assetUrl && extension === "pdf"
-      ? `<iframe src="${escHtml(assetUrl)}" title="${escHtml(name)}" style="display:block;width:100%;height:220px;background:#fff;border:1px solid #2d2d2d;border-radius:6px;margin-bottom:9px"></iframe>`
-      : "";
-  return `<div style="grid-column:span 2">
-    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px">
-      <p style="font-size:12px;color:#9ca3af">${path ? "نسخة البطاقة التموينية مرفوعة" : "لم تُرفع نسخة البطاقة التموينية"}</p>
-      ${emp?.id
-        ? (path ? "" : `<button type="button" id="btn-upload-ration-card" class="btn-secondary text-xs px-3 py-1.5">رفع نسخة…</button>`)
-        : `<p style="font-size:11px;color:#6b7280">احفظ سجل الموظف أولاً</p>`}
-    </div>
-    ${!path ? `<p style="text-align:center;color:#6b7280;padding:18px;font-size:12px;background:#181818;border:1px solid #2d2d2d;border-radius:8px">لا توجد نسخة للبطاقة التموينية</p>` : `
-      <div style="padding:10px 12px;background:#181818;border:1px solid #2d2d2d;border-radius:8px">
-        ${preview}
-        <p style="font-size:11px;color:#9ca3af;word-break:break-all;margin-bottom:8px">${escHtml(name)}</p>
-        <div style="display:flex;align-items:center;gap:6px">
-          <button type="button" id="btn-upload-ration-card" class="btn-secondary text-xs px-2 py-1">استبدال</button>
-          ${can(_currentUser, "documents.download") ? `<button type="button" class="btn-secondary text-xs px-2 py-1 btn-download-attachment" data-path="${escHtml(path)}">تحميل</button>` : ""}
-          <button type="button" class="btn-danger text-xs px-2 py-1 btn-delete-ration-card" data-path="${escHtml(path)}">حذف</button>
-        </div>
-      </div>`}
-  </div>`;
+function bindHeaderPhoto(emp) {
+  const panel = document.getElementById("emp-panel");
+  const holder = document.getElementById("emp-panel-photo");
+  if (!panel || !holder || !emp?.id) return;
+  bindAttachmentDownloadButtons(holder);
+  holder.querySelector("#btn-delete-photo")?.addEventListener("click", async event => {
+    const button = event.currentTarget;
+    try {
+      if (!(await confirmAction("تأكيد حذف الصورة الشخصية؟"))) return;
+      button.disabled = true;
+      await api.deleteEmployeePhoto(emp.id);
+      await refreshDocumentAttachments(emp.id);
+      showToast("تم حذف الصورة الشخصية");
+    } catch (error) { showToast(error?.message ?? String(error), "error"); }
+    finally { button.disabled = false; }
+  });
+  holder.querySelector("#btn-upload-photo")?.addEventListener("click", async () => {
+    try {
+      collectVisiblePanelFields(panel);
+      const { open } = await import("@tauri-apps/plugin-dialog");
+      const selected = await open({
+        multiple: false,
+        filters: [{ name: "الصورة الشخصية", extensions: ["jpg", "jpeg", "png", "webp"] }],
+      });
+      if (!selected) return;
+      if (!(await confirmAction("تأكيد رفع الصورة الشخصية؟"))) return;
+      await api.uploadEmployeePhoto(emp.id, selected);
+      showToast("تم رفع الصورة الشخصية");
+      await refreshDocumentAttachments(emp.id);
+    } catch (err) { showToast(err?.message ?? String(err || "خطأ في رفع الصورة"), "error"); }
+  });
 }
 
-function personalPhotoDocument(emp) {
-  const assetUrl = emp?.photo_full_path ? convertFileSrc(emp.photo_full_path) : "";
-  return `<div style="grid-column:span 2;display:flex;justify-content:center">
-    <div class="employee-photo-card" style="width:min(260px,100%);text-align:center;padding:14px;background:#181818;border:1px solid #2d2d2d;border-radius:8px">
-      <p style="font-size:13px;font-weight:700;color:#d1d5db;margin-bottom:10px">الصورة الشخصية</p>
-      ${assetUrl
-        ? `<img data-scan-path="${escHtml(emp.photo_path || "")}" src="${escHtml(assetUrl)}" alt="الصورة الشخصية" style="display:block;width:150px;height:180px;object-fit:cover;border:1px solid #2d2d2d;border-radius:8px;margin:0 auto 10px;background:#0b1220" />`
-        : `<div style="display:grid;place-items:center;width:150px;height:180px;border:1px dashed #374151;border-radius:8px;margin:0 auto 10px;color:#6b7280;background:#0b1220;font-size:12px">لا توجد صورة</div>`}
-      ${emp?.id
-        ? `<div class="employee-photo-actions">
-            <button type="button" id="btn-upload-photo" class="btn-secondary text-xs px-3 py-1.5">${assetUrl ? "استبدال الصورة" : "رفع صورة"}</button>
-            ${emp.photo_path && can(_currentUser, "employees.edit") ? `<button type="button" id="btn-delete-photo" class="btn-danger text-xs px-3 py-1.5">حذف الصورة</button>` : ""}
-            ${emp.photo_path && can(_currentUser, "documents.download") ? `<button type="button" class="btn-secondary text-xs px-3 py-1.5 btn-download-attachment" data-path="${escHtml(emp.photo_path)}">تحميل</button>` : ""}
-          </div>`
-        : `<p style="font-size:11px;color:#6b7280">احفظ سجل الموظف أولاً</p>`}
-    </div>
-  </div>`;
+// ── Collapsible sections and document status ────────────────────────────────
+let _sectionState = new Map();
+
+function sectionOpen(key, fallback) {
+  return _sectionState.has(key) ? _sectionState.get(key) : fallback;
+}
+
+function formSection(key, title, body, { status = null, meta = "", open = false } = {}) {
+  const isOpen = sectionOpen(`${_activeTab}:${key}`, open);
+  return `<section class="emp-sec${isOpen ? " open" : ""}" id="emp-sec-${key}" data-sec="${key}">
+    <button type="button" class="emp-sec-head" aria-expanded="${isOpen}">
+      ${status ? `<span class="emp-dot ${status.tone}" aria-hidden="true"></span>` : ""}
+      <span class="emp-sec-title">${title}</span>
+      ${status ? `<span class="emp-pill ${status.tone}">${status.label}</span>` : ""}
+      <span class="emp-sec-meta">${meta}<span class="emp-chev" aria-hidden="true"></span></span>
+    </button>
+    <div class="emp-sec-body">${body}</div>
+  </section>`;
+}
+
+function daysUntil(dateStr) {
+  if (!dateStr) return null;
+  const date = new Date(`${dateStr}T00:00:00`);
+  if (Number.isNaN(date.getTime())) return null;
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+  return Math.round((date - today) / 86400000);
+}
+
+function documentStatus({ values, expiry, maxDays, attached, expected }) {
+  const days = daysUntil(expiry);
+  if (days !== null && days < 0) return { tone: "bad", label: "منتهٍ" };
+  if (days !== null && days <= maxDays) return { tone: "warn", label: days === 0 ? "ينتهي اليوم" : `ينتهي خلال ${days} يوم` };
+  const hasData = values.some(value => String(value ?? "").trim());
+  if (!hasData && attached === 0) return { tone: "none", label: "لا توجد بيانات" };
+  if (attached < expected) return { tone: "none", label: "مرفق ناقص" };
+  return { tone: "ok", label: "مكتمل" };
+}
+
+function documentSections(emp) {
+  const hasId = Boolean(emp?.id);
+  const sided = (type, prefix) => [
+    sidedCardTile("الوجه الأمامي", "front", emp?.[`${prefix}_front_path`], emp?.[`${prefix}_front_full_path`], hasId, type),
+    sidedCardTile("الوجه الخلفي", "back", emp?.[`${prefix}_back_path`], emp?.[`${prefix}_back_full_path`], hasId, type),
+  ];
+  const sidedCount = prefix => [emp?.[`${prefix}_front_path`], emp?.[`${prefix}_back_path`]].filter(Boolean).length;
+  const sections = [
+    {
+      key: "national", title: "البطاقة الوطنية", expiry: "civil_id_expiry_date", maxDays: 30,
+      keys: ["civil_id", "civil_id_issuer", "civil_id_issue_date", "civil_id_expiry_date", "civil_id_birthplace", "civil_id_birthdate", "civil_id_family_number"],
+      fields: [
+        field("رقم البطاقة الوطنية", "civil_id", emp, {ltr:true, span:true}),
+        field("جهة الإصدار", "civil_id_issuer", emp),
+        field("تاريخ الإصدار", "civil_id_issue_date", emp, {date:true}),
+        field("تاريخ النفاذ", "civil_id_expiry_date", emp, {date:true}),
+        field("محل الولادة", "civil_id_birthplace", emp),
+        field("تاريخ الولادة", "civil_id_birthdate", emp, {date:true}),
+        field("الرقم العائلي", "civil_id_family_number", emp, {ltr:true}),
+      ],
+      tiles: sided("national", "civil_id"), attached: sidedCount("civil_id"), expected: 2,
+    },
+    {
+      key: "passport", title: "جواز السفر", expiry: "passport_expiry_date", maxDays: 183,
+      keys: ["passport_no", "passport_type", "passport_name", "passport_issue_date", "passport_expiry_date"],
+      fields: [
+        field("رقم جواز السفر", "passport_no", emp, {ltr:true}),
+        field("نوع جواز السفر", "passport_type", emp, {type:"select", options:[["","—"],["P","P"],["D","D"],["S","S"]]}),
+        field("الاسم حسب الجواز", "passport_name", emp, {ltr:true, span:true}),
+        field("تاريخ الإصدار", "passport_issue_date", emp, {date:true}),
+        field("تاريخ النفاذ", "passport_expiry_date", emp, {date:true}),
+      ],
+      tiles: [passportTile(emp)], attached: firstJsonPath(emp?.passport_attachment_paths) ? 1 : 0, expected: 1,
+    },
+    {
+      key: "residence", title: "بطاقة السكن",
+      keys: ["residence_card_issuer", "residence_head_name", "residence_address", "residence_form_no", "residence_card_no", "residence_card_issue_date"],
+      fields: [
+        field("مكتب معلومات", "residence_card_issuer", emp),
+        field("اسم رب الأسرة", "residence_head_name", emp),
+        field("عنوان السكن الحالي", "residence_address", emp, {span:true}),
+        field("رقم الاستمارة", "residence_form_no", emp, {ltr:true}),
+        field("رقم بطاقة السكن", "residence_card_no", emp, {ltr:true}),
+        field("تاريخ الإصدار", "residence_card_issue_date", emp, {date:true}),
+      ],
+      tiles: sided("residence", "residence_card"), attached: sidedCount("residence_card"), expected: 2,
+    },
+    {
+      key: "ration", title: "البطاقة التموينية الإلكترونية",
+      keys: ["ration_card_no", "ration_center_name"],
+      fields: [
+        field("رقم البطاقة التموينية", "ration_card_no", emp, {ltr:true}),
+        field("اسم رب الأسرة", "ration_center_name", emp),
+      ],
+      tiles: [rationCardTile(emp)], attached: firstJsonPath(emp?.ration_card_attachment_paths) ? 1 : 0, expected: 1,
+    },
+    {
+      key: "airport", title: "باج دخول مطار بغداد", expiry: "airport_badge_expiry", maxDays: 30,
+      keys: ["airport_badge_no", "airport_badge_issue_date", "airport_badge_expiry"],
+      fields: [
+        field("رقم الهوية", "airport_badge_no", emp, {ltr:true, span:true}),
+        field("تاريخ الإصدار", "airport_badge_issue_date", emp, {date:true}),
+        field("تاريخ النفاذ", "airport_badge_expiry", emp, {date:true}),
+      ],
+      tiles: sided("airport", "airport_badge"), attached: sidedCount("airport_badge"), expected: 2,
+    },
+    {
+      key: "ministry", title: "هوية وزارة النقل", expiry: "ministry_badge_expiry", maxDays: 30,
+      keys: ["ministry_badge_no", "ministry_badge_issue_date", "ministry_badge_expiry"],
+      fields: [
+        field("رقم الهوية", "ministry_badge_no", emp, {ltr:true, span:true}),
+        field("تاريخ الإصدار", "ministry_badge_issue_date", emp, {date:true}),
+        field("تاريخ النفاذ", "ministry_badge_expiry", emp, {date:true}),
+      ],
+      tiles: sided("ministry", "ministry_badge"), attached: sidedCount("ministry_badge"), expected: 2,
+    },
+  ];
+  return sections.map(section => ({
+    ...section,
+    status: documentStatus({
+      values: section.keys.map(key => emp?.[key]),
+      expiry: section.expiry ? emp?.[section.expiry] : null,
+      maxDays: section.maxDays ?? 0,
+      attached: section.attached,
+      expected: section.expected,
+    }),
+  }));
+}
+
+function documentsTabHtml(emp) {
+  const isNew = !emp?.id;
+  const sections = documentSections(emp);
+  const chips = sections.map(section => `<button type="button" class="emp-chip" data-jump="${section.key}" title="${section.status.label}">
+      <span class="emp-dot ${section.status.tone}" aria-hidden="true"></span>${section.title}</button>`).join("");
+  const body = sections.map(section => {
+    const expiryValue = section.expiry ? emp?.[section.expiry] : "";
+    const meta = `${expiryValue ? `<span>النفاذ: ${formatDate(expiryValue)}</span>` : ""}<span>المرفقات ${section.attached}/${section.expected}</span>`;
+    const content = `<div class="emp-grid">${section.fields.join("")}</div>
+      <p class="emp-att-title">المرفقات</p>
+      ${isNew ? `<p class="emp-tile-note">احفظ سجل الموظف أولاً لرفع المرفقات</p>` : `<div class="emp-tiles">${section.tiles.join("")}</div>`}`;
+    return formSection(section.key, section.title, content, {
+      status: section.status, meta, open: isNew || ["bad", "warn"].includes(section.status.tone),
+    });
+  }).join("");
+  return `<div class="emp-chips">${chips}</div>
+    <div class="emp-sec-tools"><button type="button" class="emp-link" data-sections-all="open">فتح الكل</button><button type="button" class="emp-link" data-sections-all="close">طيّ الكل</button></div>
+    ${body}`;
+}
+
+// ── Collapsible list rows (spouses, family members, vehicles) ───────────────
+function ageText(birthdate) {
+  const days = daysUntil(birthdate);
+  if (days === null || days > 0) return "";
+  const years = Math.floor(-days / 365.25);
+  return years < 1 ? "أقل من سنة" : `${years} سنة`;
+}
+
+function personSummary({ name, gender, birthdate }) {
+  return [name || "بدون اسم", gender, ageText(birthdate)].filter(Boolean).join(" · ");
+}
+
+function vehicleSummary({ brand, type, color, plate }) {
+  return [[brand, type, color].filter(Boolean).join(" ") || "مركبة بدون بيانات", plate].filter(Boolean).join(" · ");
+}
+
+function rowSummaryFromInputs(row) {
+  const value = selector => row.querySelector(selector)?.value?.trim() || "";
+  if (row.classList.contains("vehicle-row")) {
+    return vehicleSummary({ brand: value(".vehicle-brand"), type: value(".vehicle-type"), color: value(".vehicle-color"), plate: value(".vehicle-plate") });
+  }
+  const prefix = row.classList.contains("spouse-row") ? "sp" : "fm";
+  return personSummary({ name: value(`.${prefix}-name`), gender: value(`.${prefix}-gender`), birthdate: value(`.${prefix}-birthdate`) });
+}
+
+function rowHead({ title, summary, extra = "", removeClass }) {
+  return `<div class="emp-row-head">
+      <span class="emp-row-title">${title}</span>
+      <span class="emp-row-summary">${escHtml(summary)}</span>
+      ${extra}
+      <span class="emp-chev" aria-hidden="true"></span>
+      <button type="button" class="${removeClass} btn-danger" style="font-size:11px;padding:2px 8px">حذف</button>
+    </div>`;
+}
+
+function rowOpenClass(key, isExisting) {
+  return sectionOpen(key, !isExisting) ? "" : " collapsed";
 }
 
 const printableDocumentDefinitions = [
@@ -687,46 +906,51 @@ function openDocumentsPrintDialog(emp) {
 
 // ── Tabs ────────────────────────────────────────────────────────────────────
 const TABS = [
-  { id: "basic",       label: "💼 المعلومات الوظيفية" },
-  { id: "documents",   label: "🪪 المستمسكات" },
-  { id: "family",      label: "👨‍👩‍👧 أفراد الأسرة" },
-  { id: "vehicle",     label: "🚗 معلومات المركبة" },
+  { id: "basic",       label: "المعلومات الوظيفية" },
+  { id: "documents",   label: "المستمسكات" },
+  { id: "family",      label: "أفراد الأسرة" },
+  { id: "vehicle",     label: "المركبات" },
 ];
 
 function tabContent(tab, emp) {
   switch(tab) {
-    case "basic": return `
-      <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
-        ${sectionTitle("المعلومات الشخصية")}
+    case "basic": {
+      const isNew = !emp?.id;
+      const personal = `<div class="emp-grid">
         ${field("الاسم الرباعي واللقب *", "full_name", emp, {span:true})}
         ${field("اسم الأم الرباعي واللقب", "mother_name", emp, {span:true})}
         ${field("الجنس", "gender", emp, {type:"select", options:[["","—"],["ذكر","ذكر"],["أنثى","أنثى"]]})}
         ${field("الحالة الاجتماعية", "marital_status", emp, {type:"select", options:[["","—"],["أعزب","أعزب"],["متزوج","متزوج"],["مطلق","مطلق"],["أرمل","أرمل"]]})}
         ${field("تاريخ ولادة الموظف", "birthdate", emp, {date:true})}
         ${field("محل ولادة الموظف", "birthplace", emp)}
+        ${field("فصيلة الدم", "blood_type", emp, {type:"select", options:[["","—"],["A+","A+"],["A-","A-"],["B+","B+"],["B-","B-"],["AB+","AB+"],["AB-","AB-"],["O+","O+"],["O-","O-"]]})}
+        ${field("رقم الهاتف", "phone", emp, {ltr:true})}
+        ${field("البريد الإلكتروني", "email", emp, {ltr:true, span:true})}
+      </div>`;
+      const parents = `<div class="emp-grid">
         ${field("تاريخ ولادة الأب", "father_birthdate", emp, {date:true})}
         ${field("محل ولادة الأب", "father_birthplace", emp)}
         ${field("تاريخ ولادة الأم", "mother_birthdate", emp, {date:true})}
         ${field("محل ولادة الأم", "mother_birthplace", emp)}
-        ${field("فصيلة الدم", "blood_type", emp, {type:"select", options:[["","—"],["A+","A+"],["A-","A-"],["B+","B+"],["B-","B-"],["AB+","AB+"],["AB-","AB-"],["O+","O+"],["O-","O-"]]})}
-        ${field("رقم الهاتف", "phone", emp, {ltr:true})}
-        ${field("البريد الإلكتروني", "email", emp, {ltr:true})}
-        ${sectionTitle("بيانات التوظيف")}
+      </div>`;
+      const employment = `<div class="emp-grid">
         ${fixedCompanyField("مكان العمل", "workplace", _companyConfig?.company_name ?? emp?.workplace ?? "")}
         ${field("العنوان الوظيفي", "job_title", emp)}
         ${field("الدرجة الوظيفية", "job_grade", emp)}
-        ${field("\u062a\u0627\u0631\u064a\u062e \u0627\u0644\u062a\u0639\u064a\u064a\u0646", "appointment_date", emp, {date:true})}
+        ${field("تاريخ التعيين", "appointment_date", emp, {date:true})}
         ${fixedCompanyField("القسم", "department", _companyConfig?.department_name ?? emp?.department ?? "")}
         ${fixedCompanyField("الشعبة / الوحدة", "division", _companyConfig?.division_name ?? emp?.division ?? "")}
         ${field("تاريخ المباشرة", "hire_date", emp, {date:true})}
         ${field("نوع التوظيف", "contract_type", emp, {type:"select", options:[["","—"],["ملاك","ملاك"],["عقد","عقد"],["تنسيب","تنسيب"],["تكليف","تكليف"],["اجر يومي","اجر يومي"]]})}
         ${field("نظام العمل", "work_schedule", emp, {type:"select", options:[["","—"],["صباحي","صباحي"],["مناوب مسائي","مناوب مسائي"]]})}
         ${field("ملاحظات نوع التوظيف", "work_type_notes", emp, {type:"textarea", span:true})}
-        ${sectionTitle("التحصيل الدراسي")}
+      </div>`;
+      const education = `<div class="emp-grid">
         ${field("التحصيل الدراسي", "education_level", emp, {type:"select", options:[["","—"],["ابتدائية","ابتدائية"],["متوسطة","متوسطة"],["إعدادية","إعدادية"],["دبلوم","دبلوم"],["بكالوريوس","بكالوريوس"],["ماجستير","ماجستير"],["دكتوراه","دكتوراه"]]})}
         ${field("التخصص", "specialization", emp)}
         ${field("سنة التخرج", "graduation_year", emp, {ltr:true})}
-        ${sectionTitle("معلومات إضافية")}
+      </div>`;
+      const extra = `<div class="emp-grid">
         ${field("ملاحظات", "notes", emp, {type:"textarea", span:true})}
         <div style="grid-column:span 2;display:flex;align-items:center;gap:8px">
           <input id="f-is_active" type="checkbox" style="width:16px;height:16px;accent-color:#24a9ff"
@@ -734,59 +958,15 @@ function tabContent(tab, emp) {
           <label for="f-is_active" style="font-size:14px;color:#d1d5db">موظف نشط</label>
         </div>
       </div>`;
+      return `<div class="emp-sec-tools"><button type="button" class="emp-link" data-sections-all="open">فتح الكل</button><button type="button" class="emp-link" data-sections-all="close">طيّ الكل</button></div>
+        ${formSection("personal", "المعلومات الشخصية", personal, { open: true })}
+        ${formSection("parents", "معلومات الوالدين", parents, { open: isNew })}
+        ${formSection("employment", "بيانات التوظيف", employment, { open: true })}
+        ${formSection("education", "التحصيل الدراسي", education, { open: isNew })}
+        ${formSection("extra", "ملاحظات وحالة الموظف", extra, { open: isNew })}`;
+    }
 
-    case "documents": return `
-      <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
-        ${personalPhotoDocument(emp)}
-        ${sectionTitle("البطاقة الوطنية")}
-        ${field("رقم البطاقة الوطنية", "civil_id", emp, {ltr:true, span:true})}
-        ${field("جهة الإصدار", "civil_id_issuer", emp)}
-        ${field("تاريخ الإصدار", "civil_id_issue_date", emp, {date:true})}
-        ${field("تاريخ النفاذ", "civil_id_expiry_date", emp, {date:true})}
-        ${field("محل الولادة", "civil_id_birthplace", emp)}
-        ${field("تاريخ الولادة", "civil_id_birthdate", emp, {date:true})}
-        ${field("الرقم العائلي", "civil_id_family_number", emp, {ltr:true})}
-        ${sectionTitle("مرفقات البطاقة الوطنية")}
-        ${sidedCardAttachment("الوجه الأمامي", "front", emp?.civil_id_front_path, emp?.civil_id_front_full_path, Boolean(emp?.id))}
-        ${sidedCardAttachment("الوجه الخلفي", "back", emp?.civil_id_back_path, emp?.civil_id_back_full_path, Boolean(emp?.id))}
-        ${sectionTitle("جواز السفر")}
-        ${field("رقم جواز السفر", "passport_no", emp, {ltr:true})}
-        ${field("نوع جواز السفر", "passport_type", emp, {type:"select", options:[["","—"],["P","P"],["D","D"],["S","S"]]})}
-        ${field("الاسم حسب الجواز", "passport_name", emp, {ltr:true})}
-        ${field("تاريخ الإصدار", "passport_issue_date", emp, {date:true})}
-        ${field("تاريخ النفاذ", "passport_expiry_date", emp, {date:true})}
-        ${sectionTitle("مرفقات جواز السفر")}
-        ${passportAttachments(emp)}
-        ${sectionTitle("بطاقة السكن")}
-        ${field("مكتب معلومات", "residence_card_issuer", emp)}
-        ${field("اسم رب الأسرة", "residence_head_name", emp)}
-        ${field("عنوان السكن الحالي", "residence_address", emp)}
-        ${field("رقم الاستمارة", "residence_form_no", emp, {ltr:true})}
-        ${field("رقم بطاقة السكن", "residence_card_no", emp, {ltr:true})}
-        ${field("تاريخ الإصدار", "residence_card_issue_date", emp, {date:true})}
-        ${sectionTitle("مرفقات بطاقة السكن")}
-        ${sidedCardAttachment("الوجه الأمامي", "front", emp?.residence_card_front_path, emp?.residence_card_front_full_path, Boolean(emp?.id), "residence")}
-        ${sidedCardAttachment("الوجه الخلفي", "back", emp?.residence_card_back_path, emp?.residence_card_back_full_path, Boolean(emp?.id), "residence")}
-        ${sectionTitle("البطاقة التموينية الالكترونية")}
-        ${field("رقم البطاقة التموينية", "ration_card_no", emp, {ltr:true})}
-        ${field("اسم رب الأسرة", "ration_center_name", emp)}
-        ${sectionTitle("مرفقات البطاقة التموينية")}
-        ${rationCardAttachments(emp)}
-        ${sectionTitle("باج دخول مطار بغداد")}
-        ${field("تاريخ الإصدار", "airport_badge_issue_date", emp, {date:true})}
-        ${field("تاريخ النفاذ", "airport_badge_expiry", emp, {date:true})}
-        ${field("رقم الهوية", "airport_badge_no", emp, {ltr:true, span:true})}
-        ${sectionTitle("مرفقات باج دخول مطار بغداد")}
-        ${sidedCardAttachment("الوجه الأمامي", "front", emp?.airport_badge_front_path, emp?.airport_badge_front_full_path, Boolean(emp?.id), "airport")}
-        ${sidedCardAttachment("الوجه الخلفي", "back", emp?.airport_badge_back_path, emp?.airport_badge_back_full_path, Boolean(emp?.id), "airport")}
-        ${sectionTitle("هوية وزارة النقل")}
-        ${field("تاريخ الإصدار", "ministry_badge_issue_date", emp, {date:true})}
-        ${field("تاريخ النفاذ", "ministry_badge_expiry", emp, {date:true})}
-        ${field("رقم الهوية", "ministry_badge_no", emp, {ltr:true, span:true})}
-        ${sectionTitle("مرفقات هوية وزارة النقل")}
-        ${sidedCardAttachment("الوجه الأمامي", "front", emp?.ministry_badge_front_path, emp?.ministry_badge_front_full_path, Boolean(emp?.id), "ministry")}
-        ${sidedCardAttachment("الوجه الخلفي", "back", emp?.ministry_badge_back_path, emp?.ministry_badge_back_full_path, Boolean(emp?.id), "ministry")}
-      </div>`;
+    case "documents": return documentsTabHtml(emp);
 
     case "family": return `
       <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
@@ -807,6 +987,103 @@ function tabContent(tab, emp) {
   }
 }
 
+function parseJsonList(value) {
+  try { const list = JSON.parse(value ?? "[]"); return Array.isArray(list) ? list : []; } catch { return []; }
+}
+
+function updateTabCounts() {
+  const panel = document.getElementById("emp-panel");
+  const draft = _panelDraft;
+  if (!panel || !draft) return;
+  const alerts = documentSections(draft).filter(section => ["bad", "warn"].includes(section.status.tone)).length;
+  const counts = {
+    documents: alerts ? { text: `${alerts} تنبيه`, warn: true } : null,
+    family: (() => {
+      const total = spouseListFromEmployee(draft).length + parseJsonList(draft.family_members).length;
+      return total ? { text: String(total) } : null;
+    })(),
+    vehicle: (() => {
+      const total = parseJsonList(draft.vehicles).length;
+      return total ? { text: String(total) } : null;
+    })(),
+  };
+  panel.querySelectorAll(".emp-tab-count").forEach(badge => {
+    const count = counts[badge.dataset.countFor];
+    badge.hidden = !count;
+    badge.textContent = count?.text ?? "";
+    badge.classList.toggle("is-warn", Boolean(count?.warn));
+  });
+}
+
+function closeEmployeeMenus(except = null) {
+  document.querySelectorAll("#emp-panel .emp-tile.menu-open, #emp-panel .emp-avatar-wrap.menu-open").forEach(holder => {
+    if (holder !== except) holder.classList.remove("menu-open");
+  });
+}
+
+function setSectionOpen(section, open) {
+  section.classList.toggle("open", open);
+  section.querySelector(":scope > .emp-sec-head")?.setAttribute("aria-expanded", String(open));
+  _sectionState.set(`${_activeTab}:${section.dataset.sec}`, open);
+}
+
+function handlePanelUiClick(event) {
+  const target = event.target;
+  const menuToggle = target.closest(".emp-tile-more, #emp-avatar-btn");
+  if (menuToggle) {
+    const holder = menuToggle.closest(".emp-tile, .emp-avatar-wrap");
+    closeEmployeeMenus(holder);
+    holder?.classList.remove("menu-up");
+    holder?.classList.toggle("menu-open");
+    const menu = holder?.querySelector(".emp-tile-menu");
+    const content = document.getElementById("tab-content");
+    if (menu && content && holder.classList.contains("menu-open")
+        && menu.getBoundingClientRect().bottom > content.getBoundingClientRect().bottom) {
+      holder.classList.add("menu-up");
+    }
+    return;
+  }
+  const viewer = target.closest(".emp-view-attachment");
+  if (viewer) openAttachmentViewer(viewer.dataset.url, viewer.dataset.kind, viewer.dataset.title);
+  const thumb = target.closest(".emp-tile-thumb");
+  if (thumb) thumb.closest(".emp-tile")?.querySelector(".emp-view-attachment")?.click();
+  closeEmployeeMenus();
+  if (target.closest("input,select,textarea")) return;
+
+  const head = target.closest(".emp-sec-head");
+  if (head) { const section = head.closest(".emp-sec"); setSectionOpen(section, !section.classList.contains("open")); return; }
+
+  const jump = target.closest("[data-jump]");
+  if (jump) {
+    const section = document.getElementById(`emp-sec-${jump.dataset.jump}`);
+    if (!section) return;
+    setSectionOpen(section, true);
+    const content = document.getElementById("tab-content");
+    const chipsHeight = content.querySelector(".emp-chips")?.offsetHeight ?? 0;
+    const offset = section.getBoundingClientRect().top - content.getBoundingClientRect().top;
+    content.scrollTo({ top: content.scrollTop + offset - chipsHeight - 8, behavior: "smooth" });
+    section.classList.add("is-flash");
+    setTimeout(() => section.classList.remove("is-flash"), 900);
+    return;
+  }
+
+  const all = target.closest("[data-sections-all]");
+  if (all) {
+    document.querySelectorAll("#tab-content .emp-sec").forEach(section => setSectionOpen(section, all.dataset.sectionsAll === "open"));
+    return;
+  }
+
+  const rowHeadEl = target.closest(".emp-row-head");
+  if (rowHeadEl && !target.closest("button")) {
+    const row = rowHeadEl.closest(".emp-row");
+    const collapsed = !row.classList.contains("collapsed");
+    row.classList.toggle("collapsed", collapsed);
+    const summary = row.querySelector(".emp-row-summary");
+    if (summary) summary.textContent = rowSummaryFromInputs(row);
+    if (row.dataset.rowKey) _sectionState.set(row.dataset.rowKey, !collapsed);
+  }
+}
+
 // ── Panel render ────────────────────────────────────────────────────────────
 function renderPanel(emp) {
   const panel = document.getElementById("emp-panel");
@@ -817,9 +1094,13 @@ function renderPanel(emp) {
     <!-- Header -->
     <div style="flex-shrink:0;padding:14px 20px;border-bottom:1px solid #2d2d2d;
                 display:flex;align-items:center;justify-content:space-between">
-      <div>
-        <h3 style="font-weight:700;font-size:15px">${isNew ? "إضافة موظف جديد" : escHtml(emp.full_name)}</h3>
-        ${!isNew ? `<p style="font-size:11px;color:#6b7280">${escHtml(emp.job_title??"")} ${emp.department ? "· "+escHtml(emp.department) : ""}</p>` : ""}
+      <div style="display:flex;align-items:center;gap:12px;min-width:0">
+        <div id="emp-panel-photo">${headerPhotoHtml(draft)}</div>
+        <div style="min-width:0">
+          <h3 style="font-weight:700;font-size:15px">${isNew ? "إضافة موظف جديد" : escHtml(emp.full_name)}</h3>
+          ${!isNew ? `<p style="font-size:11px;color:#6b7280">${escHtml(emp.job_title??"")} ${emp.department ? "· "+escHtml(emp.department) : ""}</p>` : ""}
+        </div>
+        ${!isNew ? `<span class="emp-pill ${emp.is_active ? "ok" : "none"}">${emp.is_active ? "نشط" : "غير نشط"}</span>` : ""}
       </div>
       <button id="panel-close" style="color:#9ca3af;font-size:20px;background:none;border:none;cursor:pointer">✕</button>
     </div>
@@ -834,7 +1115,7 @@ function renderPanel(emp) {
           background:${_activeTab===t.id ? "rgba(36,169,255,.14)" : "transparent"};
           color:${_activeTab===t.id ? "#24a9ff" : "#9ca3af"};
           font-weight:${_activeTab===t.id ? "700" : "400"}">
-          ${t.label}
+          ${t.label}<span class="emp-tab-count" data-count-for="${t.id}" hidden></span>
         </button>`).join("")}
     </div>
 
@@ -846,6 +1127,7 @@ function renderPanel(emp) {
     <!-- Footer -->
     <div style="flex-shrink:0;padding:12px 20px;border-top:1px solid #2d2d2d;display:flex;gap:10px">
       <button id="panel-save" class="btn-primary" style="flex:1">حفظ</button>
+      <span id="panel-dirty" class="emp-dirty" hidden>● تغييرات غير محفوظة</span>
       ${!isNew ? `<button id="panel-print-documents" class="btn-secondary" style="display:${_activeTab === "documents" ? "inline-flex" : "none"}">طباعة المستمسكات</button>` : ""}
       ${!isNew ? `<button id="panel-delete" class="btn-danger">حذف</button>` : ""}
       <button id="panel-cancel" class="btn-secondary">إلغاء</button>
@@ -868,10 +1150,18 @@ function renderPanel(emp) {
         printDocumentsButton.style.display = _activeTab === "documents" ? "inline-flex" : "none";
       }
       attachTabEvents(emp);
+      updateTabCounts();
     });
   });
 
+  if (!panel.dataset.sectionUiBound) {
+    panel.addEventListener("click", handlePanelUiClick);
+    panel.addEventListener("keydown", event => { if (event.key === "Escape") closeEmployeeMenus(); });
+    panel.dataset.sectionUiBound = "1";
+  }
+  bindHeaderPhoto(emp);
   attachTabEvents(emp);
+  updateTabCounts();
   panel.addEventListener("input", markPanelDirty);
   panel.addEventListener("change", markPanelDirty);
 
@@ -1016,6 +1306,15 @@ function applyEmployeePermissions(panel, isNew) {
     panel.querySelector("#btn-upload-photo")?.remove();
   }
   if (!can(_currentUser, "documents.print")) panel.querySelector("#panel-print-documents")?.remove();
+  panel.querySelectorAll(".emp-tile-menu").forEach(menu => {
+    if (!menu.querySelector("button")) { menu.closest(".emp-tile")?.querySelector(".emp-tile-more")?.remove(); menu.remove(); }
+  });
+  const avatarMenu = panel.querySelector(".emp-avatar-menu");
+  if (avatarMenu && !avatarMenu.querySelector("button")) {
+    avatarMenu.remove();
+    const avatar = panel.querySelector("#emp-avatar-btn");
+    if (avatar) { avatar.disabled = true; avatar.querySelector(".emp-avatar-edit")?.remove(); }
+  }
 }
 
 function attachTabEvents(emp) {
@@ -1024,34 +1323,7 @@ function attachTabEvents(emp) {
 
   if (_activeTab === "documents" && emp) {
     api.auditDocumentView(emp.id, "employee_documents").catch(() => {});
-    bindAttachmentDownloadButtons(panel);
-    panel.querySelector("#btn-delete-photo")?.addEventListener("click", async event => {
-      const button = event.currentTarget;
-      try {
-        if (!(await confirmAction("تأكيد حذف الصورة الشخصية؟"))) return;
-        button.disabled = true;
-        await api.deleteEmployeePhoto(emp.id);
-        await refreshDocumentAttachments(emp.id);
-        showToast("تم حذف الصورة الشخصية");
-      } catch (error) { showToast(error?.message ?? String(error), "error"); }
-      finally { button.disabled = false; }
-    });
-    panel.querySelector("#btn-upload-photo")?.addEventListener("click", async () => {
-      try {
-        collectVisiblePanelFields(panel);
-        const { open } = await import("@tauri-apps/plugin-dialog");
-        const selected = await open({
-          multiple: false,
-          filters: [{ name: "الصورة الشخصية", extensions: ["jpg", "jpeg", "png", "webp"] }],
-        });
-        if (!selected) return;
-        if (!(await confirmAction("تأكيد رفع الصورة الشخصية؟"))) return;
-        await api.uploadEmployeePhoto(emp.id, selected);
-        showToast("تم رفع الصورة الشخصية");
-        await refreshDocumentAttachments(emp.id);
-      } catch (err) { showToast(err?.message ?? String(err || "خطأ في رفع الصورة"), "error"); }
-    });
-
+    bindAttachmentDownloadButtons(document.getElementById("tab-content"));
     panel.querySelectorAll(".btn-upload-sided-card").forEach(btn => {
       btn.addEventListener("click", async () => {
         try {
@@ -1172,7 +1444,7 @@ function attachTabEvents(emp) {
       addSpouseRow(config);
     });
     renderFamilyList(emp);
-    bindAttachmentDownloadButtons(panel);
+    bindAttachmentDownloadButtons(document.getElementById("tab-content"));
     panel.querySelector("#btn-add-member")?.addEventListener("click", () => {
       markPanelDirty();
       addFamilyRow();
@@ -1220,8 +1492,18 @@ async function refreshDocumentAttachments(employeeId) {
     ration_card_attachment_paths: updated.ration_card_attachment_paths,
     ration_card_attachment_full_paths: updated.ration_card_attachment_full_paths,
   };
-  document.getElementById("tab-content").innerHTML = tabContent("documents", _panelDraft);
-  attachTabEvents(updated);
+  const photoHolder = document.getElementById("emp-panel-photo");
+  if (photoHolder) {
+    photoHolder.innerHTML = headerPhotoHtml(_panelDraft);
+    bindHeaderPhoto(updated);
+  }
+  if (_activeTab === "documents") {
+    document.getElementById("tab-content").innerHTML = tabContent("documents", _panelDraft);
+    attachTabEvents(updated);
+  } else {
+    applyEmployeePermissions(document.getElementById("emp-panel"), false);
+  }
+  updateTabCounts();
 }
 
 async function refreshFamilyAttachments(employeeId) {
@@ -1334,35 +1616,28 @@ function renderSpouseList(emp) {
 function spouseAttachmentCard(label, side, spouse, spouseIndex, maxSpouses = 4) {
   const path = side === "front" ? spouse?.national_card_front_path : spouse?.national_card_back_path;
   const fullPath = side === "front" ? spouse?.national_card_front_full_path : spouse?.national_card_back_full_path;
-  const name = path?.split(/[/\\]/).pop();
-  const extension = name?.split(".").pop()?.toLowerCase();
-  const assetUrl = fullPath ? convertFileSrc(fullPath) : "";
-  const preview = assetUrl && ["jpg", "jpeg", "png", "webp"].includes(extension)
-    ? `<img data-scan-path="${escHtml(path)}" src="${escHtml(assetUrl)}" alt="${escHtml(label)}" style="display:block;max-width:100%;height:auto;border:1px solid #2d2d2d;border-radius:6px;margin:0 auto 8px" />`
-    : assetUrl && extension === "pdf"
-      ? `<iframe src="${escHtml(assetUrl)}" title="${escHtml(label)}" style="display:block;width:100%;height:160px;background:#fff;border:1px solid #2d2d2d;border-radius:6px;margin-bottom:8px"></iframe>`
-      : "";
   const canUpload = Boolean(_panelDraft?.id) && !_panelDirty && Number.isInteger(spouseIndex) && spouseIndex < maxSpouses;
-  return `<div style="padding:9px;background:#111827;border:1px solid #2d2d2d;border-radius:8px">
-    <p style="font-size:11px;font-weight:700;color:#d1d5db;margin-bottom:5px">${label}</p>
-    ${preview}
-    <p style="font-size:10px;color:${name ? "#9ca3af" : "#6b7280"};word-break:break-all;margin-bottom:8px">${name ? escHtml(name) : "لم يرفع ملف"}</p>
-    ${canUpload ? `<div style="display:flex;gap:6px;flex-wrap:wrap">
-      <button type="button" class="btn-secondary text-xs px-2 py-1 btn-upload-spouse-card" data-spouse-index="${spouseIndex}" data-side="${side}">${name ? "استبدال" : "رفع"}</button>
-      ${name && can(_currentUser, "documents.download") ? `<button type="button" class="btn-secondary text-xs px-2 py-1 btn-download-attachment" data-path="${escHtml(path)}">تحميل</button>` : ""}
-      ${name ? `<button type="button" class="btn-danger text-xs px-2 py-1 btn-delete-spouse-card" data-spouse-index="${spouseIndex}" data-side="${side}">حذف</button>` : ""}
-    </div>` : `<p style="font-size:10px;color:#6b7280">احفظ سجل الموظف أولاً</p>`}
-  </div>`;
+  const attrs = `data-spouse-index="${spouseIndex}" data-side="${side}"`;
+  return attachmentTile({
+    label, path, fullPath, canManage: canUpload,
+    upload: { cls: "btn-upload-spouse-card", attrs },
+    remove: { cls: "btn-delete-spouse-card", attrs },
+    lockedNote: "احفظ أولاً",
+  });
 }
 
 function spouseRowHtml(spouse = {}, index = Date.now(), config = { itemLabel: "زوجة", defaultGender: "أنثى", max: 4 }) {
   const number = typeof index === "number" && index < 100 ? index + 1 : "";
-  return `<div class="spouse-row" data-national-card-front-path="${escHtml(spouse.national_card_front_path ?? "")}" data-national-card-back-path="${escHtml(spouse.national_card_back_path ?? "")}" style="background:#181818;border:1px solid #2d2d2d;border-radius:8px;
-    padding:10px;margin-bottom:8px;display:grid;grid-template-columns:1fr 1fr;gap:8px">
-    <div style="grid-column:span 2;display:flex;justify-content:space-between;align-items:center">
-      <p style="font-size:11px;color:#24a9ff;font-weight:700">${config.itemLabel} رقم ${number}</p>
-      <button class="btn-remove-spouse btn-danger" style="font-size:11px;padding:2px 8px">حذف</button>
-    </div>
+  const existing = typeof index === "number" && index < 100;
+  const rowKey = existing ? `row:spouse:${index}` : "";
+  const attached = [spouse.national_card_front_path, spouse.national_card_back_path].filter(Boolean).length;
+  return `<div class="spouse-row emp-row${rowOpenClass(rowKey, existing)}" data-row-key="${rowKey}" data-national-card-front-path="${escHtml(spouse.national_card_front_path ?? "")}" data-national-card-back-path="${escHtml(spouse.national_card_back_path ?? "")}">
+    ${rowHead({
+      title: `${config.itemLabel} ${number ? `رقم ${number}` : "جديدة"}`,
+      summary: personSummary({ name: spouse.name, gender: spouse.gender || config.defaultGender, birthdate: spouse.birthdate }),
+      extra: `<span class="emp-pill ${attached === 2 ? "ok" : "none"}">المرفقات ${attached}/2</span>`,
+      removeClass: "btn-remove-spouse",
+    })}
     <div style="grid-column:span 2">
       <p style="font-size:10px;color:#6b7280;margin-bottom:3px">رقم البطاقة الموحدة</p>
       <input class="input-field sp-civil" dir="ltr" value="${escHtml(spouse.civil_id??"")}"/>
@@ -1413,9 +1688,9 @@ function spouseRowHtml(spouse = {}, index = Date.now(), config = { itemLabel: "�
       <p style="font-size:10px;color:#6b7280;margin-bottom:3px">تاريخ الزواج</p>
       <input class="input-field sp-marriage" type="date" value="${spouse.marriage_date??""}" />
     </div>
-    <div style="grid-column:span 2;border-top:1px solid #2d2d2d;padding-top:8px;margin-top:2px">
-      <p style="font-size:11px;color:#24a9ff;font-weight:700;margin-bottom:8px">مرفقات البطاقة الوطنية</p>
-      <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px">
+    <div style="grid-column:span 2">
+      <p class="emp-att-title">مرفقات البطاقة الوطنية</p>
+      <div class="emp-tiles">
         ${spouseAttachmentCard("الوجه الأمامي", "front", spouse, index, config.max)}
         ${spouseAttachmentCard("الوجه الخلفي", "back", spouse, index, config.max)}
       </div>
@@ -1430,6 +1705,7 @@ function addSpouseRow(config = spouseSectionConfig(_panelDraft ?? {}) ?? { defau
   const div = document.createElement("div");
   div.innerHTML = spouseRowHtml({ gender: config.defaultGender }, container.querySelectorAll(".spouse-row").length, config);
   const row = div.firstElementChild;
+  row.classList.remove("collapsed");
   row.querySelector(".btn-remove-spouse").addEventListener("click", async () => {
     if (!(await confirmAction("تأكيد حذف الزوجة؟"))) return;
     markPanelDirty();
@@ -1505,34 +1781,27 @@ function renderFamilyList(emp) {
 function familyAttachmentCard(label, side, member, memberIndex) {
   const path = side === "front" ? member?.national_card_front_path : member?.national_card_back_path;
   const fullPath = side === "front" ? member?.national_card_front_full_path : member?.national_card_back_full_path;
-  const name = path?.split(/[/\\]/).pop();
-  const extension = name?.split(".").pop()?.toLowerCase();
-  const assetUrl = fullPath ? convertFileSrc(fullPath) : "";
-  const preview = assetUrl && ["jpg", "jpeg", "png", "webp"].includes(extension)
-    ? `<img data-scan-path="${escHtml(path)}" src="${escHtml(assetUrl)}" alt="${escHtml(label)}" style="display:block;max-width:100%;height:auto;border:1px solid #2d2d2d;border-radius:6px;margin:0 auto 8px" />`
-    : assetUrl && extension === "pdf"
-      ? `<iframe src="${escHtml(assetUrl)}" title="${escHtml(label)}" style="display:block;width:100%;height:160px;background:#fff;border:1px solid #2d2d2d;border-radius:6px;margin-bottom:8px"></iframe>`
-      : "";
   const canUpload = Boolean(_panelDraft?.id) && Number.isInteger(memberIndex) && memberIndex < 100;
-  return `<div style="padding:9px;background:#111827;border:1px solid #2d2d2d;border-radius:8px">
-    <p style="font-size:11px;font-weight:700;color:#d1d5db;margin-bottom:5px">${label}</p>
-    ${preview}
-    <p style="font-size:10px;color:${name ? "#9ca3af" : "#6b7280"};word-break:break-all;margin-bottom:8px">${name ? escHtml(name) : "لم يرفع ملف"}</p>
-    ${canUpload ? `<div style="display:flex;gap:6px;flex-wrap:wrap">
-      <button type="button" class="btn-secondary text-xs px-2 py-1 btn-upload-family-card" data-member-index="${memberIndex}" data-side="${side}">${name ? "استبدال" : "رفع"}</button>
-      ${name && can(_currentUser, "documents.download") ? `<button type="button" class="btn-secondary text-xs px-2 py-1 btn-download-attachment" data-path="${escHtml(path)}">تحميل</button>` : ""}
-      ${name ? `<button type="button" class="btn-danger text-xs px-2 py-1 btn-delete-family-card" data-member-index="${memberIndex}" data-side="${side}">حذف</button>` : ""}
-    </div>` : `<p style="font-size:10px;color:#6b7280">احفظ سجل الموظف أولاً</p>`}
-  </div>`;
+  const attrs = `data-member-index="${memberIndex}" data-side="${side}"`;
+  return attachmentTile({
+    label, path, fullPath, canManage: canUpload,
+    upload: { cls: "btn-upload-family-card", attrs },
+    remove: { cls: "btn-delete-family-card", attrs },
+    lockedNote: "احفظ أولاً",
+  });
 }
 
 function familyRowHtml(m = {}, i = Date.now()) {
-  return `<div class="family-row" data-national-card-front-path="${escHtml(m.national_card_front_path ?? "")}" data-national-card-back-path="${escHtml(m.national_card_back_path ?? "")}" style="background:#181818;border:1px solid #2d2d2d;border-radius:8px;
-    padding:10px;margin-bottom:8px;display:grid;grid-template-columns:1fr 1fr;gap:8px">
-    <div style="grid-column:span 2;display:flex;justify-content:space-between;align-items:center">
-      <p style="font-size:11px;color:#24a9ff;font-weight:700">فرد رقم ${typeof i === "number" && i < 100 ? i+1 : ""}</p>
-      <button class="btn-remove-member btn-danger" style="font-size:11px;padding:2px 8px">حذف</button>
-    </div>
+  const existing = typeof i === "number" && i < 100;
+  const rowKey = existing ? `row:family:${i}` : "";
+  const attached = [m.national_card_front_path, m.national_card_back_path].filter(Boolean).length;
+  return `<div class="family-row emp-row${rowOpenClass(rowKey, existing)}" data-row-key="${rowKey}" data-national-card-front-path="${escHtml(m.national_card_front_path ?? "")}" data-national-card-back-path="${escHtml(m.national_card_back_path ?? "")}">
+    ${rowHead({
+      title: existing ? `فرد رقم ${i + 1}` : "فرد جديد",
+      summary: personSummary({ name: m.name, gender: m.gender, birthdate: m.birthdate }),
+      extra: `<span class="emp-pill ${attached === 2 ? "ok" : "none"}">المرفقات ${attached}/2</span>`,
+      removeClass: "btn-remove-member",
+    })}
     <div style="grid-column:span 2">
       <p style="font-size:10px;color:#6b7280;margin-bottom:3px">رقم البطاقة الموحدة</p>
       <input class="input-field fm-civil" dir="ltr" value="${escHtml(m.civil_id??"")}"/>
@@ -1575,9 +1844,9 @@ function familyRowHtml(m = {}, i = Date.now()) {
       <p style="font-size:10px;color:#6b7280;margin-bottom:3px">تاريخ الولادة</p>
       <input class="input-field fm-birthdate" type="date" value="${m.birthdate??""}" />
     </div>
-    <div style="grid-column:span 2;border-top:1px solid #2d2d2d;padding-top:8px;margin-top:2px">
-      <p style="font-size:11px;color:#24a9ff;font-weight:700;margin-bottom:8px">مرفقات البطاقة الوطنية</p>
-      <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px">
+    <div style="grid-column:span 2">
+      <p class="emp-att-title">مرفقات البطاقة الوطنية</p>
+      <div class="emp-tiles">
         ${familyAttachmentCard("الوجه الأمامي", "front", m, i)}
         ${familyAttachmentCard("الوجه الخلفي", "back", m, i)}
       </div>
@@ -1615,13 +1884,19 @@ function renderVehicleList(emp) {
 }
 
 function vehicleRowHtml(vehicle = {}, index = Date.now()) {
-  const number = typeof index === "number" && index < 100 ? index + 1 : "";
-  return `<div class="vehicle-row" style="background:#181818;border:1px solid #2d2d2d;border-radius:8px;
-    padding:10px;margin-bottom:10px;display:grid;grid-template-columns:1fr 1fr;gap:8px">
-    <div style="grid-column:span 2;display:flex;justify-content:space-between;align-items:center">
-      <p style="font-size:11px;color:#24a9ff;font-weight:700">مركبة رقم ${number}</p>
-      <button type="button" class="btn-remove-vehicle btn-danger" style="font-size:11px;padding:2px 8px">حذف</button>
-    </div>
+  const existing = typeof index === "number" && index < 100;
+  const rowKey = existing ? `row:vehicle:${index}` : "";
+  const status = documentStatus({ values: [vehicle.annual_no], expiry: vehicle.expiry_date, maxDays: 30, attached: 0, expected: 0 });
+  const annual = vehicle.expiry_date
+    ? `<span class="emp-pill ${status.tone}">السنوية: ${["bad", "warn"].includes(status.tone) ? status.label : formatDate(vehicle.expiry_date)}</span>`
+    : "";
+  return `<div class="vehicle-row emp-row${rowOpenClass(rowKey, existing)}" data-row-key="${rowKey}">
+    ${rowHead({
+      title: existing ? `مركبة رقم ${index + 1}` : "مركبة جديدة",
+      summary: vehicleSummary(vehicle),
+      extra: annual,
+      removeClass: "btn-remove-vehicle",
+    })}
     ${vehicleInput("رقم اللوحة", "vehicle-plate", vehicle.plate, true)}
     ${vehicleInput("العلامة التجارية للمركبة", "vehicle-brand", vehicle.brand)}
     ${vehicleInput("نوع المركبة", "vehicle-type", vehicle.type)}
