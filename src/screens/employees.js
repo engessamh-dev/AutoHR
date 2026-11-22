@@ -462,10 +462,18 @@ function daysUntil(dateStr) {
   return Math.round((date - today) / 86400000);
 }
 
+// Arabic number agreement: يومين، 3–10 أيام، 11+ يوماً
+function arabicDays(count) {
+  if (count === 1) return "يوم واحد";
+  if (count === 2) return "يومين";
+  const tens = count % 100;
+  return tens >= 3 && tens <= 10 ? `${count} أيام` : `${count} يوماً`;
+}
+
 function documentStatus({ values, expiry, maxDays, attached, expected }) {
   const days = daysUntil(expiry);
   if (days !== null && days < 0) return { tone: "bad", label: "منتهٍ" };
-  if (days !== null && days <= maxDays) return { tone: "warn", label: days === 0 ? "ينتهي اليوم" : `ينتهي خلال ${days} يوم` };
+  if (days !== null && days <= maxDays) return { tone: "warn", label: days === 0 ? "ينتهي اليوم" : days === 1 ? "ينتهي غداً" : `ينتهي خلال ${arabicDays(days)}` };
   const hasData = values.some(value => String(value ?? "").trim());
   if (!hasData && attached === 0) return { tone: "none", label: "لا توجد بيانات" };
   if (attached < expected) return { tone: "none", label: "مرفق ناقص" };
