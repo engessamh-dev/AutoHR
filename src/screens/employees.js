@@ -86,8 +86,7 @@ export async function renderEmployees(container, user, ctx) {
   if (ctx?.openEmployeeId != null) {
     const target = _employees.find(e => Number(e.id) === Number(ctx.openEmployeeId));
     if (target) {
-      openPanel(target);
-      if (ctx.openEmployeeTab) document.querySelector(`#emp-panel .tab-btn[data-tab="${ctx.openEmployeeTab}"]`)?.click();
+      openPanel(target, ctx.openEmployeeTab ?? "basic");
     }
   }
 }
@@ -140,8 +139,8 @@ function renderTable() {
     }));
 }
 
-function openPanel(emp) {
-  _activeTab = "basic";
+function openPanel(emp, tab = "basic") {
+  _activeTab = TABS.some(t => t.id === tab) ? tab : "basic";
   _panelDraft = emp ? { ...emp } : { is_active: 1, spouses: "[]", family_members: "[]", vehicles: "[]" };
   _panelDirty = false;
   document.getElementById("emp-panel").style.transform = "translateX(0)";
