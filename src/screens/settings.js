@@ -49,6 +49,26 @@ function openBackupProgress({ title = "إنشاء نسخة احتياطية", me
     close() {
       overlay.remove();
     },
+    // Keeps the result on screen (with the full file path) until the user closes it.
+    done(message, path = "") {
+      this.update({ percent: 100, message });
+      const box = overlay.firstElementChild;
+      if (path) {
+        const pathLine = document.createElement("p");
+        pathLine.dir = "ltr";
+        pathLine.style.cssText = "font-size:12px;color:#e5e7eb;background:#111827;border:1px solid #374151;border-radius:6px;padding:8px;margin:10px 0 0;word-break:break-all;user-select:text";
+        pathLine.textContent = path;
+        box.append(pathLine);
+      }
+      const ok = document.createElement("button");
+      ok.type = "button";
+      ok.className = "btn-primary";
+      ok.style.marginTop = "14px";
+      ok.textContent = "تم";
+      ok.addEventListener("click", () => overlay.remove());
+      box.append(ok);
+      ok.focus();
+    },
   };
 }
 
@@ -357,13 +377,12 @@ export async function renderSettings(container, user, ctx) {
     try {
       unlisten = await listen("backup-progress", event => progress.update(event.payload));
       const path = await api.exportBackupTo(selected, password);
-      progress.update({ percent: 100, message: "تم التصدير والتحقق" });
-      showToast(`تم تصدير النسخة والتحقق منها: ${path}`);
+      progress.done("تم تصدير النسخة والتحقق منها بنجاح. مكان الملف:", path);
     } catch (err) {
       showToast(err?.message ?? String(err), "error");
+      progress.close();
     } finally {
       if (unlisten) unlisten();
-      setTimeout(() => progress.close(), 700);
     }
   });
 
@@ -379,13 +398,12 @@ export async function renderSettings(container, user, ctx) {
     try {
       unlisten = await listen("backup-progress", event => progress.update(event.payload));
       const backup = await api.createBackup(password);
-      progress.update({ percent: 100, message: "اكتمل إنشاء النسخة الاحتياطية" });
-      showToast(`تم إنشاء النسخة: ${backup}`);
+      progress.done("اكتمل إنشاء النسخة الاحتياطية والتحقق منها. مكان الملف:", backup);
     } catch (err) {
       showToast(err?.message ?? "خطأ", "error");
+      progress.close();
     } finally {
       if (unlisten) unlisten();
-      setTimeout(() => progress.close(), 700);
     }
   });
   container.querySelector("#btn-save-auto-backup")?.addEventListener("click", async () => {
