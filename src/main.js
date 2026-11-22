@@ -322,8 +322,8 @@ async function enterApp(user) {
 }
 
 // ── Login messages ─────────────────────────────────────────────────────────
-// One fixed slot under the Arabic subtitle (in place of the English company line),
-// so a message never covers the fields, the login button or the "forgot password" link.
+// One fixed slot at the bottom of the card, under the unit name, so a message
+// never covers the fields, the login button or the "forgot password" link.
 let loginLockoutTimer = null;
 let loginBusy = false;
 
@@ -333,7 +333,6 @@ function showLoginMessage(text, kind = "error", field = null) {
   slot.dataset.kind = kind;
   slot.setAttribute("role", kind === "error" ? "alert" : "status");
   slot.classList.remove("hidden");
-  document.querySelector(".login-subtitle-en")?.classList.add("invisible");
   document.querySelectorAll("#login-username, #login-password").forEach(input => {
     input.classList.toggle("login-field-invalid", kind === "error" && input.id === `login-${field}`);
   });
@@ -344,7 +343,6 @@ function clearLoginMessage() {
   const slot = document.getElementById("login-error");
   slot.classList.add("hidden");
   slot.textContent = "";
-  document.querySelector(".login-subtitle-en")?.classList.remove("invisible");
   document.querySelectorAll(".login-field-invalid").forEach(input => input.classList.remove("login-field-invalid"));
 }
 

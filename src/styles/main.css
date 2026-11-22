@@ -719,15 +719,14 @@
 .about-facts dd{color:#e5e7eb;margin:0}
 
 /* ── Login message slot ────────────────────────────────────────────────── */
-/* Sits under the Arabic subtitle, in the space of the English company line
-   (hidden while a message shows), so nothing moves and no field or button
-   is covered. Sized from the artboard so it scales with it. */
+/* Sits at the bottom of the login card, under the unit name, in otherwise
+   empty space, so nothing moves and no field or button is covered.
+   Sized from the artboard so it scales with it. */
 .login-artboard{container-type:inline-size}
-.login-message{position:absolute;top:38.4%;left:37.4%;width:25.2%;height:3.1%;z-index:3;display:flex;align-items:center;justify-content:center;gap:.4em;margin:0;padding:0 .8em;border-radius:.45em;font-size:clamp(.62rem,.98cqw,.85rem);line-height:1.2;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;text-align:center;font-family:"Segoe UI","Cairo","Noto Sans Arabic",Tahoma,Arial,sans-serif;border:1px solid rgba(248,113,113,.45);background:rgba(60,12,18,.95);color:#fecaca}
+.login-message{position:absolute;top:80.6%;left:37.4%;width:25.2%;height:4.2%;z-index:3;display:flex;align-items:center;justify-content:center;gap:.4em;margin:0;padding:0 .8em;border-radius:.45em;font-size:clamp(.62rem,.98cqw,.85rem);line-height:1.2;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;text-align:center;font-family:"Segoe UI","Cairo","Noto Sans Arabic",Tahoma,Arial,sans-serif;border:1px solid rgba(248,113,113,.45);background:rgba(60,12,18,.95);color:#fecaca}
 .login-message.hidden{display:none}
 .login-message[data-kind="info"]{border-color:rgba(56,189,248,.4);background:rgba(4,30,58,.96);color:#bae6fd}
 .login-message[data-kind="caps"]{border-color:rgba(251,191,36,.45);background:rgba(55,38,6,.95);color:#fde68a}
-.login-subtitle-en.invisible{visibility:hidden}
 input.login-hotspot.login-field-invalid{box-shadow:inset 0 0 0 2px rgba(248,113,113,.85);border-radius:.8rem}
 .login-hotspot-submit:disabled{cursor:not-allowed}
 
