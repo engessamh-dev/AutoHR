@@ -381,3 +381,37 @@ test("all employee image attachment types open reprocessing", async ({ page }) =
     await expect(page.locator(".smart-scanner-overlay")).toHaveCount(0);
   }
 });
+test("editor enhancement controls, left rotation and card ratio reach the render call", async ({ page }) => {
+  await run(page);
+  await page.locator("[data-rotate-left]").click();
+  await page.locator("[data-auto-enhance]").click();
+  await expect(page.locator("[data-auto-enhance]")).toHaveAttribute("aria-pressed", "true");
+  await page.locator('[data-adjust="contrast"]').fill("20");
+  await page.locator("[data-grayscale]").check();
+  await expect(page.locator("[data-card-aspect]")).not.toBeChecked();
+  await page.locator("[data-card-aspect]").check();
+  await expect(page.locator("[data-resolution]")).toBeVisible();
+  await expect(page.locator("[data-result]")).toBeVisible();
+  await save(page);
+  const render = await page.evaluate(() => window.calls.filter(c => c.command === "cmd_scanner_render").at(-1).args);
+  expect(render.rotation).toBe(270);
+  expect(render.adjustments).toEqual({ auto_levels: true, brightness: 0, contrast: 20, sharpness: 1, grayscale: true, card_aspect: true });
+});
+test("card uploads default to the fixed card ratio and reset restores it", async ({ page }) => {
+  await run(page, "uploadNationalCardAttachment", [1, "front", "synthetic.png"]);
+  await expect(page.locator("[data-card-aspect]")).toBeChecked();
+  await page.locator("[data-adjust-reset]").click();
+  await expect(page.locator("[data-card-aspect]")).toBeChecked();
+  await expect(page.locator("[data-auto-enhance]")).toHaveAttribute("aria-pressed", "false");
+});
+test("dragging a corner shows the magnifier and releasing hides it", async ({ page }) => {
+  await run(page);
+  const corner = page.locator('[data-corner="0"]');
+  const box = await corner.boundingBox();
+  await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
+  await page.mouse.down();
+  await page.mouse.move(box.x + 30, box.y + 30, { steps: 3 });
+  await expect(page.locator(".smart-scanner-loupe")).toBeVisible();
+  await page.mouse.up();
+  await expect(page.locator(".smart-scanner-loupe")).toBeHidden();
+});

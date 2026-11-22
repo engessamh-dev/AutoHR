@@ -1,7 +1,11 @@
-import { createLivePreview } from "./live-preview.js";
+import { createLivePreview, outputSize } from "./live-preview.js";
 import { invoke } from "@tauri-apps/api/core";
 
 export const isScannable = path => /\.(jpe?g|png|webp)$/i.test(String(path));
+// ID-1 cards (national, residence, badges, family/spouse cards) default to the fixed card ratio.
+const isCardCommand = command => /national|residence|airport|ministry|family|spouse/i.test(String(command));
+const isCardPath = path => /\/(NationalCard|ResidenceCard|AirportBadge|MinistryBadge|Spouses|Family)\//.test(String(path));
+const LOW_RESOLUTION_SHORT_SIDE = 600;
 let active = false;
 const blobUrl = bytes => URL.createObjectURL(new Blob([new Uint8Array(bytes)], { type: "image/jpeg" }));
 
@@ -42,10 +46,12 @@ async function prepareScanner(args) {
   finally { view.close(); }
 }
 
-export async function scanDialog(input) {
+export async function scanDialog(input, { cardDefault = false } = {}) {
   const automaticDetection = import.meta.env.DEV && input.automatic_detection_available !== false;
   const originalUrl = blobUrl(input.preview);
   let processedUrl = null, rotation = 0, busy = false;
+  const neutralAdjustments = () => ({ auto_levels: false, brightness: 0, contrast: 0, sharpness: 0, grayscale: false, card_aspect: cardDefault });
+  let adjustments = neutralAdjustments();
   let corners = automaticDetection && input.reliable ? input.corners.map(p => [...p]) : [[0, 0], [input.width - 1, 0], [input.width - 1, input.height - 1], [0, input.height - 1]];
   return new Promise(resolve => {
     const view = modal(`<h2>تحديد حدود المرفق وتدويره</h2>
@@ -54,13 +60,25 @@ export async function scanDialog(input) {
         <label>تكبير <input data-zoom type="range" min="50" max="400" step="25" value="100"></label>
         <button type="button" class="btn-secondary" data-fit>ملاءمة الصورة</button>
         <button type="button" class="btn-secondary" data-reset>إعادة تعيين الحواف</button>
-        <button type="button" class="btn-secondary" data-rotate>تدوير الناتج 90°</button>
+        <button type="button" class="btn-secondary" data-rotate-left aria-label="تدوير الناتج 90° لليسار">↺ تدوير لليسار</button>
+        <button type="button" class="btn-secondary" data-rotate aria-label="تدوير الناتج 90° لليمين">↻ تدوير لليمين</button>
       </div>
+      <div class="smart-scanner-enhance" role="group" aria-label="تحسين الصورة">
+        <button type="button" class="btn-secondary" data-auto-enhance aria-pressed="false">✨ تحسين تلقائي</button>
+        <label>الإضاءة <input data-adjust="brightness" type="range" min="-60" max="60" step="5" value="0"></label>
+        <label>التباين <input data-adjust="contrast" type="range" min="-50" max="50" step="5" value="0"></label>
+        <label>الحدّة <input data-adjust="sharpness" type="range" min="0" max="3" step="1" value="0"></label>
+        <label class="smart-scanner-check"><input data-grayscale type="checkbox"> أبيض وأسود</label>
+        <label class="smart-scanner-check" title="يضبط الناتج على أبعاد البطاقة القياسية (85.6 × 54 مم) فلا تظهر مضغوطة أو ممطوطة"><input data-card-aspect type="checkbox" ${cardDefault ? "checked" : ""}> تثبيت أبعاد البطاقة</label>
+        <button type="button" class="btn-secondary" data-adjust-reset>إعادة الضبط</button>
+      </div>
+      <p data-resolution class="smart-scanner-warning" role="status" hidden></p>
       <div class="smart-scanner-previews">
         <section><h3>الأصل — حرّك الزوايا أو استخدم مفاتيح الأسهم</h3><div class="smart-scanner-scroll"><div class="smart-scanner-image">
           <img data-original alt="الصورة الأصلية بعد تصحيح اتجاه الكاميرا">
           <svg data-frame viewBox="0 0 ${input.width - 1} ${input.height - 1}" preserveAspectRatio="none" aria-label="حدود المستند"><g data-debug-overlay></g><polygon data-selected></polygon></svg>
           ${["أعلى اليسار", "أعلى اليمين", "أسفل اليمين", "أسفل اليسار"].map((label, i) => `<button type="button" class="smart-scanner-corner" data-corner="${i}" aria-label="زاوية ${label}"></button>`).join("")}
+          <canvas class="smart-scanner-loupe" width="150" height="150" aria-hidden="true" hidden></canvas>
         </div></div></section>
         <section><h3>معاينة النتيجة</h3><img data-result alt="المستند بعد القص وتصحيح المنظور" hidden></section>
       </div>
@@ -98,7 +116,7 @@ export async function scanDialog(input) {
       previewFrame = requestAnimationFrame(() => {
         previewFrame = null;
         if (!livePreview || !root.isConnected || busy) return;
-        const url = livePreview(corners, rotation);
+        const url = livePreview(corners, rotation, adjustments);
         if (!url) return;
         const result = root.querySelector("[data-result]");
         result.src = url; result.hidden = false;
@@ -112,8 +130,35 @@ export async function scanDialog(input) {
     original.addEventListener("load", initializePreview, { once: true });
     if (original.complete && original.naturalWidth) initializePreview();
     const invalidate = updatePreview;
+    const resolutionNote = root.querySelector("[data-resolution]");
+    const updateResolution = () => {
+      const { w, h } = outputSize(corners, adjustments.card_aspect);
+      const low = Math.min(w, h) < LOW_RESOLUTION_SHORT_SIDE;
+      resolutionNote.hidden = !low;
+      resolutionNote.textContent = low ? `تنبيه: دقة المرفق منخفضة (${w}×${h} بكسل) وقد تظهر الكتابة غير واضحة. يُفضّل تصوير المستند من مسافة أقرب.` : "";
+    };
+    const loupe = root.querySelector(".smart-scanner-loupe");
+    const showLoupe = index => {
+      const image = root.querySelector("[data-original]");
+      if (!image.naturalWidth) return;
+      const [x, y] = corners[index];
+      const factor = image.naturalWidth / input.width;
+      const span = 36; // natural preview pixels shown inside the loupe
+      const ctx = loupe.getContext("2d");
+      ctx.fillStyle = "#111"; ctx.fillRect(0, 0, loupe.width, loupe.height);
+      ctx.imageSmoothingEnabled = false;
+      ctx.drawImage(image, x * factor - span / 2, y * factor - span / 2, span, span, 0, 0, loupe.width, loupe.height);
+      ctx.strokeStyle = "#fbbf24"; ctx.lineWidth = 1;
+      ctx.beginPath(); ctx.moveTo(loupe.width / 2, 0); ctx.lineTo(loupe.width / 2, loupe.height); ctx.moveTo(0, loupe.height / 2); ctx.lineTo(loupe.width, loupe.height / 2); ctx.stroke();
+      loupe.style.left = `${x / (input.width - 1) * 100}%`;
+      loupe.style.top = `${y / (input.height - 1) * 100}%`;
+      loupe.classList.toggle("is-below", y / input.height < 0.3);
+      loupe.hidden = false;
+    };
+    const hideLoupe = () => { loupe.hidden = true; };
     const draw = () => {
       imageBox.classList.toggle("is-manual", manual);
+      updateResolution();
       debugDraw();
       root.querySelector("[data-selected]").setAttribute("points", corners.map(p => p.join(",")).join(" "));
       root.querySelectorAll("[data-corner]").forEach((button, i) => { button.style.left = `${corners[i][0] / (input.width - 1) * 100}%`; button.style.top = `${corners[i][1] / (input.height - 1) * 100}%`; });
@@ -134,15 +179,37 @@ export async function scanDialog(input) {
       rotation = (rotation + 90) % 360;
       updatePreview();
     });
+    root.querySelector("[data-rotate-left]").addEventListener("click", () => {
+      if (busy) return;
+      rotation = (rotation + 270) % 360;
+      updatePreview();
+    });
+    const autoButton = root.querySelector("[data-auto-enhance]");
+    const syncControls = () => {
+      autoButton.setAttribute("aria-pressed", String(adjustments.auto_levels));
+      root.querySelectorAll("[data-adjust]").forEach(slider => { slider.value = String(adjustments[slider.dataset.adjust]); });
+      root.querySelector("[data-grayscale]").checked = adjustments.grayscale;
+      root.querySelector("[data-card-aspect]").checked = adjustments.card_aspect;
+    };
+    const adjust = changes => { adjustments = { ...adjustments, ...changes }; syncControls(); updateResolution(); updatePreview(); };
+    autoButton.addEventListener("click", () => adjust(adjustments.auto_levels
+      ? { auto_levels: false }
+      : { auto_levels: true, sharpness: Math.max(1, adjustments.sharpness) }));
+    root.querySelectorAll("[data-adjust]").forEach(slider => slider.addEventListener("input", () => adjust({ [slider.dataset.adjust]: Number(slider.value) })));
+    root.querySelector("[data-grayscale]").addEventListener("change", event => adjust({ grayscale: event.target.checked }));
+    root.querySelector("[data-card-aspect]").addEventListener("change", event => adjust({ card_aspect: event.target.checked }));
+    root.querySelector("[data-adjust-reset]").addEventListener("click", () => adjust(neutralAdjustments()));
     root.querySelectorAll("[data-corner]").forEach((button, i) => {
-      const move = (x, y) => { manual = true; corners[i] = [Math.max(0, Math.min(input.width - 1, x)), Math.max(0, Math.min(input.height - 1, y))]; invalidate(); draw(); };
+      const move = (x, y) => { manual = true; corners[i] = [Math.max(0, Math.min(input.width - 1, x)), Math.max(0, Math.min(input.height - 1, y))]; invalidate(); draw(); showLoupe(i); };
       button.addEventListener("pointerdown", event => { if (!busy) { event.preventDefault(); button.focus({ preventScroll: true }); button.setPointerCapture(event.pointerId); } });
       button.addEventListener("pointermove", event => {
         if (busy || !button.hasPointerCapture(event.pointerId)) return;
         const rect = root.querySelector(".smart-scanner-image").getBoundingClientRect();
         move((event.clientX - rect.left) / rect.width * (input.width - 1), (event.clientY - rect.top) / rect.height * (input.height - 1));
       });
-      button.addEventListener("pointerup", event => { if (button.hasPointerCapture(event.pointerId)) button.releasePointerCapture(event.pointerId); });
+      button.addEventListener("pointerup", event => { if (button.hasPointerCapture(event.pointerId)) button.releasePointerCapture(event.pointerId); hideLoupe(); });
+      button.addEventListener("pointercancel", hideLoupe);
+      button.addEventListener("blur", hideLoupe);
       button.addEventListener("keydown", event => {
         if (busy || !["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown"].includes(event.key)) return;
         event.preventDefault(); event.stopPropagation(); const step = event.shiftKey ? 10 : 1;
@@ -155,7 +222,7 @@ export async function scanDialog(input) {
       root.querySelector("[data-status]").textContent = "جارٍ تصحيح المنظور بالدقة الأصلية…";
       root.querySelectorAll("button,input").forEach(el => { el.disabled = true; });
       try {
-        const bytes = await invoke("cmd_scanner_render", { token: input.token, corners, rotation });
+        const bytes = await invoke("cmd_scanner_render", { token: input.token, corners, rotation, adjustments });
         const nextUrl = blobUrl(bytes);
         try {
           const image = new Image(); image.src = nextUrl;
@@ -194,7 +261,7 @@ export async function uploadWithScanner(command, args) {
     if (choice === "cancel") throw new Error("أُلغي الرفع دون تغيير المرفق");
     if (choice === "original") return await invoke(command, args);
     const prepared = await prepareScanner({ sourcePath: args.sourcePath, relativePath: null, kind: command }); token = prepared.token;
-    if (!await scanDialog(prepared)) throw new Error("أُلغيت المعالجة دون تغيير المرفق");
+    if (!await scanDialog(prepared, { cardDefault: isCardCommand(command) })) throw new Error("أُلغيت المعالجة دون تغيير المرفق");
     const { sourcePath: _source, ...context } = args;
     return await invoke("cmd_scanner_upload", { token, command, context });
   } finally { if (token) await invoke("cmd_scanner_release", { token }).catch(() => {}); active = false; }
@@ -206,7 +273,7 @@ export async function reprocessAttachment(relativePath) {
   active = true; let token;
   try {
     const input = await prepareScanner({ relativePath, sourcePath: null, kind: "existing" }); token = input.token;
-    if (!await scanDialog(input)) return false;
+    if (!await scanDialog(input, { cardDefault: isCardPath(relativePath) })) return false;
     await invoke("cmd_scanner_save_existing", { token, relativePath });
     return true;
   } finally { if (token) await invoke("cmd_scanner_release", { token }).catch(() => {}); active = false; }

@@ -682,11 +682,107 @@ pub fn detect_debug(image: &DynamicImage) -> ([[f32; 2]; 4], f32, DetectionDebug
     (corners, confidence, debug)
 }
 
+/// ISO/IEC 7810 ID-1 card ratio (85.60 × 53.98 mm): national cards, badges and residence cards.
+pub const CARD_ASPECT: f32 = 85.60 / 53.98;
+
+/// Optional image clean-up chosen in the attachment editor. Every field defaults to "no change".
+#[derive(Debug, Clone, Copy, Default, Deserialize, Serialize, PartialEq)]
+#[serde(default)]
+pub struct Adjustments {
+    pub auto_levels: bool,
+    /// -60..=60, added to every channel.
+    pub brightness: i8,
+    /// -50..=50, percent contrast change.
+    pub contrast: i8,
+    /// 0..=3 unsharp-mask strength.
+    pub sharpness: u8,
+    pub grayscale: bool,
+    /// Force the ID-1 card aspect ratio for the corrected output.
+    pub card_aspect: bool,
+}
+
+impl Adjustments {
+    pub fn validate(&self) -> AppResult<()> {
+        if !(-60..=60).contains(&self.brightness) || !(-50..=50).contains(&self.contrast) || self.sharpness > 3 {
+            return Err(error("Invalid image adjustments"));
+        }
+        Ok(())
+    }
+}
+
+/// Stretch the luminance range between the 1st and 99th percentiles to the full 0..255 range.
+fn auto_levels(image: &mut RgbImage) {
+    let mut histogram = [0u64; 256];
+    for pixel in image.pixels() {
+        let [r, g, b] = pixel.0;
+        let luma = (0.2126 * f32::from(r) + 0.7152 * f32::from(g) + 0.0722 * f32::from(b)).round() as usize;
+        histogram[luma.min(255)] += 1;
+    }
+    let total: u64 = histogram.iter().sum();
+    if total == 0 {
+        return;
+    }
+    let percentile = |fraction: f64| {
+        let target = (total as f64 * fraction) as u64;
+        let mut seen = 0;
+        for (value, count) in histogram.iter().enumerate() {
+            seen += count;
+            if seen > target {
+                return value as f32;
+            }
+        }
+        255.
+    };
+    let (low, high) = (percentile(0.01), percentile(0.99));
+    if high - low < 16. {
+        return;
+    }
+    let scale = 255. / (high - low);
+    for pixel in image.pixels_mut() {
+        for channel in pixel.0.iter_mut() {
+            *channel = ((f32::from(*channel) - low) * scale).round().clamp(0., 255.) as u8;
+        }
+    }
+}
+
+pub fn apply_adjustments(image: DynamicImage, adjustments: &Adjustments) -> DynamicImage {
+    let mut result = image;
+    if adjustments.auto_levels {
+        let mut rgb = result.to_rgb8();
+        auto_levels(&mut rgb);
+        result = DynamicImage::ImageRgb8(rgb);
+    }
+    if adjustments.brightness != 0 {
+        result = result.brighten(i32::from(adjustments.brightness));
+    }
+    if adjustments.contrast != 0 {
+        result = result.adjust_contrast(f32::from(adjustments.contrast));
+    }
+    if adjustments.sharpness > 0 {
+        let sigma = [0., 0.8, 1.2, 1.8][usize::from(adjustments.sharpness)];
+        result = result.unsharpen(sigma, 2);
+    }
+    if adjustments.grayscale {
+        result = DynamicImage::ImageRgb8(DynamicImage::ImageLuma8(result.to_luma8()).to_rgb8());
+    }
+    result
+}
+
 pub fn transform(
     image: &DynamicImage,
     c: [[f32; 2]; 4],
     rotation: u16,
     enhancement: u8,
+) -> AppResult<DynamicImage> {
+    transform_with(image, c, rotation, enhancement, false)
+}
+
+pub fn transform_with(
+    image: &DynamicImage,
+    c: [[f32; 2]; 4],
+    rotation: u16,
+    enhancement: u8,
+    card_aspect: bool,
 ) -> AppResult<DynamicImage> {
     validate_corners(&c, image.width(), image.height())?;
     if ![0, 90, 180, 270].contains(&rotation) || enhancement > 2 {
@@ -694,8 +790,16 @@ pub fn transform(
     }
     let distance =
         |a: [f32; 2], b: [f32; 2]| ((a[0] - b[0]).powi(2) + (a[1] - b[1]).powi(2)).sqrt();
-    let w = distance(c[0], c[1]).max(distance(c[3], c[2])).round() as u32 + 1;
-    let h = distance(c[0], c[3]).max(distance(c[1], c[2])).round() as u32 + 1;
+    let mut w = distance(c[0], c[1]).max(distance(c[3], c[2])).round() as u32 + 1;
+    let mut h = distance(c[0], c[3]).max(distance(c[1], c[2])).round() as u32 + 1;
+    if card_aspect {
+        // Keep the longer measured side and derive the other from the card ratio.
+        if w >= h {
+            h = (w as f32 / CARD_ASPECT).round() as u32;
+        } else {
+            w = (h as f32 / CARD_ASPECT).round() as u32;
+        }
+    }
     if w < 16 || h < 16 || w > 16000 || h > 16000 || u64::from(w) * u64::from(h) > 40_000_000 {
         return Err(error("Output too large"));
     }
@@ -828,13 +932,16 @@ pub fn render(
     token: &str,
     corners: [[f32; 2]; 4],
     rotation: u16,
+    adjustments: Adjustments,
 ) -> AppResult<Vec<u8>> {
+    adjustments.validate()?;
     let mut sessions = sessions().lock().unwrap();
     let s = sessions.get_mut(token).ok_or(AppError::NotFound)?;
     if s.owner != owner {
         return Err(AppError::Unauthorized);
     }
-    let result = transform(&s.image, corners, rotation, s.settings.enhancement)?;
+    let result = transform_with(&s.image, corners, rotation, s.settings.enhancement, adjustments.card_aspect)?;
+    let result = apply_adjustments(result, &adjustments);
     let bytes = jpeg(&result, s.settings.quality)?;
     if bytes.len() > crate::files::MAX_DOCUMENT_SIZE as usize {
         return Err(error("Output exceeds attachment limit"));
@@ -1284,7 +1391,7 @@ pub fn production_self_test() -> AppResult<()> {
                 }
                 [[100., 65.], [520., 105.], [490., 425.], [70., 390.]]
             };
-            render("scanner-self-test", &input.token, corners, 90)?;
+            render("scanner-self-test", &input.token, corners, 90, Adjustments { auto_levels: true, sharpness: 1, ..Default::default() })?;
             let processed = load_image(Path::new(&stage("scanner-self-test", &input.token)?))?;
             if !(300..=350).contains(&processed.width())
                 || !(400..=450).contains(&processed.height())
