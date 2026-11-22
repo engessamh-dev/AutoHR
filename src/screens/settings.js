@@ -7,6 +7,7 @@ import { open }      from "@tauri-apps/plugin-dialog";
 import { convertFileSrc } from "@tauri-apps/api/core";
 import { can }       from "../permissions.js";
 import { listen }    from "@tauri-apps/api/event";
+import { APP_VERSION } from "../version.js";
 
 let activeSettingsTab = null;
 
@@ -396,7 +397,7 @@ export async function renderSettings(container, user, ctx) {
         updateStatus.textContent = `الإصدار الحالي ${info.current_version} هو الأحدث.`;
       }
     } catch (err) {
-      updateStatus.textContent = err?.message ?? String(err);
+      updateStatus.textContent = `الإصدار الحالي: ${APP_VERSION} — ${err?.message ?? String(err)}`;
     } finally {
       button.disabled = false;
     }
