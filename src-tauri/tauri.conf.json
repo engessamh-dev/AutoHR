@@ -46,5 +46,16 @@
         "installMode": "currentUser"
       }
     }
+  },
+  "plugins": {
+    "updater": {
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDlDMUZEOTE3REQ4N0Y2MkQKUldRdDlvZmRGOWtmbkV2WkJIRCtsU2Y1QzZQNlF5Rml6RUZBRFBTWEducUFWSWd6OFU1NXFtRloK",
+      "endpoints": [
+        "https://github.com/engessamh-dev/AutoHR/releases/latest/download/latest.json"
+      ],
+      "windows": {
+        "installMode": "passive"
+      }
+    }
   }
 }

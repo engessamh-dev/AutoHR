@@ -27,3 +27,8 @@ src-tauri/resources/*.db-wal
 src-tauri/resources/*.db-shm
 # Encrypted backups may contain real employee data.
 *.autohrbak
+
+# Updater signing keys: the private key must never be committed
+*.key
+*.key.pub
+.tauri/
