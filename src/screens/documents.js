@@ -375,8 +375,8 @@ export async function renderDocuments(container, user, ctx) {
       <div style="display:flex;gap:8px;border-bottom:1px solid #2d2d2d;padding-bottom:0">
         ${[["general","📂 الوارد"],["outgoing","📤 الصادر"]].map(([id, label]) => `
           <button class="doc-tab" data-tab="${id}" style="padding:8px 16px;border:none;cursor:pointer;
-            font-size:13px;border-bottom:2px solid ${activeTab===id?"#5da12c":"transparent"};
-            background:transparent;color:${activeTab===id?"#5da12c":"#9ca3af"};
+            font-size:13px;border-bottom:2px solid ${activeTab===id?"#24a9ff":"transparent"};
+            background:transparent;color:${activeTab===id?"#24a9ff":"#9ca3af"};
             font-weight:${activeTab===id?"700":"400"}">${label}</button>`).join("")}
       </div>
 
@@ -985,13 +985,13 @@ export async function renderDocuments(container, user, ctx) {
           </div>
           <label style="display:flex;align-items:center;gap:8px;cursor:pointer;font-size:13px;color:#d1d5db">
             <input id="d-internal-memo" type="checkbox" ${doc?.is_internal_memo ? "checked" : ""}
-              style="width:16px;height:16px;accent-color:#5da12c" />
+              style="width:16px;height:16px;accent-color:#24a9ff" />
             مذكرة داخلية
           </label>
           <div style="border-top:1px solid #2d2d2d;padding-top:12px">
             <label style="display:flex;align-items:center;gap:8px;cursor:pointer;font-size:13px;color:#d1d5db">
               <input id="d-has-employees" type="checkbox" ${hasEmployeeLinks ? "checked" : ""}
-                style="width:16px;height:16px;accent-color:#5da12c" />
+                style="width:16px;height:16px;accent-color:#24a9ff" />
               هل لهذه الوثيقة ارتباط بموظفي الشعبة/الوحدة؟
             </label>
             <div id="d-employee-linking" class="space-y-3" style="display:${hasEmployeeLinks ? "block" : "none"};margin-top:12px">
@@ -1006,7 +1006,7 @@ export async function renderDocuments(container, user, ctx) {
                     style="display:flex;align-items:center;gap:9px;padding:9px 11px;border-bottom:1px solid #252525;cursor:pointer">
                     <input class="d-employee-checkbox" type="checkbox" value="${employee.id}"
                       ${selectedEmployeeIds.has(employee.id) ? "checked" : ""}
-                      style="width:15px;height:15px;accent-color:#5da12c" />
+                      style="width:15px;height:15px;accent-color:#24a9ff" />
                     <span style="font-size:12px;color:#d1d5db">${escHtml(employee.full_name)}</span>
                     <span style="font-size:11px;color:#6b7280" dir="ltr">${escHtml(employee.employee_number ?? "")}</span>
                   </label>`).join("") || `<p style="padding:12px;color:#6b7280;font-size:12px">لا يوجد موظفون</p>`}
@@ -1437,8 +1437,8 @@ export async function renderDocuments(container, user, ctx) {
       activeTab = btn.dataset.tab;
       container.querySelectorAll(".doc-tab").forEach(b => {
         const a = b.dataset.tab === activeTab;
-        b.style.borderBottomColor = a ? "#5da12c" : "transparent";
-        b.style.color = a ? "#5da12c" : "#9ca3af";
+        b.style.borderBottomColor = a ? "#24a9ff" : "transparent";
+        b.style.color = a ? "#24a9ff" : "#9ca3af";
         b.style.fontWeight = a ? "700" : "400";
       });
       renderGeneral();

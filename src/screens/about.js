@@ -24,7 +24,7 @@ export async function renderAbout(container, user, ctx) {
         ${companyLine ? `<p class="text-sm text-gray-400 mt-1">${escHtml(companyLine)}</p>` : ""}
         <dl class="about-facts">
           <div><dt>الإصدار</dt><dd><span dir="ltr">${escHtml(APP_VERSION)}</span></dd></div>
-          <div><dt>المطوّر</dt><dd dir="ltr">Eng. Essam Al-Emaraa</dd></div>
+          <div><dt>المطوّر</dt><dd dir="ltr">Eng. Essam Hassan</dd></div>
         </dl>
         ${canOpenSettings ? `<button type="button" id="btn-open-settings" class="btn-secondary text-sm px-3 py-1.5 mt-4">إعدادات النظام</button>` : ""}
       </div>

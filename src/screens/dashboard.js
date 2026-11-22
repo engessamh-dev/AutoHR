@@ -17,22 +17,6 @@ export async function renderDashboard(container, user, ctx) {
 
   const documentAlerts = buildDocumentAlerts(employees);
 
-  function alertRow(a, typeLabel = "") {
-    const color  = a.expired ? "#dc2626" : "#d97706";
-    const bg     = a.expired ? "#dc262615" : "#d9770615";
-    const label  = a.expired ? "منتهي" : `${a.days} يوم`;
-    return `<tr style="border-bottom:1px solid #2d2d2d">
-      <td class="table-cell font-medium">${escHtml(a.name)}</td>
-      <td class="table-cell" dir="ltr">${escHtml(a.num ?? "—")}</td>
-      ${typeLabel ? `<td class="table-cell">${escHtml(a.type ?? typeLabel)}</td>` : ""}
-      <td class="table-cell">${formatDate(a.date)}</td>
-      <td class="table-cell">
-        <span style="padding:2px 10px;border-radius:999px;font-size:12px;font-weight:700;
-          background:${bg};color:${color}">${label}</span>
-      </td>
-    </tr>`;
-  }
-
   function recentDocsRows(docs, emptyLabel, archiveTab) {
     return docs
       .slice()
@@ -73,39 +57,6 @@ export async function renderDashboard(container, user, ctx) {
       </button>
     </div>
 
-    <!-- Document alerts -->
-    ${documentAlerts.length > 0 ? `
-    <div class="card" style="border-color:#dc262640">
-      <button id="document-alerts-toggle" type="button"
-        style="width:100%;display:flex;align-items:center;justify-content:space-between;gap:12px;background:transparent;border:0;padding:0;cursor:pointer;text-align:right">
-        <span class="section-title mb-0" style="color:#dc2626">تنبيهات المستمسكات — منتهية أو قريبة النفاذ</span>
-        <span style="display:flex;align-items:center;gap:8px">
-          <span class="badge badge-red">${documentAlerts.length}</span>
-          <span id="document-alerts-toggle-icon" style="color:#f3f4f6;font-size:18px;line-height:1">⌄</span>
-        </span>
-      </button>
-      <div id="document-alerts-dropdown" class="hidden" style="margin-top:14px">
-        <table class="w-full">
-          <thead><tr>
-            <th class="table-header">الموظف</th>
-            <th class="table-header">الرقم الوظيفي</th>
-            <th class="table-header">اسم المستمسك</th>
-            <th class="table-header">تاريخ النفاذ</th>
-            <th class="table-header">المتبقي</th>
-          </tr></thead>
-          <tbody>${documentAlerts.map(a => alertRow({
-            name: a.employeeName,
-            num: a.employeeNumber,
-            type: a.documentName,
-            date: a.expiryDate,
-            days: a.days,
-            expired: a.expired,
-          }, "المستمسك")).join("")}</tbody>
-        </table>
-      </div>
-    </div>` : ""}
-
-    <!-- Contract alerts -->
 
     <div class="space-y-4">
       <div class="card overflow-auto">
@@ -166,11 +117,5 @@ export async function renderDashboard(container, user, ctx) {
         compactArchiveMode: true,
       });
     });
-  });
-  container.querySelector("#document-alerts-toggle")?.addEventListener("click", () => {
-    const dropdown = container.querySelector("#document-alerts-dropdown");
-    const icon = container.querySelector("#document-alerts-toggle-icon");
-    dropdown?.classList.toggle("hidden");
-    if (icon) icon.textContent = dropdown?.classList.contains("hidden") ? "⌄" : "⌃";
   });
 }

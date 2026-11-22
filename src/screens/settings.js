@@ -34,7 +34,7 @@ function openBackupProgress({ title = "إنشاء نسخة احتياطية", me
         <span id="backup-progress-percent" class="badge badge-gray">0%</span>
       </div>
       <div style="height:10px;background:#111827;border-radius:999px;overflow:hidden;border:1px solid #374151">
-        <div id="backup-progress-bar" style="height:100%;width:0%;background:#5da12c;transition:width .2s ease"></div>
+        <div id="backup-progress-bar" style="height:100%;width:0%;background:#24a9ff;transition:width .2s ease"></div>
       </div>
       <p id="backup-progress-message" style="font-size:12px;color:#9ca3af;margin:12px 0 0">${message}</p>
     </div>`;

@@ -8,7 +8,7 @@ const expiringDocuments = [
   { field: "passport_expiry_date", type: "جواز السفر", maxDays: 183 },
   { field: "airport_badge_expiry", type: "باج دخول مطار بغداد", maxDays: 30 },
   { field: "ministry_badge_expiry", type: "هوية وزارة النقل", maxDays: 30 },
-  { field: "vehicle_annual_expiry_date", type: "سنوية المركبة", maxDays: 30 },
+  { field: "vehicle_annual_expiry_date", type: "سنوية المركبة", maxDays: 30, tab: "vehicle" },
 ];
 
 function parseDate(dateStr) {
@@ -34,6 +34,8 @@ export function buildDocumentAlerts(employees, today = new Date()) {
       const days = daysLeft(employee[documentType.field], today);
       if (days === null || days > documentType.maxDays) return;
       alerts.push({
+        employeeId: employee.id,
+        employeeTab: documentType.tab ?? "documents",
         employeeName: employee.full_name,
         employeeNumber: employee.employee_number,
         documentName: documentType.type,
@@ -57,9 +59,18 @@ function alertBadge(alert) {
   return `<span class="badge ${cls}">${remainingLabel(alert)}</span>`;
 }
 
+const ALERT_FILTERS = [
+  { id: "all", label: "الكل", match: () => true },
+  { id: "expired", label: "منتهية", match: alert => alert.expired },
+  { id: "soon", label: "خلال 30 يوماً", match: alert => !alert.expired && alert.days <= 30 },
+  { id: "passport", label: "جوازات", match: alert => alert.documentName === "جواز السفر" },
+];
+let activeAlertFilter = "all";
+
 function alertRows(alerts) {
   return alerts.map(alert => `
-    <tr class="table-row">
+    <tr class="table-row alert-row" data-employee-id="${alert.employeeId}" data-employee-tab="${alert.employeeTab}"
+      tabindex="0" title="فتح ملف الموظف">
       <td class="table-cell font-medium text-gray-100">${escHtml(alert.employeeName)}</td>
       <td class="table-cell" dir="ltr">${escHtml(alert.employeeNumber || "—")}</td>
       <td class="table-cell">${escHtml(alert.documentName)}</td>
@@ -71,42 +82,49 @@ function alertRows(alerts) {
 export async function renderDocumentAlerts(container, user, ctx) {
   const employees = await api.listEmployees();
   const alerts = buildDocumentAlerts(employees);
-  const expiredCount = alerts.filter(alert => alert.expired).length;
-  const passportCount = alerts.filter(alert => alert.documentName === "جواز السفر").length;
 
-  container.innerHTML = `
-    <div class="space-y-5">
-      <div class="flex items-center justify-between gap-3 flex-wrap">
-        <div>
-          <p class="section-title mb-1">تنبيهات المستمسكات</p>
-          <p class="text-sm text-gray-500">المستمسكات المنتهية أو التي قاربت على النفاذ</p>
+  const render = () => {
+    const filter = ALERT_FILTERS.find(item => item.id === activeAlertFilter) ?? ALERT_FILTERS[0];
+    const visible = alerts.filter(filter.match);
+    container.innerHTML = `
+      <div class="space-y-4">
+        <div class="flex items-center justify-between gap-3 flex-wrap">
+          <p class="text-sm text-gray-400">المستمسكات المنتهية أو التي قاربت على النفاذ للموظفين النشطين. اضغط على أي صف لفتح ملف الموظف.</p>
+          <div class="filter-chips" role="group" aria-label="تصفية التنبيهات">
+            ${ALERT_FILTERS.map(item => `<button type="button" class="filter-chip" data-alert-filter="${item.id}"
+              aria-pressed="${item.id === filter.id}">${item.label}<span class="filter-chip-count">${alerts.filter(item.match).length}</span></button>`).join("")}
+          </div>
         </div>
-        <button id="btn-back-dashboard" type="button" class="btn-secondary">العودة للوحة التحكم</button>
-      </div>
+        <div class="card overflow-auto">
+          <table class="w-full">
+            <thead><tr>
+              <th class="table-header">الموظف</th>
+              <th class="table-header">الرقم الوظيفي</th>
+              <th class="table-header">اسم المستمسك</th>
+              <th class="table-header">تاريخ النفاذ</th>
+              <th class="table-header">المتبقي</th>
+            </tr></thead>
+            <tbody>
+              ${visible.length
+                ? alertRows(visible)
+                : `<tr><td colspan="5" class="table-cell text-center text-gray-500 py-8">${alerts.length ? "لا توجد تنبيهات ضمن هذا التصنيف" : "لا توجد تنبيهات مستمسكات حاليًا"}</td></tr>`}
+            </tbody>
+          </table>
+        </div>
+      </div>`;
 
-      <div class="grid grid-cols-1 md:grid-cols-3 gap-4">
-        <div class="stat-card"><span class="stat-value">${alerts.length}</span><span class="stat-label">إجمالي التنبيهات</span></div>
-        <div class="stat-card"><span class="stat-value">${expiredCount}</span><span class="stat-label">مستمسكات منتهية</span></div>
-        <div class="stat-card"><span class="stat-value">${passportCount}</span><span class="stat-label">تنبيهات الجوازات</span></div>
-      </div>
-
-      <div class="card overflow-auto">
-        <table class="w-full">
-          <thead><tr>
-            <th class="table-header">الموظف</th>
-            <th class="table-header">الرقم الوظيفي</th>
-            <th class="table-header">اسم المستمسك</th>
-            <th class="table-header">تاريخ النفاذ</th>
-            <th class="table-header">المتبقي</th>
-          </tr></thead>
-          <tbody>
-            ${alerts.length
-              ? alertRows(alerts)
-              : `<tr><td colspan="5" class="table-cell text-center text-gray-500">لا توجد تنبيهات مستمسكات حاليًا</td></tr>`}
-          </tbody>
-        </table>
-      </div>
-    </div>`;
-
-  container.querySelector("#btn-back-dashboard")?.addEventListener("click", () => ctx.navigateTo("dashboard"));
+    container.querySelectorAll("[data-alert-filter]").forEach(button => button.addEventListener("click", () => {
+      activeAlertFilter = button.dataset.alertFilter;
+      render();
+    }));
+    container.querySelectorAll(".alert-row").forEach(row => {
+      const open = () => ctx.navigateTo("employees", {
+        openEmployeeId: Number(row.dataset.employeeId),
+        openEmployeeTab: row.dataset.employeeTab,
+      });
+      row.addEventListener("click", open);
+      row.addEventListener("keydown", event => { if (event.key === "Enter") open(); });
+    });
+  };
+  render();
 }

@@ -198,7 +198,7 @@ export function applyBranding(config) {
   const brand = document.getElementById("sidebar-brand");
   if (brand) brand.title = [companyName, config.department_name, config.division_name].filter(Boolean).join("\n");
   if (hdr)  hdr.textContent  = [config.company_name, config.department_name].filter(Boolean).join(" — ");
-  if (loginUnit) loginUnit.textContent = config.division_name || "وحدة الاتمتة";
+  if (loginUnit) loginUnit.textContent = config.division_name || "وحدة الأتمتة";
 
   if (config.logo_full_path && logo && fb) {
     logo.src = convertFileSrc(config.logo_full_path);

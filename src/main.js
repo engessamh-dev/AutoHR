@@ -131,7 +131,7 @@ function openAutomaticBackupProgress() {
         <span id="auto-backup-progress-percent" class="badge badge-gray">0%</span>
       </div>
       <div style="height:10px;background:#111827;border-radius:999px;overflow:hidden;border:1px solid #374151">
-        <div id="auto-backup-progress-bar" style="height:100%;width:0%;background:#5da12c;transition:width .2s ease"></div>
+        <div id="auto-backup-progress-bar" style="height:100%;width:0%;background:#24a9ff;transition:width .2s ease"></div>
       </div>
       <p id="auto-backup-progress-message" style="font-size:12px;color:#9ca3af;margin:12px 0 0">جاري فحص النسخ التلقائية...</p>
     </div>`;
@@ -321,10 +321,78 @@ async function enterApp(user) {
   notifyDocumentAlerts();
 }
 
+// ── Login messages ─────────────────────────────────────────────────────────
+// One fixed slot under the card (where the unit name sits), so a message never
+// covers the fields, the login button or the "forgot password" link.
+let loginLockoutTimer = null;
+let loginBusy = false;
+
+function showLoginMessage(text, kind = "error", field = null) {
+  const slot = document.getElementById("login-error");
+  slot.textContent = text;
+  slot.dataset.kind = kind;
+  slot.setAttribute("role", kind === "error" ? "alert" : "status");
+  slot.classList.remove("hidden");
+  document.getElementById("login-unit-name")?.classList.add("invisible");
+  document.querySelectorAll("#login-username, #login-password").forEach(input => {
+    input.classList.toggle("login-field-invalid", kind === "error" && input.id === `login-${field}`);
+  });
+}
+
+function clearLoginMessage() {
+  if (loginLockoutTimer) return;
+  const slot = document.getElementById("login-error");
+  slot.classList.add("hidden");
+  slot.textContent = "";
+  document.getElementById("login-unit-name")?.classList.remove("invisible");
+  document.querySelectorAll(".login-field-invalid").forEach(input => input.classList.remove("login-field-invalid"));
+}
+
+function setLoginBusy(busy) {
+  loginBusy = busy;
+  const submit = document.querySelector(".login-hotspot-submit");
+  if (submit) submit.disabled = busy || Boolean(loginLockoutTimer);
+  document.getElementById("login-form")?.setAttribute("aria-busy", String(busy));
+}
+
+function lockoutMinutes(message) {
+  if (message.includes("دقيقة واحدة")) return 1;
+  if (message.includes("دقيقتين")) return 2;
+  return Number(message.match(/(\d+)/)?.[1] ?? 5);
+}
+
+function startLoginLockout(minutes) {
+  let remaining = Math.max(1, minutes) * 60;
+  const tick = () => {
+    const mm = String(Math.floor(remaining / 60)).padStart(2, "0");
+    const ss = String(remaining % 60).padStart(2, "0");
+    showLoginMessage(`الحساب موقوف مؤقتاً. حاول بعد ${mm}:${ss}`, "error");
+    remaining -= 1;
+  };
+  if (loginLockoutTimer) clearInterval(loginLockoutTimer);
+  tick();
+  loginLockoutTimer = setInterval(() => {
+    if (remaining < 0) {
+      clearInterval(loginLockoutTimer);
+      loginLockoutTimer = null;
+      clearLoginMessage();
+      setLoginBusy(false);
+      document.getElementById("login-password")?.focus();
+      return;
+    }
+    tick();
+  }, 1000);
+  setLoginBusy(false);
+}
+
 async function doLogin(username, password) {
+  if (loginBusy || loginLockoutTimer) return;
+  setLoginBusy(true);
+  showLoginMessage("جارٍ التحقق…", "info");
   try {
     const user = await api.login(username, password);
     currentUser = user;
+    clearLoginMessage();
     document.getElementById("login-screen").classList.add("hidden");
     if (user.must_change_password) {
       document.getElementById("password-change-screen").classList.remove("hidden");
@@ -333,11 +401,19 @@ async function doLogin(username, password) {
     }
     await enterApp(user);
   } catch (err) {
-    const errEl = document.getElementById("login-error");
-    // A temporary lockout returns its own Arabic message; other failures stay generic.
-    const lockedMessage = typeof err === "string" && err.startsWith("تم إيقاف تسجيل الدخول") ? err : null;
-    errEl.textContent = lockedMessage ?? t("loginError");
-    errEl.classList.remove("hidden");
+    const message = typeof err === "string" ? err : String(err?.message ?? err ?? "");
+    if (message.startsWith("تم إيقاف تسجيل الدخول")) {
+      startLoginLockout(lockoutMinutes(message));
+    } else if (message === "You are not authorized to perform this action") {
+      showLoginMessage(t("loginError"), "error", "password");
+      const password = document.getElementById("login-password");
+      password.value = "";
+      password.focus();
+    } else {
+      showLoginMessage("تعذر تسجيل الدخول بسبب خطأ في النظام. حاول مرة أخرى.", "error");
+    }
+  } finally {
+    setLoginBusy(false);
   }
 }
 
@@ -358,7 +434,7 @@ async function doLogout() {
   document.getElementById("login-screen").classList.remove("hidden");
   document.getElementById("login-username").value = "";
   document.getElementById("login-password").value = "";
-  document.getElementById("login-error").classList.add("hidden");
+  clearLoginMessage();
   document.getElementById("password-change-form").reset();
   document.getElementById("password-change-error").classList.add("hidden");
 }
@@ -387,7 +463,9 @@ document.addEventListener("DOMContentLoaded", () => {
     e.preventDefault();
     const u = document.getElementById("login-username").value.trim();
     const p = document.getElementById("login-password").value;
-    if (u && p) doLogin(u, p);
+    if (!u) { showLoginMessage("أدخل اسم المستخدم", "error", "username"); document.getElementById("login-username").focus(); return; }
+    if (!p) { showLoginMessage("أدخل كلمة المرور", "error", "password"); document.getElementById("login-password").focus(); return; }
+    doLogin(u, p);
   });
 
   const loginPassword = document.getElementById("login-password");
@@ -400,8 +478,21 @@ document.addEventListener("DOMContentLoaded", () => {
     loginPassword.focus();
   });
 
+  const syncCapsLock = event => {
+    if (typeof event.getModifierState !== "function") return;
+    const slot = document.getElementById("login-error");
+    const capsOn = event.getModifierState("CapsLock");
+    if (capsOn && (slot.classList.contains("hidden") || slot.dataset.kind === "caps")) {
+      showLoginMessage("تنبيه: مفتاح Caps Lock مفعّل", "caps");
+    } else if (!capsOn && slot.dataset.kind === "caps") {
+      clearLoginMessage();
+    }
+  };
+  loginPassword.addEventListener("keydown", syncCapsLock);
+  loginPassword.addEventListener("keyup", syncCapsLock);
+
   document.getElementById("btn-forgot-password").addEventListener("click", () => {
-    showToast("لاستعادة كلمة المرور، تواصل مع مسؤول النظام لإصدار كلمة مرور مؤقتة آمنة.");
+    showLoginMessage("تواصل مع مسؤول النظام لإصدار كلمة مرور مؤقتة.", "info");
   });
 
   document.querySelectorAll("#login-username, #login-password").forEach(input => {
@@ -411,7 +502,7 @@ document.addEventListener("DOMContentLoaded", () => {
     };
     input.addEventListener("input", () => {
       syncPlaceholder();
-      document.getElementById("login-error").classList.add("hidden");
+      clearLoginMessage();
     });
     input.addEventListener("change", syncPlaceholder);
     syncPlaceholder();
