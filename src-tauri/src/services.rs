@@ -638,6 +638,16 @@ fn clear_login_failures(username: &str) {
     if let Some(map) = guard.as_mut() { map.remove(&login_key(username)); }
 }
 
+/// Arabic count agreement for minutes: 1 دقيقة واحدة, 2 دقيقتين, 3-10 دقائق, 11+ دقيقة.
+fn arabic_minutes(minutes: u64) -> String {
+    match minutes {
+        1 => "دقيقة واحدة".into(),
+        2 => "دقيقتين".into(),
+        3..=10 => format!("{minutes} دقائق"),
+        _ => format!("{minutes} دقيقة"),
+    }
+}
+
 pub fn login(conn: &Connection, username: &str, password: &str) -> AppResult<User> {
     if username.trim().is_empty() || username.len() > 64 || password.is_empty() || password.len() > 256 {
         return Err(AppError::Validation("Enter a valid username and password".into()));
@@ -646,7 +656,8 @@ pub fn login(conn: &Connection, username: &str, password: &str) -> AppResult<Use
         log_audit(conn, Some(username), "LOGIN", Some("session"), None, None, "Failure", Some("Account temporarily locked"));
         let minutes = remaining.as_secs().div_ceil(60).max(1);
         return Err(AppError::Validation(format!(
-            "تم إيقاف تسجيل الدخول لهذا الحساب مؤقتًا بسبب تكرار المحاولات الفاشلة. حاول بعد {minutes} دقيقة."
+            "تم إيقاف تسجيل الدخول لهذا الحساب مؤقتًا بسبب تكرار المحاولات الفاشلة. حاول بعد {}.",
+            arabic_minutes(minutes)
         )));
     }
     let row = match conn.query_row(
@@ -1912,6 +1923,14 @@ mod auth_tests {
         assert!(matches!(login(&conn, "LockMe", "correct-password"), Err(AppError::Validation(_))));
         clear_login_failures("lockme");
         assert!(login(&conn, "lockme", "correct-password").is_ok());
+    }
+
+    #[test]
+    fn lockout_minutes_use_arabic_number_agreement() {
+        assert_eq!(arabic_minutes(1), "دقيقة واحدة");
+        assert_eq!(arabic_minutes(2), "دقيقتين");
+        assert_eq!(arabic_minutes(5), "5 دقائق");
+        assert_eq!(arabic_minutes(11), "11 دقيقة");
     }
 
     #[test]
