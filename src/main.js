@@ -228,10 +228,16 @@ const screenRenderers = {
 
 let activeScreen = "dashboard";
 
+// The promotions & allowances (الترقيات والعلاوات) section is hidden from the UI.
+// Its code, backend commands and stored data are kept unchanged; set to true to restore it.
+const HR_SECTION_ENABLED = false;
+
 async function navigateTo(screen, options = {}) {
   if (screen !== activeScreen && window.autohrCanLeaveCurrentScreen && !(await window.autohrCanLeaveCurrentScreen())) {
     return;
   }
+
+  if (screen === "hr" && !HR_SECTION_ENABLED) return;
 
   // RBAC guard
   const required = { users: "users.manage", audit: "audit.view", hr: "hr.dashboard.view" };
@@ -277,7 +283,7 @@ async function enterApp(user) {
   document.getElementById("current-user").textContent = user.username;
   document.getElementById("nav-users")?.classList.toggle("hidden", !can(user, "users.manage"));
   document.getElementById("nav-audit")?.classList.toggle("hidden", !can(user, "audit.view"));
-  document.getElementById("nav-hr")?.classList.toggle("hidden", !can(user, "hr.dashboard.view"));
+  document.getElementById("nav-hr")?.classList.toggle("hidden", !HR_SECTION_ENABLED || !can(user, "hr.dashboard.view"));
   document.getElementById("login-screen").classList.add("hidden");
   document.getElementById("password-change-screen").classList.add("hidden");
   document.getElementById("app-shell").classList.remove("hidden");
