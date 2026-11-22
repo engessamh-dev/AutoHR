@@ -198,7 +198,12 @@ export function applyBranding(config) {
   const brand = document.getElementById("sidebar-brand");
   if (brand) brand.title = [companyName, config.department_name, config.division_name].filter(Boolean).join("\n");
   if (hdr)  hdr.textContent  = [config.company_name, config.department_name].filter(Boolean).join(" — ");
-  if (loginUnit) loginUnit.textContent = config.division_name || "وحدة الأتمتة";
+  if (loginUnit) {
+    // Login screen: show the configured unit name, or a muted hint telling the admin where to set it.
+    const unitName = String(config.division_name ?? "").trim();
+    loginUnit.textContent = unitName || "أضف اسم الشعبة/الوحدة في الإعدادات لتظهر هنا";
+    loginUnit.classList.toggle("is-hint", !unitName);
+  }
 
   if (config.logo_full_path && logo && fb) {
     logo.src = convertFileSrc(config.logo_full_path);

@@ -164,6 +164,7 @@
     font-size: clamp(0.43rem, 0.78vw, 0.72rem);
     font-weight: 500;
     line-height: 1.1;
+    text-transform: uppercase;
     white-space: nowrap;
   }
   .login-subtitle-en::before,
@@ -221,6 +222,15 @@
     text-shadow: 0 0 12px rgba(20, 177, 245, 0.38), 0 2px 6px rgba(0, 0, 0, 0.8);
     white-space: nowrap;
     pointer-events: none;
+  }
+  .login-unit-name.is-hint {
+    left: 37.4%;
+    width: 25.2%;
+    color: rgba(170, 200, 230, 0.7);
+    font-size: clamp(0.6rem, 0.85vw, 0.86rem);
+    font-style: italic;
+    font-weight: 400;
+    text-shadow: none;
   }
   .login-hotspots {
     position: absolute;
