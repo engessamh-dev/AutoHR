@@ -949,8 +949,8 @@ mod upgrade_tests {
         assert_eq!((full.as_str(), mother.as_str(), head.as_str(), passport.as_str()),
             ("أحمد علي حسين كاظم الجبوري", "زينب محمد جاسم الموسوي", "علي حسين كاظم", "AHMED ALI HUSSEIN ALJABOURI"));
         let employee = parts(&conn, "SELECT name_parts FROM employees WHERE id=1");
-        assert_eq!(employee["full_name"]["surname"], "الجبوري");
-        assert_eq!(employee["full_name"]["review"], false);
+        assert_eq!(employee["full_name"]["surname"], "كاظم الجبوري");
+        assert_eq!(employee["full_name"]["review"], true);
         assert_eq!(employee["mother_name"]["surname"], "الموسوي");
         assert_eq!(employee["residence_head_name"]["review"], true);
         assert_eq!(employee["passport_name"]["surname"], "ALJABOURI");
@@ -959,15 +959,15 @@ mod upgrade_tests {
         assert_eq!(spouse["name"]["grandfather"], "نور الدين");
         assert_eq!(spouse["mother_name"]["review"], true);
         let family = parts(&conn, "SELECT name_parts FROM employee_family_members WHERE employee_id=1");
-        assert_eq!(family["name"]["great_grandfather"], "حسين");
+        assert_eq!(family["name"]["surname"], "حسين");
         assert_eq!(family["name"]["review"], true);
         // Every original text is archived word for word.
         assert_eq!(count(&conn, "SELECT COUNT(*) FROM name_split_originals"), 7);
         assert_eq!(count(&conn, "SELECT COUNT(*) FROM name_split_originals WHERE field='full_name' AND original_text='أحمد علي حسين كاظم الجبوري'"), 1);
-        // Three unsure splits wait for review: head of household, spouse's mother, family member.
+        // Unsure splits wait for review: the five-part names, head of household, spouse's mother, family member.
         let review = crate::names::list_review(&conn).unwrap();
-        assert_eq!(review.len(), 3);
-        assert_eq!(review[0].original_text.as_deref(), Some("علي حسين كاظم"));
+        assert_eq!(review.len(), 5);
+        assert_eq!(review[0].original_text.as_deref(), Some("أحمد علي حسين كاظم الجبوري"));
         // One verified snapshot of the v1.0.3 database.
         let taken = snapshots(&env.backups);
         assert_eq!(taken.len(), 1);
@@ -1000,7 +1000,7 @@ mod upgrade_tests {
         let spouse = parts(&conn, "SELECT name_parts FROM employee_spouses WHERE employee_id=1");
         assert_eq!(spouse["name"]["surname"], "الساعدي");
         let family = parts(&conn, "SELECT name_parts FROM employee_family_members WHERE employee_id=1");
-        assert_eq!(family["name"]["surname"], "الجبوري");
+        assert_eq!(family["name"]["surname"], "كاظم الجبوري");
         let name: String = conn.query_row("SELECT full_name FROM employees WHERE id=1", [], |r| r.get(0)).unwrap();
         assert_eq!(name, "موظف تجريبي");
     }

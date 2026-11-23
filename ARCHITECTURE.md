@@ -127,7 +127,7 @@ database is restored from it automatically. A database from a newer version is r
 Restoring an older backup upgrades it; restoring a newer one is refused.
 
 Schema versions: 0 = v1.0.0–v1.0.3 (no version), 1 = Phase B schema, 2 = person names split
-into national-card fields (`names.rs`). Names (employee, mother, residence-card head of household,
+into national-card fields (الاسم، الأب، الجد، اللقب) (`names.rs`). Names (employee, mother, residence-card head of household,
 passport, spouses and their mothers, family members) keep their combined column, which stays the
 source for display, search and reports; the parts live in a `name_parts` JSON column and every
 save rebuilds the combined text from them. Step 2 is additive: it archives every original text in

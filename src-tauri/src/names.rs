@@ -11,13 +11,12 @@ use rusqlite::{params, Connection, Result as SqlResult};
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 
-/// الاسم، الأب، الجد، جد الأب، اللقب
+/// الاسم، الأب، الجد، اللقب
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ArabicName {
     #[serde(default)] pub first: String,
     #[serde(default)] pub father: String,
     #[serde(default)] pub grandfather: String,
-    #[serde(default)] pub great_grandfather: String,
     #[serde(default)] pub surname: String,
     #[serde(default)] pub review: bool,
 }
@@ -36,7 +35,7 @@ fn clean(value: &str) -> String {
 
 impl ArabicName {
     pub fn joined(&self) -> String {
-        [&self.first, &self.father, &self.grandfather, &self.great_grandfather, &self.surname]
+        [&self.first, &self.father, &self.grandfather, &self.surname]
             .iter()
             .map(|part| clean(part))
             .filter(|part| !part.is_empty())
@@ -44,7 +43,7 @@ impl ArabicName {
             .join(" ")
     }
     fn trimmed(mut self) -> Self {
-        for part in [&mut self.first, &mut self.father, &mut self.grandfather, &mut self.great_grandfather, &mut self.surname] {
+        for part in [&mut self.first, &mut self.father, &mut self.grandfather, &mut self.surname] {
             *part = clean(part);
         }
         self
@@ -90,37 +89,23 @@ fn looks_like_surname(token: &str) -> bool {
     token.starts_with("ال") || token.starts_with("آل ") || token.starts_with("ال ")
 }
 
-/// Best-effort split of an Arabic name. Confident only for five parts, or four parts that
-/// end in a surname-like word (starts with "ال" or "آل"); everything else is flagged.
+/// Best-effort split of an Arabic name into الاسم، الأب، الجد، اللقب. Confident only for
+/// four parts ending in a surname-like word (starts with "ال" or "آل"). Everything else is
+/// filled in order and flagged: extra words go to the surname so no text is lost.
 pub fn split_arabic(text: &str) -> ArabicName {
     let parts = tokens(text);
-    let mut name = ArabicName::default();
     let take = |i: usize| parts.get(i).cloned().unwrap_or_default();
     match parts.len() {
-        0 => {}
-        5 => {
-            name = ArabicName { first: take(0), father: take(1), grandfather: take(2), great_grandfather: take(3), surname: take(4), review: false };
-        }
+        0 => ArabicName::default(),
         4 if looks_like_surname(&parts[3]) => {
-            name = ArabicName { first: take(0), father: take(1), grandfather: take(2), surname: take(3), ..Default::default() };
-        }
-        4 => {
-            name = ArabicName { first: take(0), father: take(1), grandfather: take(2), great_grandfather: take(3), review: true, ..Default::default() };
+            ArabicName { first: take(0), father: take(1), grandfather: take(2), surname: take(3), review: false }
         }
         3 if looks_like_surname(&parts[2]) => {
-            name = ArabicName { first: take(0), father: take(1), surname: take(2), review: true, ..Default::default() };
+            ArabicName { first: take(0), father: take(1), surname: take(2), review: true, ..Default::default() }
         }
-        n if n <= 3 => {
-            name = ArabicName { first: take(0), father: take(1), grandfather: take(2), review: true, ..Default::default() };
-        }
-        _ => {
-            name = ArabicName {
-                first: take(0), father: take(1), grandfather: take(2), great_grandfather: take(3),
-                surname: parts[4..].join(" "), review: true,
-            };
-        }
+        n if n <= 3 => ArabicName { first: take(0), father: take(1), grandfather: take(2), review: true, ..Default::default() },
+        _ => ArabicName { first: take(0), father: take(1), grandfather: take(2), surname: parts[3..].join(" "), review: true },
     }
-    name
 }
 
 /// Passport names: the last word is the surname, the rest are the given names.
@@ -383,40 +368,32 @@ pub fn save_review(conn: &Connection, employee_id: i64, owner: &str, index: i64,
 mod tests {
     use super::*;
 
-    fn a(first: &str, father: &str, grandfather: &str, great: &str, surname: &str, review: bool) -> ArabicName {
-        ArabicName {
-            first: first.into(), father: father.into(), grandfather: grandfather.into(),
-            great_grandfather: great.into(), surname: surname.into(), review,
-        }
-    }
-
-    #[test]
-    fn five_parts_are_confident() {
-        assert_eq!(split_arabic("أحمد علي حسين كاظم الجبوري"), a("أحمد", "علي", "حسين", "كاظم", "الجبوري", false));
-    }
-
-    #[test]
-    fn compound_names_stay_together() {
-        assert_eq!(
-            split_arabic("عبد الله محمد نور الدين عبد الرحمن آل محمد"),
-            a("عبد الله", "محمد", "نور الدين", "عبد الرحمن", "آل محمد", false)
-        );
-        assert_eq!(split_arabic("أبو بكر فتح الله علي الربيعي"), a("أبو بكر", "فتح الله", "علي", "", "الربيعي", false));
+    fn a(first: &str, father: &str, grandfather: &str, surname: &str, review: bool) -> ArabicName {
+        ArabicName { first: first.into(), father: father.into(), grandfather: grandfather.into(), surname: surname.into(), review }
     }
 
     #[test]
     fn four_parts_with_surname_are_confident() {
-        assert_eq!(split_arabic("زينب علي حسن الموسوي"), a("زينب", "علي", "حسن", "", "الموسوي", false));
+        assert_eq!(split_arabic("زينب علي حسن الموسوي"), a("زينب", "علي", "حسن", "الموسوي", false));
+        assert_eq!(split_arabic("أبو بكر فتح الله علي الربيعي"), a("أبو بكر", "فتح الله", "علي", "الربيعي", false));
+    }
+
+    #[test]
+    fn compound_names_stay_together() {
+        assert_eq!(split_arabic("عبد الله محمد نور الدين آل محمد"), a("عبد الله", "محمد", "نور الدين", "آل محمد", false));
     }
 
     #[test]
     fn unsure_splits_are_flagged() {
-        assert_eq!(split_arabic("علي حسين كاظم جاسم"), a("علي", "حسين", "كاظم", "جاسم", "", true));
-        assert_eq!(split_arabic("موظف تجريبي"), a("موظف", "تجريبي", "", "", "", true));
-        assert_eq!(split_arabic("علي حسن الربيعي"), a("علي", "حسن", "", "", "الربيعي", true));
+        // Five parts (a great-grandfather): the extra word joins the surname, for review.
+        assert_eq!(split_arabic("أحمد علي حسين كاظم الجبوري"), a("أحمد", "علي", "حسين", "كاظم الجبوري", true));
+        // Four parts with no surname-like word: the fourth is kept as the surname, for review.
+        assert_eq!(split_arabic("علي حسين كاظم جاسم"), a("علي", "حسين", "كاظم", "جاسم", true));
+        assert_eq!(split_arabic("موظف تجريبي"), a("موظف", "تجريبي", "", "", true));
+        assert_eq!(split_arabic("علي حسن الربيعي"), a("علي", "حسن", "", "الربيعي", true));
         let long = split_arabic("أ ب ج د هـ و");
         assert!(long.review);
-        assert_eq!(long.surname, "هـ و");
+        assert_eq!(long.surname, "د هـ و");
         assert_eq!(long.joined(), "أ ب ج د هـ و");
     }
 
@@ -483,7 +460,7 @@ mod save_tests {
             "full_name": "anything",
             "passport_name": "x",
             "name_parts": {
-                "full_name": {"first": " علي ", "father": "حسن", "grandfather": "كاظم", "great_grandfather": "", "surname": "الربيعي"},
+                "full_name": {"first": " علي ", "father": "حسن", "grandfather": "كاظم", "surname": "الربيعي"},
                 "passport_name": {"given": "ALI HASSAN", "surname": "ALRUBAIE"}
             },
             "spouses": serde_json::to_string(&json!([{"name": "", "name_parts": {"name": {"first": "مريم", "father": "علي", "grandfather": "حسن", "surname": "الساعدي"}}, "mother_name": "سعاد كريم"}])).unwrap(),
@@ -498,7 +475,7 @@ mod save_tests {
         let legacy: Option<String> = conn.query_row("SELECT spouse_name FROM employees WHERE id=?1", [employee.id], |r| r.get(0)).unwrap();
         assert_eq!(legacy.as_deref(), Some("مريم علي حسن الساعدي"));
         let family: serde_json::Value = serde_json::from_str(employee.family_members.as_deref().unwrap()).unwrap();
-        assert_eq!(family[0]["name_parts"]["name"]["surname"], "الربيعي");
+        assert_eq!(family[0]["name_parts"]["name"]["surname"], "كاظم الربيعي");
     }
 
     #[test]
@@ -580,7 +557,7 @@ mod dry_run {
         crate::paths::set_current(Some(crate::paths::AppPaths { data_root: data, backup_root: dir.path().join("backups") }));
         let conn = crate::db::open_at(&db, false).unwrap();
 
-        let mut csv = String::from("\u{feff}table,employee_id,field,needs_review,original,first/given,father,grandfather,great_grandfather,surname,combined_unchanged\n");
+        let mut csv = String::from("\u{feff}table,employee_id,field,needs_review,original,first/given,father,grandfather,surname,combined_unchanged\n");
         let mut total = 0;
         let mut flagged = 0;
         let mut stmt = conn.prepare(
@@ -608,7 +585,7 @@ mod dry_run {
             csv.push_str(&[
                 quote(&table), employee_id.unwrap_or_default().to_string(), quote(&field), (if review { "yes" } else { "no" }).to_string(),
                 quote(&original), quote(&first), quote(&text("father")), quote(&text("grandfather")),
-                quote(&text("great_grandfather")), quote(&text("surname")), (if current == original { "yes" } else { "NO" }).to_string(),
+                quote(&text("surname")), (if current == original { "yes" } else { "NO" }).to_string(),
             ].join(","));
             csv.push('\n');
             assert_eq!(current, original, "a combined name changed during the upgrade: {table}/{row_id}/{field}");

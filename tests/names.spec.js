@@ -13,7 +13,7 @@ test("employee name is edited in national-card fields and saved as parts plus th
   // Not split yet: the old text sits in the first field and is flagged.
   await expect(part(full, "first")).toHaveValue("Synthetic Employee");
   await expect(full.locator(".name-review-badge")).toBeVisible();
-  for (const [name, value] of [["first", "علي"], ["father", "حسن"], ["grandfather", "كاظم"], ["great_grandfather", ""], ["surname", "الربيعي"]]) {
+  for (const [name, value] of [["first", "علي"], ["father", "حسن"], ["grandfather", "كاظم"], ["surname", "الربيعي"]]) {
     await part(full, name).fill(value);
   }
   await expect(full.locator(".name-review-badge")).toBeHidden();
@@ -22,7 +22,7 @@ test("employee name is edited in national-card fields and saved as parts plus th
   await expect.poll(() => page.evaluate(() => window.calls.some(c => c.command === "cmd_update_employee"))).toBe(true);
   const data = await page.evaluate(() => window.calls.find(c => c.command === "cmd_update_employee").args.data);
   expect(data.full_name).toBe("علي حسن كاظم الربيعي");
-  expect(data.name_parts.full_name).toEqual({ first: "علي", father: "حسن", grandfather: "كاظم", great_grandfather: "", surname: "الربيعي", review: false });
+  expect(data.name_parts.full_name).toEqual({ first: "علي", father: "حسن", grandfather: "كاظم", surname: "الربيعي", review: false });
   // Untouched names without parts are sent as text only, for the backend to split.
   expect(data.name_parts.mother_name).toBeUndefined();
 });
@@ -54,8 +54,8 @@ test("review dialog lists unsure names and confirms them", async ({ page }) => {
   await page.evaluate(() => {
     window.nameReview = [{
       employee_id: 1, employee_name: "Synthetic Employee", owner: "employee", index: 0, field: "full_name",
-      text: "علي حسين كاظم جاسم", original_text: "علي حسين كاظم جاسم",
-      parts: { first: "علي", father: "حسين", grandfather: "كاظم", great_grandfather: "جاسم", surname: "", review: true },
+      text: "أحمد علي حسين كاظم الجبوري", original_text: "أحمد علي حسين كاظم الجبوري",
+      parts: { first: "أحمد", father: "علي", grandfather: "حسين", surname: "كاظم الجبوري", review: true },
     }];
   });
   await page.evaluate(() => window.renderActual("employees"));
@@ -64,12 +64,11 @@ test("review dialog lists unsure names and confirms them", async ({ page }) => {
   await button.click();
   const dialog = page.getByRole("dialog", { name: "مراجعة الأسماء" });
   const g = group(page, "full_name", dialog);
-  await part(g, "great_grandfather").fill("");
-  await part(g, "surname").fill("جاسم");
+  await part(g, "surname").fill("الجبوري");
   await dialog.getByRole("button", { name: "تأكيد", exact: true }).click();
   await expect(dialog.getByText("لا توجد أسماء بحاجة لمراجعة.")).toBeVisible();
   const saved = await page.evaluate(() => window.calls.find(c => c.command === "cmd_save_name_review").args);
-  expect(saved.parts).toEqual({ first: "علي", father: "حسين", grandfather: "كاظم", great_grandfather: "", surname: "جاسم", review: false });
+  expect(saved.parts).toEqual({ first: "أحمد", father: "علي", grandfather: "حسين", surname: "الجبوري", review: false });
   await dialog.getByRole("button", { name: "إغلاق" }).click();
   await expect(button).toBeHidden();
 });
