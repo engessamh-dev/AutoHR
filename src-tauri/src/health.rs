@@ -151,9 +151,10 @@ fn folder_state(path: &Path) -> (&'static str, String) {
     }
 }
 
+/// Only real faults count here: a folder that is missing or cannot be written to.
+/// Placement advice from Settings (same disk, old AppData location) is guidance, not a fault,
+/// so it is left out of the check.
 fn check_folders(conn: &Connection) -> HealthItem {
-    let status_info = crate::storage::storage_status();
-    let data_root = crate::paths::data_root();
     let backup_root = crate::paths::backup_root();
     let data_files = storage_path(conn);
 
@@ -164,15 +165,6 @@ fn check_folders(conn: &Connection) -> HealthItem {
         if state == "fail" { status = "fail"; }
         details.push(format!("{label}: {text}"));
         details.push(format!("  {}", anonymise_path(path)));
-    }
-    let data_text = data_root.to_string_lossy().into_owned();
-    let backup_text = backup_root.to_string_lossy().into_owned();
-    for warning in status_info.warnings {
-        if status == "ok" { status = "warn"; }
-        let warning = warning
-            .replace(&data_text, &anonymise_path(&data_root))
-            .replace(&backup_text, &anonymise_path(&backup_root));
-        details.push(format!("تنبيه: {warning}"));
     }
     item("folders", "المجلدات", status, details)
 }
