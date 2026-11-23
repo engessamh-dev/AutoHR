@@ -10,52 +10,26 @@
 <body class="overflow-hidden">
 
   <div id="login-screen" class="login-screen">
-    <div class="login-stage">
-      <div class="login-crest">
-        <img src="/src/assets/branding/company-logo.png" alt="شعار الشركة العامة لإدارة المطارات والملاحة الجوية" />
-      </div>
-      <main class="login-panel" aria-label="نظام الأرشفة">
-        <h1 class="login-title">نظام الأرشفة الإلكتروني</h1>
-        <p class="login-subtitle">وإدارة معلومات الموظفين</p>
-        <div class="login-divider" aria-hidden="true"></div>
-        <form id="login-form" class="login-form" novalidate>
-          <label class="login-field">
-            <input id="login-username" type="text" placeholder="اسم المستخدم" dir="rtl" autocomplete="username" aria-label="اسم المستخدم" />
-            <svg class="login-field-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 12a4.5 4.5 0 1 0 0-9 4.5 4.5 0 0 0 0 9Zm0 2c-4.2 0-8 2.1-8 5v2h16v-2c0-2.9-3.8-5-8-5Z"/></svg>
-          </label>
-          <label class="login-field">
-            <input id="login-password" type="password" placeholder="كلمة المرور" dir="rtl" autocomplete="current-password" aria-label="كلمة المرور" />
-            <button id="btn-toggle-password" class="login-eye" type="button" aria-label="إظهار كلمة المرور" aria-pressed="false">
-              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5C6.5 5 2.7 9.2 1.5 12c1.2 2.8 5 7 10.5 7s9.3-4.2 10.5-7C21.3 9.2 17.5 5 12 5Zm0 11a4 4 0 1 1 0-8 4 4 0 0 1 0 8Zm0-2.2a1.8 1.8 0 1 0 0-3.6 1.8 1.8 0 0 0 0 3.6Z"/></svg>
-            </button>
-            <svg class="login-field-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M17 9h-1V7a4 4 0 0 0-8 0v2H7a2 2 0 0 0-2 2v9a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2v-9a2 2 0 0 0-2-2Zm-7-2a2 2 0 1 1 4 0v2h-4V7Zm2 11a2 2 0 1 1 0-4 2 2 0 0 1 0 4Z"/></svg>
-          </label>
-          <button type="submit" class="login-submit">
-            <span>تسجيل الدخول</span>
-            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M17 9h-1V7a4 4 0 0 0-8 0v2H7a2 2 0 0 0-2 2v9a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2v-9a2 2 0 0 0-2-2Zm-7-2a2 2 0 1 1 4 0v2h-4V7Zm2 11a2 2 0 1 1 0-4 2 2 0 0 1 0 4Z"/></svg>
-          </button>
-        </form>
-        <button id="btn-forgot-password" type="button" class="login-link">
-          <span>نسيت كلمة المرور؟</span>
-          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 14a3 3 0 1 1 0-6 3 3 0 0 1 0 6Zm5.6-4A6 6 0 1 0 12.6 14H15v3h3v-3h2v-4h-7.4Z"/></svg>
-        </button>
-        <div class="login-unit">
-          <span id="login-unit-name" class="login-unit-name">وحدة الأتمتة</span>
-          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M19.4 13a7.5 7.5 0 0 0 0-2l2.1-1.6-2-3.5-2.5 1a7.4 7.4 0 0 0-1.7-1L15 3.3h-4L10.7 6a7.4 7.4 0 0 0-1.7 1l-2.5-1-2 3.5L6.6 11a7.5 7.5 0 0 0 0 2l-2.1 1.6 2 3.5 2.5-1c.5.4 1.1.7 1.7 1l.3 2.6h4l.3-2.6c.6-.3 1.2-.6 1.7-1l2.5 1 2-3.5-2.1-1.6ZM13 15.5a3.5 3.5 0 1 1 0-7 3.5 3.5 0 0 1 0 7Z" transform="translate(-1 0)"/></svg>
-        </div>
-        <div class="login-message-slot">
-          <p id="login-error" class="login-message hidden" role="alert" aria-live="assertive"></p>
-        </div>
-      </main>
-    </div>
-    <footer class="login-footer">
-      <span class="login-security">
-        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 2 4 5v6c0 5 3.4 9.7 8 11 4.6-1.3 8-6 8-11V5l-8-3Zm-1.2 14.2-3.5-3.5 1.4-1.4 2.1 2.1 4.9-4.9 1.4 1.4-6.3 6.3Z"/></svg>
-        آمن • موثوق • احترافي
-      </span>
-      <span class="login-developer" dir="ltr">Developer: Eng. Essam Hassan</span>
+    <!-- The design (logo, title, frames, icons, button, footer) is the background
+         picture; only the parts that change or react are real elements, placed
+         on the picture's own coordinates (see login.css). -->
+    <main class="login-stage" aria-label="نظام الأرشفة الإلكتروني">
+      <h1 class="sr-only">نظام الأرشفة الإلكتروني وإدارة معلومات الموظفين</h1>
+      <form id="login-form" novalidate>
+        <label class="login-box login-box-username">
+          <input id="login-username" type="text" placeholder="اسم المستخدم" dir="rtl" autocomplete="username" aria-label="اسم المستخدم" />
+        </label>
+        <label class="login-box login-box-password">
+          <input id="login-password" type="password" placeholder="كلمة المرور" dir="rtl" autocomplete="current-password" aria-label="كلمة المرور" />
+        </label>
+        <button id="btn-toggle-password" class="login-hit login-hit-eye" type="button" aria-label="إظهار كلمة المرور" aria-pressed="false"></button>
+        <button type="submit" class="login-hit login-hit-submit" aria-label="تسجيل الدخول"></button>
+      </form>
+      <button id="btn-forgot-password" type="button" class="login-hit login-hit-forgot" aria-label="نسيت كلمة المرور؟"></button>
+      <span id="login-unit-name" class="login-unit-name">وحدة الأتمتة</span>
+      <p id="login-error" class="login-message hidden" role="alert" aria-live="assertive"></p>
       <span id="login-app-version" class="login-version" data-app-version dir="rtl"></span>
-    </footer>
+    </main>
   </div>
 
   <div id="setup-screen" class="hidden min-h-screen flex items-center justify-center" dir="rtl">

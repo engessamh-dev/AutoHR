@@ -333,7 +333,10 @@ function showLoginMessage(text, kind = "error", field = null) {
   slot.textContent = text;
   slot.dataset.kind = kind;
   slot.setAttribute("role", kind === "error" ? "alert" : "status");
-  slot.classList.remove("hidden");
+  slot.classList.remove("hidden", "is-long");
+  // The box has a fixed size from the design: a message that does not fit on one line
+  // is shown on two smaller lines.
+  if (slot.scrollWidth > slot.clientWidth) slot.classList.add("is-long");
   document.querySelectorAll("#login-username, #login-password").forEach(input => {
     input.classList.toggle("login-field-invalid", kind === "error" && input.id === `login-${field}`);
   });
@@ -349,7 +352,7 @@ function clearLoginMessage() {
 
 function setLoginBusy(busy) {
   loginBusy = busy;
-  const submit = document.querySelector(".login-submit");
+  const submit = document.querySelector(".login-hit-submit");
   if (submit) submit.disabled = busy || Boolean(loginLockoutTimer);
   document.getElementById("login-form")?.setAttribute("aria-busy", String(busy));
 }
