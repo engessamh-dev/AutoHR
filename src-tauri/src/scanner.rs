@@ -774,6 +774,8 @@ pub fn apply_adjustments(image: DynamicImage, adjustments: &Adjustments) -> Dyna
     result
 }
 
+/// Only the tests call this directly.
+#[cfg(test)]
 pub fn transform(
     image: &DynamicImage,
     c: [[f32; 2]; 4],
@@ -1137,6 +1139,7 @@ pub fn associated_path(
         SELECT 1 FROM outgoing_doc_attachments WHERE file_path=?1 UNION ALL
         SELECT 1 FROM employee_family_members WHERE national_card_front_path=?1 OR national_card_back_path=?1 UNION ALL
         SELECT 1 FROM employee_spouses WHERE national_card_front_path=?1 OR national_card_back_path=?1 UNION ALL
+        SELECT 1 FROM employee_vehicles WHERE annual_front_path=?1 OR annual_back_path=?1 UNION ALL
         SELECT 1 FROM employees WHERE photo_path=?1 OR civil_id_front_path=?1 OR civil_id_back_path=?1 OR residence_card_front_path=?1 OR residence_card_back_path=?1 OR airport_badge_front_path=?1 OR airport_badge_back_path=?1 OR ministry_badge_front_path=?1 OR ministry_badge_back_path=?1 UNION ALL
         SELECT 1 FROM company_config WHERE logo_path=?1)",[relative],|r|r.get(0))?;
     if !linked {

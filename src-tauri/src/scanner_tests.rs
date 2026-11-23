@@ -35,6 +35,7 @@ fn snapshot(conn: &Connection) -> Vec<String> {
         "employees",
         "employee_spouses",
         "employee_family_members",
+        "employee_vehicles",
         "employee_attachments",
         "general_docs",
         "general_doc_attachments",
@@ -92,7 +93,7 @@ fn ctx(command: &str) -> ScanUploadContext {
             Some(1)
         },
         doc_id: if doc { Some(1) } else { None },
-        side: if (command.contains("card_attachment") || command.contains("badge_attachment"))
+        side: if (command.contains("card_attachment") || command.contains("badge_attachment") || command.contains("annual_attachment"))
             && !command.contains("ration")
         {
             Some("front".into())
@@ -105,6 +106,11 @@ fn ctx(command: &str) -> ScanUploadContext {
             None
         },
         spouse_index: if command.contains("spouse") {
+            Some(0)
+        } else {
+            None
+        },
+        vehicle_index: if command.contains("vehicle") {
             Some(0)
         } else {
             None
@@ -153,6 +159,7 @@ fn attachment_endpoints_originals_reprocessing_permissions_and_rollback() {
     )
     .unwrap();
     conn.execute("INSERT INTO employee_family_members(employee_id,sort_order,name) VALUES(1,0,'Synthetic Family')",[]).unwrap();
+    conn.execute("INSERT INTO employee_vehicles(employee_id,sort_order,plate) VALUES(1,0,'TEST 1')",[]).unwrap();
     conn.execute(
         "INSERT INTO general_docs(id,title) VALUES(1,'Synthetic Administrative Document')",
         [],
@@ -212,6 +219,7 @@ fn attachment_endpoints_originals_reprocessing_permissions_and_rollback() {
         "cmd_upload_ministry_badge_attachment",
         "cmd_upload_family_national_card_attachment",
         "cmd_upload_spouse_national_card_attachment",
+        "cmd_upload_vehicle_annual_attachment",
         "cmd_upload_passport_attachment",
         "cmd_upload_ration_card_attachment",
         "cmd_upload_general_doc_file",

@@ -183,6 +183,8 @@ CREATE TABLE IF NOT EXISTS employee_vehicles (
   annual_no   TEXT,
   issue_date  TEXT,
   expiry_date TEXT,
+  annual_front_path TEXT,
+  annual_back_path  TEXT,
   created_at  TEXT DEFAULT (datetime('now')),
   updated_at  TEXT DEFAULT (datetime('now'))
 );

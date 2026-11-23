@@ -168,11 +168,12 @@ pub fn db_path() -> PathBuf {
 /// * 0 — any database created before versioning existed (v1.0.0 to v1.0.3).
 /// * 1 — the schema produced by `migrate()` (Phase B, before the name split).
 /// * 2 — person names split into parts (`name_parts`, `name_split_originals`; see `names.rs`).
+/// * 3 — airport badge access zones; car registration (السنوية) images per vehicle.
 ///
 /// To change the schema later: bump this constant and add an `if from < N { ... }` step in
 /// `upgrade()`. Every upgrade of an existing database runs only after a verified
 /// pre-upgrade snapshot exists, and the snapshot is restored automatically if a step fails.
-pub const SCHEMA_VERSION: i64 = 2;
+pub const SCHEMA_VERSION: i64 = 3;
 
 #[derive(Debug)]
 pub enum OpenError {
@@ -267,7 +268,10 @@ fn upgrade(conn: &Connection, from: i64) -> SqlResult<()> {
     if from < 2 {
         crate::names::upgrade_to_v2(conn)?;
     }
-    // Future steps go here, for example: if from < 3 { ... }
+    if from < 3 {
+        upgrade_to_v3(conn)?;
+    }
+    // Future steps go here, for example: if from < 4 { ... }
     #[cfg(test)]
     if FAIL_UPGRADE.with(|flag| flag.get()) {
         return Err(rusqlite::Error::InvalidQuery);
@@ -279,6 +283,28 @@ fn upgrade(conn: &Connection, from: i64) -> SqlResult<()> {
         ));
     }
     conn.pragma_update(None, "user_version", SCHEMA_VERSION)?;
+    Ok(())
+}
+
+fn add_column_if_missing(conn: &Connection, table: &str, column: &str, definition: &str) -> SqlResult<()> {
+    let exists = conn
+        .prepare(&format!("PRAGMA table_info({table})"))?
+        .query_map([], |r| r.get::<_, String>(1))?
+        .collect::<SqlResult<Vec<_>>>()?
+        .iter()
+        .any(|c| c == column);
+    if !exists {
+        conn.execute(&format!("ALTER TABLE {table} ADD COLUMN {column} {definition}"), [])?;
+    }
+    Ok(())
+}
+
+/// v3: columns added after v2 shipped. `migrate()` only runs for version 0, so columns for
+/// databases that are already versioned must be added here.
+fn upgrade_to_v3(conn: &Connection) -> SqlResult<()> {
+    add_column_if_missing(conn, "employees", "airport_badge_zones", "TEXT")?;
+    add_column_if_missing(conn, "employee_vehicles", "annual_front_path", "TEXT")?;
+    add_column_if_missing(conn, "employee_vehicles", "annual_back_path", "TEXT")?;
     Ok(())
 }
 
@@ -536,6 +562,8 @@ fn migrate(conn: &Connection) -> SqlResult<()> {
           annual_no TEXT,
           issue_date TEXT,
           expiry_date TEXT,
+          annual_front_path TEXT,
+          annual_back_path TEXT,
           created_at TEXT DEFAULT (datetime('now')),
           updated_at TEXT DEFAULT (datetime('now'))
         );
@@ -790,6 +818,28 @@ pub fn open_existing() -> Result<Connection, OpenError> {
 }
 
 #[cfg(test)]
+mod v3_tests {
+    use super::*;
+
+    /// A database from the previous release (schema v2) gains the v3 columns on open.
+    #[test]
+    fn v2_database_gains_zone_and_registration_columns() {
+        let conn = Connection::open_in_memory().unwrap();
+        migrate_for_tests(&conn);
+        conn.execute_batch("ALTER TABLE employees DROP COLUMN airport_badge_zones;
+            ALTER TABLE employee_vehicles DROP COLUMN annual_front_path;
+            ALTER TABLE employee_vehicles DROP COLUMN annual_back_path;
+            PRAGMA user_version = 2;").unwrap();
+        upgrade_restored(&conn).unwrap();
+        assert_eq!(schema_version(&conn).unwrap(), SCHEMA_VERSION);
+        conn.prepare("SELECT airport_badge_zones FROM employees").unwrap();
+        conn.prepare("SELECT annual_front_path, annual_back_path FROM employee_vehicles").unwrap();
+        // Running the step again changes nothing.
+        upgrade_to_v3(&conn).unwrap();
+    }
+}
+
+#[cfg(test)]
 mod recovery_tests {
     use super::*;
 
@@ -953,7 +1003,7 @@ mod upgrade_tests {
             ).unwrap();
         }
         let conn = open_at(&env.db, false).unwrap();
-        assert_eq!(schema_version(&conn).unwrap(), 2);
+        assert_eq!(schema_version(&conn).unwrap(), SCHEMA_VERSION);
         // The combined names are untouched.
         let (full, mother, head, passport): (String, String, String, String) = conn.query_row(
             "SELECT full_name,mother_name,residence_head_name,passport_name FROM employees WHERE id=1", [],
@@ -1009,7 +1059,7 @@ mod upgrade_tests {
             ).unwrap();
         }
         let conn = open_at(&env.db, false).unwrap();
-        assert_eq!(schema_version(&conn).unwrap(), 2);
+        assert_eq!(schema_version(&conn).unwrap(), SCHEMA_VERSION);
         let spouse = parts(&conn, "SELECT name_parts FROM employee_spouses WHERE employee_id=1");
         assert_eq!(spouse["name"]["surname"], "الساعدي");
         let family = parts(&conn, "SELECT name_parts FROM employee_family_members WHERE employee_id=1");
@@ -1031,11 +1081,11 @@ mod upgrade_tests {
             conn.execute("INSERT INTO employees(full_name) VALUES('سارة محمد علي حسن العبيدي')", []).unwrap();
         }
         let conn = open_at(&env.db, false).unwrap();
-        assert_eq!(schema_version(&conn).unwrap(), 2);
+        assert_eq!(schema_version(&conn).unwrap(), SCHEMA_VERSION);
         assert_eq!(parts(&conn, "SELECT name_parts FROM employees")["full_name"]["first"], "سارة");
         let taken = snapshots(&env.backups);
         assert_eq!(taken.len(), 1);
-        assert!(taken[0].to_string_lossy().contains("database_v1_to_v2_"));
+        assert!(taken[0].to_string_lossy().contains(&format!("database_v1_to_v{SCHEMA_VERSION}_")));
     }
 
     #[test]

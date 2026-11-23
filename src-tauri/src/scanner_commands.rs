@@ -132,6 +132,7 @@ pub(crate) struct ScanUploadContext {
     pub side: Option<String>,
     pub member_index: Option<usize>,
     pub spouse_index: Option<usize>,
+    pub vehicle_index: Option<usize>,
 }
 #[tauri::command]
 pub(crate) fn cmd_scanner_upload(
@@ -229,6 +230,13 @@ fn scanner_upload_inner(
                     &source,
                 )?
             }
+            "cmd_upload_vehicle_annual_attachment" => files::upload_vehicle_annual_attachment(
+                &tx,
+                context.employee_id.ok_or_else(missing)?,
+                context.vehicle_index.ok_or_else(missing)?,
+                context.side.as_deref().ok_or_else(missing)?,
+                &source,
+            )?,
             "cmd_upload_passport_attachment" => files::upload_passport_attachment(
                 &tx,
                 context.employee_id.ok_or_else(missing)?,

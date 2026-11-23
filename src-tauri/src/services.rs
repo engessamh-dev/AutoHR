@@ -956,17 +956,25 @@ fn load_employee_family_members(conn: &Connection, employee_id: i64) -> AppResul
 
 fn load_employee_vehicles(conn: &Connection, employee_id: i64) -> AppResult<Vec<serde_json::Value>> {
     repeating_array(conn,
-        "SELECT plate,brand,type,color,annual_no,issue_date,expiry_date FROM employee_vehicles WHERE employee_id=?1 ORDER BY sort_order,id",
+        "SELECT plate,brand,type,color,annual_no,issue_date,expiry_date,annual_front_path,annual_back_path FROM employee_vehicles WHERE employee_id=?1 ORDER BY sort_order,id",
         employee_id,
-        |row| Ok(serde_json::json!({
-            "plate": optional_json_value(row_text(row, 0)?),
-            "brand": optional_json_value(row_text(row, 1)?),
-            "type": optional_json_value(row_text(row, 2)?),
-            "color": optional_json_value(row_text(row, 3)?),
-            "annual_no": optional_json_value(row_text(row, 4)?),
-            "issue_date": optional_json_value(row_text(row, 5)?),
-            "expiry_date": optional_json_value(row_text(row, 6)?),
-        })))
+        |row| {
+            let front = row_text(row, 7)?;
+            let back = row_text(row, 8)?;
+            Ok(serde_json::json!({
+                "plate": optional_json_value(row_text(row, 0)?),
+                "brand": optional_json_value(row_text(row, 1)?),
+                "type": optional_json_value(row_text(row, 2)?),
+                "color": optional_json_value(row_text(row, 3)?),
+                "annual_no": optional_json_value(row_text(row, 4)?),
+                "issue_date": optional_json_value(row_text(row, 5)?),
+                "expiry_date": optional_json_value(row_text(row, 6)?),
+                "annual_front_path": optional_json_value(front.clone()),
+                "annual_back_path": optional_json_value(back.clone()),
+                "annual_front_full_path": optional_json_value(attachment_full_path(conn, &front)),
+                "annual_back_full_path": optional_json_value(attachment_full_path(conn, &back)),
+            }))
+        })
 }
 
 fn load_employee_attachment_paths(conn: &Connection, employee_id: i64, kind: &str) -> AppResult<Vec<String>> {
@@ -1158,17 +1166,29 @@ fn replace_employee_family_members(conn: &Connection, employee_id: i64, family_j
 }
 
 fn replace_employee_vehicles(conn: &Connection, employee_id: i64, vehicles_json: &str) -> AppResult<()> {
+    // Registration images are uploaded by their own command. A saved row may only keep a path
+    // this employee's vehicles already had (rows can move when one is removed); anything else
+    // the form sends is dropped.
+    let stored: Vec<String> = {
+        let mut stmt = conn.prepare(
+            "SELECT annual_front_path FROM employee_vehicles WHERE employee_id=?1 AND annual_front_path IS NOT NULL
+             UNION SELECT annual_back_path FROM employee_vehicles WHERE employee_id=?1 AND annual_back_path IS NOT NULL")?;
+        let paths = stmt.query_map(params![employee_id], |r| r.get::<_, String>(0))?.collect::<rusqlite::Result<Vec<_>>>()?;
+        paths
+    };
+    let kept = |vehicle: &serde_json::Value, key: &str| value_string(vehicle, key).filter(|path| stored.contains(path));
     conn.execute("DELETE FROM employee_vehicles WHERE employee_id=?1", params![employee_id])?;
     let vehicles: Vec<serde_json::Value> = serde_json::from_str(vehicles_json).unwrap_or_default();
     for (index, vehicle) in vehicles.iter().enumerate() {
         conn.execute(
-            "INSERT INTO employee_vehicles(employee_id,sort_order,plate,brand,type,color,annual_no,issue_date,expiry_date)
-             VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9)",
+            "INSERT INTO employee_vehicles(employee_id,sort_order,plate,brand,type,color,annual_no,issue_date,expiry_date,annual_front_path,annual_back_path)
+             VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11)",
             params![
                 employee_id, index as i64,
                 value_string(vehicle, "plate"), value_string(vehicle, "brand"), value_string(vehicle, "type"),
                 value_string(vehicle, "color"), value_string(vehicle, "annual_no"),
                 value_string(vehicle, "issue_date"), value_string(vehicle, "expiry_date"),
+                kept(vehicle, "annual_front_path"), kept(vehicle, "annual_back_path"),
             ],
         )?;
     }
@@ -2594,6 +2614,18 @@ fn validate_backup_references(database_path: &Path, staging: &Path) -> AppResult
     if metadata_columns.iter().any(|name| name == "parent_path") {
         let mut stmt = conn.prepare("SELECT stored_path FROM document_metadata WHERE parent_path IS NOT NULL")?;
         references.extend(stmt.query_map([], |r| r.get::<_, String>(0))?.collect::<rusqlite::Result<Vec<_>>>()?);
+    }
+    // Registration images per vehicle exist from schema v3 on.
+    let vehicle_columns: Vec<String> = {
+        let mut stmt = conn.prepare("PRAGMA table_info(employee_vehicles)")?;
+        let columns = stmt.query_map([], |r| r.get::<_, String>(1))?.collect::<rusqlite::Result<_>>()?;
+        columns
+    };
+    for column in ["annual_front_path", "annual_back_path"] {
+        if vehicle_columns.iter().any(|name| name == column) {
+            let mut stmt = conn.prepare(&format!("SELECT {column} FROM employee_vehicles WHERE {column} IS NOT NULL"))?;
+            references.extend(stmt.query_map([], |r| r.get::<_, String>(0))?.collect::<rusqlite::Result<Vec<_>>>()?);
+        }
     }
     for query in [
         "SELECT logo_path FROM company_config WHERE logo_path IS NOT NULL",

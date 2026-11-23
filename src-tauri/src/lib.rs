@@ -8,6 +8,7 @@ use tauri::{AppHandle, Emitter, Manager, State, Window};
 use std::io::Write;
 use std::sync::Mutex;
 use rusqlite::Connection;
+#[cfg(target_os = "windows")]
 use rand::RngCore;
 
 /// The open database, or `None` while first-run setup is pending or the data folder is
@@ -297,7 +298,7 @@ fn cmd_scan_document(state: State<DbState>, sess: State<SessionState>, device_id
 
     #[cfg(not(target_os = "windows"))]
     {
-        let _ = user;
+        let _ = (user, device_id);
         return Err(AppError::Validation("Document scanning is supported on Windows only".into()));
     }
 
@@ -483,6 +484,20 @@ fn cmd_scan_document(state: State<DbState>, sess: State<SessionState>, device_id
     let user = authorize(&conn, &sess, "documents.delete")?;
     files::delete_family_national_card_attachment(&conn, employee_id, member_index, &side)?;
     log_activity(&conn, &user, "DELETE_FAMILY_NATIONAL_CARD_ATTACHMENT", Some("employee"), Some(employee_id), None, Some(&format!("{}:{}", member_index, side)));
+    Ok(())
+}
+#[tauri::command] fn cmd_upload_vehicle_annual_attachment(state: State<DbState>, sess: State<SessionState>, employee_id: i64, vehicle_index: usize, side: String, source_path: String) -> Result<String, AppError> {
+    let conn = state.conn()?;
+    let user = authorize(&conn, &sess, "documents.upload")?;
+    let rel = files::upload_vehicle_annual_attachment(&conn, employee_id, vehicle_index, &side, &source_path)?;
+    log_activity(&conn, &user, "UPLOAD_VEHICLE_ANNUAL_ATTACHMENT", Some("employee"), Some(employee_id), Some(&rel), Some(&format!("{}:{}", vehicle_index, side)));
+    Ok(rel)
+}
+#[tauri::command] fn cmd_delete_vehicle_annual_attachment(state: State<DbState>, sess: State<SessionState>, employee_id: i64, vehicle_index: usize, side: String) -> Result<(), AppError> {
+    let conn = state.conn()?;
+    let user = authorize(&conn, &sess, "documents.delete")?;
+    files::delete_vehicle_annual_attachment(&conn, employee_id, vehicle_index, &side)?;
+    log_activity(&conn, &user, "DELETE_VEHICLE_ANNUAL_ATTACHMENT", Some("employee"), Some(employee_id), None, Some(&format!("{}:{}", vehicle_index, side)));
     Ok(())
 }
 #[tauri::command] fn cmd_upload_spouse_national_card_attachment(state: State<DbState>, sess: State<SessionState>, employee_id: i64, spouse_index: usize, side: String, source_path: String) -> Result<String, AppError> {
@@ -1139,6 +1154,7 @@ pub fn run() {
             cmd_upload_national_card_attachment, cmd_delete_national_card_attachment,
             cmd_upload_family_national_card_attachment, cmd_delete_family_national_card_attachment,
             cmd_upload_spouse_national_card_attachment, cmd_delete_spouse_national_card_attachment,
+            cmd_upload_vehicle_annual_attachment, cmd_delete_vehicle_annual_attachment,
             cmd_upload_residence_card_attachment, cmd_delete_residence_card_attachment,
             cmd_upload_airport_badge_attachment, cmd_delete_airport_badge_attachment,
             cmd_upload_ministry_badge_attachment, cmd_delete_ministry_badge_attachment,
