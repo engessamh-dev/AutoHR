@@ -162,3 +162,33 @@ test("ration card: number from the QR code and the head of household", async ({ 
   await expect(page.locator("#f-ration_card_no")).toHaveValue("0100000001");
   await expect(page.locator("#f-ration_center_name")).toHaveValue("أحمد علي حسين كاظم");
 });
+
+test("ministry badge: both sides are read and agreeing values are verified", async ({ page }) => {
+  await page.evaluate(() => {
+    window.employeePatch = {
+      ministry_badge_front_path: "Files/Employees/1/Documents/Ministry/front.jpg", ministry_badge_front_full_path: "synthetic",
+      ministry_badge_back_path: "Files/Employees/1/Documents/Ministry/back.jpg", ministry_badge_back_full_path: "synthetic",
+    };
+    const english = { document: "ministry_badge", warnings: [], fields: [
+      { key: "doc_number", value: "100000001", confidence: 0.95, source: "text" },
+      { key: "expiry_date", value: "2027-02-01", confidence: 0.95, source: "text" },
+    ] };
+    const arabic = { document: "ministry_badge", warnings: [], fields: [
+      { key: "doc_number", value: "100000001", confidence: 0.93, source: "text" },
+      { key: "expiry_date", value: "2027-02-02", confidence: 0.9, source: "text" },
+      { key: "job_title", value: "مهندس أقدم", confidence: 0.95, source: "text" },
+    ] };
+    window.readResults = { "Files/Employees/1/Documents/Ministry/front.jpg": english, "Files/Employees/1/Documents/Ministry/back.jpg": arabic };
+  });
+  await openDocuments(page);
+  const tile = page.locator(".emp-tile.has-file", { has: page.locator('[data-target="employee:ministry_badge"]') }).first();
+  await tile.locator(".emp-tile-more").click();
+  await tile.getByRole("menuitem", { name: "قراءة البيانات" }).click();
+  const dialog = page.getByRole("dialog", { name: /قراءة البيانات/ });
+  await expect(dialog.locator("tr", { hasText: "رقم الهوية" }).locator(".id-reader-badge.is-ok")).toHaveCount(1);
+  await expect(dialog.locator(".id-reader-warning", { hasText: "تاريخ النفاذ" })).toBeVisible();
+  await dialog.getByRole("button", { name: "اعتماد المحدَّد" }).click();
+  await expect(page.locator("#f-ministry_badge_no")).toHaveValue("100000001");
+  expect((await page.evaluate(() => window.calls.filter(c => c.command === "cmd_read_document_fields").map(c => c.args.relativePath))).sort())
+    .toEqual(["Files/Employees/1/Documents/Ministry/back.jpg", "Files/Employees/1/Documents/Ministry/front.jpg"]);
+});

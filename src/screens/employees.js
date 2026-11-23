@@ -2178,6 +2178,10 @@ function ocrRows(result, target) {
     add(`field:${badge}_no`, "رقم الهوية", "doc_number", record?.[`${badge}_no`], { ltr: true });
     add(`field:${badge}_issue_date`, "تاريخ الإصدار", "issue_date", record?.[`${badge}_issue_date`], { date: true });
     add(`field:${badge}_expiry`, "تاريخ النفاذ", "expiry_date", record?.[`${badge}_expiry`], { date: true });
+    // Suggestions for the employee record from the badge (unticked when they differ).
+    add("field:job_title", "العنوان الوظيفي", "job_title", record?.job_title);
+    const names = currentNameParts(record, "full_name");
+    OCR_NAME_PARTS.forEach(([part, label]) => add(`name:full_name:${part}`, label, part, names[part]));
     return rows;
   }
   const nameKey = kind === "employee" ? "full_name" : "name";
@@ -2251,11 +2255,22 @@ async function readUploadedFields(target, path, fullPath, title) {
   await readFieldsInto(target, path, fullPath ? convertFileSrc(fullPath) : "", title);
 }
 
+const OCR_FIELD_LABELS = { doc_number: "رقم الهوية", issue_date: "تاريخ الإصدار", expiry_date: "تاريخ النفاذ", job_title: "العنوان الوظيفي", first: "الاسم", father: "اسم الأب", grandfather: "اسم الجد" };
+
+/** The other side of a two-sided badge, when it is an image too. */
+function otherBadgeSide(target, path) {
+  const badge = ocrTarget(target).badge;
+  if (!["airport_badge", "ministry_badge"].includes(badge)) return null;
+  const sides = [_panelDraft?.[`${badge}_front_path`], _panelDraft?.[`${badge}_back_path`]];
+  const other = sides.find(p => p && p !== path);
+  return other && OCR_IMAGE_EXTENSIONS.includes(other.split(".").pop()?.toLowerCase()) ? other : null;
+}
+
 async function readFieldsInto(target, path, imageUrl, title) {
   const extension = String(path ?? "").split(".").pop()?.toLowerCase();
   if (!path || !OCR_IMAGE_EXTENSIONS.includes(extension)) return;
   const chosen = await readDocumentFields({
-    path, imageUrl, title: `قراءة البيانات: ${title ?? ""}`,
+    path, otherPath: otherBadgeSide(target, path), labels: OCR_FIELD_LABELS, imageUrl, title: `قراءة البيانات: ${title ?? ""}`,
     buildRows: result => ocrRows(result, target),
   });
   if (chosen && Object.keys(chosen).length) applyOcrValues(target, chosen);
