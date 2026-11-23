@@ -1193,6 +1193,7 @@ fn cell_right_of<'a>(lines: &'a [Line], label: &Line) -> Option<&'a Line> {
 fn parse_vehicle_registration(lines: &[Line], result: &mut ReadResult) {
     // Front.
     let mut dates: Vec<(String, f32)> = Vec::new();
+    let mut governorate_from_code: Option<String> = None;
     for line in lines {
         if let Some((number, verified)) = vehicle_licence_line(&line.text) {
             if verified {
@@ -1216,7 +1217,13 @@ fn parse_vehicle_registration(lines: &[Line], result: &mut ReadResult) {
                 // Plate digits and letters are easily misread: always reviewed.
                 result.set("plate", plate.number, line.confidence.min(0.7), "text");
                 if let Some(governorate) = plate.governorate {
-                    result.set("governorate", governorate, line.confidence.min(if plate.governorate_from_code { 0.6 } else { 0.9 }), "text");
+                    // A name written on the plate is used as read; one from the code table is
+                    // set after the loop, for review.
+                    if plate.governorate_from_code {
+                        governorate_from_code = Some(governorate);
+                    } else {
+                        result.set("governorate", governorate, line.confidence.min(0.9), "text");
+                    }
                 }
                 if let Some(category) = plate.category {
                     result.set("plate_category", category, line.confidence.min(0.9), "text");
@@ -1226,6 +1233,23 @@ fn parse_vehicle_registration(lines: &[Line], result: &mut ReadResult) {
     }
     dates.sort_by(|a, b| a.0.cmp(&b.0));
     dates.dedup_by(|a, b| a.0 == b.0);
+    // From the plate code (unconfirmed table), then the owner's address (C.1.3): both reviewed.
+    if result.get("governorate").is_none() {
+        if let Some(name) = governorate_from_code {
+            result.set("governorate", name, 0.6, "text");
+        }
+    }
+    if result.get("plate").is_some() && result.get("governorate").is_none() {
+        let address = lines.iter().find_map(|l| {
+            if !l.text.to_uppercase().contains("C.1.3") { return None; }
+            let text = normalize(&l.text);
+            GOVERNORATE_NAMES.iter().find(|g| text.contains(&normalize(g))).map(|g| (g.to_string(), l.confidence))
+        });
+        if let Some((name, confidence)) = address {
+            // Where the owner lives need not be where the car is registered: reviewed.
+            result.set("governorate", name, confidence.min(0.5), "text");
+        }
+    }
     if dates.len() >= 2 {
         let (issue, expiry) = (&dates[0], &dates[dates.len() - 1]);
         result.set("issue_date", issue.0.clone(), issue.1.min(0.9), "text");
@@ -1621,6 +1645,17 @@ mod tests {
         assert_eq!(v(&r, "plate_category"), "خصوصي");
         assert_eq!(v(&r, "governorate"), "نينوى");
         assert!(r.get("governorate").unwrap().confidence < 0.85, "from the code table: reviewed");
+        // Code lost by the reader: the owner's address names the governorate, for review.
+        let mut lost = front.clone();
+        lost[1] = at("خصوصي A34567", 300., 100.);
+        lost.push(at("كربلاء المركز 3 C.1.3.", 300., 200.));
+        let rl = parse(&lost);
+        assert_eq!(v(&rl, "governorate"), "كربلاء");
+        assert!(rl.get("governorate").unwrap().confidence < 0.85);
+        // The plate code wins over the address (the owner may live elsewhere).
+        let mut both = front.clone();
+        both.push(at("كربلاء المركز 3 C.1.3.", 300., 200.));
+        assert_eq!(v(&parse(&both), "governorate"), "نينوى");
         // Older plates: Arabic-Indic number glued to an Arabic letter, then the governorate.
         let mut arabic = front.clone();
         arabic[1] = at("٤٥٦٧٨ب كربلاء أجرة", 300., 100.);
