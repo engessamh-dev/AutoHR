@@ -1,5 +1,6 @@
 import { api } from "../api.js";
 import { escHtml, formatDate, showToast } from "../utils.js";
+import { COMPANY_LOGO } from "../branding.js";
 
 const STORAGE_KEY = "autohr.reportBuilder.v1";
 
@@ -260,13 +261,21 @@ function printReport(rows, fields) {
       table{width:100%;border-collapse:collapse;font-size:10px}
       th,td{border:1px solid #d1d5db;padding:5px;vertical-align:top}
       th{background:#f3f4f6}
+      .report-head{display:flex;align-items:center;gap:12px;margin:0 0 10px}
+      .report-head img{width:30mm;height:auto}
+      .report-head h1{margin:0}
       @page{size:A4 landscape;margin:8mm}
-    </style></head><body><h1>تقرير الموظفين</h1>${table}</body></html>`);
+    </style></head><body><header class="report-head"><img src="${escHtml(new URL(COMPANY_LOGO.print, location.href).href)}" alt="${escHtml(COMPANY_LOGO.alt)}" /><h1>تقرير الموظفين</h1></header>${table}</body></html>`);
   doc.close();
-  setTimeout(() => {
+  // Print only after the company logo has loaded, so it is never missing from the page.
+  const logo = doc.querySelector(".report-head img");
+  const logoReady = !logo || logo.complete
+    ? Promise.resolve()
+    : new Promise(resolve => { logo.onload = logo.onerror = resolve; });
+  Promise.all([logoReady, new Promise(resolve => setTimeout(resolve, 400))]).then(() => {
     frame.contentWindow.focus();
     frame.contentWindow.print();
-  }, 400);
+  });
   setTimeout(() => frame.remove(), 60000);
 }
 

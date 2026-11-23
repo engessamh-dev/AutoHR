@@ -3,7 +3,7 @@
  */
 import { api }       from "../api.js";
 import { escHtml }   from "../utils.js";
-import { convertFileSrc } from "@tauri-apps/api/core";
+import { COMPANY_LOGO } from "../branding.js";
 import { can }       from "../permissions.js";
 import { APP_VERSION } from "../version.js";
 
@@ -15,9 +15,7 @@ export async function renderAbout(container, user, ctx) {
 
   container.innerHTML = `
     <div class="card about-card">
-      ${companyConfig?.logo_full_path
-        ? `<img src="${escHtml(convertFileSrc(companyConfig.logo_full_path))}" alt="شعار الجهة" class="about-logo" />`
-        : `<div class="about-logo about-logo-fallback">CNS</div>`}
+      <img src="${escHtml(COMPANY_LOGO.medium)}" alt="${escHtml(COMPANY_LOGO.alt)}" class="about-logo company-logo-tile" />
       <div class="min-w-0">
         <h2 class="text-xl font-bold">CNSArch</h2>
         <p class="text-sm text-gray-300">نظام الأرشفة الإلكتروني</p>

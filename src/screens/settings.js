@@ -4,10 +4,10 @@
 import { api }       from "../api.js";
 import { showToast, confirmAction, applyBranding, escHtml } from "../utils.js";
 import { open }      from "@tauri-apps/plugin-dialog";
-import { convertFileSrc } from "@tauri-apps/api/core";
 import { can }       from "../permissions.js";
 import { listen }    from "@tauri-apps/api/event";
 import { APP_VERSION } from "../version.js";
+import { COMPANY_LOGO } from "../branding.js";
 
 let activeSettingsTab = null;
 
@@ -165,9 +165,8 @@ export async function renderSettings(container, user, ctx) {
   }
   if (!tabs.some(tab => tab.id === activeSettingsTab)) activeSettingsTab = tabs[0].id;
 
-  const logoMarkup = () => companyConfig?.logo_full_path
-    ? `<img src="${escHtml(convertFileSrc(companyConfig.logo_full_path))}" id="logo-preview" alt="شعار الجهة" class="settings-logo" />`
-    : `<div class="settings-logo settings-logo-fallback">CNS</div>`;
+  const logoMarkup = () =>
+    `<img src="${escHtml(COMPANY_LOGO.medium)}" id="logo-preview" alt="${escHtml(COMPANY_LOGO.alt)}" class="settings-logo company-logo-tile" />`;
 
   container.innerHTML = `
     <div class="settings-screen space-y-4">
@@ -180,8 +179,7 @@ export async function renderSettings(container, user, ctx) {
         <div class="settings-company">
           <div class="settings-logo-col">
             <div id="company-logo-box">${logoMarkup()}</div>
-            <button id="btn-upload-logo" type="button" class="btn-secondary text-sm px-3 py-1.5">تغيير الشعار…</button>
-            <p class="text-xs text-gray-500">PNG أو JPG، حتى 5 MB</p>
+            <p class="text-xs text-gray-500">شعار الشركة ثابت ومضمَّن في النظام</p>
           </div>
           <div class="settings-company-fields space-y-3">
             <div>
@@ -310,24 +308,6 @@ export async function renderSettings(container, user, ctx) {
       applyBranding(companyConfig);
       showToast("تم حفظ بيانات الجهة");
     } catch (err) { showToast(err?.message ?? "خطأ", "error"); }
-  });
-
-  container.querySelector("#btn-upload-logo")?.addEventListener("click", async () => {
-    try {
-      const selected = await open({
-        multiple: false,
-        filters: [{ name: "Images", extensions: ["png", "jpg", "jpeg", "webp"] }],
-      });
-      if (!selected) return;
-      if (!(await confirmAction("تأكيد رفع شعار جديد؟"))) return;
-      companyConfig = await api.uploadCompanyLogo(selected);
-      applyBranding(companyConfig);
-      const box = container.querySelector("#company-logo-box");
-      if (box) box.innerHTML = logoMarkup();
-      showToast("تم رفع الشعار بنجاح");
-    } catch (err) {
-      showToast(err?.message ?? "فشل رفع الشعار", "error");
-    }
   });
 
   // The data and backup folders are fixed by the backend for safety, so they
@@ -496,7 +476,7 @@ export async function renderSettings(container, user, ctx) {
     }
   });
   container.querySelector("#btn-restore-backup")?.addEventListener("click", async () => {
-    const selected = await open({ multiple: false, filters: [{ name: "Encrypted AutoHR Backup", extensions: ["autohrbak"] }] });
+    const selected = await open({ multiple: false, filters: [{ name: "Encrypted CNSArch Backup", extensions: ["autohrbak"] }] });
     if (!selected || !(await confirmAction("ستُستبدل كل البيانات والمرفقات الحالية بمحتوى النسخة المختارة، وتضيع أي تغييرات بعد تاريخها. هل تريد المتابعة؟"))) return;
     const password = await requestBackupPassword({
       title: "استعادة نسخة احتياطية",

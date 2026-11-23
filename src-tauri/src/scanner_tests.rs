@@ -215,7 +215,6 @@ fn attachment_endpoints_originals_reprocessing_permissions_and_rollback() {
         "cmd_upload_ration_card_attachment",
         "cmd_upload_general_doc_file",
         "cmd_upload_outgoing_doc_file",
-        "cmd_upload_company_logo",
     ] {
         eprintln!("testing {command}");
         let input = prepared(&source, None);
@@ -287,6 +286,21 @@ fn attachment_endpoints_originals_reprocessing_permissions_and_rollback() {
         scanner::versions(&conn, "scanner-admin", &path).unwrap();
         assert_eq!(snapshot(&conn), state);
     }
+    // The company logo is fixed in the app: no upload path may replace it, even for admins.
+    let input = prepared(&source, None);
+    let state = snapshot(&conn);
+    let disk = files(&data);
+    assert!(scanner_upload(
+        &conn,
+        "scanner-admin",
+        &input.token,
+        "cmd_upload_company_logo",
+        ctx("cmd_upload_company_logo")
+    )
+    .is_err());
+    assert_eq!(snapshot(&conn), state, "company logo must stay unchanged");
+    assert_eq!(files(&data), disk);
+    let _ = scanner::release("scanner-admin", &input.token);
     // Replacing an existing scanned card must defer deletion until commit, even at a later Audit failure.
     let input = prepared(&source, None);
     let state = snapshot(&conn);

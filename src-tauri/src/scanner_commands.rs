@@ -49,7 +49,6 @@ pub(crate) async fn cmd_scanner_prepare(
         } else {
             let permission = match kind.as_str() {
                 "cmd_upload_employee_photo" => "employees.edit",
-                "cmd_upload_company_logo" => "settings.manage",
                 _ => "documents.upload",
             };
             assert_permission(&conn, &owner, permission)?;
@@ -163,7 +162,6 @@ fn scanner_upload_inner(
 ) -> Result<serde_json::Value, AppError> {
     let permission = match command {
         "cmd_upload_employee_photo" => "employees.edit",
-        "cmd_upload_company_logo" => "settings.manage",
         _ => "documents.upload",
     };
     assert_permission(conn, owner, permission)?;
@@ -180,10 +178,6 @@ fn scanner_upload_inner(
     let missing = || AppError::Validation("Missing upload context".into());
     let result = (|| -> Result<serde_json::Value, AppError> {
         let rel = match command {
-            "cmd_upload_company_logo" => {
-                return serde_json::to_value(upload_company_logo(&tx, owner, &source)?)
-                    .map_err(|e| AppError::Other(e.to_string()))
-            }
             "cmd_upload_employee_photo" => {
                 upload_employee_photo(&tx, context.employee_id.ok_or_else(missing)?, &source)?
             }

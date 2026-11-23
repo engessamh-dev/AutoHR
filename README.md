@@ -72,7 +72,7 @@ Manual overrides keep the calculated system date and store the approved manual d
 npm run test:scanner
 npm run build
 npm run tauri:build
-$scanCheck = Start-Process -FilePath .\target\release\autohr.exe -ArgumentList '--scanner-self-test' -WindowStyle Hidden -Wait -PassThru
+$scanCheck = Start-Process -FilePath .\target\release\CNSArch.exe -ArgumentList '--scanner-self-test' -WindowStyle Hidden -Wait -PassThru
 $scanCheck.ExitCode # 0 = PASS
 ```
 

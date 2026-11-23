@@ -373,10 +373,6 @@ fn cmd_scan_document(state: State<DbState>, sess: State<SessionState>, device_id
     let user = session_user(&sess)?;
     update_company_config(&*state.conn()?, &user, &data)
 }
-#[tauri::command] fn cmd_upload_company_logo(state: State<DbState>, sess: State<SessionState>, source_path: String) -> Result<CompanyConfig, AppError> {
-    let user = session_user(&sess)?;
-    upload_company_logo(&*state.conn()?, &user, &source_path)
-}
 #[tauri::command] fn cmd_next_employee_number(state: State<DbState>, sess: State<SessionState>) -> Result<String, AppError> {
     let conn = state.conn()?;
     authorize(&conn, &sess, "employees.create")?;
@@ -1106,7 +1102,7 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             cmd_login, cmd_change_password, cmd_logout,
-            cmd_get_company_config, cmd_get_public_company_config, cmd_update_company_config, cmd_upload_company_logo,
+            cmd_get_company_config, cmd_get_public_company_config, cmd_update_company_config,
             cmd_next_employee_number,
             cmd_list_employees, cmd_get_employee,
             cmd_create_employee, cmd_update_employee, cmd_delete_employee,

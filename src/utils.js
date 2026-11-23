@@ -2,6 +2,7 @@
  * utils.js — Shared utilities
  */
 import { convertFileSrc } from "@tauri-apps/api/core";
+import { COMPANY_LOGO } from "./branding.js";
 
 // ── Toast ──────────────────────────────────────────────────────────────────
 let _toastTimer = null;
@@ -205,14 +206,14 @@ export function applyBranding(config) {
     loginUnit.classList.toggle("is-hint", !unitName);
   }
 
-  if (config.logo_full_path && logo && fb) {
-    logo.src = convertFileSrc(config.logo_full_path);
+  // The company logo is fixed and bundled with the app; any logo_path stored by an
+  // older release is ignored.
+  if (logo) {
+    logo.src = COMPANY_LOGO.small;
+    logo.alt = COMPANY_LOGO.alt;
     logo.classList.remove("hidden");
-    fb.classList.add("hidden");
-  } else if (logo && fb) {
-    logo.classList.add("hidden");
-    fb.classList.remove("hidden");
   }
+  if (fb) fb.classList.add("hidden");
 }
 
 // ── Date helpers ───────────────────────────────────────────────────────────
