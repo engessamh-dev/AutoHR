@@ -60,7 +60,8 @@ test("review dialog lists unsure names and confirms them", async ({ page }) => {
   });
   await page.evaluate(() => window.renderActual("employees"));
   const button = page.locator("#btn-name-review");
-  await expect(button).toHaveText("مراجعة الأسماء (1)");
+  await expect(button).toHaveAttribute("aria-label", "مراجعة الأسماء (1)");
+  await expect(button.locator(".btn-review-count")).toHaveText("1");
   await button.click();
   const dialog = page.getByRole("dialog", { name: "مراجعة الأسماء" });
   const g = group(page, "full_name", dialog);

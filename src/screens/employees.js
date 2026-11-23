@@ -3,6 +3,7 @@
  */
 import { api } from "../api.js";
 import { bindAttachmentScannerButtons } from "../attachments/integration.js";
+import { zoomToolbarHtml, mountZoomViewer } from "../attachments/zoom-viewer.js";
 import { convertFileSrc } from "@tauri-apps/api/core";
 import { open, save } from "@tauri-apps/plugin-dialog";
 import { showToast, formatDate, escHtml, debounce, confirmAction, confirmSaveChanges } from "../utils.js";
@@ -73,7 +74,7 @@ export async function renderEmployees(container, user, ctx) {
   _statusFilter = "all";
 
   container.innerHTML = `
-    <div class="flex flex-col gap-4 h-full">
+    <div id="emp-screen" class="flex flex-col gap-4 h-full">
       <div class="flex items-center gap-3 flex-wrap">
         <input id="emp-search" type="text" class="input-field flex-1 min-w-[200px]"
                placeholder="بحث بالاسم أو الرقم الوظيفي أو القسم أو رقم الهوية أو الهاتف أو العنوان الوظيفي…" aria-label="بحث في الموظفين" />
@@ -83,12 +84,15 @@ export async function renderEmployees(container, user, ctx) {
           <option value="inactive">غير النشطين فقط</option>
         </select>
         <span id="emp-count" class="badge badge-gray"></span>
-        <button id="btn-name-review" class="btn-secondary px-4 py-2.5 whitespace-nowrap" hidden>مراجعة الأسماء</button>
+        <button id="btn-name-review" class="btn-review-names whitespace-nowrap" hidden title="أسماء قُسّمت تلقائيًا وتحتاج تأكيدًا">
+          <svg aria-hidden="true" viewBox="0 0 24 24"><path d="M12 3 2.5 20h19z"/><path d="M12 10v4.5M12 17.5v.01"/></svg>
+          <span>مراجعة الأسماء</span><span class="btn-review-count" dir="ltr"></span>
+        </button>
         <button id="btn-add-emp" class="btn-primary px-4 py-2.5 whitespace-nowrap">+ إضافة موظف</button>
       </div>
       <div id="emp-table-wrap" class="card overflow-auto flex-1"></div>
     </div>
-    <div id="emp-overlay" style="display:none;position:fixed;inset:0;z-index:40;background:rgba(0,0,0,0.5)"></div>
+    <div id="emp-overlay" style="display:none;position:fixed;inset:0;z-index:40;background:rgba(0,0,0,0.38)"></div>
     <div id="emp-panel" style="position:fixed;top:0;bottom:0;right:0;width:min(580px,100vw);z-index:50;
       background:var(--ui-surface);border-left:1px solid var(--ui-line);box-shadow:-8px 0 32px rgba(0,0,0,0.5);
       display:flex;flex-direction:column;transform:translateX(calc(100% + 40px));transition:transform 0.3s ease"></div>`;
@@ -108,7 +112,8 @@ export async function renderEmployees(container, user, ctx) {
     const refreshReviewCount = async () => {
       const count = (await api.listNameReview().catch(() => [])).length;
       reviewButton.hidden = count === 0;
-      reviewButton.textContent = `مراجعة الأسماء (${count})`;
+      reviewButton.querySelector(".btn-review-count").textContent = String(count);
+      reviewButton.setAttribute("aria-label", `مراجعة الأسماء (${count})`);
     };
     reviewButton.addEventListener("click", () => openNameReview(async () => {
       _employees = await api.listEmployees();
@@ -195,6 +200,7 @@ function renderTable({ keepVisibleRows = false } = {}) {
     _visibleRows += TABLE_STEP;
     renderTable({ keepVisibleRows: true });
   });
+  if (_panelDraft?.id != null) wrap.querySelector(`tr[data-id="${_panelDraft.id}"]`)?.classList.add("is-selected");
 }
 
 function openPanel(emp, tab = "basic") {
@@ -204,12 +210,48 @@ function openPanel(emp, tab = "basic") {
   _sectionState = new Map();
   document.getElementById("emp-panel").style.transform = "translateX(0)";
   document.getElementById("emp-overlay").style.display = "block";
+  markSelectedRow(emp?.id ?? null);
+  reserveSpaceForPanel();
   renderPanel(emp);
 }
 
+// The browser reads "translateX(0)" back as "translateX(0px)".
+function isPanelOpen(panel = document.getElementById("emp-panel")) {
+  return Boolean(panel) && /^translateX\(0(px)?\)$/.test(panel.style.transform);
+}
+
+/** Highlights the employee whose panel is open, so the name stays readable next to it. */
+function markSelectedRow(id) {
+  document.querySelectorAll("#emp-table-wrap tr.is-selected").forEach(row => row.classList.remove("is-selected"));
+  if (id == null) return;
+  const row = document.querySelector(`#emp-table-wrap tr[data-id="${id}"]`);
+  row?.classList.add("is-selected");
+  row?.scrollIntoView({ block: "nearest" });
+}
+
+/**
+ * The side panel covers the right edge of the window, where the name column sits (RTL).
+ * Narrow the list while the panel is open so the names stay visible beside it.
+ */
+function reserveSpaceForPanel() {
+  const screen = document.getElementById("emp-screen");
+  const panel = document.getElementById("emp-panel");
+  if (!screen || !panel) return;
+  screen.style.marginRight = "";
+  if (!isPanelOpen(panel)) return;
+  // Measure where the panel ends up, not where it is mid-slide: it is pinned to the right edge.
+  const panelLeft = window.innerWidth - panel.getBoundingClientRect().width;
+  const rect = screen.getBoundingClientRect();
+  // Under «حجم الواجهة» the shell is zoomed: convert screen pixels back to CSS pixels.
+  const toCss = rect.width ? screen.offsetWidth / rect.width : 1;
+  const overlap = (rect.right - panelLeft) * toCss + 16;
+  if (overlap > 16 && screen.offsetWidth - overlap >= 320) screen.style.marginRight = `${overlap}px`;
+}
+window.addEventListener("resize", debounce(reserveSpaceForPanel, 150));
+
 async function confirmLeavePanel() {
   const panel = document.getElementById("emp-panel");
-  const isOpen = panel && panel.style.transform === "translateX(0)";
+  const isOpen = isPanelOpen(panel);
   if (!isOpen || !_panelDirty) return true;
   return await confirmAction("توجد تغييرات غير محفوظة. هل تريد الخروج بدون حفظ؟");
 }
@@ -226,6 +268,9 @@ async function closePanel(force = false) {
   }
   document.getElementById("emp-panel").style.transform = "translateX(calc(100% + 40px))";
   document.getElementById("emp-overlay").style.display = "none";
+  const screen = document.getElementById("emp-screen");
+  if (screen) screen.style.marginRight = "";
+  markSelectedRow(null);
   _panelDraft = null;
   _panelDirty = false;
 }
@@ -414,23 +459,79 @@ function rationCardTile(emp) {
   });
 }
 
-function openAttachmentViewer(url, kind, title) {
+function viewerItemFromButton(button) {
+  const section = button.closest(".emp-sec")?.querySelector(".emp-sec-title")?.textContent?.trim();
+  const row = button.closest(".spouse-row,.family-row")?.querySelector(".emp-row-title")?.textContent?.trim();
+  const group = [section, row].filter(Boolean).join(" · ");
+  const label = button.dataset.title ?? "";
+  return { url: button.dataset.url, kind: button.dataset.kind, title: group ? `${group} · ${label}` : label };
+}
+
+/** Viewer for employee attachments: zoom, rotate, and next/previous through `items`. */
+function openAttachmentViewer(items, startIndex = 0) {
+  let index = Math.min(Math.max(0, startIndex), items.length - 1);
+  let zoomer = null;
   const overlay = document.createElement("div");
   overlay.className = "emp-viewer";
   overlay.setAttribute("role", "dialog");
   overlay.setAttribute("aria-modal", "true");
-  overlay.setAttribute("aria-label", title);
   overlay.innerHTML = `<div class="emp-viewer-box">
-    <div class="emp-viewer-head"><span>${escHtml(title)}</span><button type="button" class="emp-viewer-close" aria-label="إغلاق">✕</button></div>
-    ${kind === "pdf" ? `<iframe src="${escHtml(url)}" title="${escHtml(title)}"></iframe>` : `<img src="${escHtml(url)}" alt="${escHtml(title)}" />`}
+    <div class="emp-viewer-head">
+      <span class="emp-viewer-title"></span>
+      <span class="emp-viewer-tools"></span>
+      ${items.length > 1 ? `<span class="emp-viewer-nav">
+        <button type="button" class="zv-btn emp-viewer-prev" title="المرفق السابق (→)" aria-label="المرفق السابق">‹</button>
+        <span class="emp-viewer-count" dir="ltr"></span>
+        <button type="button" class="zv-btn emp-viewer-next" title="المرفق التالي (←)" aria-label="المرفق التالي">›</button>
+      </span>` : ""}
+      <button type="button" class="emp-viewer-close" aria-label="إغلاق">✕</button>
+    </div>
+    <div class="emp-viewer-body"></div>
   </div>`;
-  const onKey = event => { if (event.key === "Escape") { event.stopPropagation(); close(); } };
-  const close = () => { overlay.remove(); document.removeEventListener("keydown", onKey, true); };
+  const body = overlay.querySelector(".emp-viewer-body");
+  const tools = overlay.querySelector(".emp-viewer-tools");
+
+  function show() {
+    const item = items[index];
+    zoomer?.destroy();
+    zoomer = null;
+    overlay.setAttribute("aria-label", item.title);
+    overlay.querySelector(".emp-viewer-title").textContent = item.title;
+    const count = overlay.querySelector(".emp-viewer-count");
+    if (count) count.textContent = `${index + 1} / ${items.length}`;
+    overlay.querySelector(".emp-viewer-prev")?.toggleAttribute("disabled", index === 0);
+    overlay.querySelector(".emp-viewer-next")?.toggleAttribute("disabled", index === items.length - 1);
+    if (item.kind === "pdf") {
+      tools.innerHTML = "";
+      body.innerHTML = `<iframe src="${escHtml(item.url)}" title="${escHtml(item.title)}"></iframe>`;
+      return;
+    }
+    tools.innerHTML = zoomToolbarHtml();
+    body.innerHTML = `<img src="${escHtml(item.url)}" alt="${escHtml(item.title)}" />`;
+    zoomer = mountZoomViewer({ stage: body, img: body.querySelector("img"), toolbar: tools });
+  }
+  const go = delta => {
+    const next = index + delta;
+    if (next < 0 || next >= items.length) return;
+    index = next;
+    show();
+  };
+  const onKey = event => {
+    if (event.key === "Escape") { event.stopPropagation(); close(); return; }
+    // RTL: the left arrow moves forward.
+    if (event.key === "ArrowLeft") { event.preventDefault(); go(1); return; }
+    if (event.key === "ArrowRight") { event.preventDefault(); go(-1); return; }
+    if (zoomer?.handleKey(event)) event.preventDefault();
+  };
+  const close = () => { zoomer?.destroy(); overlay.remove(); document.removeEventListener("keydown", onKey, true); };
   overlay.addEventListener("click", event => {
     if (event.target === overlay || event.target.closest(".emp-viewer-close")) close();
+    else if (event.target.closest(".emp-viewer-prev")) go(-1);
+    else if (event.target.closest(".emp-viewer-next")) go(1);
   });
   document.addEventListener("keydown", onKey, true);
   document.body.append(overlay);
+  show();
   overlay.querySelector(".emp-viewer-close").focus();
 }
 
@@ -1110,7 +1211,11 @@ function handlePanelUiClick(event) {
     return;
   }
   const viewer = target.closest(".emp-view-attachment");
-  if (viewer) openAttachmentViewer(viewer.dataset.url, viewer.dataset.kind, viewer.dataset.title);
+  if (viewer) {
+    const scope = viewer.closest("#tab-content") ?? document;
+    const buttons = [...scope.querySelectorAll(".emp-view-attachment")];
+    openAttachmentViewer(buttons.map(viewerItemFromButton), Math.max(0, buttons.indexOf(viewer)));
+  }
   const reader = target.closest(".emp-read-fields");
   if (reader) readFieldsInto(reader.dataset.target, reader.dataset.path, reader.dataset.url, reader.dataset.title);
   const thumb = target.closest(".emp-tile-thumb");

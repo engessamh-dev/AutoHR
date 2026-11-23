@@ -2,6 +2,7 @@
  * documents.js — General + per-employee document archive
  */
 import { isScannable, reprocessAttachment } from "../attachments/scanner.js";
+import { zoomToolbarHtml, mountZoomViewer } from "../attachments/zoom-viewer.js";
 import { api }       from "../api.js";
 import { showToast, escHtml, confirmAction, confirmSaveChanges, arCount, AR_NOUNS } from "../utils.js";
 
@@ -24,6 +25,12 @@ function loadPdfjs() {
   return pdfjsPromise;
 }
 const DOCUMENT_EXTENSIONS = ["jpg", "jpeg", "png", "webp", "pdf", "doc", "docx", "xls", "xlsx", "ppt", "pptx"];
+
+/** Today's date as yyyy-mm-dd in local time (the default issue date of a new document). */
+function todayIso() {
+  const now = new Date();
+  return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-${String(now.getDate()).padStart(2, "0")}`;
+}
 
 export async function renderDocuments(container, user, ctx) {
   let [generalDocs, outgoingDocs, employees, documentTypes] = await Promise.all([
@@ -189,12 +196,14 @@ export async function renderDocuments(container, user, ctx) {
     const previewPaths = paths.length ? paths : [path];
     let currentIndex = Math.max(0, previewPaths.indexOf(path));
     let asset = await loadDocumentAsset(previewPaths[currentIndex]);
+    let zoomer = null;
     const overlay = document.createElement("div");
     overlay.setAttribute("dir", "rtl");
     overlay.style.cssText = "position:fixed;inset:0;z-index:11000;background:rgba(0,0,0,.76);display:flex;flex-direction:column";
     overlay.innerHTML = `
       <div style="height:64px;background:var(--ui-surface);border-bottom:1px solid var(--ui-line);display:flex;align-items:center;gap:10px;padding:10px 18px">
         <strong id="document-preview-title" style="font-size:15px;margin-left:auto;color:var(--ui-text-strong)">${escHtml(asset.title)}</strong>
+        <span id="document-preview-tools"></span>
         ${previewPaths.length > 1 ? `
           <span id="document-preview-counter" class="badge badge-gray" dir="ltr"></span>
           <button type="button" id="document-preview-prev" class="btn-secondary" title="المرفق السابق" style="min-width:42px">↑</button>
@@ -215,14 +224,24 @@ export async function renderDocuments(container, user, ctx) {
       if (prev) prev.disabled = currentIndex === 0;
       if (next) next.disabled = currentIndex === previewPaths.length - 1;
       const isImage = ["jpg", "jpeg", "png", "webp"].includes(asset.extension);
-      overlay.querySelector("#document-preview-body").innerHTML = asset.extension === "pdf"
+      zoomer?.destroy();
+      zoomer = null;
+      const tools = overlay.querySelector("#document-preview-tools");
+      tools.innerHTML = isImage ? zoomToolbarHtml() : "";
+      const previewBody = overlay.querySelector("#document-preview-body");
+      previewBody.style.padding = isImage ? "0" : "18px";
+      previewBody.innerHTML = asset.extension === "pdf"
         ? `<iframe src="${escHtml(asset.assetUrl)}" title="معاينة الوثيقة" style="display:block;width:100%;height:100%;border:0;background:#fff"></iframe>`
-        : isImage ? `<div style="width:100%;height:100%;overflow:auto;text-align:center;background:#d1d5db;padding:18px">
-            <img src="${escHtml(asset.assetUrl)}" alt="${escHtml(asset.title)}" style="max-width:100%;height:auto;max-height:100%;object-fit:contain;background:#fff;box-shadow:0 3px 18px rgba(0,0,0,.25)">
+        : isImage ? `<div class="document-preview-stage" style="width:100%;height:100%;background:#d1d5db">
+            <img src="${escHtml(asset.assetUrl)}" alt="${escHtml(asset.title)}">
           </div>`
         : `<div style="display:grid;place-items:center;width:100%;height:100%;background:#d1d5db;color:#374151;text-align:center;padding:24px">
             <div><p style="font-size:18px;font-weight:700;margin-bottom:8px">لا تتوفر معاينة داخلية لهذا النوع من الملفات</p><p>يمكنك تحميل الملف وفتحه ببرنامج Office المناسب.</p></div>
           </div>`;
+      if (isImage) {
+        const stage = previewBody.querySelector(".document-preview-stage");
+        zoomer = mountZoomViewer({ stage, img: stage.querySelector("img"), toolbar: tools });
+      }
     }
 
     async function navigatePreview(direction) {
@@ -242,6 +261,7 @@ export async function renderDocuments(container, user, ctx) {
 
     const close = () => {
       document.removeEventListener("keydown", onKeyDown);
+      zoomer?.destroy();
       URL.revokeObjectURL(asset.assetUrl);
       overlay.remove();
     };
@@ -249,6 +269,9 @@ export async function renderDocuments(container, user, ctx) {
       if (event.key === "Escape") close();
       if (event.key === "ArrowUp") navigatePreview(-1);
       if (event.key === "ArrowDown") navigatePreview(1);
+      if (event.key === "ArrowLeft") navigatePreview(1);
+      if (event.key === "ArrowRight") navigatePreview(-1);
+      if (zoomer?.handleKey(event)) event.preventDefault();
     };
     overlay.querySelector("#document-preview-close").addEventListener("click", close);
     overlay.querySelector("#document-preview-prev")?.addEventListener("click", () => navigatePreview(-1));
@@ -518,7 +541,14 @@ export async function renderDocuments(container, user, ctx) {
             </tr></thead>
             <tbody>
               ${archiveDocs.length === 0
-                ? `<tr><td colspan="9" class="table-cell text-center text-gray-500 py-8">لا توجد وثائق</td></tr>`
+                ? `<tr><td colspan="9" class="table-cell"><div class="doc-empty">
+                    <span class="doc-empty-icon"><svg aria-hidden="true" viewBox="0 0 24 24"><path d="M3 6.5A1.5 1.5 0 0 1 4.5 5H9l2 2.5h8.5A1.5 1.5 0 0 1 21 9v9.5a1.5 1.5 0 0 1-1.5 1.5h-15A1.5 1.5 0 0 1 3 18.5z"/><path d="M12 11v6M9 14h6"/></svg></span>
+                    <p class="doc-empty-title">لا توجد وثائق في ${escHtml(archiveName())} بعد</p>
+                    ${can(user, "documents.manage")
+                      ? `<p class="doc-empty-text">ابدأ بإضافة أول وثيقة، ويمكنك إرفاق ملفاتها أو مسحها ضوئيًا.</p>
+                         <button type="button" id="btn-add-first-doc" class="btn-primary px-5 py-2">+ إضافة أول وثيقة</button>`
+                      : `<p class="doc-empty-text">ستظهر الوثائق هنا عند إضافتها.</p>`}
+                  </div></td></tr>`
                 : filteredDocs.length === 0
                   ? `<tr><td colspan="9" class="table-cell text-center text-gray-500 py-8">لا توجد نتائج مطابقة</td></tr>`
                   : filteredDocs.map(d => `
@@ -649,6 +679,7 @@ export async function renderDocuments(container, user, ctx) {
     });
 
     el.querySelector("#btn-add-doc")?.addEventListener("click", () => showDocForm());
+    el.querySelector("#btn-add-first-doc")?.addEventListener("click", () => showDocForm());
 
     el.querySelectorAll(".general-doc-row").forEach(row => {
       row.addEventListener("click", event => {
@@ -954,16 +985,12 @@ export async function renderDocuments(container, user, ctx) {
     const hasEmployeeLinks = selectedEmployeeIds.size > 0;
     el.innerHTML = `
       <div id="doc-form-stage" style="min-height:calc(100vh - 190px);padding:20px 0 20px 56px">
-        <div id="doc-form-card" class="card max-w-2xl space-y-4">
+        <div id="doc-form-card" class="card doc-form-card space-y-4">
           <p class="section-title">${isEdit ? "تعديل وثيقة" : "إضافة وثيقة جديدة"}</p>
-          <div>
-            <label for="d-title" style="display:block;font-size:11px;color:var(--ui-text-faint);margin-bottom:4px">الجهة المصدرة للوثيقة</label>
-            <input id="d-title" class="input-field" placeholder="الجهة المصدرة للوثيقة" value="${escHtml(doc?.title ?? "")}" />
-          </div>
-          <div class="grid grid-cols-2 gap-3">
+          <div class="doc-form-grid">
             <div>
-              <label for="d-number" style="display:block;font-size:11px;color:var(--ui-text-faint);margin-bottom:4px">إلى</label>
-              <input id="d-number" class="input-field" value="${escHtml(doc?.doc_number ?? "")}" />
+              <label for="d-title" style="display:block;font-size:11px;color:var(--ui-text-faint);margin-bottom:4px">الجهة المصدرة للوثيقة</label>
+              <input id="d-title" class="input-field" placeholder="الجهة المصدرة للوثيقة" value="${escHtml(doc?.title ?? "")}" />
             </div>
             <div>
               <label for="d-issuer" style="display:block;font-size:11px;color:var(--ui-text-faint);margin-bottom:4px">الموضوع</label>
@@ -984,33 +1011,41 @@ export async function renderDocuments(container, user, ctx) {
               </div>
             </div>
             <div>
-              <label for="d-date" style="display:block;font-size:11px;color:var(--ui-text-faint);margin-bottom:4px">تاريخ الإصدار</label>
-              <input id="d-date" class="input-field" type="date" value="${escHtml(doc?.issue_date ?? "")}" />
+              <label for="d-number" style="display:block;font-size:11px;color:var(--ui-text-faint);margin-bottom:4px">إلى</label>
+              <input id="d-number" class="input-field" value="${escHtml(doc?.doc_number ?? "")}" />
+            </div>
+            <div class="doc-form-pair">
+              <div>
+                <label for="d-date" style="display:block;font-size:11px;color:var(--ui-text-faint);margin-bottom:4px">تاريخ الإصدار</label>
+                <input id="d-date" class="input-field" type="date" value="${escHtml(doc?.issue_date ?? (isEdit ? "" : todayIso()))}" />
+              </div>
+              <div>
+                <label for="d-count" style="display:block;font-size:11px;color:var(--ui-text-faint);margin-bottom:4px">العدد</label>
+                <input id="d-count" class="input-field" value="${escHtml(doc?.doc_count ?? "")}" />
+              </div>
             </div>
             <div>
-              <label for="d-count" style="display:block;font-size:11px;color:var(--ui-text-faint);margin-bottom:4px">العدد</label>
-              <input id="d-count" class="input-field" value="${escHtml(doc?.doc_count ?? "")}" />
+              <label for="d-notes" style="display:block;font-size:11px;color:var(--ui-text-faint);margin-bottom:4px">نبذة عامة عن الوثيقة</label>
+              <textarea id="d-notes" class="input-field" style="height:70px;resize:none">${escHtml(doc?.notes ?? "")}</textarea>
+            </div>
+            <div>
+              <label for="d-margin" style="display:block;font-size:11px;color:var(--ui-text-faint);margin-bottom:4px">الهامش</label>
+              <textarea id="d-margin" class="input-field" style="height:70px;resize:none">${escHtml(doc?.margin ?? "")}</textarea>
             </div>
           </div>
-          <div>
-            <label for="d-notes" style="display:block;font-size:11px;color:var(--ui-text-faint);margin-bottom:4px">نبذة عامة عن الوثيقة</label>
-            <textarea id="d-notes" class="input-field" style="height:70px;resize:none">${escHtml(doc?.notes ?? "")}</textarea>
-          </div>
-          <div>
-            <label for="d-margin" style="display:block;font-size:11px;color:var(--ui-text-faint);margin-bottom:4px">الهامش</label>
-            <textarea id="d-margin" class="input-field" style="height:70px;resize:none">${escHtml(doc?.margin ?? "")}</textarea>
-          </div>
-          <label style="display:flex;align-items:center;gap:8px;cursor:pointer;font-size:13px;color:var(--ui-text)">
-            <input id="d-internal-memo" type="checkbox" ${doc?.is_internal_memo ? "checked" : ""}
-              style="width:16px;height:16px;accent-color:var(--ui-accent)" />
-            مذكرة داخلية
-          </label>
           <div style="border-top:1px solid var(--ui-line);padding-top:12px">
-            <label style="display:flex;align-items:center;gap:8px;cursor:pointer;font-size:13px;color:var(--ui-text)">
-              <input id="d-has-employees" type="checkbox" ${hasEmployeeLinks ? "checked" : ""}
-                style="width:16px;height:16px;accent-color:var(--ui-accent)" />
-              هل لهذه الوثيقة ارتباط بموظفي الشعبة/الوحدة؟
-            </label>
+            <div style="display:flex;flex-wrap:wrap;gap:10px 28px">
+              <label style="display:flex;align-items:center;gap:8px;cursor:pointer;font-size:13px;color:var(--ui-text)">
+                <input id="d-internal-memo" type="checkbox" ${doc?.is_internal_memo ? "checked" : ""}
+                  style="width:16px;height:16px;accent-color:var(--ui-accent)" />
+                مذكرة داخلية
+              </label>
+              <label style="display:flex;align-items:center;gap:8px;cursor:pointer;font-size:13px;color:var(--ui-text)">
+                <input id="d-has-employees" type="checkbox" ${hasEmployeeLinks ? "checked" : ""}
+                  style="width:16px;height:16px;accent-color:var(--ui-accent)" />
+                هل لهذه الوثيقة ارتباط بموظفي الشعبة/الوحدة؟
+              </label>
+            </div>
             <div id="d-employee-linking" class="space-y-3" style="display:${hasEmployeeLinks ? "block" : "none"};margin-top:12px">
               <input id="d-employee-search" class="input-field" placeholder="بحث باسم الموظف أو رقمه الوظيفي..." />
               <div class="flex items-center justify-between">
@@ -1030,28 +1065,32 @@ export async function renderDocuments(container, user, ctx) {
               </div>
             </div>
           </div>
-          <div style="border-top:1px solid var(--ui-line);padding-top:12px;display:flex;align-items:center;justify-content:space-between;gap:12px">
-            <div>
-              <p style="font-size:12px;font-weight:700;color:var(--ui-text)">مرفقات الوثيقة</p>
-              <p style="font-size:11px;color:var(--ui-text-faint);margin-top:3px">${isEdit ? "اضغط على الأيقونة لإدارة الملفات المرفقة" : "اختر المرفقات وسيتم رفعها بعد حفظ الوثيقة"}</p>
+          <div style="border-top:1px solid var(--ui-line);padding-top:12px">
+            <div style="display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap">
+              <div>
+                <p style="font-size:12px;font-weight:700;color:var(--ui-text)">مرفقات الوثيقة</p>
+                <p style="font-size:11px;color:var(--ui-text-faint);margin-top:3px">${isEdit ? "اضغط على الأيقونة لإدارة الملفات المرفقة" : "أضف المرفقات الآن، وتُحفظ مع الوثيقة عند الضغط على «حفظ»"}</p>
+              </div>
+              <div style="display:flex;align-items:center;gap:8px">
+                ${isEdit ? "" : `<button type="button" id="d-pick-attachments" class="btn-secondary" title="اختيار ملفات من الحاسوب">+ إضافة مرفقات</button>`}
+                <button type="button" id="d-scan-attachment" class="btn-secondary" title="مسح وثيقة ضوئياً">
+                  <svg aria-hidden="true" viewBox="0 0 24 24" style="width:17px;height:17px;fill:none;stroke:currentColor;stroke-width:1.8">
+                    <path d="M7 3h10v5H7zM5 14h14v7H5zM4 8h16a2 2 0 0 1 2 2v6h-3M5 16H2v-6a2 2 0 0 1 2-2"/>
+                    <path d="M8 17h8M8 19h8M18 11h.01"/>
+                  </svg>
+                  <span>ماسح ضوئي</span>
+                </button>
+                <button type="button" id="d-manage-attachments" title="${isEdit ? "إدارة مرفقات الوثيقة" : "إضافة مرفقات"}"
+                  style="border:none;background:transparent;cursor:pointer;padding:2px">
+                  <span class="badge ${isEdit && generalDocAttachments(doc).length ? "badge-green" : "badge-gray"}"
+                    style="gap:6px;font-size:12px;padding:5px 11px">
+                    <span>📎</span>
+                    <span dir="ltr">${isEdit ? generalDocAttachments(doc).length : 0}</span>
+                  </span>
+                </button>
+              </div>
             </div>
-            <div style="display:flex;align-items:center;gap:8px">
-              <button type="button" id="d-scan-attachment" class="btn-secondary" title="مسح وثيقة ضوئياً">
-                <svg aria-hidden="true" viewBox="0 0 24 24" style="width:17px;height:17px;fill:none;stroke:currentColor;stroke-width:1.8">
-                  <path d="M7 3h10v5H7zM5 14h14v7H5zM4 8h16a2 2 0 0 1 2 2v6h-3M5 16H2v-6a2 2 0 0 1 2-2"/>
-                  <path d="M8 17h8M8 19h8M18 11h.01"/>
-                </svg>
-                <span>ماسح ضوئي</span>
-              </button>
-              <button type="button" id="d-manage-attachments" title="إدارة مرفقات الوثيقة"
-                style="border:none;background:transparent;cursor:pointer;padding:2px">
-                <span class="badge ${isEdit && generalDocAttachments(doc).length ? "badge-green" : "badge-gray"}"
-                  style="gap:6px;font-size:12px;padding:5px 11px">
-                  <span>📎</span>
-                  <span dir="ltr">${isEdit ? generalDocAttachments(doc).length : 0}</span>
-                </span>
-              </button>
-            </div>
+            ${isEdit ? "" : `<ul id="d-pending-list" class="doc-pending-list" hidden></ul>`}
           </div>
           <div id="d-scan-progress" style="display:none;align-items:center;gap:14px;padding:12px 14px;border:1px solid var(--ui-line-strong);border-radius:10px;background:var(--ui-info-bg)">
             <div id="d-scan-progress-bar" style="width:62px;height:62px;flex:none;display:grid;place-items:center;border-radius:50%;background:conic-gradient(#22c55e 0%,var(--ui-sunken) 0);transition:background .35s ease">
@@ -1237,25 +1276,55 @@ export async function renderDocuments(container, user, ctx) {
         option.style.display = !needle || option.dataset.search.includes(needle) ? "flex" : "none";
       });
     });
-    el.querySelector("#d-manage-attachments")?.addEventListener("click", async () => {
-      if (isEdit) {
-        openAttachmentManager(doc.id, false);
-        return;
+    const pendingName = path => String(path).split(/[\\/]/).pop();
+    const renderPendingAttachments = () => {
+      const badge = el.querySelector("#d-manage-attachments .badge");
+      if (badge) {
+        badge.classList.toggle("badge-green", pendingAttachments.length > 0);
+        badge.classList.toggle("badge-gray", pendingAttachments.length === 0);
+        badge.querySelector("[dir='ltr']").textContent = String(pendingAttachments.length);
       }
+      const list = el.querySelector("#d-pending-list");
+      if (!list) return;
+      list.hidden = pendingAttachments.length === 0;
+      list.innerHTML = pendingAttachments.map((path, index) => {
+        const name = pendingName(path);
+        const extension = name.includes(".") ? name.split(".").pop().toUpperCase() : "ملف";
+        return `<li class="doc-pending-item" title="${escHtml(path)}">
+          <span class="doc-pending-ext">${escHtml(extension)}</span>
+          <span class="doc-pending-name">${escHtml(name)}</span>
+          <button type="button" class="doc-pending-remove" data-index="${index}" aria-label="إزالة ${escHtml(name)}" title="إزالة">✕</button>
+        </li>`;
+      }).join("");
+      list.querySelectorAll(".doc-pending-remove").forEach(button => button.addEventListener("click", () => {
+        pendingAttachments.splice(Number(button.dataset.index), 1);
+        formDirty = true;
+        renderPendingAttachments();
+      }));
+    };
+    const addPendingAttachments = files => {
+      const before = pendingAttachments.length;
+      pendingAttachments = [...new Set([...pendingAttachments, ...files])].slice(0, 20);
+      if (pendingAttachments.length < before + files.length) showToast("الحد الأقصى 20 مرفقًا للوثيقة", "warn");
+      formDirty = true;
+      renderPendingAttachments();
+    };
+    const pickPendingAttachments = async () => {
       const selected = await open({
         multiple: true,
         filters: [{ name: "ملفات الوثائق", extensions: DOCUMENT_EXTENSIONS }],
       });
       if (!selected) return;
-      const files = Array.isArray(selected) ? selected : [selected];
-      pendingAttachments = [...new Set([...pendingAttachments, ...files])].slice(0, 20);
-      formDirty = true;
-      const badge = el.querySelector("#d-manage-attachments .badge");
-      badge.classList.toggle("badge-green", pendingAttachments.length > 0);
-      badge.classList.toggle("badge-gray", pendingAttachments.length === 0);
-      badge.querySelector("[dir='ltr']").textContent = String(pendingAttachments.length);
-      showToast(`تم اختيار ${arCount(pendingAttachments.length, { ...AR_NOUNS.attachment, two: "مرفقين" })}، وستُرفع بعد الحفظ`);
+      addPendingAttachments(Array.isArray(selected) ? selected : [selected]);
+    };
+    el.querySelector("#d-manage-attachments")?.addEventListener("click", async () => {
+      if (isEdit) {
+        openAttachmentManager(doc.id, false);
+        return;
+      }
+      await pickPendingAttachments();
     });
+    el.querySelector("#d-pick-attachments")?.addEventListener("click", () => pickPendingAttachments());
     el.querySelector("#d-scan-attachment")?.addEventListener("click", async () => {
       const attachmentCount = isEdit ? generalDocAttachments(doc).length : pendingAttachments.length;
       if (attachmentCount >= 20) {
@@ -1293,7 +1362,7 @@ export async function renderDocuments(container, user, ctx) {
       }, 700);
       try {
         const scannedPath = await api.scanDocument(deviceId);
-        updateProgress(94, "جاري حفظ الوثيقة تلقائياً...");
+        updateProgress(94, isEdit ? "جاري حفظ الوثيقة تلقائياً..." : "جاري تجهيز الصورة...");
         if (isEdit) {
           await updateCurrentDoc(doc.id, collectDocData());
           await uploadCurrentDocFile(doc.id, scannedPath);
@@ -1306,17 +1375,12 @@ export async function renderDocuments(container, user, ctx) {
           showDocForm(currentDocs().find(item => item.id === doc.id));
           return;
         }
-        const created = await createCurrentDoc(collectDocData());
-        const filesToUpload = [...new Set([...pendingAttachments, scannedPath])].slice(0, 20);
-        for (const file of filesToUpload) await uploadCurrentDocFile(created.id, file);
-        pendingAttachments = [];
-        await refreshCurrentDocs();
-        activeDocFormGuard = null;
+        addPendingAttachments([scannedPath]);
         clearInterval(progressTimer);
-        updateProgress(100, "اكتمل المسح والحفظ بنجاح");
-        showToast("تم مسح الوثيقة وإنشاؤها وحفظها تلقائياً");
-        await new Promise(resolve => setTimeout(resolve, 650));
-        showDocForm(currentDocs().find(item => item.id === created.id));
+        updateProgress(100, "اكتمل المسح، وسيُحفظ مع الوثيقة");
+        showToast("أُضيفت الصورة الممسوحة إلى المرفقات، وتُحفظ مع الوثيقة");
+        await new Promise(resolve => setTimeout(resolve, 900));
+        progress.style.display = "none";
       } catch (error) {
         clearInterval(progressTimer);
         progress.style.borderColor = "var(--ui-danger-line)";

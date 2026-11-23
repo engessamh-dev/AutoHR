@@ -134,6 +134,28 @@ function requestBackupPassword({ title, message, minLength = 1 }) {
   });
 }
 
+// Storage warnings («على نفس القرص»…) can be dismissed per device. The key includes both
+// folders, so the warning shows again after either folder changes and the condition still holds.
+const DISMISSED_STORAGE_WARNINGS_KEY = "autohr.dismissedStorageWarnings";
+
+function storageWarningKey(warning, status) {
+  return [warning, status?.data_root ?? "", status?.backup_root ?? ""].join("|");
+}
+
+function dismissedStorageWarnings() {
+  try { return JSON.parse(localStorage.getItem(DISMISSED_STORAGE_WARNINGS_KEY) || "[]"); }
+  catch { return []; }
+}
+
+function isStorageWarningDismissed(key) {
+  return dismissedStorageWarnings().includes(key);
+}
+
+function dismissStorageWarning(key) {
+  const list = [...new Set([...dismissedStorageWarnings(), key])].slice(-20);
+  try { localStorage.setItem(DISMISSED_STORAGE_WARNINGS_KEY, JSON.stringify(list)); } catch { /* storage is optional */ }
+}
+
 export async function renderSettings(container, user, ctx) {
   const canSettings = can(user, "settings.manage");
   const canBackups = can(user, "backups.manage");
@@ -207,7 +229,10 @@ export async function renderSettings(container, user, ctx) {
 
       <section class="card settings-panel space-y-1" data-settings-panel="storage">
         <p class="text-xs text-gray-500">يمكن نقل مجلد البيانات أو تغيير مجلد النسخ الاحتياطية بأمان: يُنسخ كل شيء ويُتحقق منه أولًا، ويبقى الموقع القديم كما هو دون حذف.</p>
-        ${(storageStatus?.warnings || []).map(w => `<p class="settings-storage-warning text-xs" style="color:var(--ui-warn);background:var(--ui-warn-bg);border:1px solid var(--ui-warn-line);border-radius:8px;padding:8px 10px;margin:6px 0">${escHtml(w)}</p>`).join("")}
+        ${(storageStatus?.warnings || []).filter(w => !isStorageWarningDismissed(storageWarningKey(w, storageStatus))).map(w => `<div class="settings-storage-warning text-xs" role="status" data-warning-key="${escHtml(storageWarningKey(w, storageStatus))}">
+          <span>${escHtml(w)}</span>
+          <button type="button" class="settings-warning-dismiss" title="إخفاء هذا التنبيه على هذا الجهاز">حسنًا</button>
+        </div>`).join("")}
         <div class="settings-path-row">
           <div class="min-w-0">
             <p class="settings-path-label">مجلد البيانات والمرفقات</p>
@@ -341,6 +366,11 @@ export async function renderSettings(container, user, ctx) {
     });
   };
   bindOpenFolder("#btn-open-storage", "data");
+  container.querySelectorAll(".settings-warning-dismiss").forEach(button => button.addEventListener("click", () => {
+    const warning = button.closest(".settings-storage-warning");
+    dismissStorageWarning(warning.dataset.warningKey);
+    warning.remove();
+  }));
   bindOpenFolder("#btn-open-backup", "backups");
 
   const pickFolder = title => open({ directory: true, multiple: false, title });
