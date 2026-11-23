@@ -36,7 +36,7 @@ export async function renderUsers(container, user) {
             <p class="text-xs text-gray-500 mt-1">أدخل البيانات المطلوبة ثم اضغط ${escHtml(submitLabel)}</p>
           </div>
           <button type="button" class="modal-close" aria-label="إغلاق" title="إغلاق (Esc)"
-            style="border:0;background:transparent;color:#9ca3af;font-size:22px;line-height:1;cursor:pointer;padding:4px 8px;border-radius:6px">×</button>
+            style="border:0;background:transparent;color:var(--ui-text-muted);font-size:22px;line-height:1;cursor:pointer;padding:4px 8px;border-radius:6px">×</button>
         </div>
         ${body}
         <div class="flex gap-3 pt-2">
@@ -201,7 +201,7 @@ export async function renderUsers(container, user) {
                 <tr class="table-row">
                   <td class="table-cell">
                     <div class="flex items-center gap-3">
-                      <span style="display:grid;place-items:center;width:34px;height:34px;border-radius:50%;background:#08284a;color:#7dd3fc;font-weight:800">
+                      <span style="display:grid;place-items:center;width:34px;height:34px;border-radius:50%;background:var(--ui-accent-soft);color:var(--ui-info);font-weight:800">
                         ${escHtml(item.username.slice(0, 1).toUpperCase())}
                       </span>
                       <div>

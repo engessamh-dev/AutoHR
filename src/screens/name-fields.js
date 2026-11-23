@@ -44,14 +44,14 @@ export function nameFieldsHtml({ key, label, parts, text, passport = false, requ
   const value = part => hasParts ? escHtml(parts[part] ?? "") : (part === fields[0][0] ? escHtml(text ?? "") : "");
   return `<div class="name-fields" data-name-key="${key}" data-passport="${passport ? 1 : 0}" data-review="${review ? 1 : 0}" data-has-parts="${hasParts ? 1 : 0}"
       style="${span ? "grid-column:1 / -1;" : ""}">
-    <p style="font-size:11px;color:#6b7280;letter-spacing:.05em;margin-bottom:4px;display:flex;gap:8px;align-items:center">
+    <p style="font-size:11px;color:var(--ui-text-faint);letter-spacing:.05em;margin-bottom:4px;display:flex;gap:8px;align-items:center">
       <span>${label}${required ? " *" : ""}</span>
       <span class="name-review-badge" ${review ? "" : "hidden"} title="قُسّم الاسم تلقائيًا ويحتاج تأكيدًا"
-        style="font-size:11px;color:#fbbf24;background:rgba(251,191,36,.12);border-radius:999px;padding:1px 8px">بحاجة لمراجعة</span>
+        style="font-size:11px;color:var(--ui-warn);background:var(--ui-warn-bg);border-radius:999px;padding:1px 8px">بحاجة لمراجعة</span>
     </p>
     <div style="display:grid;grid-template-columns:repeat(${fields.length}, minmax(0, 1fr));gap:6px">
       ${fields.map(([part, partLabel]) => `<label style="display:block;min-width:0">
-        <span style="display:block;font-size:10px;color:#6b7280;margin-bottom:2px">${partLabel}</span>
+        <span style="display:block;font-size:10px;color:var(--ui-text-faint);margin-bottom:2px">${partLabel}</span>
         <input class="input-field name-part" data-part="${part}" dir="${passport ? "ltr" : "rtl"}" value="${value(part)}" />
       </label>`).join("")}
     </div>
