@@ -494,7 +494,7 @@ document.addEventListener("DOMContentLoaded", async () => {
   loginPassword.addEventListener("keyup", syncCapsLock);
 
   document.getElementById("btn-forgot-password").addEventListener("click", () => {
-    showLoginMessage("تواصل مع مسؤول النظام لإصدار كلمة مرور مؤقتة.", "info");
+    showLoginMessage("تواصل مع مدير النظام لإعادة تعيين كلمة المرور", "info");
   });
 
   document.querySelectorAll("#login-username, #login-password").forEach(input => {
