@@ -1104,26 +1104,63 @@ fn vehicle_licence_line(text: &str) -> Option<(String, bool)> {
     Some(if check_digit(&repaired) == check { (fixed, true) } else { (number, false) })
 }
 
-/// The plate as printed: province digits, a Latin letter with the number, then the category
-/// (for example "12 A34567 خصوصي").
-fn vehicle_plate(text: &str) -> Option<String> {
+/// Plate categories printed after the plate («خصوصي», «أجرة», …), compared after `normalize`.
+const PLATE_CATEGORIES: &[&str] = &["خصوصي", "اجره", "تكسي", "حمل", "حكومي", "نقل", "دراجه", "زراعي", "انشائي", "مؤقت", "تصدير", "فحص"];
+
+/// Governorate codes on the newer Latin-letter plates.
+const GOVERNORATE_CODES: &[(&str, &str)] = &[
+    ("11", "بغداد"), ("12", "نينوى"), ("13", "ميسان"), ("14", "البصرة"), ("15", "الأنبار"),
+    ("16", "القادسية"), ("17", "المثنى"), ("18", "بابل"), ("19", "كربلاء"), ("20", "ديالى"),
+    ("21", "ذي قار"), ("22", "كركوك"), ("23", "واسط"), ("24", "صلاح الدين"), ("25", "النجف"),
+];
+
+/// Governorate names as written on the older plates, compared after `normalize`.
+const GOVERNORATE_NAMES: &[&str] = &[
+    "بغداد", "نينوى", "ميسان", "البصرة", "الأنبار", "القادسية", "المثنى", "بابل", "كربلاء", "ديالى",
+    "ذي قار", "كركوك", "واسط", "صلاح الدين", "النجف", "أربيل", "دهوك", "السليمانية", "حلبجة",
+];
+
+struct Plate { number: String, governorate: Option<String>, governorate_from_code: bool, category: Option<String> }
+
+/// The plate line, in either format:
+/// * Latin letter: governorate code, letter with number, category ("12 A34567 خصوصي");
+/// * Arabic letter: number with a letter, governorate name, category ("12345 أ بغداد خصوصي",
+///   in Arabic-Indic digits on the card).
+fn vehicle_plate(text: &str) -> Option<Plate> {
     let text = ascii_digits(text);
-    let tokens: Vec<&str> = text.split_whitespace().collect();
-    let pos = tokens.iter().position(|t| {
+    let mut tokens: Vec<String> = text.split_whitespace().map(str::to_owned).collect();
+    // "12345ب": digits glued to the plate letter.
+    tokens = tokens.into_iter().flat_map(|t| {
+        let split = t.find(|c: char| is_arabic_letter(c));
+        match split {
+            Some(i) if i > 0 && t[..i].chars().all(|c| c.is_ascii_digit()) => vec![t[..i].to_owned(), t[i..].to_owned()],
+            _ => vec![t],
+        }
+    }).collect();
+    let category = tokens.iter().find(|t| PLATE_CATEGORIES.iter().any(|c| normalize(t) == normalize(c))).cloned();
+    let joined = normalize(&tokens.join(" "));
+    let governorate_name = GOVERNORATE_NAMES.iter().find(|g| joined.contains(&normalize(g))).map(|g| g.to_string());
+    // Latin format.
+    if let Some(pos) = tokens.iter().position(|t| {
         let letters = t.chars().filter(|c| c.is_ascii_uppercase()).count();
         (1..=2).contains(&letters) && t.chars().filter(char::is_ascii_digit).count() >= 4 && t.chars().all(|c| c.is_ascii_alphanumeric())
-    })?;
-    let token = tokens[pos];
-    // Province digits glued in front of the letter: "12A34567" → "12", "A34567".
-    let split = token.find(|c: char| c.is_ascii_uppercase()).unwrap_or(0);
-    let (province, number) = token.split_at(split);
-    let mut parts: Vec<String> = Vec::new();
-    let before: Vec<&str> = tokens[..pos].iter().copied().filter(|t| t.chars().all(|c| c.is_ascii_digit())).collect();
-    if !province.is_empty() { parts.push(province.to_owned()); } else if let Some(p) = before.last() { parts.push((*p).to_owned()); }
-    parts.push(number.to_owned());
-    let category: Vec<&str> = tokens.iter().copied().filter(|t| t.chars().any(is_arabic_letter)).collect();
-    if !category.is_empty() { parts.push(category.join(" ")); }
-    Some(parts.join(" "))
+    }) {
+        let token = &tokens[pos];
+        let split = token.find(|c: char| c.is_ascii_uppercase()).unwrap_or(0);
+        let (glued, number) = token.split_at(split);
+        let code = if !glued.is_empty() { Some(glued.to_owned()) } else {
+            tokens[..pos].iter().rev().find(|t| t.chars().all(|c| c.is_ascii_digit())).cloned()
+        };
+        let from_code = code.as_deref().and_then(|c| GOVERNORATE_CODES.iter().find(|(k, _)| *k == c)).map(|(_, name)| name.to_string());
+        let number = match &code { Some(c) => format!("{c} {number}"), None => number.to_owned() };
+        return Some(Plate { number, governorate: governorate_name.clone().or(from_code.clone()), governorate_from_code: governorate_name.is_none() && from_code.is_some(), category });
+    }
+    // Arabic format: the number (4 digits or more) and the letter after it.
+    let pos = tokens.iter().position(|t| t.len() >= 4 && t.chars().all(|c| c.is_ascii_digit()))?;
+    if category.is_none() && governorate_name.is_none() { return None; }
+    let letter = tokens.get(pos + 1).filter(|t| t.chars().count() <= 2 && t.chars().all(is_arabic_letter));
+    let number = match letter { Some(l) => format!("{} {}", tokens[pos], l), None => tokens[pos].clone() };
+    Some(Plate { number, governorate: governorate_name, governorate_from_code: false, category })
 }
 
 /// A table code such as "D.1." or "R." on its own (a label cell, not a value).
@@ -1166,10 +1203,17 @@ fn parse_vehicle_registration(lines: &[Line], result: &mut ReadResult) {
             }
             continue;
         }
-        if line.text.chars().any(is_arabic_letter) && result.get("plate").is_none() {
+        // The owner's address (C.1.3) also has a governorate and numbers.
+        if line.text.chars().any(is_arabic_letter) && result.get("plate").is_none() && !line.text.to_uppercase().contains("C.1") {
             if let Some(plate) = vehicle_plate(&line.text) {
-                // Province digits are often merged by the reader: always reviewed.
-                result.set("plate", plate, line.confidence.min(0.6), "text");
+                // Plate digits and letters are easily misread: always reviewed.
+                result.set("plate", plate.number, line.confidence.min(0.7), "text");
+                if let Some(governorate) = plate.governorate {
+                    result.set("governorate", governorate, line.confidence.min(if plate.governorate_from_code { 0.6 } else { 0.9 }), "text");
+                }
+                if let Some(category) = plate.category {
+                    result.set("plate_category", category, line.confidence.min(0.9), "text");
+                }
             }
         }
     }
@@ -1185,16 +1229,32 @@ fn parse_vehicle_registration(lines: &[Line], result: &mut ReadResult) {
     // Back.
     for label in lines {
         let Some(code) = vehicle_code(&label.text) else { continue };
-        let key = match code.as_str() { "D.1" => "brand", "D.3" => "vehicle_type", "R" => "color", "11" => "year", _ => continue };
+        let key = match code.as_str() { "D.1" => "brand", "D.3" => "vehicle_type", "R" => "color", "11" => "year", "E" => "chassis_no", _ => continue };
         let Some(cell) = cell_right_of(lines, label) else { continue };
         if vehicle_code(&cell.text).is_some() && key != "year" { continue; }
         let value = cell.text.trim().to_owned();
         let valid = match key {
             "year" => value.len() == 4 && value.chars().all(|c| c.is_ascii_digit()),
+            "chassis_no" => (11..=17).contains(&value.len()) && value.chars().all(|c| c.is_ascii_alphanumeric()),
             _ => value.chars().any(is_arabic_letter) || value.chars().any(|c| c.is_ascii_alphabetic()),
         };
         if valid {
             result.set(key, value, cell.confidence, "text");
+        }
+    }
+    // The chassis number is often printed again under P.5: agreeing copies are verified,
+    // differing ones are reviewed.
+    let cabinet = lines.iter()
+        .filter(|l| vehicle_code(&l.text).as_deref() == Some("P.5"))
+        .find_map(|label| cell_right_of(lines, label))
+        .map(|cell| cell.text.trim().to_owned());
+    if let (Some(chassis), Some(cabinet)) = (result.get("chassis_no").map(|f| f.value.clone()), cabinet) {
+        if cabinet.len() == chassis.len() {
+            if cabinet == chassis {
+                result.set("chassis_no", chassis, 0.99, "both");
+            } else if let Some(field) = result.fields.iter_mut().find(|f| f.key == "chassis_no") {
+                field.confidence = field.confidence.min(0.6);
+            }
         }
     }
 }
@@ -1542,7 +1602,18 @@ mod tests {
         assert_eq!(r.document, "vehicle_registration");
         assert_eq!(v(&r, "annual_no"), "X12345678");
         assert_eq!(r.get("annual_no").unwrap().source, "mrz");
-        assert_eq!(v(&r, "plate"), "12 A34567 خصوصي");
+        assert_eq!(v(&r, "plate"), "12 A34567");
+        assert_eq!(v(&r, "plate_category"), "خصوصي");
+        assert_eq!(v(&r, "governorate"), "نينوى");
+        assert!(r.get("governorate").unwrap().confidence < 0.85, "from the code table: reviewed");
+        // Older plates: Arabic-Indic number glued to an Arabic letter, then the governorate.
+        let mut arabic = front.clone();
+        arabic[1] = at("٤٥٦٧٨ب كربلاء أجرة", 300., 100.);
+        arabic.push(at("C.1.3. 1 2 بغداد الكرخ", 300., 200.));
+        let ra = parse(&arabic);
+        assert_eq!(v(&ra, "plate"), "45678 ب");
+        assert_eq!(v(&ra, "governorate"), "كربلاء");
+        assert_eq!(v(&ra, "plate_category"), "أجرة");
         assert!(r.get("plate").unwrap().confidence < 0.85);
         assert_eq!(v(&r, "issue_date"), "2025-02-03");
         assert_eq!(v(&r, "expiry_date"), "2030-02-02");
@@ -1554,7 +1625,8 @@ mod tests {
         assert!(parse(&bad).get("annual_no").unwrap().confidence < 0.85);
 
         let back = vec![
-            at("D.1.", 0., 0.), at("تويوتا", 100., 2.), at("E.", 500., 0.), at("ABC123", 600., 0.),
+            at("D.1.", 0., 0.), at("تويوتا", 100., 2.), at("E.", 500., 0.), at("ABCDE1234567890XY", 600., 0.),
+            at("P.5.", 0., 160.), at("ABCDE1234567890XY", 100., 160.),
             at("D.3.", 0., 40.), at("كامري", 100., 41.), at("11.", 500., 40.), at("2022", 600., 40.),
             at("R.", 0., 80.), at("أبيض", 100., 80.), at("13.", 500., 80.),
             at("18.", 0., 120.), at("19.", 300., 120.),
@@ -1566,6 +1638,8 @@ mod tests {
         assert_eq!(v(&r, "vehicle_type"), "كامري");
         assert_eq!(v(&r, "color"), "أبيض");
         assert_eq!(v(&r, "year"), "2022");
+        assert_eq!(v(&r, "chassis_no"), "ABCDE1234567890XY");
+        assert_eq!(r.get("chassis_no").unwrap().source, "both");
     }
 
     #[test]
