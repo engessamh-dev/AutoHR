@@ -1080,6 +1080,13 @@ fn parse_airport_badge(lines: &[Line], result: &mut ReadResult) {
 // its code.
 
 fn is_vehicle_registration(lines: &[Line]) -> bool {
+    // The back is a table of field codes; its printed legend is often unreadable.
+    let codes = lines.iter()
+        .filter_map(|l| vehicle_code(&l.text))
+        .filter(|c| ["D.1", "D.3", "E", "P.5", "R", "A.12", "A.13", "F.1", "F.2", "S.1./S.2", "P.2", "P.3"].contains(&c.as_str()))
+        .collect::<std::collections::HashSet<_>>()
+        .len();
+    if codes >= 4 { return true; }
     lines.iter().any(|l| {
         let lower = l.text.to_lowercase();
         lower.contains("vehicle registration") || lower.contains("vehicle brand") || lower.contains("chassis number")
@@ -1248,6 +1255,14 @@ fn parse_vehicle_registration(lines: &[Line], result: &mut ReadResult) {
         .filter(|l| vehicle_code(&l.text).as_deref() == Some("P.5"))
         .find_map(|label| cell_right_of(lines, label))
         .map(|cell| cell.text.trim().to_owned());
+    let valid_vin = |v: &str| (11..=17).contains(&v.len()) && v.chars().all(|c| c.is_ascii_alphanumeric());
+    // E. misread (for example a "$" for a 5): the P.5 copy stands in, for review.
+    if result.get("chassis_no").is_none() {
+        if let Some(cabinet) = cabinet.as_deref().filter(|c| valid_vin(c)) {
+            result.set("chassis_no", cabinet.to_owned(), 0.7, "text");
+        }
+        return;
+    }
     if let (Some(chassis), Some(cabinet)) = (result.get("chassis_no").map(|f| f.value.clone()), cabinet) {
         if cabinet.len() == chassis.len() {
             if cabinet == chassis {
@@ -1640,6 +1655,15 @@ mod tests {
         assert_eq!(v(&r, "year"), "2022");
         assert_eq!(v(&r, "chassis_no"), "ABCDE1234567890XY");
         assert_eq!(r.get("chassis_no").unwrap().source, "both");
+        // No readable legend, and the E. copy misread: still a registration, chassis from P.5.
+        let mut bare = back.clone();
+        bare.retain(|l| !l.text.contains("Vehicle"));
+        bare[3] = at("ABCDE1234567890X$", 600., 0.);
+        let rb = parse(&bare);
+        assert_eq!(rb.document, "vehicle_registration");
+        assert_eq!(v(&rb, "brand"), "تويوتا");
+        assert_eq!(v(&rb, "chassis_no"), "ABCDE1234567890XY");
+        assert!(rb.get("chassis_no").unwrap().confidence < 0.85);
     }
 
     #[test]
