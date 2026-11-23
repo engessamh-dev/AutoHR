@@ -116,6 +116,7 @@ export const api = {
   downloadDocument: (relativePath, destinationPath) => invoke("cmd_download_document", { relativePath, destinationPath }),
   getDocumentDownloadName: (relativePath) => invoke("cmd_get_document_download_name", { relativePath }),
   getDocumentPreviewPath: (relativePath) => invoke("cmd_get_document_preview_path", { relativePath }),
-  readDocument: (relativePath) => invoke("cmd_read_document", { relativePath }),
+  // The backend sends raw bytes (an ArrayBuffer), not a JSON array of numbers.
+  readDocument: async (relativePath) => new Uint8Array(await invoke("cmd_read_document", { relativePath })),
   printDocument: (relativePath) => invoke("cmd_print_document", { relativePath }),
 };

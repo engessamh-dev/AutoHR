@@ -9,10 +9,20 @@ const FILE_GEN = { ...AR_NOUNS.file, two: "ملفين" };
 const DOC_GEN = { ...AR_NOUNS.document, two: "وثيقتين" };
 import { open, save } from "@tauri-apps/plugin-dialog";
 import { can }       from "../permissions.js";
-import * as pdfjsLib from "pdfjs-dist";
 import pdfWorkerUrl from "pdfjs-dist/build/pdf.worker.min.mjs?url";
 
-pdfjsLib.GlobalWorkerOptions.workerSrc = pdfWorkerUrl;
+// pdf.js is about 460 KB, so it is loaded only when a PDF is first printed, not at startup.
+let pdfjsPromise = null;
+function loadPdfjs() {
+  pdfjsPromise ??= import("pdfjs-dist").then(pdfjsLib => {
+    pdfjsLib.GlobalWorkerOptions.workerSrc = pdfWorkerUrl;
+    return pdfjsLib;
+  }).catch(error => {
+    pdfjsPromise = null;
+    throw error;
+  });
+  return pdfjsPromise;
+}
 const DOCUMENT_EXTENSIONS = ["jpg", "jpeg", "png", "webp", "pdf", "doc", "docx", "xls", "xlsx", "ppt", "pptx"];
 
 export async function renderDocuments(container, user, ctx) {
@@ -99,7 +109,10 @@ export async function renderDocuments(container, user, ctx) {
     if (asset.extension !== "pdf") {
       return [{ title: asset.title, html: `<img src="${escHtml(asset.assetUrl)}" alt="${escHtml(asset.title)}">` }];
     }
-    const bytes = await (await fetch(asset.assetUrl)).arrayBuffer();
+    const [pdfjsLib, bytes] = await Promise.all([
+      loadPdfjs(),
+      fetch(asset.assetUrl).then(response => response.arrayBuffer()),
+    ]);
     const loadingTask = pdfjsLib.getDocument({ data: bytes });
     const pdf = await loadingTask.promise;
     const pages = [];

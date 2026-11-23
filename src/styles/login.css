@@ -13,7 +13,7 @@
   --pf:min(calc(100vw / 1671),calc(100vh / 941));                     /* footer: fits the window */
   --pc:min(calc(100vh / 941 * .85),calc(100vw / 1671 * .95));         /* centre block: ~85% of the design size */
   position:fixed;inset:0;z-index:40;overflow:hidden;
-  background:#04122d url('../assets/login-background-gcaan.jpg') center / cover no-repeat;
+  background:#04122d url('../assets/login-background-gcaan.webp') center / cover no-repeat;
   font-family:"Segoe UI","Cairo","Noto Sans Arabic",Tahoma,Arial,sans-serif;
 }
 .login-screen.hidden{display:none}
@@ -25,7 +25,7 @@
 }
 .login-stage > *, .login-stage form > *{position:absolute}
 .login-stage form{position:static}
-.login-card-top{--x0:498;--y0:0;--x1:1174;--y1:740;pointer-events:none;background:url('../assets/login-card-top.png') 0 0 / 100% 100% no-repeat}
+.login-card-top{--x0:498;--y0:0;--x1:1174;--y1:740;pointer-events:none;background:url('../assets/login-card-top.webp') 0 0 / 100% 100% no-repeat}
 
 /* x0 y0 x1 y1 in design pixels → box */
 .login-box-username{--x0:585;--y0:435;--x1:1085;--y1:484}
@@ -113,7 +113,7 @@
   --px:var(--pf);
   position:absolute;left:50%;bottom:0;transform:translateX(-50%);
   width:calc(1627 * var(--px));height:calc(83 * var(--px));
-  background:url('../assets/login-footer.png') 0 0 / 100% 100% no-repeat;pointer-events:none;
+  background:url('../assets/login-footer.webp') 0 0 / 100% 100% no-repeat;pointer-events:none;
 }
 .login-version{
   position:absolute;left:calc((1374 - 22) * var(--px));top:calc((883 - 858) * var(--px));

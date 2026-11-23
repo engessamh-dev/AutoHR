@@ -548,7 +548,7 @@ mod dry_run {
         let source = Connection::open_with_flags(&source_path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY).unwrap();
         let dir = tempfile::tempdir().unwrap();
         let copy_path = dir.path().join("database.db");
-        source.backup(rusqlite::DatabaseName::Main, &copy_path, None).unwrap();
+        source.backup(rusqlite::MAIN_DB, &copy_path, None::<fn(rusqlite::backup::Progress)>).unwrap();
         drop(source);
         let data = dir.path().join("data");
         std::fs::create_dir_all(&data).unwrap();

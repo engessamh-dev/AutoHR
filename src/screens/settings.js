@@ -136,6 +136,8 @@ function requestBackupPassword({ title, message, minLength = 1 }) {
 export async function renderSettings(container, user, ctx) {
   const canSettings = can(user, "settings.manage");
   const canBackups = can(user, "backups.manage");
+  // Restoring replaces every table, users included, so only a System Admin may do it.
+  const canRestore = can(user, "backups.restore");
   let storageStatus = null;
   let companyConfig = null;
   let autoBackup = null;
@@ -265,13 +267,13 @@ export async function renderSettings(container, user, ctx) {
           <button id="btn-export-backup" class="btn-secondary">تصدير نسخة إلى…</button>
         </div>
       </div>
-      <div class="card danger-zone space-y-3 mt-4">
+      ${canRestore ? `<div class="card danger-zone space-y-3 mt-4">
         <p class="danger-zone-title"><span aria-hidden="true">⚠</span> استعادة نسخة احتياطية</p>
         <p class="text-xs text-gray-400 leading-6">تستبدل الاستعادة كل البيانات والمرفقات الحالية بمحتوى النسخة المختارة، وتضيع أي تغييرات أُجريت بعد تاريخ تلك النسخة. يُنصح بإنشاء نسخة احتياطية الآن قبل الاستعادة.</p>
         <div>
           <button id="btn-restore-backup" class="btn-danger-outline">استعادة نسخة احتياطية…</button>
         </div>
-      </div>
+      </div>` : ""}
       </section>` : ""}
 
       ${canSettings && canBackups ? `<section class="card settings-panel space-y-3" data-settings-panel="updates">

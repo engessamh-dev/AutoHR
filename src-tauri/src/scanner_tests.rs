@@ -11,7 +11,7 @@ fn database_snapshot_migration_is_idempotent() {
     let source = Connection::open_with_flags(path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY).unwrap();
     let dir = tempfile::tempdir().unwrap();
     let copy = dir.path().join("database.db");
-    source.backup(rusqlite::DatabaseName::Main, &copy, None).unwrap();
+    source.backup(rusqlite::MAIN_DB, &copy, None::<fn(rusqlite::backup::Progress)>).unwrap();
     let conn = Connection::open(copy).unwrap();
     let tables: Vec<String> = conn.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'").unwrap()
         .query_map([], |r| r.get(0)).unwrap().map(Result::unwrap).collect();
