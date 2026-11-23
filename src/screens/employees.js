@@ -8,7 +8,8 @@ import { open, save } from "@tauri-apps/plugin-dialog";
 import { showToast, formatDate, escHtml, debounce, confirmAction, confirmSaveChanges } from "../utils.js";
 import { can } from "../permissions.js";
 import { openNameReview } from "./name-review.js";
-import { employeeNameFields, recordNameFields, bindNameFields, readNameFields, readNameGroup, applyNames } from "./name-fields.js";
+import { employeeNameFields, recordNameFields, bindNameFields, readNameFields, readNameGroup, applyNames, joinNameParts } from "./name-fields.js";
+import { readDocumentFields } from "./id-reader.js";
 
 let _employees = [];
 let _filter = "";
@@ -352,7 +353,7 @@ function sectionTitle(title) {
 // ── Unified attachment tiles ────────────────────────────────────────────────
 const IMAGE_EXTENSIONS = ["jpg", "jpeg", "png", "webp"];
 
-function attachmentTile({ label, path, fullPath, canManage, upload, remove, lockedNote = "احفظ سجل الموظف أولاً" }) {
+function attachmentTile({ label, path, fullPath, canManage, upload, remove, lockedNote = "احفظ سجل الموظف أولاً", read = null }) {
   const name = path?.split(/[/\\]/).pop();
   const extension = name?.split(".").pop()?.toLowerCase();
   const assetUrl = fullPath ? convertFileSrc(fullPath) : "";
@@ -369,6 +370,7 @@ function attachmentTile({ label, path, fullPath, canManage, upload, remove, lock
       : `<span class="emp-tile-note">${lockedNote}</span>`;
   const menu = name ? `<div class="emp-tile-menu" role="menu">
       ${viewKind ? `<button type="button" role="menuitem" class="emp-menu-item emp-view-attachment" data-url="${escHtml(assetUrl)}" data-kind="${viewKind}" data-title="${escHtml(label)}">عرض</button>` : ""}
+      ${read && isImage && can(_currentUser, "employees.edit") ? `<button type="button" role="menuitem" class="emp-menu-item emp-read-fields" data-path="${escHtml(path)}" data-url="${escHtml(assetUrl)}" data-target="${escHtml(read)}" data-title="${escHtml(label)}">قراءة البيانات</button>` : ""}
       ${canManage ? `<button type="button" role="menuitem" class="emp-menu-item ${upload.cls}" ${upload.attrs}>استبدال</button>` : ""}
       ${can(_currentUser, "documents.download") ? `<button type="button" role="menuitem" class="emp-menu-item btn-download-attachment" data-path="${escHtml(path)}">تحميل</button>` : ""}
       ${canManage ? `<button type="button" role="menuitem" class="emp-menu-item is-danger ${remove.cls}" ${remove.attrs}>حذف</button>` : ""}
@@ -383,7 +385,7 @@ function attachmentTile({ label, path, fullPath, canManage, upload, remove, lock
 function sidedCardTile(label, side, path, fullPath, canUpload, cardType = "national") {
   const attrs = `data-card-type="${cardType}" data-side="${side}"`;
   return attachmentTile({
-    label, path, fullPath, canManage: canUpload,
+    label, path, fullPath, canManage: canUpload, read: cardType === "national" ? "employee" : null,
     upload: { cls: "btn-upload-sided-card", attrs },
     remove: { cls: "btn-delete-sided-card", attrs },
   });
@@ -396,7 +398,7 @@ function firstJsonPath(value) {
 function passportTile(emp) {
   const path = firstJsonPath(emp?.passport_attachment_paths);
   return attachmentTile({
-    label: "نسخة الجواز", path, fullPath: emp?.passport_attachment_full_paths?.[0], canManage: Boolean(emp?.id),
+    label: "نسخة الجواز", path, fullPath: emp?.passport_attachment_full_paths?.[0], canManage: Boolean(emp?.id), read: "employee",
     upload: { cls: "", attrs: `id="btn-upload-passport"` },
     remove: { cls: "btn-delete-passport", attrs: `data-path="${escHtml(path ?? "")}"` },
   });
@@ -1108,6 +1110,8 @@ function handlePanelUiClick(event) {
   }
   const viewer = target.closest(".emp-view-attachment");
   if (viewer) openAttachmentViewer(viewer.dataset.url, viewer.dataset.kind, viewer.dataset.title);
+  const reader = target.closest(".emp-read-fields");
+  if (reader) readFieldsInto(reader.dataset.target, reader.dataset.path, reader.dataset.url, reader.dataset.title);
   const thumb = target.closest(".emp-tile-thumb");
   if (thumb) thumb.closest(".emp-tile")?.querySelector(".emp-view-attachment")?.click();
   closeEmployeeMenus();
@@ -1419,6 +1423,7 @@ function attachTabEvents(emp) {
           else await api.uploadNationalCardAttachment(emp.id, btn.dataset.side, selected);
           showToast(`تم رفع مرفق ${cardName}`);
           await refreshDocumentAttachments(emp.id);
+          if (cardType === "national") await readUploadedFields("employee", _panelDraft?.[`civil_id_${btn.dataset.side}_path`], _panelDraft?.[`civil_id_${btn.dataset.side}_full_path`], `${cardName}، ${btn.dataset.side === "front" ? "الوجه الأمامي" : "الوجه الخلفي"}`);
         } catch (err) { showToast(err?.message ?? String(err || "خطأ في الرفع"), "error"); }
       });
     });
@@ -1456,6 +1461,9 @@ function attachTabEvents(emp) {
         await api.uploadPassportAttachment(emp.id, selected);
         showToast("تم رفع نسخة جواز السفر");
         await refreshDocumentAttachments(emp.id);
+        const passportPaths = parseJsonList(_panelDraft?.passport_attachment_paths);
+        const passportIndex = passportPaths.length - 1;
+        await readUploadedFields("employee", passportPaths[passportIndex], _panelDraft?.passport_attachment_full_paths?.[passportIndex], "جواز السفر");
       } catch (err) { showToast(err?.message ?? String(err || "خطأ في الرفع"), "error"); }
     });
 
@@ -1661,6 +1669,8 @@ function renderSpouseList(emp) {
         await api.uploadSpouseNationalCardAttachment(_panelDraft.id, Number(btn.dataset.spouseIndex), btn.dataset.side, selected);
         showToast(`تم رفع مرفق البطاقة الوطنية للـ${config.itemLabel}`);
         await refreshSpouseAttachments(_panelDraft.id);
+        const spouse = ocrTarget(`spouse:${btn.dataset.spouseIndex}`).record;
+        await readUploadedFields(`spouse:${btn.dataset.spouseIndex}`, spouse?.[`national_card_${btn.dataset.side}_path`], spouse?.[`national_card_${btn.dataset.side}_full_path`], `البطاقة الوطنية للـ${config.itemLabel}`);
       } catch (err) { showToast(err?.message ?? String(err || "خطأ في رفع المرفق"), "error"); }
     });
   });
@@ -1688,7 +1698,7 @@ function spouseAttachmentCard(label, side, spouse, spouseIndex, maxSpouses = 4) 
   const canUpload = Boolean(_panelDraft?.id) && !_panelDirty && Number.isInteger(spouseIndex) && spouseIndex < maxSpouses;
   const attrs = `data-spouse-index="${spouseIndex}" data-side="${side}"`;
   return attachmentTile({
-    label, path, fullPath, canManage: canUpload,
+    label, path, fullPath, canManage: canUpload, read: `spouse:${spouseIndex}`,
     upload: { cls: "btn-upload-spouse-card", attrs },
     remove: { cls: "btn-delete-spouse-card", attrs },
     lockedNote: "احفظ أولاً",
@@ -1819,6 +1829,8 @@ function renderFamilyList(emp) {
         await api.uploadFamilyNationalCardAttachment(_panelDraft.id, Number(btn.dataset.memberIndex), btn.dataset.side, selected);
         showToast("تم رفع مرفق البطاقة الوطنية لفرد الأسرة");
         await refreshFamilyAttachments(_panelDraft.id);
+        const member = ocrTarget(`family:${btn.dataset.memberIndex}`).record;
+        await readUploadedFields(`family:${btn.dataset.memberIndex}`, member?.[`national_card_${btn.dataset.side}_path`], member?.[`national_card_${btn.dataset.side}_full_path`], "البطاقة الوطنية لفرد الأسرة");
       } catch (err) { showToast(err?.message ?? String(err || "خطأ في رفع المرفق"), "error"); }
     });
   });
@@ -1846,7 +1858,7 @@ function familyAttachmentCard(label, side, member, memberIndex) {
   const canUpload = Boolean(_panelDraft?.id) && Number.isInteger(memberIndex) && memberIndex < 100;
   const attrs = `data-member-index="${memberIndex}" data-side="${side}"`;
   return attachmentTile({
-    label, path, fullPath, canManage: canUpload,
+    label, path, fullPath, canManage: canUpload, read: `family:${memberIndex}`,
     upload: { cls: "btn-upload-family-card", attrs },
     remove: { cls: "btn-delete-family-card", attrs },
     lockedNote: "احفظ أولاً",
@@ -1996,4 +2008,127 @@ function addVehicleRow() {
   const row = wrapper.firstElementChild;
   container.appendChild(row);
   attachVehicleRemoveEvents(row);
+}
+
+// ── Reading identity documents into the form ───────────────────────────────
+// The values read from a national card or passport image are reviewed by the user and then put
+// into the open form (not saved): the user saves the employee record as usual.
+
+const OCR_NAME_PARTS = [["first", "الاسم"], ["father", "اسم الأب"], ["grandfather", "اسم الجد"], ["surname", "اللقب"]];
+const OCR_IMAGE_EXTENSIONS = ["jpg", "jpeg", "png", "webp"];
+
+function namePartsOf(record) {
+  const value = record?.name_parts;
+  if (!value) return {};
+  if (typeof value === "string") { try { return JSON.parse(value) ?? {}; } catch { return {}; } }
+  return { ...value };
+}
+
+/** Current parts of a split name; an unsplit name is split by words like the name review does. */
+function currentNameParts(record, key, passport = false) {
+  const stored = namePartsOf(record)[key];
+  if (stored && joinNameParts(stored, passport)) return stored;
+  const words = String(record?.[key] ?? "").trim().split(/\s+/).filter(Boolean);
+  if (passport) return { given: words.slice(0, -1).join(" ") || words[0] || "", surname: words.length > 1 ? words.at(-1) : "" };
+  return { first: words[0] ?? "", father: words[1] ?? "", grandfather: words[2] ?? "", surname: words.slice(3).join(" ") };
+}
+
+function ocrTarget(target) {
+  const [kind, index] = String(target).split(":");
+  if (kind === "employee") return { kind, record: _panelDraft };
+  const listKey = kind === "spouse" ? "spouses" : "family_members";
+  let list = [];
+  try { list = JSON.parse(_panelDraft?.[listKey] ?? "[]"); } catch {}
+  if (kind === "spouse" && list.length === 0) list = spouseListFromEmployee(_panelDraft);
+  return { kind, index: Number(index), listKey, list, record: list[Number(index)] ?? {} };
+}
+
+function ocrRows(result, target) {
+  const { kind, record } = ocrTarget(target);
+  const read = key => result.fields.find(f => f.key === key);
+  const passport = result.document === "passport";
+  const rows = [];
+  const add = (id, label, key, current, opts = {}) => {
+    const field = read(key);
+    if (field) rows.push({ id, label, value: field.value, confidence: field.confidence, source: field.source, current: current ?? "", ...opts });
+  };
+  const nameKey = kind === "employee" ? "full_name" : "name";
+  const names = currentNameParts(record, nameKey);
+  OCR_NAME_PARTS.forEach(([part, label]) => add(`name:${nameKey}:${part}`, label, part, names[part]));
+  if (kind !== "family") {
+    const mother = currentNameParts(record, "mother_name");
+    add("name:mother_name:first", "اسم الأم", "mother_first", mother.first);
+    add("name:mother_name:father", "اسم والد الأم", "mother_father", mother.father);
+  }
+  add("field:gender", "الجنس", "gender", record?.gender);
+  add("field:blood_type", "فصيلة الدم", "blood_type", record?.blood_type, { ltr: true });
+  const fields = kind === "employee"
+    ? passport
+      ? [["passport_no", "رقم جواز السفر", "passport_no", { ltr: true }], ["passport_type", "نوع جواز السفر", "passport_type", { ltr: true }],
+         ["passport_issue_date", "تاريخ إصدار الجواز", "issue_date", { date: true }], ["passport_expiry_date", "تاريخ نفاذ الجواز", "expiry_date", { date: true }],
+         ["civil_id", "رقم البطاقة الوطنية", "national_no", { ltr: true }], ["birthdate", "تاريخ الولادة", "birthdate", { date: true }]]
+      : [["civil_id", "رقم البطاقة الوطنية", "national_no", { ltr: true }], ["civil_id_issuer", "جهة الإصدار", "issuer"],
+         ["civil_id_issue_date", "تاريخ الإصدار", "issue_date", { date: true }], ["civil_id_expiry_date", "تاريخ النفاذ", "expiry_date", { date: true }],
+         ["civil_id_birthplace", "محل الولادة (البطاقة)", "birthplace"], ["civil_id_birthdate", "تاريخ الولادة (البطاقة)", "birthdate", { date: true }],
+         ["civil_id_family_number", "الرقم العائلي", "family_no", { ltr: true }],
+         ["birthplace", "محل الولادة (البيانات الأساسية)", "birthplace"], ["birthdate", "تاريخ الولادة (البيانات الأساسية)", "birthdate", { date: true }]]
+    : [["civil_id", "رقم البطاقة الوطنية", "national_no", { ltr: true }], ["issuer", "جهة الإصدار", "issuer"],
+       ["issue_date", "تاريخ الإصدار", "issue_date", { date: true }], ["expiry_date", "تاريخ النفاذ", "expiry_date", { date: true }],
+       ["birthplace", "محل الولادة", "birthplace"], ["birthdate", "تاريخ الولادة", "birthdate", { date: true }]];
+  fields.forEach(([id, label, key, opts]) => add(`field:${id}`, label, key, record?.[id], opts));
+  if (kind === "employee" && passport) {
+    const latin = currentNameParts(record, "passport_name", true);
+    add("name:passport_name:given", "الأسماء حسب الجواز", "latin_given", latin.given, { ltr: true });
+    add("name:passport_name:surname", "اللقب حسب الجواز", "latin_surname", latin.surname, { ltr: true });
+  }
+  return rows;
+}
+
+function applyOcrValues(target, chosen) {
+  const panel = document.getElementById("emp-panel");
+  const before = ocrTarget(target);
+  collectVisiblePanelFields(panel);
+  const info = ocrTarget(target);
+  // Rows read back from the form keep only stored paths; keep the preview paths too.
+  info.list?.forEach((entry, i) => {
+    Object.entries(before.list?.[i] ?? {}).forEach(([key, value]) => {
+      if (key.endsWith("_full_path") && entry[key] == null) entry[key] = value;
+    });
+  });
+  const record = info.kind === "employee" ? _panelDraft : { ...info.record };
+  const parts = namePartsOf(record);
+  for (const [id, value] of Object.entries(chosen)) {
+    const [type, key, part] = id.split(":");
+    if (type === "field") { record[key] = value; continue; }
+    const passport = key === "passport_name";
+    const group = { ...currentNameParts(record, key, passport), ...(parts[key] ?? {}), [part]: value, review: false };
+    parts[key] = group;
+    record[key] = joinNameParts(group, passport);
+  }
+  record.name_parts = parts;
+  if (info.kind !== "employee") {
+    info.list[info.index] = record;
+    _panelDraft[info.listKey] = JSON.stringify(info.list);
+  }
+  document.getElementById("tab-content").innerHTML = tabContent(_activeTab, _panelDraft);
+  attachTabEvents(_panelDraft);
+  updateTabCounts();
+  markPanelDirty();
+  showToast("أُدخلت القيم في النموذج. راجعها ثم اضغط حفظ.");
+}
+
+/** Right after an upload: offer the read values straight away (images only). */
+async function readUploadedFields(target, path, fullPath, title) {
+  if (!can(_currentUser, "employees.edit")) return;
+  await readFieldsInto(target, path, fullPath ? convertFileSrc(fullPath) : "", title);
+}
+
+async function readFieldsInto(target, path, imageUrl, title) {
+  const extension = String(path ?? "").split(".").pop()?.toLowerCase();
+  if (!path || !OCR_IMAGE_EXTENSIONS.includes(extension)) return;
+  const chosen = await readDocumentFields({
+    path, imageUrl, title: `قراءة البيانات: ${title ?? ""}`,
+    buildRows: result => ocrRows(result, target),
+  });
+  if (chosen && Object.keys(chosen).length) applyOcrValues(target, chosen);
 }

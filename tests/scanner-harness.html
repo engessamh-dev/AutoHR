@@ -29,7 +29,7 @@ window.__TAURI_INTERNALS__={convertFileSrc:()=>canvas.toDataURL("image/jpeg"),in
   if(command==="cmd_scanner_versions")return {original:bytes,processed:bytes};
   if(command.startsWith("cmd_upload_"))return "original-upload-result";
   if(command==="plugin:dialog|open")return "synthetic.png";
-  if(command==="cmd_list_employees")return [employee];
+  if(command==="cmd_list_employees")return [Object.assign(employee, window.employeePatch || {})];
   if(command==="cmd_get_employee")return employee;
   if(command==="cmd_list_name_review")return window.nameReview ?? [];
   if(command==="cmd_save_name_review"){window.nameReview=(window.nameReview??[]).filter(i=>!(i.employee_id===args.employeeId&&i.owner===args.owner&&i.index===args.index&&i.field===args.field));return "saved";}
@@ -38,6 +38,7 @@ window.__TAURI_INTERNALS__={convertFileSrc:()=>canvas.toDataURL("image/jpeg"),in
   if(command==="cmd_get_company_config")return {company_name:"Synthetic Company",department_name:"Test",division_name:""};
   if(command==="cmd_list_general_docs" || command==="cmd_list_outgoing_docs")return [doc];
   if(command==="cmd_read_document")return bytes;
+  if(command==="cmd_read_document_fields"){if(window.failRead)throw window.failRead;return window.readResult ?? {document:"unknown",fields:[],warnings:[]};}
   if(command==="cmd_audit_document_view")return;
   if(command==="cmd_get_storage_path" || command==="cmd_get_backup_path")return "synthetic path";
   throw new Error("Unmocked command: "+command);

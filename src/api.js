@@ -43,6 +43,8 @@ export const api = {
   deleteMinistryBadgeAttachment: (empId, side) => invoke("cmd_delete_ministry_badge_attachment", { employeeId: empId, side }),
   uploadPassportAttachment: (empId, path) => uploadWithScanner("cmd_upload_passport_attachment", { employeeId: empId, sourcePath: path }),
   deletePassportAttachment: (empId, rel) => invoke("cmd_delete_passport_attachment", { employeeId: empId, relativePath: rel }),
+  // Reads the fields of a stored national card or passport image on this device (nothing is saved).
+  readDocumentFields: (rel) => invoke("cmd_read_document_fields", { relativePath: rel }),
   uploadRationCardAttachment: (empId, path) => uploadWithScanner("cmd_upload_ration_card_attachment", { employeeId: empId, sourcePath: path }),
   deleteRationCardAttachment: (empId, rel) => invoke("cmd_delete_ration_card_attachment", { employeeId: empId, relativePath: rel }),
 
