@@ -235,7 +235,7 @@ pub fn pre_upgrade_snapshot(conn: &Connection, from: i64) -> Result<PathBuf, Str
             if destination.exists() {
                 return Err(format!("{} already exists", destination.display()));
             }
-            conn.backup(rusqlite::DatabaseName::Main, &destination, None).map_err(|e| e.to_string())?;
+            conn.backup(rusqlite::MAIN_DB, &destination, None::<fn(rusqlite::backup::Progress)>).map_err(|e| e.to_string())?;
             // Keep the snapshot a single self-contained file (no -wal / -shm beside it).
             Connection::open(&destination)
                 .and_then(|copy| copy.pragma_update(None, "journal_mode", "DELETE"))
@@ -294,6 +294,10 @@ pub fn upgrade_restored(conn: &Connection) -> Result<(), OpenError> {
     }
     Ok(())
 }
+
+/// Builds the current schema on an empty connection (tests only).
+#[cfg(test)]
+pub(crate) fn migrate_for_tests(conn: &Connection) { upgrade(conn, 0).unwrap(); }
 
 fn migrate(conn: &Connection) -> SqlResult<()> {
     conn.execute("DELETE FROM app_settings WHERE key='biometric_username'", []).ok();
@@ -744,7 +748,7 @@ pub fn open_at(path: &Path, allow_create: bool) -> Result<Connection, OpenError>
             let snapshot = pre_upgrade_snapshot(&conn, version).map_err(OpenError::Snapshot)?;
             if let Err(error) = upgrade(&conn, version) {
                 let restored = conn
-                    .restore(rusqlite::DatabaseName::Main, &snapshot, None::<fn(rusqlite::backup::Progress)>)
+                    .restore(rusqlite::MAIN_DB, &snapshot, None::<fn(rusqlite::backup::Progress)>)
                     .is_ok();
                 return Err(OpenError::UpgradeFailed { from: version, error: error.to_string(), snapshot, restored });
             }
@@ -752,6 +756,9 @@ pub fn open_at(path: &Path, allow_create: bool) -> Result<Connection, OpenError>
             upgrade(&conn, version)?;
         }
     }
+    // Accounts still on the unsalted SHA-256 hash of early releases must choose a new
+    // password at their next sign-in (which also stores it with bcrypt).
+    conn.execute("UPDATE users SET must_change_password=1 WHERE password NOT LIKE '$2%' AND must_change_password=0", [])?;
     let user_count: i64 = conn.query_row("SELECT COUNT(*) FROM users", [], |r| r.get(0))?;
     if user_count == 0 {
         let password = bcrypt::hash("password", bcrypt::DEFAULT_COST).map_err(|_| rusqlite::Error::InvalidQuery)?;
@@ -841,7 +848,7 @@ mod upgrade_tests {
         let conn = Connection::open(path).unwrap();
         conn.execute_batch(schema).unwrap();
         let role = if schema.contains("'system_admin'") { "system_admin" } else { "master" };
-        conn.execute("INSERT INTO users(username,password,role) VALUES('old_admin','x',?1)", [role]).unwrap();
+        conn.execute("INSERT INTO users(username,password,role) VALUES('old_admin','$2b$12$fixturehash',?1)", [role]).unwrap();
         conn.execute("INSERT INTO employees(employee_number,full_name) VALUES('E-001','موظف تجريبي')", []).unwrap();
         assert_eq!(schema_version(&conn).unwrap(), 0);
     }
@@ -853,8 +860,13 @@ mod upgrade_tests {
     fn upgrade_keeps_data(schema: &str) {
         let env = env();
         old_database(&env.db, schema);
+        Connection::open(&env.db).unwrap().execute(
+            "INSERT INTO users(username,password,role) VALUES('legacy_user',?1,(SELECT role FROM users WHERE username='old_admin'))", [&"a".repeat(64)],
+        ).unwrap();
         let conn = open_at(&env.db, false).unwrap();
         assert_eq!(schema_version(&conn).unwrap(), SCHEMA_VERSION);
+        let legacy: i64 = conn.query_row("SELECT must_change_password FROM users WHERE username='legacy_user'", [], |r| r.get(0)).unwrap();
+        assert_eq!(legacy, 1, "unsalted legacy hashes must pick a new password");
         let name: String = conn.query_row("SELECT full_name FROM employees WHERE employee_number='E-001'", [], |r| r.get(0)).unwrap();
         assert_eq!(name, "موظف تجريبي");
         let flag: i64 = conn.query_row("SELECT must_change_password FROM users WHERE username='old_admin'", [], |r| r.get(0)).unwrap();
@@ -1014,7 +1026,7 @@ mod upgrade_tests {
             conn.execute_batch(include_str!("../../database/schema.sql")).unwrap();
             migrate(&conn).unwrap();
             conn.pragma_update(None, "user_version", 1).unwrap();
-            conn.execute("INSERT INTO users(username,password,role) VALUES('old_admin','x','system_admin')", []).unwrap();
+            conn.execute("INSERT INTO users(username,password,role) VALUES('old_admin','$2b$12$fixturehash','system_admin')", []).unwrap();
             conn.execute("INSERT INTO employees(full_name) VALUES('سارة محمد علي حسن العبيدي')", []).unwrap();
         }
         let conn = open_at(&env.db, false).unwrap();

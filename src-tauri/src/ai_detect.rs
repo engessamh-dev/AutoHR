@@ -15,7 +15,7 @@ use tract_onnx::prelude::*;
 
 const MODEL_BYTES: &[u8] = include_bytes!("../models/u2netp.onnx");
 const SIZE: u32 = 320;
-type Model = SimplePlan<TypedFact, Box<dyn TypedOp>, Graph<TypedFact, Box<dyn TypedOp>>>;
+type Model = std::sync::Arc<TypedRunnableModel>;
 
 fn model() -> Option<&'static Model> {
     static MODEL: OnceLock<Option<Model>> = OnceLock::new();
@@ -47,7 +47,7 @@ fn saliency(image: &DynamicImage) -> Option<GrayImage> {
     })
     .into();
     let outputs = model.run(tvec!(input.into())).ok()?;
-    let map = outputs.first()?.to_array_view::<f32>().ok()?;
+    let map = outputs.first()?.to_plain_array_view::<f32>().ok()?;
     let (low, high) = map.iter().fold((f32::MAX, f32::MIN), |(lo, hi), v| (lo.min(*v), hi.max(*v)));
     if !(high - low).is_finite() || high - low < 1e-3 {
         return None;

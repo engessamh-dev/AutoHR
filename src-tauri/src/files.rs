@@ -24,7 +24,7 @@ fn office_upload_type(source: &Path, extension: &str) -> Option<(&'static str, &
                 _ => return None,
             };
             let valid = archive.by_name("[Content_Types].xml").is_ok()
-                && (0..archive.len()).any(|index| archive.by_index(index).is_ok_and(|entry| entry.name().starts_with(required_dir)));
+                && (0..archive.len()).any(|index| archive.by_index(index).is_ok_and(|entry| entry.name().is_ok_and(|name| name.starts_with(required_dir))));
             if !valid { return None; }
             Some(match extension {
                 "docx" => ("docx", "application/vnd.openxmlformats-officedocument.wordprocessingml.document"),

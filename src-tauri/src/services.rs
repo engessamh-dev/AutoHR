@@ -363,7 +363,7 @@ pub fn role_permissions(role: &str) -> &'static [&'static str] {
         "system_admin" => &[
             "dashboard.view", "employees.view", "employees.create", "employees.edit", "employees.delete",
             "documents.view", "documents.manage", "documents.upload", "documents.download", "documents.delete", "documents.print",
-            "users.manage", "users.assign_system_admin", "audit.view", "settings.manage", "backups.manage",
+            "users.manage", "users.assign_system_admin", "audit.view", "settings.manage", "backups.manage", "backups.restore",
         ],
         "archive_admin" => &[
             "dashboard.view", "employees.view", "employees.create", "employees.edit", "employees.delete",
@@ -600,40 +600,62 @@ fn normalize_document_types(types: &[String]) -> Vec<String> {
 const LOGIN_MAX_FAILURES: u32 = 5;
 const LOGIN_LOCKOUT: std::time::Duration = std::time::Duration::from_secs(5 * 60);
 
-/// Failed sign-in attempts per username, kept in memory for the running process.
-static LOGIN_FAILURES: std::sync::Mutex<Option<std::collections::HashMap<String, (u32, std::time::Instant)>>> =
-    std::sync::Mutex::new(None);
+/// Failed sign-in attempts per username, kept in the database so that restarting the
+/// application does not reset a lockout.
+fn login_failures_table(conn: &Connection) {
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS login_failures (username_key TEXT PRIMARY KEY, failures INTEGER NOT NULL, last_failure INTEGER NOT NULL)",
+        [],
+    ).ok();
+}
+
+fn now_secs() -> i64 {
+    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs() as i64).unwrap_or(0)
+}
 
 fn login_key(username: &str) -> String {
     username.trim().to_lowercase()
 }
 
-fn login_locked_remaining(username: &str) -> Option<std::time::Duration> {
-    let mut guard = LOGIN_FAILURES.lock().unwrap_or_else(|e| e.into_inner());
-    let map = guard.get_or_insert_with(Default::default);
+fn login_locked_remaining(conn: &Connection, username: &str) -> Option<std::time::Duration> {
+    login_failures_table(conn);
     let key = login_key(username);
-    let (count, last) = *map.get(&key)?;
-    if count < LOGIN_MAX_FAILURES { return None; }
-    let elapsed = last.elapsed();
+    let (count, last): (i64, i64) = conn.query_row(
+        "SELECT failures,last_failure FROM login_failures WHERE username_key=?1", params![key], |r| Ok((r.get(0)?, r.get(1)?)),
+    ).ok()?;
+    if count < LOGIN_MAX_FAILURES as i64 { return None; }
+    // A clock moved backwards counts as "just now" rather than unlocking early.
+    let elapsed = std::time::Duration::from_secs(now_secs().saturating_sub(last).max(0) as u64);
     if elapsed >= LOGIN_LOCKOUT {
-        map.remove(&key);
+        clear_login_failures(conn, username);
         return None;
     }
     Some(LOGIN_LOCKOUT - elapsed)
 }
 
-fn record_login_failure(username: &str) {
-    let mut guard = LOGIN_FAILURES.lock().unwrap_or_else(|e| e.into_inner());
-    let entry = guard.get_or_insert_with(Default::default)
-        .entry(login_key(username))
-        .or_insert((0, std::time::Instant::now()));
-    entry.0 = entry.0.saturating_add(1);
-    entry.1 = std::time::Instant::now();
+fn record_login_failure(conn: &Connection, username: &str) {
+    login_failures_table(conn);
+    conn.execute(
+        "INSERT INTO login_failures(username_key,failures,last_failure) VALUES(?1,1,?2)
+         ON CONFLICT(username_key) DO UPDATE SET failures=failures+1, last_failure=excluded.last_failure",
+        params![login_key(username), now_secs()],
+    ).ok();
 }
 
-fn clear_login_failures(username: &str) {
-    let mut guard = LOGIN_FAILURES.lock().unwrap_or_else(|e| e.into_inner());
-    if let Some(map) = guard.as_mut() { map.remove(&login_key(username)); }
+fn clear_login_failures(conn: &Connection, username: &str) {
+    login_failures_table(conn);
+    conn.execute("DELETE FROM login_failures WHERE username_key=?1", params![login_key(username)]).ok();
+}
+
+/// A bcrypt hash of a random value, checked when the username does not exist so that the
+/// response time does not reveal which usernames are valid.
+fn dummy_password_hash() -> &'static str {
+    static HASH: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    HASH.get_or_init(|| {
+        let mut random = [0u8; 16];
+        OsRng.fill_bytes(&mut random);
+        hash_password(&hex::encode(random)).unwrap_or_default()
+    })
 }
 
 /// Arabic count agreement for minutes: 1 دقيقة واحدة, 2 دقيقتين, 3-10 دقائق, 11+ دقيقة.
@@ -650,7 +672,7 @@ pub fn login(conn: &Connection, username: &str, password: &str) -> AppResult<Use
     if username.trim().is_empty() || username.len() > 64 || password.is_empty() || password.len() > 256 {
         return Err(AppError::Validation("Enter a valid username and password".into()));
     }
-    if let Some(remaining) = login_locked_remaining(username) {
+    if let Some(remaining) = login_locked_remaining(conn, username) {
         log_audit(conn, Some(username), "LOGIN", Some("session"), None, None, "Failure", Some("Account temporarily locked"));
         let minutes = remaining.as_secs().div_ceil(60).max(1);
         return Err(AppError::Validation(format!(
@@ -668,17 +690,18 @@ pub fn login(conn: &Connection, username: &str, password: &str) -> AppResult<Use
     ) {
         Ok(row) => row,
         Err(_) => {
-            record_login_failure(username);
+            let _ = verify_password(password, dummy_password_hash());
+            record_login_failure(conn, username);
             log_audit(conn, Some(username), "LOGIN", Some("session"), None, None, "Failure", Some("Unknown username"));
             return Err(AppError::Unauthorized);
         }
     };
     if !verify_password(password, &row.2)? {
-        record_login_failure(username);
+        record_login_failure(conn, username);
         log_audit(conn, Some(username), "LOGIN", Some("session"), None, None, "Failure", Some("Invalid password"));
         return Err(AppError::Unauthorized);
     }
-    clear_login_failures(username);
+    clear_login_failures(conn, username);
     if !row.2.starts_with("$2") {
         conn.execute("UPDATE users SET password=?1 WHERE id=?2", params![hash_password(password)?, row.0])?;
     }
@@ -1950,6 +1973,8 @@ mod auth_tests {
         ).unwrap();
         assert!(assert_permission(&conn, "archiveadmin", "users.manage").is_ok());
         assert!(assert_permission(&conn, "archiveadmin", "users.assign_system_admin").is_err());
+        // A restore replaces the users table, so it would let an Archive Admin promote themselves.
+        assert!(assert_permission(&conn, "archiveadmin", "backups.restore").is_err());
     }
 
     #[test]
@@ -1980,7 +2005,7 @@ mod auth_tests {
         }
         // Even the correct password is refused while locked.
         assert!(matches!(login(&conn, "LockMe", "correct-password"), Err(AppError::Validation(_))));
-        clear_login_failures("lockme");
+        clear_login_failures(&conn, "lockme");
         assert!(login(&conn, "lockme", "correct-password").is_ok());
     }
 
@@ -2032,6 +2057,23 @@ fn get_setting(conn: &Connection, key: &str) -> AppResult<Option<String>> {
         .map_err(Into::into)
 }
 
+/// The automatic-backup password, unwrapped from DPAPI. A plain-text value left by an older
+/// release is re-saved protected the first time it is read.
+fn auto_backup_password(conn: &Connection) -> AppResult<String> {
+    let Some(stored) = get_setting(conn, "auto_backup_password")?.filter(|value| !value.is_empty()) else {
+        return Ok(String::new());
+    };
+    let secret = crate::secure::unprotect_secret(&stored)?;
+    if secret.legacy && !secret.value.is_empty() {
+        set_setting(conn, "auto_backup_password", &crate::secure::protect_secret(&secret.value)?)?;
+    }
+    Ok(secret.value)
+}
+
+fn set_auto_backup_password(conn: &Connection, password: &str) -> AppResult<()> {
+    set_setting(conn, "auto_backup_password", &crate::secure::protect_secret(password)?)
+}
+
 fn set_setting(conn: &Connection, key: &str, value: &str) -> AppResult<()> {
     conn.execute(
         "INSERT INTO app_settings(key,value) VALUES(?1,?2)
@@ -2064,13 +2106,15 @@ pub fn get_auto_backup_settings(conn: &Connection, user: &str) -> AppResult<Auto
 pub fn set_auto_backup_settings(conn: &Connection, user: &str, data: &AutoBackupSettingsData) -> AppResult<AutoBackupSettings> {
     assert_permission(conn, user, "backups.manage")?;
     let existing_password = get_setting(conn, "auto_backup_password")?.unwrap_or_default();
+    // Moves a legacy plain-text password to DPAPI even when only the toggles change.
+    if !existing_password.is_empty() { auto_backup_password(conn).ok(); }
     let password = data.password.as_deref().unwrap_or("").trim();
     if (data.daily_enabled || data.weekly_enabled || data.monthly_enabled) && password.is_empty() && existing_password.is_empty() {
         return Err(AppError::Validation("Enter an automatic backup password before enabling automatic backups".into()));
     }
     if !password.is_empty() {
         validate_new_password(password)?;
-        set_setting(conn, "auto_backup_password", password)?;
+        set_auto_backup_password(conn, password)?;
     }
     set_setting(conn, "auto_backup_daily_enabled", if data.daily_enabled { "1" } else { "0" })?;
     set_setting(conn, "auto_backup_weekly_enabled", if data.weekly_enabled { "1" } else { "0" })?;
@@ -2210,7 +2254,7 @@ pub(crate) fn create_backup_archive(
     std::fs::create_dir_all(&work_dir).map_err(|e| AppError::Other(e.to_string()))?;
     let db_snapshot = tempfile::NamedTempFile::new_in(&work_dir).map_err(|e| AppError::Other(e.to_string()))?;
     progress(backup_progress(8, "جاري نسخ قاعدة البيانات..."));
-    conn.backup(rusqlite::DatabaseName::Main, db_snapshot.path(), None)?;
+    conn.backup(rusqlite::MAIN_DB, db_snapshot.path(), None::<fn(rusqlite::backup::Progress)>)?;
     let archive = tempfile::NamedTempFile::new_in(&work_dir).map_err(|e| AppError::Other(e.to_string()))?;
     let mut zip = zip::ZipWriter::new(archive.reopen().map_err(|e| AppError::Other(e.to_string()))?);
     let options = zip::write::SimpleFileOptions::default()
@@ -2411,7 +2455,7 @@ pub fn run_due_automatic_backups_with_progress<F>(conn: &Connection, mut progres
 where
     F: FnMut(BackupProgress),
 {
-    let password = get_setting(conn, "auto_backup_password")?.unwrap_or_default();
+    let password = auto_backup_password(conn)?;
     if password.is_empty() {
         return Ok(Vec::new());
     }
@@ -2651,7 +2695,7 @@ fn extract_and_validate_backup(plaintext: &[u8], staging: &Path) -> AppResult<Ba
 fn trial_restore_database(source: &Path) -> AppResult<()> {
     let trial = tempfile::tempdir().map_err(|e| AppError::Other(e.to_string()))?;
     let mut conn = Connection::open(trial.path().join("trial.db"))?;
-    conn.restore(rusqlite::DatabaseName::Main, source, None::<fn(rusqlite::backup::Progress)>)?;
+    conn.restore(rusqlite::MAIN_DB, source, None::<fn(rusqlite::backup::Progress)>)?;
     // Reject backups made by a newer AutoHR, and prove an older one upgrades cleanly.
     crate::db::upgrade_restored(&conn)?;
     crate::scanner::ensure_metadata_columns(&conn)?;
@@ -2677,7 +2721,8 @@ pub fn restore_backup_with_progress<F>(conn: &mut Connection, user: &str, source
 where
     F: FnMut(BackupProgress),
 {
-    assert_permission(conn, user, "backups.manage")?;
+    // A restore replaces the users table too, so it is limited to System Admins.
+    assert_permission(conn, user, "backups.restore")?;
     progress(backup_progress(2, "جاري تجهيز عملية الاستعادة..."));
     let source = Path::new(source_path);
     if source.extension().and_then(|e| e.to_str()).is_none_or(|e| !e.eq_ignore_ascii_case("autohrbak")) {
@@ -2720,7 +2765,7 @@ where
     std::fs::remove_dir_all(&rollback_data).ok();
     std::fs::remove_file(&rollback_database).ok();
     progress(backup_progress(70, "جاري حفظ نسخة تراجع من قاعدة البيانات الحالية..."));
-    conn.backup(rusqlite::DatabaseName::Main, &rollback_database, None)?;
+    conn.backup(rusqlite::MAIN_DB, &rollback_database, None::<fn(rusqlite::backup::Progress)>)?;
     std::fs::write(&restore_marker, b"AutoHR restore in progress").map_err(|e| AppError::Other(e.to_string()))?;
     let staged_data = staging.path().join("Data");
     progress(backup_progress(76, "جاري استبدال المرفقات والملفات..."));
@@ -2734,12 +2779,12 @@ where
         return Err(AppError::Other(error.to_string()));
     }
     progress(backup_progress(86, "جاري استعادة قاعدة البيانات..."));
-    if let Err(error) = conn.restore(rusqlite::DatabaseName::Main, staging.path().join("database.db"), None::<fn(rusqlite::backup::Progress)>).map_err(AppError::from)
+    if let Err(error) = conn.restore(rusqlite::MAIN_DB, staging.path().join("database.db"), None::<fn(rusqlite::backup::Progress)>).map_err(AppError::from)
         .and_then(|_| crate::db::upgrade_restored(conn).map_err(AppError::from))
         .and_then(|_| crate::scanner::ensure_metadata_columns(conn).map_err(AppError::from)) {
         std::fs::remove_dir_all(&current_data).ok();
         if rollback_data.exists() { std::fs::rename(&rollback_data, &current_data).ok(); }
-        conn.restore(rusqlite::DatabaseName::Main, &rollback_database, None::<fn(rusqlite::backup::Progress)>).ok();
+        conn.restore(rusqlite::MAIN_DB, &rollback_database, None::<fn(rusqlite::backup::Progress)>).ok();
         std::fs::remove_file(&rollback_database).ok();
         std::fs::remove_file(&restore_marker).ok();
         return Err(error);
@@ -2819,6 +2864,15 @@ pub fn download_document(conn: &Connection, user: &str, relative_path: &str, des
     if destination.file_name().is_none() || !destination.parent().is_some_and(Path::is_dir) {
         return Err(AppError::Validation("Invalid download destination".into()));
     }
+    // The copy may only produce a file of the same type, so a download can never be used to
+    // write or overwrite an executable, script or DLL elsewhere on the computer.
+    let extension_of = |path: &Path| path.extension().and_then(|e| e.to_str()).map(|e| match e.to_ascii_lowercase().as_str() {
+        "jpeg" => "jpg".to_string(),
+        other => other.to_string(),
+    });
+    if extension_of(&source).is_none() || extension_of(&source) != extension_of(destination) {
+        return Err(AppError::Validation("The download must keep the document's file type".into()));
+    }
     std::fs::copy(&source, destination).map_err(|e| AppError::Other(e.to_string()))?;
     log_activity(conn, user, "DOWNLOAD_DOCUMENT", Some("document"), None, name.to_str(), Some(&destination.to_string_lossy()));
     Ok(destination.to_string_lossy().into_owned())
@@ -2855,6 +2909,27 @@ pub fn set_document_types(conn: &Connection, user: &str, types: &[String]) -> Ap
 mod phase3_security_tests {
     use super::*;
 
+    // Opt-in timing check: `cargo test -p autohr --lib list_employees_timing -- --ignored --nocapture`.
+    #[test]
+    #[ignore]
+    fn list_employees_timing() {
+        let conn = Connection::open_in_memory().unwrap();
+        crate::db::migrate_for_tests(&conn);
+        for count in [75_i64, 1000] {
+            conn.execute("DELETE FROM employees", []).unwrap();
+            for id in 1..=count {
+                conn.execute("INSERT INTO employees(id,full_name,employee_number,photo_path) VALUES(?1,?2,?3,?4)",
+                    params![id, format!("موظف {id}"), format!("E-{id}"), format!("Files/Employees/{id}/p.jpg")]).unwrap();
+                for order in 0..2 { conn.execute("INSERT INTO employee_spouses(employee_id,name,sort_order) VALUES(?1,'x',?2)", params![id, order]).unwrap(); }
+                for order in 0..3 { conn.execute("INSERT INTO employee_attachments(employee_id,kind,file_path,sort_order) VALUES(?1,'general',?2,?3)", params![id, format!("Files/Employees/{id}/a{order}.pdf"), order]).unwrap(); }
+            }
+            list_employees(&conn).unwrap();
+            let started = std::time::Instant::now();
+            let employees = list_employees(&conn).unwrap();
+            println!("list_employees: {} employees in {:?}", employees.len(), started.elapsed());
+        }
+    }
+
     #[test]
     fn daily_backup_after_employee_change_is_verified_and_not_repeated() {
         let dir = tempfile::tempdir().unwrap();
@@ -2874,6 +2949,9 @@ mod phase3_security_tests {
         conn.execute("INSERT INTO employees(id,full_name) VALUES(1,'Before change')", []).unwrap();
         log_activity(&conn, "testadmin", "CREATE_EMPLOYEE", Some("employee"), Some(1), None, None);
         assert_eq!(run_due_automatic_backups_with_progress(&conn, |_| {}).unwrap(), vec!["يومي"]);
+        // A plain-text password from an older release is re-saved protected once read.
+        assert_ne!(get_setting(&conn, "auto_backup_password").unwrap().unwrap(), "strong-password");
+        assert_eq!(auto_backup_password(&conn).unwrap(), "strong-password");
         let first_path = get_setting(&conn, "auto_backup_last_daily_path").unwrap().unwrap();
         verify_written_backup(Path::new(&first_path), "strong-password").unwrap();
         // Login/logout and reading documents must not cause another backup.
@@ -3042,7 +3120,9 @@ mod phase3_security_tests {
         assert!(officer.contains(&"documents.upload") && !officer.contains(&"documents.delete"));
         let admin = role_permissions("archive_admin");
         assert!(admin.contains(&"backups.manage") && !admin.contains(&"users.assign_system_admin"));
+        assert!(!admin.contains(&"backups.restore"), "only a System Admin may restore a backup");
         assert!(role_permissions("system_admin").contains(&"users.assign_system_admin"));
+        assert!(role_permissions("system_admin").contains(&"backups.restore"));
     }
 
     #[test]

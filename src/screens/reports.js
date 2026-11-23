@@ -1,6 +1,7 @@
 import { api } from "../api.js";
 import { escHtml, formatDate, showToast } from "../utils.js";
 import { COMPANY_LOGO } from "../branding.js";
+import { save } from "@tauri-apps/plugin-dialog";
 
 const STORAGE_KEY = "autohr.reportBuilder.v1";
 
@@ -234,7 +235,6 @@ function buildExcelPayload(rows, fields) {
 
 
 async function downloadExcel(rows, fields) {
-  const { save } = await import("@tauri-apps/plugin-dialog");
   const destination = await save({
     title: "حفظ تقرير الموظفين Excel",
     defaultPath: `employees-report-${new Date().toISOString().slice(0, 10)}.xlsx`,

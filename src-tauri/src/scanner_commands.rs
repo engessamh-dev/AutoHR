@@ -98,12 +98,13 @@ pub(crate) async fn cmd_scanner_render(
     corners: [[f32; 2]; 4],
     rotation: u16,
     adjustments: Option<scanner::Adjustments>,
-) -> Result<Vec<u8>, AppError> {
+) -> Result<tauri::ipc::Response, AppError> {
     let owner = session_user(&sess)?;
     let adjustments = adjustments.unwrap_or_default();
     tauri::async_runtime::spawn_blocking(move || scanner::render(&owner, &token, corners, rotation, adjustments))
         .await
         .map_err(|e| AppError::Other(e.to_string()))?
+        .map(tauri::ipc::Response::new)
 }
 #[tauri::command]
 pub(crate) fn cmd_scanner_release(

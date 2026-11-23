@@ -32,3 +32,6 @@ src-tauri/resources/*.db-shm
 *.key
 *.key.pub
 .tauri/
+
+# Local notes about where the installer was built
+.exe path.txt

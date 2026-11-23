@@ -1,5 +1,5 @@
 // lib.rs — GCANS v2.0
-mod db; mod names; mod services; mod files; mod scanner; mod paths; mod storage; mod ai_detect;
+mod db; mod names; mod services; mod files; mod scanner; mod paths; mod storage; mod ai_detect; mod secure;
 mod scanner_commands;
 use scanner_commands::*;
 #[cfg(test)] mod scanner_tests;
@@ -87,6 +87,24 @@ fn activate_database(app: &AppHandle, conn: &Connection) {
     scanner::recover_pending_files(conn).ok();
     ensure_backup_layout(conn).ok();
     app.asset_protocol_scope().allow_directory(storage_path(conn), true).ok();
+    restrict_managed_folders();
+}
+
+/// Limits the data and backup folders to this Windows user, Administrators and SYSTEM, once per
+/// folder (a marker file records it). Runs in the background and never blocks or fails startup.
+fn restrict_managed_folders() {
+    if !cfg!(target_os = "windows") { return; }
+    const MARKER: &str = ".acl-v1";
+    let roots = [paths::data_root(), paths::backup_root()];
+    std::thread::spawn(move || {
+        for root in roots {
+            if !root.is_dir() || root.join(MARKER).exists() { continue; }
+            match secure::restrict_folder(&root) {
+                Ok(()) => { std::fs::write(root.join(MARKER), b"restricted to the current user, Administrators and SYSTEM\n").ok(); }
+                Err(error) => eprintln!("Could not restrict {}: {error}", root.display()),
+            }
+        }
+    });
 }
 
 #[derive(Clone)]
@@ -340,6 +358,11 @@ fn cmd_scan_document(state: State<DbState>, sess: State<SessionState>, device_id
 #[tauri::command] fn cmd_login(state: State<DbState>, sess: State<SessionState>, username: String, password: String) -> Result<User, AppError> {
     let conn = state.conn()?;
     let user = login(&conn, &username, &password)?;
+    if user.permissions.iter().any(|p| p == "documents.upload") {
+        // Load and optimise the document-detection model in the background, so the first scan
+        // does not wait for it. Only users who can upload documents ever need it.
+        std::thread::spawn(|| { ai_detect::available(); });
+    }
     *sess.0.lock().unwrap() = Some(Session {
         username,
         must_change_password: user.must_change_password,
@@ -842,7 +865,10 @@ async fn cmd_move_data_folder(window: Window, state: State<'_, DbState>, sess: S
     set_auto_backup_settings(&conn, &user, &data)
 }
 #[tauri::command]
-async fn cmd_run_due_auto_backups(window: Window) -> Result<Vec<String>, AppError> {
+async fn cmd_run_due_auto_backups(window: Window, sess: State<'_, SessionState>) -> Result<Vec<String>, AppError> {
+    // Only a signed-in session can trigger backups. Without one nothing could have changed
+    // since the last run, so there is nothing due and the call quietly does nothing.
+    if session_identity(&sess).is_err() { return Ok(Vec::new()); }
     let progress_window = window.clone();
     tauri::async_runtime::spawn_blocking(move || {
         // Never migrates or creates anything: it only runs against an already open,
@@ -897,7 +923,7 @@ async fn cmd_create_backup(window: Window, state: State<'_, DbState>, sess: Stat
 async fn cmd_restore_backup(window: Window, state: State<'_, DbState>, sess: State<'_, SessionState>, source_path: String, password: String) -> Result<(), AppError> {
     let user = {
         let conn = state.conn()?;
-        authorize(&conn, &sess, "backups.manage")?
+        authorize(&conn, &sess, "backups.restore")?
     };
     let app = window.app_handle().clone();
     let progress_window = window.clone();
@@ -929,9 +955,11 @@ async fn cmd_restore_backup(window: Window, state: State<'_, DbState>, sess: Sta
     let conn = state.conn()?; let user = authorize(&conn, &sess, "documents.view")?;
     document_preview_path(&conn, &user, &relative_path)
 }
-#[tauri::command] fn cmd_read_document(state: State<DbState>, sess: State<SessionState>, relative_path: String) -> Result<Vec<u8>, AppError> {
+#[tauri::command] fn cmd_read_document(state: State<DbState>, sess: State<SessionState>, relative_path: String) -> Result<tauri::ipc::Response, AppError> {
     let conn = state.conn()?; let user = authorize(&conn, &sess, "documents.view")?;
-    read_document(&conn, &user, &relative_path)
+    // Raw bytes reach the frontend as an ArrayBuffer; a Vec<u8> would be sent as a JSON
+    // array of numbers, several times larger and slow to parse for big PDFs.
+    read_document(&conn, &user, &relative_path).map(tauri::ipc::Response::new)
 }
 #[tauri::command] fn cmd_print_document(state: State<DbState>, sess: State<SessionState>, relative_path: String) -> Result<(), AppError> {
     let conn = state.conn()?; let user = authorize(&conn, &sess, "documents.print")?;
