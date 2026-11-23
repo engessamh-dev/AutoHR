@@ -42,12 +42,22 @@ npx tauri signer generate -w "$env:USERPROFILE\.tauri\autohr-updater.key"
      "platforms": {
        "windows-x86_64": {
          "signature": "<contents of the .sig file>",
-         "url": "https://github.com/engessamh-dev/AutoHR/releases/download/v1.0.5/CNSArch_1.0.5_x64-setup.exe"
+         "url": "https://github.com/engessamh-dev/CNSArch/releases/download/v1.0.5/CNSArch_1.0.5_x64-setup.exe"
        }
      }
    }
    ```
-4. Create the GitHub Release `v<version>` and attach the installer, the `.sig` and `latest.json`.
-   The app reads `https://github.com/engessamh-dev/AutoHR/releases/latest/download/latest.json`.
+4. In the **public releases-only repository** `engessamh-dev/CNSArch` (no source code there),
+   create the GitHub Release `v<version>`, mark it as the latest release (not a draft or
+   pre-release), and attach the installer, the `.sig` and `latest.json`.
+   Since 1.0.5 the app reads `https://github.com/engessamh-dev/CNSArch/releases/latest/download/latest.json`.
+   The source repository `engessamh-dev/AutoHR` can stay private.
+
+### Transition from 1.0.3
+
+Copies installed from 1.0.3 still check the old URL in the source repository
+(`engessamh-dev/AutoHR/releases/latest/download/latest.json`). To let them update, publish
+1.0.5 once in **both** repositories. After every such copy has updated to 1.0.5, the source
+repository can be made private; the old URL then simply stops answering.
 
 The normal `npm run tauri:build` does not need the key and does not produce updater files.
