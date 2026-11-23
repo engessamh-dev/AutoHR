@@ -269,6 +269,7 @@ async function productionModule(page, entry, key) {
 
 test("Production manual editor ignores detected corners and only crops after approval", async ({page})=>{
   await productionModule(page,"src/attachments/scanner.js","productionScanner");
+  await page.evaluate(()=>{ window.prepareOverrides = { automatic_detection_available: false }; });
   await page.evaluate(()=>{
     window.productionScanner.uploadWithScanner("cmd_upload_general_doc_file",{docId:1,sourcePath:"synthetic.png"}).then(v=>window.result=v).catch(e=>window.failure=String(e));
   });
@@ -414,4 +415,20 @@ test("dragging a corner shows the magnifier and releasing hides it", async ({ pa
   await expect(page.locator(".smart-scanner-loupe")).toBeVisible();
   await page.mouse.up();
   await expect(page.locator(".smart-scanner-loupe")).toBeHidden();
+});
+
+test("Production uses the on-device model's corners without development diagnostics", async ({ page }) => {
+  await productionModule(page, "src/attachments/scanner.js", "productionScanner");
+  await page.evaluate(() => {
+    window.prepareOverrides = { automatic_detection_available: true };
+    window.productionScanner.uploadWithScanner("cmd_upload_general_doc_file", { docId: 1, sourcePath: "synthetic.png" }).then(v => window.result = v).catch(e => window.failure = String(e));
+  });
+  await page.locator('[data-choice="scan"]').click();
+  await expect(page.locator("[data-original]")).toBeVisible();
+  await expect(page.locator("[data-debug]")).toHaveCount(0);
+  expect(await page.locator("[data-selected]").getAttribute("points")).toBe("100,70 540,70 540,410 100,410");
+  await expect(page.locator("[data-status]")).toContainText("ثقة الكشف");
+  await page.locator("[data-process]").click();
+  await page.waitForFunction(() => window.result !== null);
+  expect((await page.evaluate(() => window.calls.filter(c => c.command === "cmd_scanner_render").at(-1).args.corners))).toEqual([[100, 70], [540, 70], [540, 410], [100, 410]]);
 });

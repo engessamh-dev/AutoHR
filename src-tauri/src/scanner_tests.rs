@@ -458,3 +458,37 @@ fn editor_adjustments_card_aspect_and_validation() {
     assert!(scanner::Adjustments { sharpness: 4, ..Default::default() }.validate().is_err());
     assert!(scanner::Adjustments { contrast: -50, sharpness: 3, ..Default::default() }.validate().is_ok());
 }
+
+// Opt-in: SCANNER_AI_SCENE points at a local photo; writes nothing, prints detected corners.
+#[test]
+#[ignore]
+fn ai_detects_card_in_scene() {
+    let path = std::env::var("SCANNER_AI_SCENE").expect("SCANNER_AI_SCENE");
+    let image = scanner::load_image(std::path::Path::new(&path)).unwrap();
+    let started = std::time::Instant::now();
+    let result = crate::ai_detect::detect(&image);
+    println!("ai result {:?} in {:?}", result, started.elapsed());
+    assert!(result.is_some());
+}
+
+#[test]
+fn ai_detects_synthetic_document() {
+    use image::{DynamicImage, Rgb, RgbImage};
+    let mut pixels = RgbImage::from_pixel(600, 500, Rgb([25, 35, 45]));
+    imageproc::drawing::draw_polygon_mut(
+        &mut pixels,
+        &[
+            imageproc::point::Point::new(100, 65),
+            imageproc::point::Point::new(520, 105),
+            imageproc::point::Point::new(490, 425),
+            imageproc::point::Point::new(70, 390),
+        ],
+        Rgb([235, 235, 230]),
+    );
+    let (corners, confidence) = crate::ai_detect::detect(&DynamicImage::ImageRgb8(pixels)).expect("model output");
+    let expected = [[100., 65.], [520., 105.], [490., 425.], [70., 390.]];
+    for (got, want) in corners.iter().zip(expected.iter()) {
+        assert!((got[0] - want[0]).hypot(got[1] - want[1]) < 20., "corner {got:?} vs {want:?}");
+    }
+    assert!(confidence > 0.8, "confidence {confidence}");
+}

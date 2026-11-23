@@ -41,13 +41,14 @@ async function chooseUpload() {
   });
 }
 async function prepareScanner(args) {
-  const view = modal(`<h2>تحديد حدود المرفق وتدويره</h2><p role="status">جارٍ تحميل الصورة وتصحيح اتجاهها لتحديد الحدود والتدوير…</p>`);
+  const view = modal(`<h2>تحديد حدود المرفق وتدويره</h2><p role="status">جارٍ تحميل الصورة وتحديد حدود المستند تلقائياً على هذا الجهاز…</p>`);
   try { return await invoke("cmd_scanner_prepare", args); }
   finally { view.close(); }
 }
 
 export async function scanDialog(input, { cardDefault = false } = {}) {
-  const automaticDetection = import.meta.env.DEV && input.automatic_detection_available !== false;
+  // Release builds detect with the bundled on-device model; the classic detector is development-only.
+  const automaticDetection = input.automatic_detection_available !== false;
   const originalUrl = blobUrl(input.preview);
   let processedUrl = null, rotation = 0, busy = false;
   const neutralAdjustments = () => ({ auto_levels: false, brightness: 0, contrast: 0, sharpness: 0, grayscale: false, card_aspect: cardDefault });
@@ -82,7 +83,7 @@ export async function scanDialog(input, { cardDefault = false } = {}) {
         </div></div></section>
         <section><h3>معاينة النتيجة</h3><img data-result alt="المستند بعد القص وتصحيح المنظور" hidden></section>
       </div>
-      ${automaticDetection ? '<details data-debug><summary>Detection diagnostics (Development)</summary><pre data-metrics dir="ltr"></pre></details>' : ''}
+      ${import.meta.env.DEV && automaticDetection ? '<details data-debug><summary>Detection diagnostics (Development)</summary><pre data-metrics dir="ltr"></pre></details>' : ''}
       <p data-error role="alert"></p>
       <div class="smart-scanner-actions"><button type="button" class="btn-primary" data-process>تطبيق القص / إعادة المعالجة</button>
       <button type="button" class="btn-secondary" data-cancel>إلغاء دون تغيير</button></div>`);

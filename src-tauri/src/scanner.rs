@@ -230,6 +230,12 @@ pub fn full_corners(w: u32, h: u32) -> [[f32; 2]; 4] {
         [0., (h - 1) as f32],
     ]
 }
+pub(crate) fn order_corners(points: Vec<[f32; 2]>) -> [[f32; 2]; 4] {
+    order(points)
+}
+pub(crate) fn refine_quad(c: [[f32; 2]; 4], points: &[imageproc::point::Point<i32>]) -> [[f32; 2]; 4] {
+    refine_edges(c, points)
+}
 fn order(mut points: Vec<[f32; 2]>) -> [[f32; 2]; 4] {
     let cx = points.iter().map(|p| p[0]).sum::<f32>() / 4.;
     let cy = points.iter().map(|p| p[1]).sum::<f32>() / 4.;
@@ -885,8 +891,30 @@ pub fn prepare(
     );
     std::fs::copy(source, &original).map_err(error)?;
     let image = load_image(&original)?;
-    let (corners, confidence, debug) = if settings.auto_detect {
+    let ai = crate::ai_detect::detect(&image);
+    let (corners, confidence, debug) = if let Some((corners, confidence)) = ai.filter(|(_, c)| *c >= settings.confidence_threshold) {
+        (
+            corners,
+            confidence,
+            DetectionDebug {
+                original_dimensions: [image.width(), image.height()],
+                ai_status: "Bundled on-device model (U2-Netp)",
+                ..Default::default()
+            },
+        )
+    } else if settings.auto_detect {
         detect_debug(&image)
+    } else if let Some((corners, confidence)) = ai {
+        // Low-confidence model output is still a better manual starting point than the full frame.
+        (
+            corners,
+            confidence,
+            DetectionDebug {
+                original_dimensions: [image.width(), image.height()],
+                ai_status: "Bundled on-device model (low confidence)",
+                ..Default::default()
+            },
+        )
     } else {
         (
             full_corners(image.width(), image.height()),
@@ -906,7 +934,7 @@ pub fn prepare(
         corners,
         confidence,
         reliable: confidence >= settings.confidence_threshold,
-        automatic_detection_available: cfg!(debug_assertions),
+        automatic_detection_available: cfg!(debug_assertions) || crate::ai_detect::available(),
         debug,
         preview: jpeg(&thumbnail(&image, 1400), 90)?,
         settings: settings.clone(),
@@ -1259,12 +1287,21 @@ pub fn redetect(owner: &str, token: &str) -> AppResult<Detection> {
     if s.owner != owner {
         return Err(AppError::Unauthorized);
     }
-    if !cfg!(debug_assertions) {
-        return Err(error(
-            "Automatic detection is disabled in Production; use manual corners",
-        ));
-    }
-    let (corners, confidence, debug) = detect_debug(&s.image);
+    let (corners, confidence, debug) = match crate::ai_detect::detect(&s.image) {
+        Some((corners, confidence)) => (
+            corners,
+            confidence,
+            DetectionDebug {
+                original_dimensions: [s.image.width(), s.image.height()],
+                ai_status: "Bundled on-device model (U2-Netp)",
+                ..Default::default()
+            },
+        ),
+        None if cfg!(debug_assertions) => detect_debug(&s.image),
+        None => {
+            return Err(error("Automatic detection could not find the document; use manual corners"))
+        }
+    };
     Ok(Detection {
         corners,
         confidence,

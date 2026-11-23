@@ -1,5 +1,5 @@
 // lib.rs — GCANS v2.0
-mod db; mod services; mod files; mod scanner; mod paths; mod storage;
+mod db; mod services; mod files; mod scanner; mod paths; mod storage; mod ai_detect;
 mod scanner_commands;
 use scanner_commands::*;
 #[cfg(test)] mod scanner_tests;
