@@ -22,6 +22,9 @@ let _activeTab = "basic";
 let _panelDraft = null;
 let _panelDirty = false;
 let _skipNextSaveConfirmation = false;
+// Save keeps the panel open; these make one save close it, or continue with an upload.
+let _closeAfterSave = false;
+let _afterSave = null;
 let _currentUser = null;
 let _companyConfig = null;
 const DOCUMENT_EXTENSIONS = ["jpg", "jpeg", "png", "webp", "pdf", "doc", "docx", "xls", "xlsx", "ppt", "pptx"];
@@ -204,11 +207,11 @@ function renderTable({ keepVisibleRows = false } = {}) {
   if (_panelDraft?.id != null) wrap.querySelector(`tr[data-id="${_panelDraft.id}"]`)?.classList.add("is-selected");
 }
 
-function openPanel(emp, tab = "basic") {
+function openPanel(emp, tab = "basic", sectionState = new Map()) {
   _activeTab = TABS.some(t => t.id === tab) ? tab : "basic";
   _panelDraft = emp ? { ...emp } : { is_active: 1, spouses: "[]", family_members: "[]", vehicles: "[]" };
   _panelDirty = false;
-  _sectionState = new Map();
+  _sectionState = sectionState;
   document.getElementById("emp-panel").style.transform = "translateX(0)";
   document.getElementById("emp-overlay").style.display = "block";
   markSelectedRow(emp?.id ?? null);
@@ -263,6 +266,7 @@ async function closePanel(force = false) {
     if (choice === "cancel") return;
     if (choice === "save") {
       _skipNextSaveConfirmation = true;
+      _closeAfterSave = true;
       document.getElementById("panel-save")?.click();
       return;
     }
@@ -354,6 +358,10 @@ function collectVisiblePanelFields(panel) {
         annual_no:   row.querySelector(".vehicle-annual-no")?.value?.trim() || "",
         issue_date:  row.querySelector(".vehicle-issue-date")?.value || "",
         expiry_date: row.querySelector(".vehicle-expiry-date")?.value || "",
+        governorate:    row.querySelector(".vehicle-governorate")?.value?.trim() || "",
+        plate_category: row.querySelector(".vehicle-plate-category")?.value?.trim() || "",
+        chassis_no:     row.querySelector(".vehicle-chassis")?.value?.trim() || "",
+        model_year:     row.querySelector(".vehicle-model-year")?.value?.trim() || "",
         annual_front_path: row.dataset.annualFrontPath || "",
         annual_back_path:  row.dataset.annualBackPath || "",
       });
@@ -437,7 +445,7 @@ function sectionTitle(title) {
 // ── Unified attachment tiles ────────────────────────────────────────────────
 const IMAGE_EXTENSIONS = ["jpg", "jpeg", "png", "webp"];
 
-function attachmentTile({ label, path, fullPath, canManage, upload, remove, lockedNote = "احفظ سجل الموظف أولاً", read = null }) {
+function attachmentTile({ label, path, fullPath, canManage, upload, remove, lockedNote = "احفظ سجل الموظف أولاً", read = null, saveFirst = null }) {
   const name = path?.split(/[/\\]/).pop();
   const extension = name?.split(".").pop()?.toLowerCase();
   const assetUrl = fullPath ? convertFileSrc(fullPath) : "";
@@ -451,7 +459,10 @@ function attachmentTile({ label, path, fullPath, canManage, upload, remove, lock
     ? `<button type="button" class="emp-tile-more" aria-haspopup="menu" aria-label="خيارات ${escHtml(label)}">⋯</button>`
     : canManage
       ? `<button type="button" class="emp-tile-upload ${upload.cls}" ${upload.attrs}>+ رفع</button>`
-      : `<span class="emp-tile-note">${lockedNote}</span>`;
+      : upload && saveFirst
+        // Not saved yet: the button saves first, then continues with the upload.
+        ? `<button type="button" class="emp-tile-upload btn-save-then-upload" data-then="${escHtml(saveFirst)}" title="يُحفظ الموظف ثم يُرفع الملف">+ رفع</button>`
+        : `<span class="emp-tile-note">${lockedNote}</span>`;
   const menu = name ? `<div class="emp-tile-menu" role="menu">
       ${viewKind ? `<button type="button" role="menuitem" class="emp-menu-item emp-view-attachment" data-url="${escHtml(assetUrl)}" data-kind="${viewKind}" data-title="${escHtml(label)}">عرض</button>` : ""}
       ${read && isImage && can(_currentUser, "employees.edit") ? `<button type="button" role="menuitem" class="emp-menu-item emp-read-fields" data-path="${escHtml(path)}" data-url="${escHtml(assetUrl)}" data-target="${escHtml(read)}" data-title="${escHtml(label)}">قراءة البيانات</button>` : ""}
@@ -473,6 +484,7 @@ function sidedCardTile(label, side, path, fullPath, canUpload, cardType = "natio
     read: cardType === "national" ? "employee" : cardType === "airport" ? "employee:airport_badge" : cardType === "ministry" ? "employee:ministry_badge" : cardType === "residence" ? "employee:residence_card" : null,
     upload: { cls: "btn-upload-sided-card", attrs },
     remove: { cls: "btn-delete-sided-card", attrs },
+    saveFirst: `.btn-upload-sided-card[data-card-type="${cardType}"][data-side="${side}"]`,
   });
 }
 
@@ -484,7 +496,7 @@ function passportTile(emp) {
   const path = firstJsonPath(emp?.passport_attachment_paths);
   return attachmentTile({
     label: "نسخة الجواز", path, fullPath: emp?.passport_attachment_full_paths?.[0], canManage: Boolean(emp?.id), read: "employee",
-    upload: { cls: "", attrs: `id="btn-upload-passport"` },
+    upload: { cls: "", attrs: `id="btn-upload-passport"` }, saveFirst: "#btn-upload-passport",
     remove: { cls: "btn-delete-passport", attrs: `data-path="${escHtml(path ?? "")}"` },
   });
 }
@@ -493,7 +505,7 @@ function rationCardTile(emp) {
   const path = firstJsonPath(emp?.ration_card_attachment_paths);
   return attachmentTile({
     label: "نسخة البطاقة", path, fullPath: emp?.ration_card_attachment_full_paths?.[0], canManage: Boolean(emp?.id), read: "employee:ration_card",
-    upload: { cls: "", attrs: `id="btn-upload-ration-card"` },
+    upload: { cls: "", attrs: `id="btn-upload-ration-card"` }, saveFirst: "#btn-upload-ration-card",
     remove: { cls: "btn-delete-ration-card", attrs: `data-path="${escHtml(path ?? "")}"` },
   });
 }
@@ -1234,8 +1246,35 @@ function setSectionOpen(section, open) {
   _sectionState.set(`${_activeTab}:${section.dataset.sec}`, open);
 }
 
+/**
+ * Saves the employee (the panel stays open), then presses the same upload button again.
+ * Row buttons are found again by the row's position, which is its index once saved.
+ */
+async function saveThenUpload(button) {
+  let selector = button.dataset.then;
+  const row = button.closest(".vehicle-row, .family-row, .spouse-row");
+  if (row) {
+    const kind = [...row.classList].find(c => c.endsWith("-row") && c !== "emp-row");
+    const position = [...document.querySelectorAll(`#emp-panel .${kind}`)].indexOf(row);
+    const indexAttr = { "vehicle-row": "data-vehicle-index", "family-row": "data-member-index", "spouse-row": "data-spouse-index" }[kind];
+    selector ??= `.${[...button.classList].find(c => c.startsWith("btn-upload-"))}[${indexAttr}="{i}"][data-side="${button.dataset.side}"]`;
+    selector = selector.replace("{i}", String(position));
+  }
+  if (!selector) return;
+  if (!(await confirmAction("يُحفظ الموظف أولاً ثم يُرفع الملف. متابعة؟"))) return;
+  _skipNextSaveConfirmation = true;
+  _afterSave = () => {
+    const next = document.querySelector(`#emp-panel ${selector}`);
+    next?.closest(".emp-row")?.classList.remove("collapsed");
+    next?.click();
+  };
+  document.getElementById("panel-save")?.click();
+}
+
 function handlePanelUiClick(event) {
   const target = event.target;
+  const saveFirst = target.closest(".btn-save-then-upload");
+  if (saveFirst) { saveThenUpload(saveFirst); return; }
   const menuToggle = target.closest(".emp-tile-more, #emp-avatar-btn");
   if (menuToggle) {
     const holder = menuToggle.closest(".emp-tile, .emp-avatar-wrap");
@@ -1496,19 +1535,29 @@ function renderPanel(emp) {
 
     const skipConfirmation = _skipNextSaveConfirmation;
     _skipNextSaveConfirmation = false;
+    const closeAfter = _closeAfterSave;
+    const afterSave = _afterSave;
+    _closeAfterSave = false;
+    _afterSave = null;
     if (!data.full_name) { showToast("الاسم الكامل مطلوب", "error"); return; }
     if (!skipConfirmation && !(await confirmAction(isNew ? "تأكيد إضافة الموظف؟" : "تأكيد حفظ تعديلات الموظف؟"))) return;
     try {
+      let saved;
       if (isNew) {
-        await api.createEmployee(data);
+        saved = await api.createEmployee(data);
         showToast("تم إضافة الموظف بنجاح");
       } else {
-        await api.updateEmployee(emp.id, data);
+        saved = await api.updateEmployee(emp.id, data);
         showToast("تم تحديث بيانات الموظف");
       }
       _employees = await api.listEmployees();
       renderTable();
-      closePanel(true);
+      const id = saved?.id ?? emp?.id;
+      const fresh = _employees.find(e => e.id === id);
+      if (closeAfter || !fresh) { closePanel(true); return; }
+      // Stay on the same employee and tab, with the same sections open.
+      openPanel(fresh, _activeTab, _sectionState);
+      if (afterSave) await afterSave();
     } catch (err) { showToast(err?.message ?? String(err || "خطأ في الحفظ"), "error"); }
   });
 
@@ -1537,6 +1586,9 @@ function applyEmployeePermissions(panel, isNew) {
   }
   if (isNew || !can(_currentUser, "documents.delete")) {
     panel.querySelectorAll(".btn-delete-sided-card,.btn-delete-passport,.btn-delete-ration-card,.btn-delete-family-card,.btn-delete-spouse-card").forEach(el => el.remove());
+  }
+  if (!can(_currentUser, "documents.upload") || !can(_currentUser, isNew ? "employees.create" : "employees.edit")) {
+    panel.querySelectorAll(".btn-save-then-upload").forEach(el => el.remove());
   }
   if (isNew || !can(_currentUser, "documents.upload")) {
     panel.querySelectorAll(".btn-upload-sided-card,#btn-upload-passport,#btn-upload-ration-card,.btn-upload-family-card,.btn-upload-spouse-card").forEach(el => el.remove());
@@ -1823,7 +1875,7 @@ function renderSpouseList(emp) {
   container.querySelectorAll(".btn-upload-spouse-card").forEach(btn => {
     btn.addEventListener("click", async () => {
       if (_panelDirty) {
-        showToast("احفظ تعديلات الزوجات قبل رفع المرفقات", "error");
+        await saveThenUpload(btn);
         return;
       }
       try {
@@ -1868,6 +1920,7 @@ function spouseAttachmentCard(label, side, spouse, spouseIndex, maxSpouses = 4) 
   return attachmentTile({
     label, path, fullPath, canManage: canUpload, read: `spouse:${spouseIndex}`,
     upload: { cls: "btn-upload-spouse-card", attrs },
+    saveFirst: `.btn-upload-spouse-card[data-spouse-index="{i}"][data-side="${side}"]`,
     remove: { cls: "btn-delete-spouse-card", attrs },
     lockedNote: "احفظ أولاً",
   });
@@ -1983,7 +2036,7 @@ function renderFamilyList(emp) {
   container.querySelectorAll(".btn-upload-family-card").forEach(btn => {
     btn.addEventListener("click", async () => {
       if (_panelDirty) {
-        showToast("احفظ تعديلات أفراد الأسرة قبل رفع المرفقات", "error");
+        await saveThenUpload(btn);
         return;
       }
       try {
@@ -2028,6 +2081,7 @@ function familyAttachmentCard(label, side, member, memberIndex) {
   return attachmentTile({
     label, path, fullPath, canManage: canUpload, read: `family:${memberIndex}`,
     upload: { cls: "btn-upload-family-card", attrs },
+    saveFirst: `.btn-upload-family-card[data-member-index="{i}"][data-side="${side}"]`,
     remove: { cls: "btn-delete-family-card", attrs },
     lockedNote: "احفظ أولاً",
   });
@@ -2138,10 +2192,14 @@ function vehicleRowHtml(vehicle = {}, index = Date.now()) {
       extra: `${annual}${existing ? `<span class="emp-pill ${attached === 2 ? "ok" : "none"}">المرفقات ${attached}/2</span>` : ""}`,
       removeClass: "btn-remove-vehicle",
     })}
-    ${vehicleInput("رقم اللوحة", "vehicle-plate", vehicle.plate, true)}
+    ${vehicleInput("رقم اللوحة", "vehicle-plate", vehicle.plate)}
+    ${vehicleInput("المحافظة", "vehicle-governorate", vehicle.governorate)}
+    ${vehicleInput("نوع اللوحة", "vehicle-plate-category", vehicle.plate_category)}
     ${vehicleInput("العلامة التجارية للمركبة", "vehicle-brand", vehicle.brand)}
     ${vehicleInput("نوع المركبة", "vehicle-type", vehicle.type)}
     ${vehicleInput("لون المركبة", "vehicle-color", vehicle.color)}
+    ${vehicleInput("سنة الصنع", "vehicle-model-year", vehicle.model_year, true)}
+    ${vehicleInput("رقم الشاصي", "vehicle-chassis", vehicle.chassis_no, true)}
     ${vehicleInput("رقم السنوية", "vehicle-annual-no", vehicle.annual_no, true)}
     ${vehicleInput("تاريخ الإصدار", "vehicle-issue-date", vehicle.issue_date, false, true)}
     ${vehicleInput("تاريخ النفاذ", "vehicle-expiry-date", vehicle.expiry_date, false, true)}
@@ -2159,9 +2217,10 @@ function vehicleAnnualTile(label, side, vehicle, vehicleIndex) {
   const attrs = `data-vehicle-index="${vehicleIndex ?? ""}" data-side="${side}"`;
   return attachmentTile({
     label, path: vehicle?.[`annual_${side}_path`], fullPath: vehicle?.[`annual_${side}_full_path`],
-    canManage: Boolean(_panelDraft?.id) && Number.isInteger(vehicleIndex) && can(_currentUser, "documents.upload"),
+    canManage: Boolean(_panelDraft?.id) && !_panelDirty && Number.isInteger(vehicleIndex) && can(_currentUser, "documents.upload"),
     read: Number.isInteger(vehicleIndex) ? `vehicle:${vehicleIndex}` : null,
     upload: { cls: "btn-upload-vehicle-annual", attrs },
+    saveFirst: `.btn-upload-vehicle-annual[data-vehicle-index="{i}"][data-side="${side}"]`,
     remove: { cls: "btn-delete-vehicle-annual", attrs },
     lockedNote: "احفظ أولاً",
   });
@@ -2180,7 +2239,7 @@ function attachVehicleAnnualEvents(container) {
   container.querySelectorAll(".btn-upload-vehicle-annual").forEach(btn => {
     btn.addEventListener("click", async () => {
       if (_panelDirty) {
-        showToast("احفظ تعديلات المركبات قبل رفع المرفقات", "error");
+        await saveThenUpload(btn);
         return;
       }
       try {
@@ -2290,10 +2349,14 @@ function ocrRows(result, target) {
   };
   if (kind === "vehicle") {
     add("field:plate", "رقم اللوحة", "plate", record?.plate);
+    add("field:governorate", "المحافظة", "governorate", record?.governorate);
+    add("field:plate_category", "نوع اللوحة", "plate_category", record?.plate_category);
     add("field:annual_no", "رقم السنوية", "annual_no", record?.annual_no, { ltr: true });
     add("field:brand", "العلامة التجارية للمركبة", "brand", record?.brand);
     add("field:type", "نوع المركبة", "vehicle_type", record?.type);
     add("field:color", "لون المركبة", "color", record?.color);
+    add("field:model_year", "سنة الصنع", "year", record?.model_year, { ltr: true });
+    add("field:chassis_no", "رقم الشاصي", "chassis_no", record?.chassis_no, { ltr: true });
     add("field:issue_date", "تاريخ الإصدار", "issue_date", record?.issue_date, { date: true });
     add("field:expiry_date", "تاريخ النفاذ", "expiry_date", record?.expiry_date, { date: true });
     return rows;
@@ -2391,7 +2454,7 @@ async function readUploadedFields(target, path, fullPath, title) {
   await readFieldsInto(target, path, fullPath ? convertFileSrc(fullPath) : "", title);
 }
 
-const OCR_FIELD_LABELS = { plate: "رقم اللوحة", annual_no: "رقم السنوية", brand: "العلامة التجارية", vehicle_type: "نوع المركبة", color: "اللون", doc_number: "رقم الهوية", issue_date: "تاريخ الإصدار", expiry_date: "تاريخ النفاذ", job_title: "العنوان الوظيفي", zones: "صلاحيات الباج", first: "الاسم", father: "اسم الأب", grandfather: "اسم الجد" };
+const OCR_FIELD_LABELS = { plate: "رقم اللوحة", governorate: "المحافظة", plate_category: "نوع اللوحة", chassis_no: "رقم الشاصي", year: "سنة الصنع", annual_no: "رقم السنوية", brand: "العلامة التجارية", vehicle_type: "نوع المركبة", color: "اللون", doc_number: "رقم الهوية", issue_date: "تاريخ الإصدار", expiry_date: "تاريخ النفاذ", job_title: "العنوان الوظيفي", zones: "صلاحيات الباج", first: "الاسم", father: "اسم الأب", grandfather: "اسم الجد" };
 
 /** The other side of a two-sided badge, when it is an image too. */
 function otherBadgeSide(target, path) {

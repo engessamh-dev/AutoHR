@@ -185,6 +185,10 @@ CREATE TABLE IF NOT EXISTS employee_vehicles (
   expiry_date TEXT,
   annual_front_path TEXT,
   annual_back_path  TEXT,
+  governorate       TEXT,
+  plate_category    TEXT,
+  chassis_no        TEXT,
+  model_year        TEXT,
   created_at  TEXT DEFAULT (datetime('now')),
   updated_at  TEXT DEFAULT (datetime('now'))
 );

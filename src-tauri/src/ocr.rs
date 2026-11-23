@@ -187,6 +187,14 @@ fn crop_line(image: &RgbImage, c: &[[f32; 2]; 4], out_h: u32) -> RgbImage {
 
 /// Characters of one upright line crop with their x position (crop pixels), left to right.
 fn recognize_chars(crop: &RgbImage) -> Option<(Vec<(f32, String, f32)>, usize, f32)> {
+    recognize_chars_in(crop, None)
+}
+
+/// Characters of machine-readable lines (MRZ and the like).
+fn mrz_char(c: &str) -> bool { c.len() == 1 && c.chars().all(|c| c.is_ascii_uppercase() || c.is_ascii_digit() || c == '<') }
+
+/// Like `recognize_chars`, but only characters accepted by `allowed` can be emitted.
+fn recognize_chars_in(crop: &RgbImage, allowed: Option<fn(&str) -> bool>) -> Option<(Vec<(f32, String, f32)>, usize, f32)> {
     let scale = REC_HEIGHT as f32 / crop.height() as f32;
     let mut width = ((crop.width() as f32 * scale).round() as usize).max(8);
     let max = *REC_WIDTHS.last().unwrap();
@@ -208,11 +216,25 @@ fn recognize_chars(crop: &RgbImage) -> Option<(Vec<(f32, String, f32)>, usize, f
     let mut out = Vec::new();
     let mut last = 0usize;
     for t in 0..frames {
+        let frame = probs.slice(tract_ndarray::s![0, t, ..]);
         let (mut best, mut p) = (0usize, f32::MIN);
-        for (k, v) in probs.slice(tract_ndarray::s![0, t, ..]).iter().enumerate() {
+        for (k, v) in frame.iter().enumerate() {
             if *v > p {
                 best = k;
                 p = *v;
+            }
+        }
+        // Restricted: a frame whose best character is not allowed takes the most likely allowed
+        // character instead (not the blank, which would drop it).
+        if let Some(ok) = allowed {
+            if best != 0 && !chars.get(best).is_some_and(|c| ok(c)) {
+                (best, p) = (0, f32::MIN);
+                for (k, v) in frame.iter().enumerate() {
+                    if k != 0 && *v > p && chars.get(k).is_some_and(|c| ok(c)) {
+                        best = k;
+                        p = *v;
+                    }
+                }
             }
         }
         if best != 0 && best != last {
@@ -353,7 +375,19 @@ pub fn read_lines(image: &DynamicImage) -> Option<Vec<Line>> {
         .filter_map(|b| {
             let crop = crop_line(&rgb, b, REC_HEIGHT as u32);
             let (visual, confidence) = recognize(&crop)?;
-            let text = logical_order(&visual);
+            let mut text = logical_order(&visual);
+            let mut confidence = confidence;
+            // A long run of fillers read as Arabic-Indic digits ("V<V…<<<<" → "٧٢٧…٢٢٢٢"):
+            // read the line again with the machine-readable alphabet only.
+            if looks_machine_readable(&visual) {
+                if let Some((pieces, _, _)) = recognize_chars_in(&crop, Some(mrz_char)) {
+                    let mrz: String = pieces.iter().map(|p| p.1.as_str()).collect();
+                    if mrz.matches('<').count() >= 5 {
+                        confidence = pieces.iter().map(|p| p.2).sum::<f32>() / pieces.len().max(1) as f32;
+                        text = mrz;
+                    }
+                }
+            }
             if text.is_empty() {
                 return None;
             }
@@ -373,6 +407,13 @@ pub fn read_lines(image: &DynamicImage) -> Option<Vec<Line>> {
         .collect();
     lines.sort_by(|a, b| a.center_y().total_cmp(&b.center_y()));
     Some(lines)
+}
+
+/// Many filler-like characters in one line: '<' itself, or the Arabic-Indic digits the
+/// recogniser reads it as.
+fn looks_machine_readable(text: &str) -> bool {
+    let fillers = text.chars().filter(|c| matches!(c, '<' | '٢' | '٧' | '٨' | '«')).count();
+    fillers >= 8 && fillers * 2 >= text.chars().filter(|c| !c.is_whitespace()).count()
 }
 
 /// Contents of the QR codes on the image (the electronic ration card carries its number in one).

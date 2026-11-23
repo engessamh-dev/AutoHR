@@ -229,7 +229,9 @@ test("car registration: both sides fill the vehicle row and keep the images on s
     window.employeePatch = { vehicles: JSON.stringify([{ plate: "", annual_front_path: front, annual_back_path: back, annual_front_full_path: "synthetic", annual_back_full_path: "synthetic" }]) };
     window.readResults = {
       [front]: { document: "vehicle_registration", warnings: [], fields: [
-        { key: "plate", value: "12 A34567 خصوصي", confidence: 0.6, source: "text" },
+        { key: "plate", value: "12 A34567", confidence: 0.6, source: "text" },
+        { key: "governorate", value: "نينوى", confidence: 0.6, source: "text" },
+        { key: "plate_category", value: "خصوصي", confidence: 0.9, source: "text" },
         { key: "annual_no", value: "X12345678", confidence: 0.99, source: "mrz" },
         { key: "issue_date", value: "2025-02-03", confidence: 0.9, source: "text" },
         { key: "expiry_date", value: "2030-02-02", confidence: 0.9, source: "text" },
@@ -238,6 +240,8 @@ test("car registration: both sides fill the vehicle row and keep the images on s
         { key: "brand", value: "تويوتا", confidence: 0.95, source: "text" },
         { key: "vehicle_type", value: "كامري", confidence: 0.95, source: "text" },
         { key: "color", value: "أبيض", confidence: 0.95, source: "text" },
+        { key: "year", value: "2022", confidence: 0.95, source: "text" },
+        { key: "chassis_no", value: "ABCDE1234567890XY", confidence: 0.99, source: "both" },
       ] },
     };
   }, { front, back });
@@ -256,12 +260,47 @@ test("car registration: both sides fill the vehicle row and keep the images on s
   await expect(dialog).toBeHidden();
   await expect(row.locator(".vehicle-brand")).toHaveValue("تويوتا");
   await expect(row.locator(".vehicle-annual-no")).toHaveValue("X12345678");
-  await expect(row.locator(".vehicle-plate")).toHaveValue("12 A34567 خصوصي");
+  await expect(row.locator(".vehicle-plate")).toHaveValue("12 A34567");
+  await expect(row.locator(".vehicle-governorate")).toHaveValue("نينوى");
+  await expect(row.locator(".vehicle-plate-category")).toHaveValue("خصوصي");
+  await expect(row.locator(".vehicle-chassis")).toHaveValue("ABCDE1234567890XY");
+  await expect(row.locator(".vehicle-model-year")).toHaveValue("2022");
   await expect(row.locator(".vehicle-expiry-date")).toHaveValue("2030-02-02");
   await page.locator("#panel-save").click();
   await page.getByRole("button", { name: "تأكيد", exact: true }).click();
   await expect.poll(() => page.evaluate(() => window.calls.some(c => c.command === "cmd_update_employee"))).toBe(true);
   const data = await page.evaluate(() => window.calls.find(c => c.command === "cmd_update_employee").args.data);
   const [vehicle] = JSON.parse(data.vehicles);
-  expect(vehicle).toMatchObject({ brand: "تويوتا", type: "كامري", color: "أبيض", annual_no: "X12345678", issue_date: "2025-02-03", annual_front_path: front, annual_back_path: back });
+  expect(vehicle).toMatchObject({ brand: "تويوتا", type: "كامري", color: "أبيض", annual_no: "X12345678", issue_date: "2025-02-03", governorate: "نينوى", chassis_no: "ABCDE1234567890XY", model_year: "2022", annual_front_path: front, annual_back_path: back });
+});
+
+test("save keeps the panel open on the same tab", async ({ page }) => {
+  await page.evaluate(() => window.renderActual("employees"));
+  await page.locator('.table-row[data-id="1"]').click();
+  await page.locator('.tab-btn[data-tab="vehicle"]').click();
+  await page.locator("#btn-add-vehicle").click();
+  await page.locator(".vehicle-row .vehicle-plate").first().fill("TEST 1");
+  await page.locator("#panel-save").click();
+  await page.getByRole("button", { name: "تأكيد", exact: true }).click();
+  await expect.poll(() => page.evaluate(() => window.calls.some(c => c.command === "cmd_update_employee"))).toBe(true);
+  await expect(page.locator('.tab-btn[data-tab="vehicle"]')).toHaveCSS("font-weight", "700");
+  await expect(page.locator("#emp-panel")).toHaveCSS("transform", "matrix(1, 0, 0, 1, 0, 0)");
+  await expect(page.locator("#btn-add-vehicle")).toBeVisible();
+});
+
+test("a new vehicle's registration image: + رفع saves, then uploads to the saved row", async ({ page }) => {
+  await page.evaluate(() => { window.applySaves = true; window.renderActual("employees"); });
+  await page.locator('.table-row[data-id="1"]').click();
+  await page.locator('.tab-btn[data-tab="vehicle"]').click();
+  await page.locator("#btn-add-vehicle").click();
+  const row = page.locator(".vehicle-row").first();
+  await row.locator(".vehicle-plate").fill("TEST 2");
+  await row.locator(".btn-save-then-upload").first().click();
+  await page.getByRole("button", { name: "تأكيد", exact: true }).click();
+  await expect.poll(() => page.evaluate(() => window.calls.some(c => c.command === "cmd_update_employee"))).toBe(true);
+  // The upload continues on the saved row: confirm it, then upload the original file.
+  await page.getByRole("button", { name: "تأكيد", exact: true }).click();
+  await page.getByRole("button", { name: "رفع بالطريقة المعتادة" }).click();
+  await expect.poll(() => page.evaluate(() => window.calls.find(c => c.command === "cmd_upload_vehicle_annual_attachment")?.args)).toMatchObject({ employeeId: 1, vehicleIndex: 0, side: "front" });
+  await expect(page.locator('.tab-btn[data-tab="vehicle"]')).toHaveCSS("font-weight", "700");
 });

@@ -956,7 +956,7 @@ fn load_employee_family_members(conn: &Connection, employee_id: i64) -> AppResul
 
 fn load_employee_vehicles(conn: &Connection, employee_id: i64) -> AppResult<Vec<serde_json::Value>> {
     repeating_array(conn,
-        "SELECT plate,brand,type,color,annual_no,issue_date,expiry_date,annual_front_path,annual_back_path FROM employee_vehicles WHERE employee_id=?1 ORDER BY sort_order,id",
+        "SELECT plate,brand,type,color,annual_no,issue_date,expiry_date,annual_front_path,annual_back_path,governorate,plate_category,chassis_no,model_year FROM employee_vehicles WHERE employee_id=?1 ORDER BY sort_order,id",
         employee_id,
         |row| {
             let front = row_text(row, 7)?;
@@ -971,6 +971,10 @@ fn load_employee_vehicles(conn: &Connection, employee_id: i64) -> AppResult<Vec<
                 "expiry_date": optional_json_value(row_text(row, 6)?),
                 "annual_front_path": optional_json_value(front.clone()),
                 "annual_back_path": optional_json_value(back.clone()),
+                "governorate": optional_json_value(row_text(row, 9)?),
+                "plate_category": optional_json_value(row_text(row, 10)?),
+                "chassis_no": optional_json_value(row_text(row, 11)?),
+                "model_year": optional_json_value(row_text(row, 12)?),
                 "annual_front_full_path": optional_json_value(attachment_full_path(conn, &front)),
                 "annual_back_full_path": optional_json_value(attachment_full_path(conn, &back)),
             }))
@@ -1181,14 +1185,16 @@ fn replace_employee_vehicles(conn: &Connection, employee_id: i64, vehicles_json:
     let vehicles: Vec<serde_json::Value> = serde_json::from_str(vehicles_json).unwrap_or_default();
     for (index, vehicle) in vehicles.iter().enumerate() {
         conn.execute(
-            "INSERT INTO employee_vehicles(employee_id,sort_order,plate,brand,type,color,annual_no,issue_date,expiry_date,annual_front_path,annual_back_path)
-             VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11)",
+            "INSERT INTO employee_vehicles(employee_id,sort_order,plate,brand,type,color,annual_no,issue_date,expiry_date,annual_front_path,annual_back_path,governorate,plate_category,chassis_no,model_year)
+             VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15)",
             params![
                 employee_id, index as i64,
                 value_string(vehicle, "plate"), value_string(vehicle, "brand"), value_string(vehicle, "type"),
                 value_string(vehicle, "color"), value_string(vehicle, "annual_no"),
                 value_string(vehicle, "issue_date"), value_string(vehicle, "expiry_date"),
                 kept(vehicle, "annual_front_path"), kept(vehicle, "annual_back_path"),
+                value_string(vehicle, "governorate"), value_string(vehicle, "plate_category"),
+                value_string(vehicle, "chassis_no"), value_string(vehicle, "model_year"),
             ],
         )?;
     }

@@ -169,11 +169,12 @@ pub fn db_path() -> PathBuf {
 /// * 1 — the schema produced by `migrate()` (Phase B, before the name split).
 /// * 2 — person names split into parts (`name_parts`, `name_split_originals`; see `names.rs`).
 /// * 3 — airport badge access zones; car registration (السنوية) images per vehicle.
+/// * 4 — vehicle governorate, plate category, chassis number and model year.
 ///
 /// To change the schema later: bump this constant and add an `if from < N { ... }` step in
 /// `upgrade()`. Every upgrade of an existing database runs only after a verified
 /// pre-upgrade snapshot exists, and the snapshot is restored automatically if a step fails.
-pub const SCHEMA_VERSION: i64 = 3;
+pub const SCHEMA_VERSION: i64 = 4;
 
 #[derive(Debug)]
 pub enum OpenError {
@@ -271,7 +272,12 @@ fn upgrade(conn: &Connection, from: i64) -> SqlResult<()> {
     if from < 3 {
         upgrade_to_v3(conn)?;
     }
-    // Future steps go here, for example: if from < 4 { ... }
+    if from < 4 {
+        for column in ["governorate", "plate_category", "chassis_no", "model_year"] {
+            add_column_if_missing(conn, "employee_vehicles", column, "TEXT")?;
+        }
+    }
+    // Future steps go here, for example: if from < 5 { ... }
     #[cfg(test)]
     if FAIL_UPGRADE.with(|flag| flag.get()) {
         return Err(rusqlite::Error::InvalidQuery);
@@ -564,6 +570,10 @@ fn migrate(conn: &Connection) -> SqlResult<()> {
           expiry_date TEXT,
           annual_front_path TEXT,
           annual_back_path TEXT,
+          governorate TEXT,
+          plate_category TEXT,
+          chassis_no TEXT,
+          model_year TEXT,
           created_at TEXT DEFAULT (datetime('now')),
           updated_at TEXT DEFAULT (datetime('now'))
         );
@@ -829,11 +839,12 @@ mod v3_tests {
         conn.execute_batch("ALTER TABLE employees DROP COLUMN airport_badge_zones;
             ALTER TABLE employee_vehicles DROP COLUMN annual_front_path;
             ALTER TABLE employee_vehicles DROP COLUMN annual_back_path;
+            ALTER TABLE employee_vehicles DROP COLUMN chassis_no;
             PRAGMA user_version = 2;").unwrap();
         upgrade_restored(&conn).unwrap();
         assert_eq!(schema_version(&conn).unwrap(), SCHEMA_VERSION);
         conn.prepare("SELECT airport_badge_zones FROM employees").unwrap();
-        conn.prepare("SELECT annual_front_path, annual_back_path FROM employee_vehicles").unwrap();
+        conn.prepare("SELECT annual_front_path, annual_back_path, governorate, plate_category, chassis_no, model_year FROM employee_vehicles").unwrap();
         // Running the step again changes nothing.
         upgrade_to_v3(&conn).unwrap();
     }

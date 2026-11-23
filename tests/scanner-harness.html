@@ -33,7 +33,7 @@ window.__TAURI_INTERNALS__={convertFileSrc:()=>canvas.toDataURL("image/jpeg"),in
   if(command==="cmd_get_employee")return employee;
   if(command==="cmd_list_name_review")return window.nameReview ?? [];
   if(command==="cmd_save_name_review"){window.nameReview=(window.nameReview??[]).filter(i=>!(i.employee_id===args.employeeId&&i.owner===args.owner&&i.index===args.index&&i.field===args.field));return "saved";}
-  if(command==="cmd_update_employee"||command==="cmd_create_employee")return employee;
+  if(command==="cmd_update_employee"||command==="cmd_create_employee"){if(window.applySaves)Object.assign(employee,args.data);return employee;}
   if(command==="cmd_delete_employee_photo"){employee.photo_path=null;employee.photo_full_path=null;return;}
   if(command==="cmd_get_company_config")return {company_name:"Synthetic Company",department_name:"Test",division_name:""};
   if(command==="cmd_list_general_docs" || command==="cmd_list_outgoing_docs")return window.docs ?? [doc];
