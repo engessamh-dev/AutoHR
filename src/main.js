@@ -393,6 +393,69 @@ function startLoginLockout(minutes) {
   setLoginBusy(false);
 }
 
+// ── Recent usernames ──────────────────────────────────────────────────────
+// The WebView's own "Saved info" popup is turned off (autocomplete="off"),
+// because it is a dark native box that covers the password field. Instead the
+// last few usernames that signed in successfully are offered in a small list
+// styled like the login card. Only usernames are kept, never passwords.
+const RECENT_USERNAMES_KEY = "cnsarch.recentUsernames";
+function recentLoginUsernames() {
+  try {
+    const list = JSON.parse(localStorage.getItem(RECENT_USERNAMES_KEY) || "[]");
+    return Array.isArray(list) ? list.filter(v => typeof v === "string" && v).slice(0, 5) : [];
+  } catch { return []; }
+}
+function rememberLoginUsername(username) {
+  const name = String(username || "").trim();
+  if (!name) return;
+  const list = [name, ...recentLoginUsernames().filter(v => v !== name)].slice(0, 5);
+  try { localStorage.setItem(RECENT_USERNAMES_KEY, JSON.stringify(list)); } catch { /* storage is optional */ }
+}
+function bindLoginUsernameSuggestions() {
+  const input = document.getElementById("login-username");
+  const box = document.getElementById("login-suggestions");
+  if (!input || !box) return;
+  let active = -1;
+  const items = () => [...box.querySelectorAll("[data-username]")];
+  const close = () => { box.classList.add("hidden"); input.setAttribute("aria-expanded", "false"); active = -1; };
+  const render = () => {
+    const typed = input.value.trim().toLowerCase();
+    const matches = recentLoginUsernames().filter(v => v.toLowerCase().startsWith(typed) && v.toLowerCase() !== typed);
+    if (!matches.length) { close(); return; }
+    box.innerHTML = matches.map((name, i) =>
+      `<li role="option" id="login-suggestion-${i}" data-username="${escHtml(name)}" dir="ltr">${escHtml(name)}</li>`).join("");
+    box.classList.remove("hidden");
+    input.setAttribute("aria-expanded", "true");
+    active = -1;
+  };
+  const pick = name => {
+    input.value = name;
+    input.dispatchEvent(new Event("input"));
+    close();
+    document.getElementById("login-password")?.focus();
+  };
+  const highlight = index => {
+    const list = items();
+    active = (index + list.length) % list.length;
+    list.forEach((li, i) => li.classList.toggle("is-active", i === active));
+    input.setAttribute("aria-activedescendant", list[active]?.id || "");
+  };
+  input.addEventListener("focus", render);
+  input.addEventListener("input", render);
+  input.addEventListener("blur", () => setTimeout(close, 120));
+  input.addEventListener("keydown", event => {
+    if (box.classList.contains("hidden")) return;
+    if (event.key === "ArrowDown") { event.preventDefault(); highlight(active + 1); }
+    else if (event.key === "ArrowUp") { event.preventDefault(); highlight(active - 1); }
+    else if (event.key === "Enter" && active >= 0) { event.preventDefault(); pick(items()[active].dataset.username); }
+    else if (event.key === "Escape") close();
+  });
+  box.addEventListener("mousedown", event => {
+    const li = event.target.closest("[data-username]");
+    if (li) { event.preventDefault(); pick(li.dataset.username); }
+  });
+}
+
 async function doLogin(username, password) {
   if (loginBusy || loginLockoutTimer) return;
   setLoginBusy(true);
@@ -400,6 +463,7 @@ async function doLogin(username, password) {
   try {
     const user = await api.login(username, password);
     currentUser = user;
+    rememberLoginUsername(username);
     clearLoginMessage();
     document.getElementById("login-screen").classList.add("hidden");
     if (user.must_change_password) {
@@ -478,6 +542,8 @@ document.addEventListener("DOMContentLoaded", async () => {
     if (!p) { showLoginMessage("أدخل كلمة المرور", "error", "password"); document.getElementById("login-password").focus(); return; }
     doLogin(u, p);
   });
+
+  bindLoginUsernameSuggestions();
 
   const loginPassword = document.getElementById("login-password");
   const togglePassword = document.getElementById("btn-toggle-password");
