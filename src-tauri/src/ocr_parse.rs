@@ -10,9 +10,9 @@ use serde::Serialize;
 pub struct Field {
     pub key: String,
     pub value: String,
-    /// 0..1. MRZ values that pass their check digit get 0.99.
+    /// 0..1. MRZ values that pass their check digit, and QR values, get 0.99.
     pub confidence: f32,
-    /// "mrz" or "text".
+    /// "mrz", "qr" or "text".
     pub source: &'static str,
 }
 
@@ -33,8 +33,8 @@ impl ReadResult {
             return;
         }
         match self.fields.iter_mut().find(|f| f.key == key) {
-            // An MRZ value that passed its check digit wins over printed text.
-            Some(existing) if existing.source == "mrz" && existing.confidence >= confidence => {}
+            // An MRZ or QR value that passed its check wins over printed text.
+            Some(existing) if existing.source != "text" && existing.confidence >= confidence => {}
             Some(existing) => *existing = Field { key: key.into(), value, confidence, source },
             None => self.fields.push(Field { key: key.into(), value, confidence, source }),
         }
@@ -789,8 +789,58 @@ fn parse_generic(lines: &[Line], result: &mut ReadResult) {
 
 // ---------------------------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------------------------
+// Electronic ration card
+
+fn is_ration_card(lines: &[Line]) -> bool {
+    lines.iter().any(|l| has_label(&l.text, "البطاقة التموينية") || has_label(&l.text, "رقم البطاقة التموينية"))
+}
+
+/// Card number (printed under its label, and in the QR code) and the head of household's name.
+fn parse_ration(lines: &[Line], codes: &[String], result: &mut ReadResult) {
+    let printed = lines
+        .iter()
+        .position(|l| has_label(&l.text, "رقم البطاقة"))
+        .and_then(|i| lines[i + 1..].iter().take(3).find_map(|l| {
+            let digits = ascii_digits(&l.text).replace(' ', "");
+            (digits.len() >= 6 && digits.chars().all(|c| c.is_ascii_digit())).then(|| (digits, l.confidence))
+        }));
+    let qr = codes.iter().find(|c| c.len() >= 6 && c.chars().all(|ch| ch.is_ascii_digit()));
+    match (printed, qr) {
+        (Some((p, _)), Some(q)) if &p == q => result.set("ration_no", p, 0.99, "qr"),
+        (_, Some(q)) => result.set("ration_no", q.clone(), 0.97, "qr"),
+        (Some((p, c)), None) => result.set("ration_no", p, c, "text"),
+        (None, None) => {}
+    }
+    if let Some(i) = lines.iter().position(|l| has_label(&l.text, "اسم رب الاسره")) {
+        // Below the label: the Kurdish label line, then the printed name.
+        let name = lines[i + 1..].iter().take(4).find(|l| {
+            let words = tokens(&l.text);
+            !words.is_empty() && words.iter().all(|w| w.chars().all(is_arabic_letter)) && !words.iter().any(|w| is_kurdish_word(w) || matches!(normalize(w).as_str(), "سه" | "روكي" | "مالبات" | "سهروكي" | "ناوي"))
+        });
+        if let Some(line) = name {
+            result.set("head_name", merge_single_letters(&arabic_only(&line.text)).join(" "), line.confidence, "text");
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------------------------
+
 pub fn parse(lines: &[Line]) -> ReadResult {
+    parse_with_codes(lines, &[])
+}
+
+/// `codes` are the contents of QR codes found on the image.
+pub fn parse_with_codes(lines: &[Line], codes: &[String]) -> ReadResult {
     let mut result = ReadResult::default();
+    if is_ration_card(lines) {
+        parse_ration(lines, codes, &mut result);
+        result.document = "ration".into();
+        if result.fields.is_empty() {
+            result.warnings.push("لم يُعثر على بيانات مقروءة في الصورة".into());
+        }
+        return result;
+    }
     let mrz = parse_mrz(lines, &mut result);
     if mrz == Some("td3") {
         parse_passport_text(lines, &mut result);
@@ -961,6 +1011,27 @@ mod tests {
         assert_eq!(v("expiry_date"), "2026-01-09");
         assert_eq!(v("doc_number"), "004512");
         assert!(r.get("doc_number").unwrap().confidence < 0.85);
+    }
+
+    #[test]
+    fn ration_card_number_and_head_of_household() {
+        let lines = vec![
+            line("البطاقة التموينية الالكترونية", 0.),
+            line("رقم البطاقة التموينية ازمارهى كارتي خوراك", 20.),
+            line("0100000001", 40.),
+            line("اسم رب الأسرة", 60.),
+            line("ناوى سه روكى مالبات", 80.),
+            line("أحمد علي حسين كاظم", 100.),
+            line("1000000000001", 140.),
+        ];
+        let r = parse_with_codes(&lines, &["0100000001".to_string()]);
+        assert_eq!(r.document, "ration");
+        assert_eq!(r.get("ration_no").unwrap().value, "0100000001");
+        assert_eq!(r.get("ration_no").unwrap().source, "qr");
+        assert_eq!(r.get("head_name").unwrap().value, "أحمد علي حسين كاظم");
+        // Without the QR code the printed number is used.
+        let r = parse(&lines);
+        assert_eq!(r.get("ration_no").unwrap().source, "text");
     }
 
     #[test]

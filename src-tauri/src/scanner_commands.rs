@@ -315,7 +315,7 @@ pub(crate) async fn cmd_read_document_fields(
         let image = scanner::load_image(&path)
             .map_err(|_| AppError::Validation("قراءة البيانات تعمل على الصور فقط (JPEG أو PNG أو WebP)".into()))?;
         let lines = ocr::read_lines(&image).ok_or_else(|| AppError::Other("text reader unavailable".into()))?;
-        Ok(ocr_parse::parse(&lines))
+        Ok(ocr_parse::parse_with_codes(&lines, &ocr::read_qr_codes(&image)))
     })
     .await
     .map_err(|e| AppError::Other(e.to_string()))?

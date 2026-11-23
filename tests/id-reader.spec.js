@@ -140,3 +140,25 @@ test("residence card: the printed serial fills the card number", async ({ page }
   await page.getByRole("dialog", { name: /قراءة البيانات/ }).getByRole("button", { name: "اعتماد المحدَّد" }).click();
   await expect(page.locator("#f-residence_card_no")).toHaveValue("1000001");
 });
+
+test("ration card: number from the QR code and the head of household", async ({ page }) => {
+  await page.evaluate(() => {
+    window.employeePatch = { ration_card_attachment_paths: JSON.stringify(["Files/Employees/1/Documents/Ration/card.jpg"]), ration_card_attachment_full_paths: ["synthetic"] };
+    window.readResult = {
+      document: "ration", warnings: [],
+      fields: [
+        { key: "ration_no", value: "0100000001", confidence: 0.99, source: "qr" },
+        { key: "head_name", value: "أحمد علي حسين كاظم", confidence: 0.9, source: "text" },
+      ],
+    };
+  });
+  await openDocuments(page);
+  const tile = page.locator(".emp-tile.has-file", { has: page.locator('[data-target="employee:ration_card"]') });
+  await tile.locator(".emp-tile-more").click();
+  await tile.getByRole("menuitem", { name: "قراءة البيانات" }).click();
+  const dialog = page.getByRole("dialog", { name: /قراءة البيانات/ });
+  await expect(dialog.locator(".id-reader-badge.is-ok")).toHaveCount(1);
+  await dialog.getByRole("button", { name: "اعتماد المحدَّد" }).click();
+  await expect(page.locator("#f-ration_card_no")).toHaveValue("0100000001");
+  await expect(page.locator("#f-ration_center_name")).toHaveValue("أحمد علي حسين كاظم");
+});

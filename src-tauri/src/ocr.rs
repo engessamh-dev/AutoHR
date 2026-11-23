@@ -375,6 +375,23 @@ pub fn read_lines(image: &DynamicImage) -> Option<Vec<Line>> {
     Some(lines)
 }
 
+/// Contents of the QR codes on the image (the electronic ration card carries its number in one).
+pub fn read_qr_codes(image: &DynamicImage) -> Vec<String> {
+    let mut gray = image.to_luma8();
+    let longest = gray.width().max(gray.height());
+    if longest > 2000 {
+        let s = 2000. / longest as f32;
+        gray = image::imageops::resize(&gray, (gray.width() as f32 * s) as u32, (gray.height() as f32 * s) as u32, FilterType::Triangle);
+    }
+    let mut prepared = rqrr::PreparedImage::prepare_from_greyscale(gray.width() as usize, gray.height() as usize, |x, y| gray.get_pixel(x as u32, y as u32)[0]);
+    prepared
+        .detect_grids()
+        .into_iter()
+        .filter_map(|grid| grid.decode().ok().map(|(_, content)| content.trim().to_owned()))
+        .filter(|content| !content.is_empty())
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -409,7 +426,9 @@ mod tests {
             if std::env::var("OCR_LINES").is_ok() {
                 for l in &lines { println!("  {:.2} {}", l.confidence, l.text); }
             }
-            let result = crate::ocr_parse::parse(&lines);
+            let codes = read_qr_codes(&image);
+            println!("  qr codes: {}", codes.len());
+            let result = crate::ocr_parse::parse_with_codes(&lines, &codes);
             println!("  doc={} {:?}", result.document, result.warnings);
             for f in &result.fields { println!("  {:<14} {:.2} {:<5} {}", f.key, f.confidence, f.source, f.value); }
         }

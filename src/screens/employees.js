@@ -453,7 +453,7 @@ function passportTile(emp) {
 function rationCardTile(emp) {
   const path = firstJsonPath(emp?.ration_card_attachment_paths);
   return attachmentTile({
-    label: "نسخة البطاقة", path, fullPath: emp?.ration_card_attachment_full_paths?.[0], canManage: Boolean(emp?.id),
+    label: "نسخة البطاقة", path, fullPath: emp?.ration_card_attachment_full_paths?.[0], canManage: Boolean(emp?.id), read: "employee:ration_card",
     upload: { cls: "", attrs: `id="btn-upload-ration-card"` },
     remove: { cls: "btn-delete-ration-card", attrs: `data-path="${escHtml(path ?? "")}"` },
   });
@@ -1599,6 +1599,9 @@ function attachTabEvents(emp) {
         await api.uploadRationCardAttachment(emp.id, selected);
         showToast("تم رفع نسخة البطاقة التموينية");
         await refreshDocumentAttachments(emp.id);
+        const rationPaths = parseJsonList(_panelDraft?.ration_card_attachment_paths);
+        const rationIndex = rationPaths.length - 1;
+        await readUploadedFields("employee:ration_card", rationPaths[rationIndex], _panelDraft?.ration_card_attachment_full_paths?.[rationIndex], "البطاقة التموينية");
       } catch (err) { showToast(err?.message ?? String(err || "خطأ في الرفع"), "error"); }
     });
 
@@ -2160,6 +2163,11 @@ function ocrRows(result, target) {
     const field = read(key);
     if (field) rows.push({ id, label, value: field.value, confidence: field.confidence, source: field.source, current: current ?? "", ...opts });
   };
+  if (badge === "ration_card") {
+    add("field:ration_card_no", "رقم البطاقة التموينية", "ration_no", record?.ration_card_no, { ltr: true });
+    add("field:ration_center_name", "اسم رب الأسرة", "head_name", record?.ration_center_name);
+    return rows;
+  }
   if (badge === "residence_card") {
     // Old-style residence cards: only the printed serial is readable; the rest is handwritten.
     add("field:residence_card_no", "رقم بطاقة السكن (التسلسل)", "doc_number", record?.residence_card_no, { ltr: true });

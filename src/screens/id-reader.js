@@ -21,8 +21,9 @@ function rowHtml(row, index) {
   const conflict = row.current && row.current !== row.value;
   const checked = !row.current || row.current === row.value ? "checked" : "";
   const low = row.confidence < LOW_CONFIDENCE;
-  const badge = row.source === "mrz" && !low
-    ? `<span class="id-reader-badge is-ok" title="تطابق مع أرقام التحقق في الشريط السفلي">مُتحقَّق</span>`
+  const verified = row.source === "mrz" ? "تطابق مع أرقام التحقق في الشريط السفلي" : row.source === "qr" ? "قُرئ من رمز QR على البطاقة" : "";
+  const badge = verified && !low
+    ? `<span class="id-reader-badge is-ok" title="${verified}">مُتحقَّق</span>`
     : low ? `<span class="id-reader-badge is-warn" title="القراءة غير مؤكدة، راجعها مع الصورة">راجِع</span>` : "";
   return `<tr class="${low ? "is-low" : ""} ${conflict ? "is-conflict" : ""}">
     <td><input type="checkbox" class="id-reader-pick" data-index="${index}" ${checked} aria-label="اعتماد ${escHtml(row.label)}" /></td>
