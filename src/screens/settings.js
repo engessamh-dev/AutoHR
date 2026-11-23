@@ -291,7 +291,7 @@ export async function renderSettings(container, user, ctx) {
         <p class="section-title">مظهر البرنامج</p>
         <p class="text-xs text-gray-400 leading-6">يُحفظ الاختيار على هذا الجهاز فقط. شاشة الدخول والمطبوعات لا تتغير.</p>
         <div class="theme-choices" role="radiogroup" aria-label="مظهر البرنامج">
-          ${["light", "dark", "system"].map(choice => `<button type="button" role="radio" class="theme-choice" data-theme-option="${choice}"
+          ${["light", "dark"].map(choice => `<button type="button" role="radio" class="theme-choice" data-theme-option="${choice}"
             aria-checked="${getThemeChoice() === choice}">${themeIcon(choice)}<span>${themeLabels[choice]}</span></button>`).join("")}
         </div>
       </section>
