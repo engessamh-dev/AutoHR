@@ -87,8 +87,8 @@
   color:#fff;font-size:calc(24 * var(--px));font-weight:700;white-space:nowrap;pointer-events:none;
 }
 .login-unit-name.is-hint{
-  --x1:955;justify-content:flex-start;padding-inline-start:calc(4 * var(--px));
-  color:#b7c8dc;font-size:calc(13 * var(--px));font-weight:500;font-style:italic;white-space:normal;line-height:1.25;
+  /* muted, one line, same place: tells the admin the division name is not set yet */
+  color:#9fb6cf;font-size:calc(16.5 * var(--px));font-weight:600;pointer-events:auto;cursor:help;
 }
 
 /* Message box: the design's own red error box (text removed), shown only when needed.
