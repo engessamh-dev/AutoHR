@@ -38,3 +38,20 @@ test("dialogs use the theme colours", async ({ page }) => {
   await expect(dialog).toBeVisible();
   expect(await dialog.evaluate(el => getComputedStyle(el).backgroundColor)).toBe("rgb(255, 255, 255)");
 });
+
+test("header sun button cycles light, dark and follow Windows", async ({ page }) => {
+  await page.evaluate(async () => {
+    document.querySelector("#root").innerHTML = `<button id="btn-theme"></button>`;
+    const { mountThemeMenu, setThemeChoice } = await import("/src/theme.js");
+    setThemeChoice("dark");
+    mountThemeMenu(document.getElementById("btn-theme"));
+  });
+  const button = page.locator("#btn-theme");
+  const choice = () => page.evaluate(() => localStorage.getItem("autohr.theme"));
+  await button.click(); expect(await choice()).toBe("system");
+  await expect(button).toHaveAttribute("title", /حسب إعداد Windows/);
+  await button.click(); expect(await choice()).toBe("light");
+  expect(await theme(page)).toBe("light");
+  await button.click(); expect(await choice()).toBe("dark");
+  expect(await theme(page)).toBe("dark");
+});

@@ -563,15 +563,9 @@
 .emp-footer-end{justify-self:end}
 .emp-footer button{white-space:nowrap}
 
-/* ── Appearance (light / dark) menu in the header ──────────────────────── */
+/* ── Appearance (light / dark / Windows) button in the header ──────────────────────── */
 .theme-switch{position:relative;flex:none}
 .theme-icon{width:19px;height:19px;fill:none;stroke:currentColor;stroke-width:1.7;stroke-linecap:round;stroke-linejoin:round}
-.theme-menu{position:absolute;top:calc(100% + 6px);inset-inline-end:0;z-index:60;min-width:200px;white-space:nowrap;padding:6px;background:var(--ui-surface-raised);border:1px solid var(--ui-line);border-radius:10px;box-shadow:0 12px 32px rgba(0,0,0,.35)}
-.theme-menu[hidden]{display:none}
-.theme-menu-item{display:flex;align-items:center;gap:10px;width:100%;padding:8px 10px;border:0;border-radius:6px;background:transparent;color:var(--ui-text-strong);font-size:13.5px;text-align:start;cursor:pointer}
-.theme-menu-item:hover,.theme-menu-item:focus-visible{background:var(--ui-hover-2);outline:none}
-.theme-menu-item[aria-checked="true"]{color:var(--ui-accent);font-weight:600}
-.theme-menu-item[aria-checked="true"]::after{content:"✓";margin-inline-start:auto}
 .theme-choices{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px}
 @media (max-width:640px){.theme-choices{grid-template-columns:1fr}}
 .theme-choice{display:flex;flex-direction:column;align-items:center;gap:8px;padding:14px 10px;border:1px solid var(--ui-line);border-radius:10px;background:var(--btn2-bg);color:var(--ui-text);font-size:13px;cursor:pointer}

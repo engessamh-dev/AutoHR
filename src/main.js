@@ -549,7 +549,7 @@ document.addEventListener("DOMContentLoaded", async () => {
   // Collapsible sidebar: ☰ button and Ctrl+B, state remembered between sessions.
   setSidebarCollapsed(readSidebarCollapsed());
   document.getElementById("btn-toggle-sidebar").addEventListener("click", toggleSidebar);
-  // Light / dark / follow Windows, available to every user from the header.
+  // Light → dark → follow Windows on each click, available to every user from the header.
   mountThemeMenu(document.getElementById("btn-theme"));
   document.addEventListener("keydown", event => {
     if (!(event.ctrlKey || event.metaKey) || event.altKey || event.shiftKey) return;

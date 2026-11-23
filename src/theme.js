@@ -17,7 +17,7 @@ const systemQuery = window.matchMedia?.("(prefers-color-scheme: light)");
 const listeners = new Set();
 
 export const themeLabels = {
-  dark:   "داكن",
+  dark:   "الأصلي (داكن)",
   light:  "فاتح",
   system: "حسب إعداد Windows",
 };
@@ -74,53 +74,20 @@ export function themeIcon(choice) {
   return `<svg class="theme-icon" viewBox="0 0 24 24" aria-hidden="true">${ICONS[choice] ?? ICONS.dark}</svg>`;
 }
 
-/** Header button: opens a small menu with the three choices. */
+/** Header button: each click moves to the next mode (light → dark → Windows). */
+const CYCLE = ["light", "dark", "system"];
+
 export function mountThemeMenu(button) {
   if (!button) return;
-  const menu = document.createElement("div");
-  menu.className = "theme-menu";
-  menu.setAttribute("role", "menu");
-  menu.hidden = true;
-  menu.innerHTML = CHOICES.map(choice => `
-    <button type="button" role="menuitemradio" class="theme-menu-item" data-theme-choice="${choice}">
-      ${themeIcon(choice)}<span>${themeLabels[choice]}</span>
-    </button>`).join("");
-  button.after(menu);
-
+  const nextOf = choice => CYCLE[(CYCLE.indexOf(choice) + 1) % CYCLE.length];
   const sync = () => {
     const choice = getThemeChoice();
     button.innerHTML = themeIcon(choice);
-    const label = `المظهر: ${themeLabels[choice]}`;
+    const label = `المظهر: ${themeLabels[choice]} (اضغط للتبديل إلى: ${themeLabels[nextOf(choice)]})`;
     button.title = label;
     button.setAttribute("aria-label", label);
-    menu.querySelectorAll("[data-theme-choice]").forEach(item =>
-      item.setAttribute("aria-checked", String(item.dataset.themeChoice === choice)));
   };
-  const close = () => { menu.hidden = true; button.setAttribute("aria-expanded", "false"); };
-  const open = () => {
-    menu.hidden = false;
-    button.setAttribute("aria-expanded", "true");
-    menu.querySelector('[aria-checked="true"]')?.focus();
-  };
-
-  button.setAttribute("aria-haspopup", "menu");
-  button.setAttribute("aria-expanded", "false");
-  button.addEventListener("click", e => { e.stopPropagation(); menu.hidden ? open() : close(); });
-  menu.addEventListener("click", e => {
-    const item = e.target.closest("[data-theme-choice]");
-    if (!item) return;
-    setThemeChoice(item.dataset.themeChoice);
-    close();
-    button.focus();
-  });
-  menu.addEventListener("keydown", e => {
-    const items = [...menu.querySelectorAll("[data-theme-choice]")];
-    const i = items.indexOf(document.activeElement);
-    if (e.key === "Escape") { close(); button.focus(); }
-    else if (e.key === "ArrowDown") { e.preventDefault(); items[(i + 1) % items.length].focus(); }
-    else if (e.key === "ArrowUp") { e.preventDefault(); items[(i - 1 + items.length) % items.length].focus(); }
-  });
-  document.addEventListener("click", e => { if (!menu.hidden && !menu.contains(e.target)) close(); });
+  button.addEventListener("click", () => setThemeChoice(nextOf(getThemeChoice())));
   onThemeChange(sync);
   sync();
 }
