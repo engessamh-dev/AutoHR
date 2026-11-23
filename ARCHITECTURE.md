@@ -126,6 +126,14 @@ existing database, a verified SQLite snapshot is written to `PreUpgrade`; if the
 database is restored from it automatically. A database from a newer version is refused untouched.
 Restoring an older backup upgrades it; restoring a newer one is refused.
 
+Schema versions: 0 = v1.0.0–v1.0.3 (no version), 1 = Phase B schema, 2 = person names split
+into national-card fields (الاسم، الأب، الجد، اللقب) (`names.rs`). Names (employee, mother, residence-card head of household,
+passport, spouses and their mothers, family members) keep their combined column, which stays the
+source for display, search and reports; the parts live in a `name_parts` JSON column and every
+save rebuilds the combined text from them. Step 2 is additive: it archives every original text in
+`name_split_originals`, splits best effort, and flags unsure splits (`review: true`) for the
+«مراجعة الأسماء» dialog on the employees screen. See [docs/NAME_SPLIT.md](docs/NAME_SPLIT.md).
+
 ---
 
 ## Build

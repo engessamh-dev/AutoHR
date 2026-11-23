@@ -166,12 +166,13 @@ pub fn db_path() -> PathBuf {
 /// Schema version stored in `PRAGMA user_version` after a successful upgrade.
 ///
 /// * 0 — any database created before versioning existed (v1.0.0 to v1.0.3).
-/// * 1 — the schema produced by `migrate()` as of this release.
+/// * 1 — the schema produced by `migrate()` (v1.0.4 before the name split).
+/// * 2 — person names split into parts (`name_parts`, `name_split_originals`; see `names.rs`).
 ///
 /// To change the schema later: bump this constant and add an `if from < N { ... }` step in
 /// `upgrade()`. Every upgrade of an existing database runs only after a verified
 /// pre-upgrade snapshot exists, and the snapshot is restored automatically if a step fails.
-pub const SCHEMA_VERSION: i64 = 1;
+pub const SCHEMA_VERSION: i64 = 2;
 
 #[derive(Debug)]
 pub enum OpenError {
@@ -263,7 +264,10 @@ fn upgrade(conn: &Connection, from: i64) -> SqlResult<()> {
         conn.execute_batch(include_str!("../../database/schema.sql"))?;
         migrate(conn)?;
     }
-    // Future steps go here, for example: if from < 2 { ... }
+    if from < 2 {
+        crate::names::upgrade_to_v2(conn)?;
+    }
+    // Future steps go here, for example: if from < 3 { ... }
     #[cfg(test)]
     if FAIL_UPGRADE.with(|flag| flag.get()) {
         return Err(rusqlite::Error::InvalidQuery);
@@ -711,7 +715,8 @@ fn migrate(conn: &Connection) -> SqlResult<()> {
 #[cfg(test)]
 pub(crate) fn initialize_test(conn: &Connection) -> SqlResult<()> {
     conn.execute_batch(include_str!("../../database/schema.sql"))?;
-    migrate(conn)
+    migrate(conn)?;
+    crate::names::upgrade_to_v2(conn)
 }
 
 /// Opens (and if needed upgrades) the database in the configured data folder.
@@ -908,6 +913,137 @@ mod upgrade_tests {
         assert!(matches!(open_at(&env.db, false), Err(OpenError::NewerSchema { .. })));
         let conn = Connection::open(&env.db).unwrap();
         assert_eq!(schema_version(&conn).unwrap(), SCHEMA_VERSION + 5);
+    }
+
+    fn parts(conn: &Connection, sql: &str) -> serde_json::Value {
+        let text: String = conn.query_row(sql, [], |r| r.get(0)).unwrap();
+        serde_json::from_str(&text).unwrap()
+    }
+
+    fn count(conn: &Connection, sql: &str) -> i64 {
+        conn.query_row(sql, [], |r| r.get(0)).unwrap()
+    }
+
+    /// The path of the real data: a database written by v1.0.3 (no user_version), upgraded
+    /// through the Phase B step (0 -> 1) and the name split (1 -> 2) in one go.
+    #[test]
+    fn database_from_1_0_3_gets_split_names_and_keeps_every_original() {
+        let env = env();
+        old_database(&env.db, include_str!("test_fixtures/schema_v1_0_3_42e8a5e.sql"));
+        {
+            let conn = Connection::open(&env.db).unwrap();
+            conn.execute_batch(
+                "UPDATE employees SET full_name='أحمد علي حسين كاظم الجبوري', mother_name='زينب محمد جاسم الموسوي',
+                     residence_head_name='علي حسين كاظم', passport_name='AHMED ALI HUSSEIN ALJABOURI' WHERE employee_number='E-001';
+                 INSERT INTO employee_spouses(employee_id,sort_order,name,mother_name) VALUES(1,0,'فاطمة عبد الله نور الدين علي الربيعي','سعاد كريم');
+                 INSERT INTO employee_family_members(employee_id,sort_order,name) VALUES(1,0,'حسن أحمد علي حسين');",
+            ).unwrap();
+        }
+        let conn = open_at(&env.db, false).unwrap();
+        assert_eq!(schema_version(&conn).unwrap(), 2);
+        // The combined names are untouched.
+        let (full, mother, head, passport): (String, String, String, String) = conn.query_row(
+            "SELECT full_name,mother_name,residence_head_name,passport_name FROM employees WHERE id=1", [],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+        ).unwrap();
+        assert_eq!((full.as_str(), mother.as_str(), head.as_str(), passport.as_str()),
+            ("أحمد علي حسين كاظم الجبوري", "زينب محمد جاسم الموسوي", "علي حسين كاظم", "AHMED ALI HUSSEIN ALJABOURI"));
+        let employee = parts(&conn, "SELECT name_parts FROM employees WHERE id=1");
+        assert_eq!(employee["full_name"]["surname"], "كاظم الجبوري");
+        assert_eq!(employee["full_name"]["review"], true);
+        assert_eq!(employee["mother_name"]["surname"], "الموسوي");
+        assert_eq!(employee["residence_head_name"]["review"], true);
+        assert_eq!(employee["passport_name"]["surname"], "ALJABOURI");
+        let spouse = parts(&conn, "SELECT name_parts FROM employee_spouses WHERE employee_id=1");
+        assert_eq!(spouse["name"]["father"], "عبد الله");
+        assert_eq!(spouse["name"]["grandfather"], "نور الدين");
+        assert_eq!(spouse["mother_name"]["review"], true);
+        let family = parts(&conn, "SELECT name_parts FROM employee_family_members WHERE employee_id=1");
+        assert_eq!(family["name"]["surname"], "حسين");
+        assert_eq!(family["name"]["review"], true);
+        // Every original text is archived word for word.
+        assert_eq!(count(&conn, "SELECT COUNT(*) FROM name_split_originals"), 7);
+        assert_eq!(count(&conn, "SELECT COUNT(*) FROM name_split_originals WHERE field='full_name' AND original_text='أحمد علي حسين كاظم الجبوري'"), 1);
+        // Unsure splits wait for review: the five-part names, head of household, spouse's mother, family member.
+        let review = crate::names::list_review(&conn).unwrap();
+        assert_eq!(review.len(), 5);
+        assert_eq!(review[0].original_text.as_deref(), Some("أحمد علي حسين كاظم الجبوري"));
+        // One verified snapshot of the v1.0.3 database.
+        let taken = snapshots(&env.backups);
+        assert_eq!(taken.len(), 1);
+        let snap = Connection::open_with_flags(&taken[0], rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY).unwrap();
+        assert_eq!(schema_version(&snap).unwrap(), 0);
+        assert_eq!(count(&snap, "SELECT COUNT(*) FROM employee_spouses"), 1);
+        drop(conn);
+        // Opening again changes nothing.
+        let conn = open_at(&env.db, false).unwrap();
+        assert_eq!(count(&conn, "SELECT COUNT(*) FROM name_split_originals"), 7);
+        assert_eq!(parts(&conn, "SELECT name_parts FROM employees WHERE id=1"), employee);
+        assert_eq!(snapshots(&env.backups).len(), 1);
+    }
+
+    /// Spouses and family members that the oldest releases kept in JSON columns are moved
+    /// to their tables by step 1 and then split by step 2.
+    #[test]
+    fn names_kept_in_old_json_columns_are_split_too() {
+        let env = env();
+        old_database(&env.db, include_str!("test_fixtures/schema_initial_cca9a40.sql"));
+        {
+            let conn = Connection::open(&env.db).unwrap();
+            conn.execute(
+                "UPDATE employees SET spouse_name='مريم علي حسن الساعدي', family_members=?1 WHERE id=1",
+                [r#"[{"name":"علي أحمد حسين كاظم الجبوري"}]"#],
+            ).unwrap();
+        }
+        let conn = open_at(&env.db, false).unwrap();
+        assert_eq!(schema_version(&conn).unwrap(), 2);
+        let spouse = parts(&conn, "SELECT name_parts FROM employee_spouses WHERE employee_id=1");
+        assert_eq!(spouse["name"]["surname"], "الساعدي");
+        let family = parts(&conn, "SELECT name_parts FROM employee_family_members WHERE employee_id=1");
+        assert_eq!(family["name"]["surname"], "كاظم الجبوري");
+        let name: String = conn.query_row("SELECT full_name FROM employees WHERE id=1", [], |r| r.get(0)).unwrap();
+        assert_eq!(name, "موظف تجريبي");
+    }
+
+    /// A database already on version 1 (this release before the name split) gets step 2 only.
+    #[test]
+    fn database_on_version_1_is_upgraded_to_2() {
+        let env = env();
+        {
+            let conn = Connection::open(&env.db).unwrap();
+            conn.execute_batch(include_str!("../../database/schema.sql")).unwrap();
+            migrate(&conn).unwrap();
+            conn.pragma_update(None, "user_version", 1).unwrap();
+            conn.execute("INSERT INTO users(username,password,role) VALUES('old_admin','x','system_admin')", []).unwrap();
+            conn.execute("INSERT INTO employees(full_name) VALUES('سارة محمد علي حسن العبيدي')", []).unwrap();
+        }
+        let conn = open_at(&env.db, false).unwrap();
+        assert_eq!(schema_version(&conn).unwrap(), 2);
+        assert_eq!(parts(&conn, "SELECT name_parts FROM employees")["full_name"]["first"], "سارة");
+        let taken = snapshots(&env.backups);
+        assert_eq!(taken.len(), 1);
+        assert!(taken[0].to_string_lossy().contains("database_v1_to_v2_"));
+    }
+
+    #[test]
+    fn failed_name_split_restores_the_version_1_database() {
+        let env = env();
+        {
+            let conn = Connection::open(&env.db).unwrap();
+            conn.execute_batch(include_str!("../../database/schema.sql")).unwrap();
+            migrate(&conn).unwrap();
+            conn.pragma_update(None, "user_version", 1).unwrap();
+            conn.execute("INSERT INTO employees(full_name) VALUES('سارة محمد علي حسن العبيدي')", []).unwrap();
+        }
+        FAIL_UPGRADE.with(|flag| flag.set(true));
+        let result = open_at(&env.db, false);
+        FAIL_UPGRADE.with(|flag| flag.set(false));
+        assert!(matches!(result, Err(OpenError::UpgradeFailed { from: 1, restored: true, .. })));
+        let conn = Connection::open(&env.db).unwrap();
+        assert_eq!(schema_version(&conn).unwrap(), 1);
+        assert!(!conn.prepare("PRAGMA table_info(employees)").unwrap()
+            .query_map([], |r| r.get::<_, String>(1)).unwrap().any(|c| c.unwrap() == "name_parts"));
+        assert_eq!(count(&conn, "SELECT COUNT(*) FROM sqlite_master WHERE name='name_split_originals'"), 0);
     }
 
     #[test]
