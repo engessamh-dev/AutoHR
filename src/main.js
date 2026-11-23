@@ -308,8 +308,44 @@ async function navigateTo(screen, options = {}) {
 }
 
 // ── Login ──────────────────────────────────────────────────────────────────
+// ── UI scale («حجم الواجهة») ───────────────────────────────────────────────
+// Saved per machine; applied only while signed in so the login screen keeps its own layout.
+const UI_SCALE_KEY = "autohr.uiScale";
+const UI_SCALES = [90, 100, 110];
+function savedUiScale() {
+  try {
+    const value = Number(localStorage.getItem(UI_SCALE_KEY));
+    return UI_SCALES.includes(value) ? value : 100;
+  } catch { return 100; }
+}
+function applyUiScale(percent) {
+  const root = document.documentElement;
+  if (!percent || percent === 100) {
+    root.style.removeProperty("zoom");
+    root.style.removeProperty("--ui-scale");
+    delete root.dataset.uiScale;
+  } else {
+    root.style.zoom = String(percent / 100);
+    root.style.setProperty("--ui-scale", String(percent / 100));
+    root.dataset.uiScale = String(percent);
+  }
+  document.querySelectorAll("[data-ui-scale-option]").forEach(button => {
+    button.setAttribute("aria-pressed", String(Number(button.dataset.uiScaleOption) === (percent || 100)));
+  });
+}
+function bindUiScalePicker() {
+  document.querySelectorAll("[data-ui-scale-option]").forEach(button => {
+    button.addEventListener("click", () => {
+      const percent = Number(button.dataset.uiScaleOption);
+      try { localStorage.setItem(UI_SCALE_KEY, String(percent)); } catch { /* non-fatal */ }
+      applyUiScale(percent);
+    });
+  });
+}
+
 async function enterApp(user) {
   currentUser = user;
+  applyUiScale(savedUiScale());
   renderSidebarUser(user);
   const canManageUsers = can(user, "users.manage");
   const canViewAudit = can(user, "audit.view");
@@ -501,6 +537,7 @@ async function doLogout() {
     try { await api.logout(); } catch (_) { /* non-fatal */ }
   }
   currentUser = null;
+  applyUiScale(100);
   document.getElementById("app-shell").classList.add("hidden");
   document.getElementById("password-change-screen").classList.add("hidden");
   document.getElementById("login-screen").classList.remove("hidden");
@@ -619,6 +656,7 @@ document.addEventListener("DOMContentLoaded", async () => {
     toggleSidebar();
   });
   document.getElementById("btn-logout-side").addEventListener("click", doLogout);
+  bindUiScalePicker();
   document.getElementById("btn-password-change-logout").addEventListener("click", doLogout);
 
   // Sidebar navigation
