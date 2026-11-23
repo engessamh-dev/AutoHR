@@ -42,15 +42,15 @@ npx tauri signer generate -w "$env:USERPROFILE\.tauri\autohr-updater.key"
      "platforms": {
        "windows-x86_64": {
          "signature": "<contents of the .sig file>",
-         "url": "https://github.com/engessamh-dev/CNSArch/releases/download/v1.0.5/CNSArch_1.0.5_x64-setup.exe"
+         "url": "https://github.com/engessamh-dev/CNSArch-releases/releases/download/v1.0.5/CNSArch_1.0.5_x64-setup.exe"
        }
      }
    }
    ```
-4. In the **public releases-only repository** `engessamh-dev/CNSArch` (no source code there),
+4. In the **public releases-only repository** `engessamh-dev/CNSArch-releases` (no source code there),
    create the GitHub Release `v<version>`, mark it as the latest release (not a draft or
    pre-release), and attach the installer, the `.sig` and `latest.json`.
-   Since 1.0.5 the app reads `https://github.com/engessamh-dev/CNSArch/releases/latest/download/latest.json`.
+   Since 1.0.5 the app reads `https://github.com/engessamh-dev/CNSArch-releases/releases/latest/download/latest.json`.
    The source repository `engessamh-dev/AutoHR` can stay private.
 
 ### Transition from 1.0.3

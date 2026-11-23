@@ -1157,7 +1157,7 @@ mod report_export_tests {
         // Endpoints must be HTTPS: the plugin refuses plain HTTP unless explicitly allowed.
         for endpoint in updater["endpoints"].as_array().unwrap() {
             // Releases live in the public releases-only repository, not the source repository.
-            assert!(endpoint.as_str().unwrap().starts_with("https://github.com/engessamh-dev/CNSArch/releases/"));
+            assert!(endpoint.as_str().unwrap().starts_with("https://github.com/engessamh-dev/CNSArch-releases/releases/"));
         }
     }
     use std::io::Read;
