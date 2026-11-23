@@ -465,7 +465,7 @@
 
 /* ── Settings & About screens ──────────────────────────────────────────── */
 .settings-screen{max-width:56rem}
-.settings-tabs{display:flex;gap:4px;border-bottom:1px solid var(--ui-line);overflow-x:auto;scrollbar-width:thin}
+.settings-tabs{display:flex;flex-wrap:wrap;gap:4px;border-bottom:1px solid var(--ui-line)}
 .settings-tab{padding:9px 16px;font-size:14px;color:var(--ui-text-muted);background:transparent;border:0;border-bottom:2px solid transparent;margin-bottom:-1px;cursor:pointer;white-space:nowrap}
 .settings-tab:hover{color:var(--ui-text-strong)}
 .settings-tab[aria-selected="true"]{color:var(--ui-accent);border-bottom-color:var(--ui-accent);font-weight:600}
@@ -488,9 +488,9 @@
 .about-facts dd{color:var(--ui-text-strong);margin:0}
 
 /* ── Program check and support («الفحص والدعم») ─────────────────────────── */
-.support-grid{display:grid;grid-template-columns:minmax(0,1.6fr) minmax(0,1fr);gap:16px;align-items:start}
+.support-grid{display:grid;grid-template-columns:1fr;gap:16px}
 .support-side{display:grid;gap:16px}
-@media (max-width:1100px){.support-grid{grid-template-columns:1fr}}
+.support-summary.hidden,.support-actions.hidden{display:none}
 .support-card h2,.support-card-status{color:var(--ui-text-strong)}
 .support-card-head{display:flex;align-items:flex-start;justify-content:space-between;gap:16px}
 .support-card-head .btn-primary{flex:none}
@@ -499,6 +499,7 @@
 .support-summary-warn{border-color:var(--ui-warn-line);background:var(--ui-warn-bg)}
 .support-summary-fail{border-color:var(--ui-danger-line);background:var(--ui-danger-bg)}
 .support-check-list{display:grid;gap:8px;margin-top:12px}
+.support-check-list:empty{display:none}
 .support-check-item{border:1px solid var(--ui-line);border-radius:8px;padding:10px 12px;background:var(--ui-surface-2)}
 .support-check-head{display:flex;align-items:center;justify-content:space-between;gap:12px;font-size:14px;color:var(--ui-text-strong)}
 .support-check-details{margin:6px 0 0;padding:0;list-style:none;font-size:12px;line-height:1.8;color:var(--ui-text-muted);word-break:break-word}
@@ -506,6 +507,12 @@
 .support-actions{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-top:14px}
 .support-actions p{flex:1;min-width:14rem;margin:0}
 .support-contact-row{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-top:12px}
+.support-contact-table{display:grid;grid-template-columns:auto auto 1fr;gap:12px 20px;align-items:center;margin-top:16px}
+.support-contact-table > div{display:contents}
+.support-contact-label{font-size:13px;color:var(--ui-text-muted)}
+.support-contact-value{font-size:14px;color:var(--ui-text-strong);user-select:text}
+.support-contact-buttons{display:flex;gap:8px;flex-wrap:wrap;justify-content:flex-end}
+@media (max-width:900px){.support-contact-table{grid-template-columns:auto 1fr}.support-contact-buttons{grid-column:1 / -1;justify-content:flex-start}}
 
 
 /* ── Filter chips (document alerts) ────────────────────────────────────── */

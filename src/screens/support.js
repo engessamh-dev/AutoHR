@@ -67,19 +67,23 @@ export async function renderSupport(container, user, ctx) {
         <h2 id="support-contact-title" class="text-lg font-bold">اتصل بنا</h2>
         <p class="text-sm text-gray-400 mt-1">لإرسال اقتراح أو الإبلاغ عن مشكلة. عند الإبلاغ عن مشكلة، احفظ ملف التشخيص أولًا ثم أرفقه في الرسالة.</p>
         ${contact ? `
-        <dl class="about-facts">
-          <div><dt>واتساب</dt><dd dir="ltr">${escHtml(contact.whatsapp)}</dd></div>
-          <div><dt>البريد الإلكتروني</dt><dd dir="ltr">${escHtml(contact.email)}</dd></div>
-        </dl>
-        <div class="support-contact-row">
-          <span class="text-sm text-gray-400">واتساب:</span>
-          <button type="button" class="btn-secondary text-sm" data-channel="whatsapp" data-topic="suggestion">إرسال اقتراح</button>
-          <button type="button" class="btn-secondary text-sm" data-channel="whatsapp" data-topic="problem">الإبلاغ عن مشكلة</button>
-        </div>
-        <div class="support-contact-row">
-          <span class="text-sm text-gray-400">البريد:</span>
-          <button type="button" class="btn-secondary text-sm" data-channel="email" data-topic="suggestion">إرسال اقتراح</button>
-          <button type="button" class="btn-secondary text-sm" data-channel="email" data-topic="problem">الإبلاغ عن مشكلة</button>
+        <div class="support-contact-table">
+          <div>
+            <span class="support-contact-label">واتساب</span>
+            <span class="support-contact-value" dir="ltr">${escHtml(contact.whatsapp)}</span>
+            <span class="support-contact-buttons">
+              <button type="button" class="btn-secondary text-sm" data-channel="whatsapp" data-topic="suggestion">إرسال اقتراح</button>
+              <button type="button" class="btn-secondary text-sm" data-channel="whatsapp" data-topic="problem">الإبلاغ عن مشكلة</button>
+            </span>
+          </div>
+          <div>
+            <span class="support-contact-label">البريد الإلكتروني</span>
+            <span class="support-contact-value" dir="ltr">${escHtml(contact.email)}</span>
+            <span class="support-contact-buttons">
+              <button type="button" class="btn-secondary text-sm" data-channel="email" data-topic="suggestion">إرسال اقتراح</button>
+              <button type="button" class="btn-secondary text-sm" data-channel="email" data-topic="problem">الإبلاغ عن مشكلة</button>
+            </span>
+          </div>
         </div>` : `<p class="text-sm text-gray-400 mt-3">تعذر عرض بيانات التواصل.</p>`}
       </section>
 
