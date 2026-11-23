@@ -987,6 +987,45 @@ fn airport_zones(all_rows: &[Line], result: &mut ReadResult) {
     result.set("zones", zones.join(","), confidence, "text");
 }
 
+/// A date whose digits may be misread as letters ("O8-O6-2O28", "0B-06-2028"): letters
+/// inside mostly-digit tokens are mapped back before looking for the date.
+fn loose_date(text: &str) -> Option<String> {
+    find_date(text).or_else(|| {
+        let fixed: Vec<String> = ascii_digits(text).split_whitespace().map(|token| {
+            let digits = token.chars().filter(char::is_ascii_digit).count();
+            if digits >= 4 && digits * 2 >= token.chars().filter(char::is_ascii_alphanumeric).count() {
+                token.chars().map(|c| match c { 'O' | 'o' | 'D' | 'Q' => '0', 'B' => '8', 'I' | 'l' | '|' => '1', 'S' | 's' => '5', 'Z' | 'z' => '2', c => c }).collect()
+            } else {
+                token.to_owned()
+            }
+        }).collect();
+        find_date(&fixed.join(" "))
+    })
+}
+
+/// The expiry date when its row did not carry it: the value printed beside the
+/// "Expire Date / تاريخ الانتهاء" labels can sit a little higher or lower than them, and on
+/// large photos it then forms a row of its own.
+fn airport_expiry_fallback(lines: &[Line], result: &mut ReadResult) {
+    if result.get("expiry_date").is_some() { return; }
+    let is_label = |l: &Line| l.text.to_lowercase().contains("expire") || compact_arabic(&l.text).contains("الانتهاء");
+    let issue_label = |l: &Line| l.text.to_lowercase().contains("issue") || compact_arabic(&l.text).contains("الاصدار");
+    let labels: Vec<&Line> = lines.iter().filter(|l| is_label(l)).collect();
+    if labels.is_empty() { return; }
+    let issue = result.get("issue_date").map(|f| f.value.clone());
+    let near = lines.iter()
+        .filter(|l| !issue_label(l))
+        .filter_map(|l| {
+            let distance = labels.iter().map(|label| (l.center_y() - label.center_y()).abs() / label.height().max(1.)).fold(f32::MAX, f32::min);
+            (distance < 2.5).then_some((l, distance))
+        })
+        .filter_map(|(l, distance)| loose_date(&l.text).filter(|d| Some(d) != issue.as_ref()).map(|d| (d, l.confidence, distance)))
+        .min_by(|a, b| a.2.total_cmp(&b.2));
+    if let Some((date, confidence, _)) = near {
+        result.set("expiry_date", date, confidence.min(0.8), "text");
+    }
+}
+
 fn parse_airport_badge(lines: &[Line], result: &mut ReadResult) {
     let all_rows: Vec<Line> = rows(lines).into_iter().map(|(row, _)| row).collect();
     airport_zones(&all_rows, result);
@@ -1178,6 +1217,7 @@ pub fn parse_with_codes(lines: &[Line], codes: &[String]) -> ReadResult {
     }
     if is_airport_badge(lines) {
         parse_airport_badge(lines, &mut result);
+        airport_expiry_fallback(lines, &mut result);
         result.document = "airport_badge".into();
         if result.fields.is_empty() {
             result.warnings.push("لم يُعثر على بيانات مقروءة في الصورة".into());
@@ -1454,6 +1494,15 @@ mod tests {
         with_zones.push(line("ABC CO", 130.));
         let r = parse(&with_zones);
         assert_eq!(v(&r, "zones"), "S1,T,VIP,C");
+        // Large photo: the date is a little below its labels and forms a row of its own,
+        // with a digit read as a letter.
+        let mut split = front.clone();
+        split.retain(|l| !l.text.starts_with("Expire"));
+        split.push(line("Expire Date تاريخ الانتهاء", 100.));
+        split.push(line("O1-02-2028", 112.));
+        let rs = parse(&split);
+        assert_eq!(v(&rs, "expiry_date"), "2028-02-01");
+        assert!(rs.get("expiry_date").unwrap().confidence < 0.85);
         assert!(r.get("zones").unwrap().confidence >= 0.85);
         // An unfamiliar code next to known ones is kept, but marked for review.
         let mut odd = front.clone();
