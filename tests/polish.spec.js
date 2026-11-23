@@ -71,12 +71,12 @@ test("empty archive offers «إضافة أول وثيقة», and the new form de
   // Two columns on a wide window: the issuer and the subject sit side by side.
   const [a, b] = await Promise.all(["#d-title", "#d-issuer"].map(s => page.locator(s).boundingBox()));
   expect(Math.abs(a.y - b.y)).toBeLessThan(4);
-  await page.locator("#d-pick-attachments").click();
+  await page.locator("#d-manage-attachments").click();
   await expect(page.locator(".doc-pending-item")).toHaveCount(1);
   await expect(page.locator("#d-manage-attachments [dir='ltr']")).toHaveText("1");
   await page.locator(".doc-pending-remove").click();
   await expect(page.locator(".doc-pending-item")).toHaveCount(0);
-  await page.locator("#d-pick-attachments").click();
+  await page.locator("#d-manage-attachments").click();
   await page.locator("#d-title").fill("جهة تجريبية");
   await page.locator("#btn-save-doc").click();
   await page.getByRole("button", { name: "تأكيد", exact: true }).click();

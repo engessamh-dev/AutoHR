@@ -698,3 +698,8 @@ html[data-ui-scale] #app-shell { height: calc(100vh / var(--ui-scale)); }
 .id-reader-badge.is-warn{color:var(--ui-warn);background:var(--ui-warn-bg)}
 .id-reader-actions{display:flex;gap:10px;padding:10px 14px;border-top:1px solid var(--ui-line)}
 @media (max-width:900px){.id-reader-body{flex-direction:column}.id-reader-image{max-width:100%}}
+/* One attachments button in the document form: label plus count */
+.doc-att-button{display:inline-flex;align-items:center;gap:8px}
+.doc-att-count{min-width:24px;justify-content:center;font-size:12px;padding:2px 8px}
+.doc-att-button{height:38px;padding-block:0}
+.doc-att-icon{width:18px;height:18px;fill:none;stroke:currentColor;stroke-width:1.8;stroke-linecap:round;stroke-linejoin:round}
