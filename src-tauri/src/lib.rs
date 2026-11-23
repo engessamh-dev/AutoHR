@@ -1,5 +1,5 @@
 // lib.rs — GCANS v2.0
-mod db; mod names; mod services; mod files; mod scanner; mod paths; mod storage; mod ai_detect; mod secure; mod ocr; mod ocr_parse;
+mod db; mod names; mod services; mod files; mod scanner; mod paths; mod storage; mod ai_detect; mod secure; mod ocr; mod ocr_parse; mod health;
 mod scanner_commands;
 use scanner_commands::*;
 #[cfg(test)] mod scanner_tests;
@@ -1109,6 +1109,55 @@ async fn cmd_install_update(window: Window, state: State<'_, DbState>, sess: Sta
     app.restart();
 }
 
+// ── Program check and support («الفحص والدعم») ──────────────────────────────
+// Available to every signed-in user. The report holds no personal data (see health.rs).
+
+#[tauri::command]
+fn cmd_run_health_check(app: AppHandle, state: State<DbState>, sess: State<SessionState>) -> Result<health::HealthReport, AppError> {
+    let conn = state.conn()?;
+    session_user(&sess)?;
+    Ok(health::run(&conn, &app.package_info().version.to_string(), updater_configured(&app)))
+}
+
+/// Runs the check again in Rust and writes its text to the .txt file the user chose,
+/// so the frontend cannot put anything else into the diagnostic file.
+#[tauri::command]
+fn cmd_save_health_report(app: AppHandle, state: State<DbState>, sess: State<SessionState>, destination_path: String) -> Result<String, AppError> {
+    let conn = state.conn()?;
+    let user = session_user(&sess)?;
+    let destination = std::path::PathBuf::from(&destination_path);
+    if !destination.is_absolute() || !destination.extension().is_some_and(|ext| ext.eq_ignore_ascii_case("txt")) {
+        return Err(AppError::Validation("اختر مكانًا لحفظ ملف نصي (.txt)".into()));
+    }
+    let report = health::run(&conn, &app.package_info().version.to_string(), updater_configured(&app));
+    health::save(&report, &destination).map_err(|e| AppError::Other(e.to_string()))?;
+    log_activity(&conn, &user, "SAVE_HEALTH_REPORT", Some("app"), None, Some(report.overall.as_str()), None);
+    Ok(destination_path)
+}
+
+#[tauri::command]
+fn cmd_get_support_contact() -> health::SupportContact {
+    health::support_contact()
+}
+
+/// Opens WhatsApp or the mail program with a fixed support address. Only the URLs built
+/// in health::support_url can be opened; nothing comes from the frontend but two keywords.
+#[tauri::command]
+fn cmd_open_support_link(app: AppHandle, channel: String, topic: String) -> Result<(), AppError> {
+    let url = health::support_url(&channel, &topic, &app.package_info().version.to_string())
+        .ok_or_else(|| AppError::Validation("Unknown support link".into()))?;
+    #[cfg(not(target_os = "windows"))]
+    { let _ = url; return Err(AppError::Validation("Opening links is supported on Windows only".into())); }
+    #[cfg(target_os = "windows")]
+    {
+        std::process::Command::new("rundll32.exe")
+            .args(["url.dll,FileProtocolHandler", url.as_str()])
+            .spawn()
+            .map_err(|error| AppError::Other(error.to_string()))?;
+        Ok(())
+    }
+}
+
 pub fn scanner_self_test() -> Result<(), String> {
     scanner::production_self_test().map_err(|error| error.to_string())
 }
@@ -1176,6 +1225,7 @@ pub fn run() {
             cmd_get_startup_status, cmd_check_setup_folders, cmd_complete_setup, cmd_retry_data_folder,
             cmd_get_storage_status, cmd_change_backup_folder, cmd_export_backup_to, cmd_move_data_folder,
             cmd_check_for_update, cmd_install_update,
+            cmd_run_health_check, cmd_save_health_report, cmd_get_support_contact, cmd_open_support_link,
             cmd_get_auto_backup_settings, cmd_set_auto_backup_settings,
             cmd_run_due_auto_backups, cmd_exit_app,
             cmd_get_document_types, cmd_set_document_types,

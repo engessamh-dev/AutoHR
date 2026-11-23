@@ -10,6 +10,7 @@ import { renderReports }    from "./screens/reports.js";
 import { renderDocuments }  from "./screens/documents.js";
 import { renderUsers }     from "./screens/users.js";
 import { renderAbout }     from "./screens/about.js";
+import { renderSupport }   from "./screens/support.js";
 import { renderSettings }  from "./screens/settings.js";
 import { runStartupGate } from "./screens/setup.js";
 import { renderAudit }     from "./screens/audit.js";
@@ -37,6 +38,7 @@ const i18n = {
   nav_users:     "المستخدمين والصلاحيات",
   nav_audit:     "سجل النظام",
   nav_settings:  "الإعدادات",
+  nav_support:   "الفحص والدعم",
   nav_about:     "حول النظام",
   loginError:    "اسم المستخدم أو كلمة المرور غير صحيحة",
 };
@@ -58,7 +60,7 @@ function applyLang() {
   // update sidebar nav labels
   const navMap = {
     dashboard: "nav_dashboard", employees: "nav_employees", reports: "nav_reports", documents: "nav_documents",
-    users: "nav_users", audit: "nav_audit", settings: "nav_settings", about: "nav_about",
+    users: "nav_users", audit: "nav_audit", settings: "nav_settings", support: "nav_support", about: "nav_about",
   };
   document.querySelectorAll(".nav-item[data-screen]").forEach(el => {
     const screen = el.dataset.screen;
@@ -257,6 +259,7 @@ const screenRenderers = {
   users:     renderUsers,
   settings:  renderSettings,
   audit:     renderAudit,
+  support:   renderSupport,
   about:     renderAbout,
 };
 
@@ -288,7 +291,7 @@ async function navigateTo(screen, options = {}) {
 
   const titleMap = {
     dashboard: "nav_dashboard", documentAlerts: "nav_document_alerts", employees: "nav_employees", reports: "nav_reports", documents: "nav_documents",
-    users: "nav_users", audit: "nav_audit", settings: "nav_settings", about: "nav_about",
+    users: "nav_users", audit: "nav_audit", settings: "nav_settings", support: "nav_support", about: "nav_about",
   };
   document.getElementById("page-title").textContent = t(titleMap[screen] ?? screen);
 

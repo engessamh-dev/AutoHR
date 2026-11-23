@@ -189,6 +189,7 @@ export async function renderSettings(container, user, ctx) {
     container.innerHTML = `<div class="card text-gray-400">لا توجد إعدادات متاحة لهذا المستخدم.</div>`;
     return;
   }
+  if (ctx?.tab) activeSettingsTab = ctx.tab;
   if (!tabs.some(tab => tab.id === activeSettingsTab)) activeSettingsTab = tabs[0].id;
 
   const logoMarkup = () =>

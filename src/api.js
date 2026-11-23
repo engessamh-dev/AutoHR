@@ -104,6 +104,12 @@ export const api = {
   // Application updates (administrators only; checked in Rust)
   checkForUpdate: () => invoke("cmd_check_for_update"),
   installUpdate: (password) => invoke("cmd_install_update", { password }),
+
+  // Program check and support (every signed-in user)
+  runHealthCheck: () => invoke("cmd_run_health_check"),
+  saveHealthReport: (destinationPath) => invoke("cmd_save_health_report", { destinationPath }),
+  getSupportContact: () => invoke("cmd_get_support_contact"),
+  openSupportLink: (channel, topic) => invoke("cmd_open_support_link", { channel, topic }),
   getAutoBackupSettings: () => invoke("cmd_get_auto_backup_settings"),
   setAutoBackupSettings: (data) => invoke("cmd_set_auto_backup_settings", { data }),
   runDueAutoBackups: () => invoke("cmd_run_due_auto_backups"),
