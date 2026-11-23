@@ -36,13 +36,13 @@ npx tauri signer generate -w "$env:USERPROFILE\.tauri\autohr-updater.key"
 3. Write `latest.json`:
    ```json
    {
-     "version": "1.0.4",
+     "version": "1.0.5",
      "notes": "ما الجديد في هذا الإصدار",
      "pub_date": "2026-12-01T10:00:00Z",
      "platforms": {
        "windows-x86_64": {
          "signature": "<contents of the .sig file>",
-         "url": "https://github.com/engessamh-dev/AutoHR/releases/download/v1.0.4/CNSArch_1.0.4_x64-setup.exe"
+         "url": "https://github.com/engessamh-dev/AutoHR/releases/download/v1.0.5/CNSArch_1.0.5_x64-setup.exe"
        }
      }
    }

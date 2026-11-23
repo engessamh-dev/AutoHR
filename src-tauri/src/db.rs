@@ -166,7 +166,7 @@ pub fn db_path() -> PathBuf {
 /// Schema version stored in `PRAGMA user_version` after a successful upgrade.
 ///
 /// * 0 — any database created before versioning existed (v1.0.0 to v1.0.3).
-/// * 1 — the schema produced by `migrate()` (v1.0.4 before the name split).
+/// * 1 — the schema produced by `migrate()` (Phase B, before the name split).
 /// * 2 — person names split into parts (`name_parts`, `name_split_originals`; see `names.rs`).
 ///
 /// To change the schema later: bump this constant and add an `if from < N { ... }` step in
