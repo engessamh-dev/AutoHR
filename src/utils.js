@@ -41,9 +41,9 @@ export function confirmAction(message = "هل أنت متأكد من تنفيذ 
     dialog.setAttribute("role", "alertdialog");
     dialog.setAttribute("aria-modal", "true");
     dialog.style.cssText = `
-      width:min(420px,100%);background:#1f1f1f;border:1px solid #2d2d2d;
+      width:min(420px,100%);background:var(--ui-surface);border:1px solid var(--ui-line);
       border-radius:8px;box-shadow:0 18px 60px rgba(0,0,0,.45);
-      padding:18px;color:#f3f4f6;
+      padding:18px;color:var(--ui-text-strong);
     `;
 
     const title = document.createElement("p");
@@ -52,7 +52,7 @@ export function confirmAction(message = "هل أنت متأكد من تنفيذ 
 
     const body = document.createElement("p");
     body.textContent = message;
-    body.style.cssText = "font-size:14px;line-height:1.8;color:#d1d5db;margin:0 0 18px";
+    body.style.cssText = "font-size:14px;line-height:1.8;color:var(--ui-text);margin:0 0 18px";
 
     const actions = document.createElement("div");
     actions.style.cssText = "display:flex;gap:10px;justify-content:flex-start";
@@ -114,9 +114,9 @@ export function confirmSaveChanges(message = "توجد تغييرات غير م�
     dialog.setAttribute("role", "alertdialog");
     dialog.setAttribute("aria-modal", "true");
     dialog.style.cssText = `
-      width:min(460px,100%);background:#1f1f1f;border:1px solid #2d2d2d;
+      width:min(460px,100%);background:var(--ui-surface);border:1px solid var(--ui-line);
       border-radius:8px;box-shadow:0 18px 60px rgba(0,0,0,.45);
-      padding:18px;color:#f3f4f6;
+      padding:18px;color:var(--ui-text-strong);
     `;
 
     const title = document.createElement("p");
@@ -125,7 +125,7 @@ export function confirmSaveChanges(message = "توجد تغييرات غير م�
 
     const body = document.createElement("p");
     body.textContent = message;
-    body.style.cssText = "font-size:14px;line-height:1.8;color:#d1d5db;margin:0 0 18px";
+    body.style.cssText = "font-size:14px;line-height:1.8;color:var(--ui-text);margin:0 0 18px";
 
     const actions = document.createElement("div");
     actions.style.cssText = "display:flex;gap:10px;justify-content:flex-start;flex-wrap:wrap";

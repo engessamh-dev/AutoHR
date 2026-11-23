@@ -52,8 +52,8 @@ export async function runStartupGate() {
   };
   const showWarnings = (list = [], info = "") => {
     warnings.innerHTML = [
-      ...list.map(w => `<p class="text-xs" style="color:#fbbf24;background:rgba(251,191,36,.08);border:1px solid rgba(251,191,36,.3);border-radius:8px;padding:8px 10px">${escHtml(w)}</p>`),
-      info ? `<p class="text-xs" style="color:#93c5fd;background:rgba(59,130,246,.08);border:1px solid rgba(59,130,246,.3);border-radius:8px;padding:8px 10px">${escHtml(info)}</p>` : "",
+      ...list.map(w => `<p class="text-xs" style="color:var(--ui-warn);background:var(--ui-warn-bg);border:1px solid var(--ui-warn-line);border-radius:8px;padding:8px 10px">${escHtml(w)}</p>`),
+      info ? `<p class="text-xs" style="color:var(--ui-info);background:var(--ui-info-bg);border:1px solid var(--ui-info-line);border-radius:8px;padding:8px 10px">${escHtml(info)}</p>` : "",
     ].join("");
   };
   const applyStatus = current => {

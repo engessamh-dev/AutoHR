@@ -309,12 +309,12 @@ export async function renderReports(container) {
             <button type="button" id="report-clear" class="btn-secondary text-xs px-2 py-1">إلغاء تحديد الأعمدة</button>
           </div>
           ${fieldGroups.map(group => `
-            <section style="border-top:1px solid #2d2d2d;padding-top:10px;margin-top:10px">
-              <p style="font-size:12px;font-weight:700;color:#24a9ff;margin-bottom:8px">${escHtml(group.title)}</p>
+            <section style="border-top:1px solid var(--ui-line);padding-top:10px;margin-top:10px">
+              <p style="font-size:12px;font-weight:700;color:var(--ui-accent);margin-bottom:8px">${escHtml(group.title)}</p>
               <div class="space-y-2">
                 ${group.fields.map(([key, label]) => `
-                  <label style="display:flex;align-items:center;gap:8px;font-size:12px;color:#d1d5db;cursor:pointer">
-                    <input type="checkbox" class="report-field" value="${key}" ${selected.has(key) ? "checked" : ""} style="width:15px;height:15px;accent-color:#24a9ff" />
+                  <label style="display:flex;align-items:center;gap:8px;font-size:12px;color:var(--ui-text);cursor:pointer">
+                    <input type="checkbox" class="report-field" value="${key}" ${selected.has(key) ? "checked" : ""} style="width:15px;height:15px;accent-color:var(--ui-accent)" />
                     <span>${escHtml(label)}</span>
                   </label>`).join("")}
               </div>
@@ -322,7 +322,7 @@ export async function renderReports(container) {
         </aside>
 
         <main class="card overflow-auto">
-          <div id="report-summary" style="padding:12px 14px;border-bottom:1px solid #2d2d2d;font-size:13px;color:#9ca3af"></div>
+          <div id="report-summary" style="padding:12px 14px;border-bottom:1px solid var(--ui-line);font-size:13px;color:var(--ui-text-muted)"></div>
           <div id="report-table"></div>
         </main>
       </div>
@@ -337,11 +337,11 @@ export async function renderReports(container) {
     container.querySelector("#report-table").innerHTML = fields.length
       ? `<table class="w-full">
           <thead><tr>
-            <th class="table-header" style="width:54px;text-align:center"><input id="report-employees-all" type="checkbox" ${rows.length === employees.length ? "checked" : ""} style="width:16px;height:16px;accent-color:#24a9ff" title="تحديد جميع الموظفين" /></th>
+            <th class="table-header" style="width:54px;text-align:center"><input id="report-employees-all" type="checkbox" ${rows.length === employees.length ? "checked" : ""} style="width:16px;height:16px;accent-color:var(--ui-accent)" title="تحديد جميع الموظفين" /></th>
             ${fields.map(field => `<th class="table-header">${escHtml(field.label)}</th>`).join("")}
           </tr></thead>
           <tbody>${employees.length ? employees.map(employee => `<tr class="table-row">
-            <td class="table-cell" style="text-align:center"><input type="checkbox" class="report-employee" value="${employee.id}" ${chosenEmployeeIds.has(Number(employee.id)) ? "checked" : ""} style="width:16px;height:16px;accent-color:#24a9ff" aria-label="تحديد ${escHtml(employee.full_name)}" /></td>
+            <td class="table-cell" style="text-align:center"><input type="checkbox" class="report-employee" value="${employee.id}" ${chosenEmployeeIds.has(Number(employee.id)) ? "checked" : ""} style="width:16px;height:16px;accent-color:var(--ui-accent)" aria-label="تحديد ${escHtml(employee.full_name)}" /></td>
             ${fields.map(field => `<td class="table-cell">${escHtml(formatReportValue(employee, field))}</td>`).join("")}
           </tr>`).join("") : `<tr><td colspan="${fields.length + 1}" class="table-cell text-center text-gray-500">لا توجد نتائج</td></tr>`}</tbody>
         </table>`

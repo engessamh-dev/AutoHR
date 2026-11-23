@@ -18,6 +18,10 @@ import { formatAppVersion } from "./version.js";
 import { isPermissionGranted, requestPermission, sendNotification } from "@tauri-apps/plugin-notification";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
+import { initTheme, mountThemeMenu } from "./theme.js";
+
+// Apply the saved light/dark choice before anything is shown.
+initTheme();
 
 // ── i18n ───────────────────────────────────────────────────────────────────
 const i18n = {
@@ -126,15 +130,15 @@ function openAutomaticBackupProgress() {
   overlay.setAttribute("dir", "rtl");
   overlay.style.cssText = "position:fixed;inset:0;z-index:10000;background:rgba(0,0,0,.62);display:flex;align-items:center;justify-content:center;padding:20px";
   overlay.innerHTML = `
-    <div style="width:min(440px,100%);background:#1f1f1f;border:1px solid #2d2d2d;border-radius:10px;padding:18px;box-shadow:0 18px 60px rgba(0,0,0,.45)">
+    <div style="width:min(440px,100%);background:var(--ui-surface);border:1px solid var(--ui-line);border-radius:10px;padding:18px;box-shadow:0 18px 60px rgba(0,0,0,.45)">
       <div style="display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:14px">
-        <p style="font-size:15px;font-weight:700;color:#f3f4f6;margin:0">النسخ الاحتياطي التلقائي</p>
+        <p style="font-size:15px;font-weight:700;color:var(--ui-text-strong);margin:0">النسخ الاحتياطي التلقائي</p>
         <span id="auto-backup-progress-percent" class="badge badge-gray">0%</span>
       </div>
-      <div style="height:10px;background:#111827;border-radius:999px;overflow:hidden;border:1px solid #374151">
-        <div id="auto-backup-progress-bar" style="height:100%;width:0%;background:#24a9ff;transition:width .2s ease"></div>
+      <div style="height:10px;background:var(--ui-sunken);border-radius:999px;overflow:hidden;border:1px solid var(--ui-line)">
+        <div id="auto-backup-progress-bar" style="height:100%;width:0%;background:var(--ui-accent);transition:width .2s ease"></div>
       </div>
-      <p id="auto-backup-progress-message" style="font-size:12px;color:#9ca3af;margin:12px 0 0">جاري فحص النسخ التلقائية...</p>
+      <p id="auto-backup-progress-message" style="font-size:12px;color:var(--ui-text-muted);margin:12px 0 0">جاري فحص النسخ التلقائية...</p>
     </div>`;
   document.body.append(overlay);
   return {
@@ -648,6 +652,8 @@ document.addEventListener("DOMContentLoaded", async () => {
   // Collapsible sidebar: ☰ button and Ctrl+B, state remembered between sessions.
   setSidebarCollapsed(readSidebarCollapsed());
   document.getElementById("btn-toggle-sidebar").addEventListener("click", toggleSidebar);
+  // Light → dark → follow Windows on each click, available to every user from the header.
+  mountThemeMenu(document.getElementById("btn-theme"));
   document.addEventListener("keydown", event => {
     if (!(event.ctrlKey || event.metaKey) || event.altKey || event.shiftKey) return;
     if (event.code !== "KeyB" && event.key?.toLowerCase() !== "b") return;

@@ -180,8 +180,8 @@ export async function renderDocuments(container, user, ctx) {
     overlay.setAttribute("dir", "rtl");
     overlay.style.cssText = "position:fixed;inset:0;z-index:11000;background:rgba(0,0,0,.76);display:flex;flex-direction:column";
     overlay.innerHTML = `
-      <div style="height:64px;background:#1f1f1f;border-bottom:1px solid #333;display:flex;align-items:center;gap:10px;padding:10px 18px">
-        <strong id="document-preview-title" style="font-size:15px;margin-left:auto;color:#f3f4f6">${escHtml(asset.title)}</strong>
+      <div style="height:64px;background:var(--ui-surface);border-bottom:1px solid var(--ui-line);display:flex;align-items:center;gap:10px;padding:10px 18px">
+        <strong id="document-preview-title" style="font-size:15px;margin-left:auto;color:var(--ui-text-strong)">${escHtml(asset.title)}</strong>
         ${previewPaths.length > 1 ? `
           <span id="document-preview-counter" class="badge badge-gray" dir="ltr"></span>
           <button type="button" id="document-preview-prev" class="btn-secondary" title="المرفق السابق" style="min-width:42px">↑</button>
@@ -293,8 +293,8 @@ export async function renderDocuments(container, user, ctx) {
     overlay.setAttribute("dir", "rtl");
     overlay.style.cssText = "position:fixed;inset:0;z-index:11000;background:rgba(0,0,0,.76);display:flex;flex-direction:column";
     overlay.innerHTML = `
-      <div style="height:64px;background:#1f1f1f;border-bottom:1px solid #333;display:flex;align-items:center;gap:10px;padding:10px 18px">
-        <strong style="font-size:15px;margin-left:auto;color:#f3f4f6">استعراض كل مرفقات: ${escHtml(title)}</strong>
+      <div style="height:64px;background:var(--ui-surface);border-bottom:1px solid var(--ui-line);display:flex;align-items:center;gap:10px;padding:10px 18px">
+        <strong style="font-size:15px;margin-left:auto;color:var(--ui-text-strong)">استعراض كل مرفقات: ${escHtml(title)}</strong>
         <span class="badge badge-gray">${arCount(assets.length, "file")}</span>
         ${can(user, "documents.print") ? `<button type="button" id="all-documents-print" class="btn-primary">طباعة الكل</button>` : ""}
         <button type="button" id="all-documents-close" class="btn-secondary">إغلاق</button>
@@ -375,11 +375,11 @@ export async function renderDocuments(container, user, ctx) {
   function html() {
     return `<div class="space-y-4">
       <!-- Tabs -->
-      <div style="display:flex;gap:8px;border-bottom:1px solid #2d2d2d;padding-bottom:0">
+      <div style="display:flex;gap:8px;border-bottom:1px solid var(--ui-line);padding-bottom:0">
         ${[["general","📂 الوارد"],["outgoing","📤 الصادر"]].map(([id, label]) => `
           <button class="doc-tab" data-tab="${id}" style="padding:8px 16px;border:none;cursor:pointer;
-            font-size:13px;border-bottom:2px solid ${activeTab===id?"#24a9ff":"transparent"};
-            background:transparent;color:${activeTab===id?"#24a9ff":"#9ca3af"};
+            font-size:13px;border-bottom:2px solid ${activeTab===id?"var(--ui-accent)":"transparent"};
+            background:transparent;color:${activeTab===id?"var(--ui-accent)":"var(--ui-text-muted)"};
             font-weight:${activeTab===id?"700":"400"}">${label}</button>`).join("")}
       </div>
 
@@ -424,22 +424,22 @@ export async function renderDocuments(container, user, ctx) {
           ${generalFiltersOpen ? `
           <div class="grid grid-cols-1 md:grid-cols-3 gap-3">
             <div>
-              <label for="general-issuer-filter" style="display:block;font-size:11px;color:#6b7280;margin-bottom:4px">الجهة المصدرة للوثيقة</label>
+              <label for="general-issuer-filter" style="display:block;font-size:11px;color:var(--ui-text-faint);margin-bottom:4px">الجهة المصدرة للوثيقة</label>
               <input id="general-issuer-filter" class="input-field"
                 placeholder="فلترة حسب الجهة..." value="${escHtml(generalIssuerFilter)}" />
             </div>
             <div>
-              <label for="general-recipient-filter" style="display:block;font-size:11px;color:#6b7280;margin-bottom:4px">إلى</label>
+              <label for="general-recipient-filter" style="display:block;font-size:11px;color:var(--ui-text-faint);margin-bottom:4px">إلى</label>
               <input id="general-recipient-filter" class="input-field"
                 placeholder="فلترة حسب الجهة المستلمة..." value="${escHtml(generalRecipientFilter)}" />
             </div>
             <div>
-              <label for="general-subject-filter" style="display:block;font-size:11px;color:#6b7280;margin-bottom:4px">الموضوع</label>
+              <label for="general-subject-filter" style="display:block;font-size:11px;color:var(--ui-text-faint);margin-bottom:4px">الموضوع</label>
               <input id="general-subject-filter" class="input-field"
                 placeholder="فلترة حسب الموضوع..." value="${escHtml(generalSubjectFilter)}" />
             </div>
             <div>
-              <label for="general-file-filter" style="display:block;font-size:11px;color:#6b7280;margin-bottom:4px">حالة المرفق</label>
+              <label for="general-file-filter" style="display:block;font-size:11px;color:var(--ui-text-faint);margin-bottom:4px">حالة المرفق</label>
               <select id="general-file-filter" class="input-field">
                 <option value="all" ${generalFileFilter === "all" ? "selected" : ""}>الكل</option>
                 <option value="with" ${generalFileFilter === "with" ? "selected" : ""}>لديه مرفق</option>
@@ -447,25 +447,25 @@ export async function renderDocuments(container, user, ctx) {
               </select>
             </div>
             <div>
-              <label for="general-date-from" style="display:block;font-size:11px;color:#6b7280;margin-bottom:4px">من تاريخ إصدار</label>
+              <label for="general-date-from" style="display:block;font-size:11px;color:var(--ui-text-faint);margin-bottom:4px">من تاريخ إصدار</label>
               <input id="general-date-from" class="input-field" type="date" value="${escHtml(generalDateFrom)}" />
             </div>
             <div>
-              <label for="general-date-to" style="display:block;font-size:11px;color:#6b7280;margin-bottom:4px">إلى تاريخ إصدار</label>
+              <label for="general-date-to" style="display:block;font-size:11px;color:var(--ui-text-faint);margin-bottom:4px">إلى تاريخ إصدار</label>
               <input id="general-date-to" class="input-field" type="date" value="${escHtml(generalDateTo)}" />
             </div>
             <div>
-              <label for="general-count-filter" style="display:block;font-size:11px;color:#6b7280;margin-bottom:4px">العدد</label>
+              <label for="general-count-filter" style="display:block;font-size:11px;color:var(--ui-text-faint);margin-bottom:4px">العدد</label>
               <input id="general-count-filter" class="input-field"
                 placeholder="فلترة حسب العدد..." value="${escHtml(generalCountFilter)}" />
             </div>
             <div>
-              <label for="general-margin-filter" style="display:block;font-size:11px;color:#6b7280;margin-bottom:4px">الهامش</label>
+              <label for="general-margin-filter" style="display:block;font-size:11px;color:var(--ui-text-faint);margin-bottom:4px">الهامش</label>
               <input id="general-margin-filter" class="input-field"
                 placeholder="فلترة حسب الهامش..." value="${escHtml(generalMarginFilter)}" />
             </div>
             <div>
-              <label for="general-memo-filter" style="display:block;font-size:11px;color:#6b7280;margin-bottom:4px">مذكرة داخلية</label>
+              <label for="general-memo-filter" style="display:block;font-size:11px;color:var(--ui-text-faint);margin-bottom:4px">مذكرة داخلية</label>
               <select id="general-memo-filter" class="input-field">
                 <option value="all" ${generalMemoFilter === "all" ? "selected" : ""}>الكل</option>
                 <option value="yes" ${generalMemoFilter === "yes" ? "selected" : ""}>نعم</option>
@@ -473,13 +473,13 @@ export async function renderDocuments(container, user, ctx) {
               </select>
             </div>
             <div>
-              <label for="general-employee-filter" style="display:block;font-size:11px;color:#6b7280;margin-bottom:4px">الموظفون المرتبطون</label>
+              <label for="general-employee-filter" style="display:block;font-size:11px;color:var(--ui-text-faint);margin-bottom:4px">الموظفون المرتبطون</label>
               <input id="general-employee-filter" class="input-field"
                 placeholder="فلترة باسم الموظف..." value="${escHtml(generalEmployeeFilter)}" />
             </div>
           </div>
           <div>
-            <label for="general-notes-search" style="display:block;font-size:11px;color:#6b7280;margin-bottom:4px">البحث في نبذة عامة عن الوثيقة</label>
+            <label for="general-notes-search" style="display:block;font-size:11px;color:var(--ui-text-faint);margin-bottom:4px">البحث في نبذة عامة عن الوثيقة</label>
             <input id="general-notes-search" class="input-field"
               placeholder="اكتب جزءا من نبذة الوثيقة..." value="${escHtml(generalNotesSearch)}" />
           </div>
@@ -944,21 +944,21 @@ export async function renderDocuments(container, user, ctx) {
         <div id="doc-form-card" class="card max-w-2xl space-y-4">
           <p class="section-title">${isEdit ? "تعديل وثيقة" : "إضافة وثيقة جديدة"}</p>
           <div>
-            <label for="d-title" style="display:block;font-size:11px;color:#6b7280;margin-bottom:4px">الجهة المصدرة للوثيقة</label>
+            <label for="d-title" style="display:block;font-size:11px;color:var(--ui-text-faint);margin-bottom:4px">الجهة المصدرة للوثيقة</label>
             <input id="d-title" class="input-field" placeholder="الجهة المصدرة للوثيقة" value="${escHtml(doc?.title ?? "")}" />
           </div>
           <div class="grid grid-cols-2 gap-3">
             <div>
-              <label for="d-number" style="display:block;font-size:11px;color:#6b7280;margin-bottom:4px">إلى</label>
+              <label for="d-number" style="display:block;font-size:11px;color:var(--ui-text-faint);margin-bottom:4px">إلى</label>
               <input id="d-number" class="input-field" value="${escHtml(doc?.doc_number ?? "")}" />
             </div>
             <div>
-              <label for="d-issuer" style="display:block;font-size:11px;color:#6b7280;margin-bottom:4px">الموضوع</label>
+              <label for="d-issuer" style="display:block;font-size:11px;color:var(--ui-text-faint);margin-bottom:4px">الموضوع</label>
               <div style="display:grid;grid-template-columns:1fr auto auto;gap:8px;align-items:center">
                 <div style="position:relative;min-width:0">
                   <input id="d-issuer" class="input-field" value="${escHtml(doc?.issuer ?? "")}" autocomplete="off" />
-                  <div id="d-subject-menu" class="hidden" style="position:absolute;z-index:50;top:calc(100% + 6px);left:0;right:0;max-height:220px;overflow:auto;background:#1f1f1f;border:1px solid #2d5f8a;border-radius:8px;box-shadow:0 12px 28px rgba(0,0,0,.35)">
-                    ${documentTypes.map(type => `<button type="button" class="d-subject-option" data-value="${escHtml(type)}" style="display:block;width:100%;text-align:right;padding:10px 12px;border:0;border-bottom:1px solid #2d2d2d;background:transparent;color:#f3f4f6;cursor:pointer">${escHtml(type)}</button>`).join("")}
+                  <div id="d-subject-menu" class="hidden" style="position:absolute;z-index:50;top:calc(100% + 6px);left:0;right:0;max-height:220px;overflow:auto;background:var(--ui-surface);border:1px solid var(--ui-line-strong);border-radius:8px;box-shadow:0 12px 28px rgba(0,0,0,.35)">
+                    ${documentTypes.map(type => `<button type="button" class="d-subject-option" data-value="${escHtml(type)}" style="display:block;width:100%;text-align:right;padding:10px 12px;border:0;border-bottom:1px solid var(--ui-line);background:transparent;color:var(--ui-text-strong);cursor:pointer">${escHtml(type)}</button>`).join("")}
                   </div>
                 </div>
                 <datalist id="d-subject-options">
@@ -966,61 +966,61 @@ export async function renderDocuments(container, user, ctx) {
                 </datalist>
                 <button type="button" id="d-add-subject" class="btn-secondary px-3" style="align-self:stretch" title="إضافة الموضوع المكتوب إلى قائمة المواضيع" aria-label="إضافة الموضوع المكتوب إلى قائمة المواضيع">+</button>
                 <button type="button" id="d-delete-subject" class="btn-secondary px-3" style="align-self:stretch;display:grid;place-items:center" title="حذف الموضوع المكتوب من قائمة المواضيع" aria-label="حذف الموضوع المكتوب من قائمة المواضيع">
-                  <svg aria-hidden="true" viewBox="0 0 24 24" style="width:16px;height:16px;fill:none;stroke:#f87171;stroke-width:1.8;stroke-linecap:round;stroke-linejoin:round"><path d="M4 7h16M10 11v6M14 11v6M6 7l1 13h10l1-13M9 7V4h6v3"/></svg>
+                  <svg aria-hidden="true" viewBox="0 0 24 24" style="width:16px;height:16px;fill:none;stroke:var(--ui-danger);stroke-width:1.8;stroke-linecap:round;stroke-linejoin:round"><path d="M4 7h16M10 11v6M14 11v6M6 7l1 13h10l1-13M9 7V4h6v3"/></svg>
                 </button>
               </div>
             </div>
             <div>
-              <label for="d-date" style="display:block;font-size:11px;color:#6b7280;margin-bottom:4px">تاريخ الإصدار</label>
+              <label for="d-date" style="display:block;font-size:11px;color:var(--ui-text-faint);margin-bottom:4px">تاريخ الإصدار</label>
               <input id="d-date" class="input-field" type="date" value="${escHtml(doc?.issue_date ?? "")}" />
             </div>
             <div>
-              <label for="d-count" style="display:block;font-size:11px;color:#6b7280;margin-bottom:4px">العدد</label>
+              <label for="d-count" style="display:block;font-size:11px;color:var(--ui-text-faint);margin-bottom:4px">العدد</label>
               <input id="d-count" class="input-field" value="${escHtml(doc?.doc_count ?? "")}" />
             </div>
           </div>
           <div>
-            <label for="d-notes" style="display:block;font-size:11px;color:#6b7280;margin-bottom:4px">نبذة عامة عن الوثيقة</label>
+            <label for="d-notes" style="display:block;font-size:11px;color:var(--ui-text-faint);margin-bottom:4px">نبذة عامة عن الوثيقة</label>
             <textarea id="d-notes" class="input-field" style="height:70px;resize:none">${escHtml(doc?.notes ?? "")}</textarea>
           </div>
           <div>
-            <label for="d-margin" style="display:block;font-size:11px;color:#6b7280;margin-bottom:4px">الهامش</label>
+            <label for="d-margin" style="display:block;font-size:11px;color:var(--ui-text-faint);margin-bottom:4px">الهامش</label>
             <textarea id="d-margin" class="input-field" style="height:70px;resize:none">${escHtml(doc?.margin ?? "")}</textarea>
           </div>
-          <label style="display:flex;align-items:center;gap:8px;cursor:pointer;font-size:13px;color:#d1d5db">
+          <label style="display:flex;align-items:center;gap:8px;cursor:pointer;font-size:13px;color:var(--ui-text)">
             <input id="d-internal-memo" type="checkbox" ${doc?.is_internal_memo ? "checked" : ""}
-              style="width:16px;height:16px;accent-color:#24a9ff" />
+              style="width:16px;height:16px;accent-color:var(--ui-accent)" />
             مذكرة داخلية
           </label>
-          <div style="border-top:1px solid #2d2d2d;padding-top:12px">
-            <label style="display:flex;align-items:center;gap:8px;cursor:pointer;font-size:13px;color:#d1d5db">
+          <div style="border-top:1px solid var(--ui-line);padding-top:12px">
+            <label style="display:flex;align-items:center;gap:8px;cursor:pointer;font-size:13px;color:var(--ui-text)">
               <input id="d-has-employees" type="checkbox" ${hasEmployeeLinks ? "checked" : ""}
-                style="width:16px;height:16px;accent-color:#24a9ff" />
+                style="width:16px;height:16px;accent-color:var(--ui-accent)" />
               هل لهذه الوثيقة ارتباط بموظفي الشعبة/الوحدة؟
             </label>
             <div id="d-employee-linking" class="space-y-3" style="display:${hasEmployeeLinks ? "block" : "none"};margin-top:12px">
               <input id="d-employee-search" class="input-field" placeholder="بحث باسم الموظف أو رقمه الوظيفي..." />
               <div class="flex items-center justify-between">
-                <p style="font-size:11px;color:#6b7280">يمكن تحديد موظف واحد أو أكثر</p>
+                <p style="font-size:11px;color:var(--ui-text-faint)">يمكن تحديد موظف واحد أو أكثر</p>
                 <span id="d-selected-count" class="badge badge-gray">المحدد: ${selectedEmployeeIds.size}</span>
               </div>
-              <div id="d-employee-list" style="max-height:240px;overflow:auto;border:1px solid #2d2d2d;border-radius:8px">
+              <div id="d-employee-list" style="max-height:240px;overflow:auto;border:1px solid var(--ui-line);border-radius:8px">
                 ${employees.map(employee => `
                   <label class="doc-employee-option" data-search="${escHtml(`${employee.full_name} ${employee.employee_number ?? ""}`.toLowerCase())}"
-                    style="display:flex;align-items:center;gap:9px;padding:9px 11px;border-bottom:1px solid #252525;cursor:pointer">
+                    style="display:flex;align-items:center;gap:9px;padding:9px 11px;border-bottom:1px solid var(--ui-line);cursor:pointer">
                     <input class="d-employee-checkbox" type="checkbox" value="${employee.id}"
                       ${selectedEmployeeIds.has(employee.id) ? "checked" : ""}
-                      style="width:15px;height:15px;accent-color:#24a9ff" />
-                    <span style="font-size:12px;color:#d1d5db">${escHtml(employee.full_name)}</span>
-                    <span style="font-size:11px;color:#6b7280" dir="ltr">${escHtml(employee.employee_number ?? "")}</span>
-                  </label>`).join("") || `<p style="padding:12px;color:#6b7280;font-size:12px">لا يوجد موظفون</p>`}
+                      style="width:15px;height:15px;accent-color:var(--ui-accent)" />
+                    <span style="font-size:12px;color:var(--ui-text)">${escHtml(employee.full_name)}</span>
+                    <span style="font-size:11px;color:var(--ui-text-faint)" dir="ltr">${escHtml(employee.employee_number ?? "")}</span>
+                  </label>`).join("") || `<p style="padding:12px;color:var(--ui-text-faint);font-size:12px">لا يوجد موظفون</p>`}
               </div>
             </div>
           </div>
-          <div style="border-top:1px solid #2d2d2d;padding-top:12px;display:flex;align-items:center;justify-content:space-between;gap:12px">
+          <div style="border-top:1px solid var(--ui-line);padding-top:12px;display:flex;align-items:center;justify-content:space-between;gap:12px">
             <div>
-              <p style="font-size:12px;font-weight:700;color:#d1d5db">مرفقات الوثيقة</p>
-              <p style="font-size:11px;color:#6b7280;margin-top:3px">${isEdit ? "اضغط على الأيقونة لإدارة الملفات المرفقة" : "اختر المرفقات وسيتم رفعها بعد حفظ الوثيقة"}</p>
+              <p style="font-size:12px;font-weight:700;color:var(--ui-text)">مرفقات الوثيقة</p>
+              <p style="font-size:11px;color:var(--ui-text-faint);margin-top:3px">${isEdit ? "اضغط على الأيقونة لإدارة الملفات المرفقة" : "اختر المرفقات وسيتم رفعها بعد حفظ الوثيقة"}</p>
             </div>
             <div style="display:flex;align-items:center;gap:8px">
               <button type="button" id="d-scan-attachment" class="btn-secondary" title="مسح وثيقة ضوئياً">
@@ -1040,22 +1040,22 @@ export async function renderDocuments(container, user, ctx) {
               </button>
             </div>
           </div>
-          <div id="d-scan-progress" style="display:none;align-items:center;gap:14px;padding:12px 14px;border:1px solid #245477;border-radius:10px;background:rgba(5,35,62,.75)">
-            <div id="d-scan-progress-bar" style="width:62px;height:62px;flex:none;display:grid;place-items:center;border-radius:50%;background:conic-gradient(#22c55e 0%,#0b2235 0);transition:background .35s ease">
-              <div style="width:46px;height:46px;display:grid;place-items:center;border-radius:50%;background:#071827;box-shadow:inset 0 0 8px rgba(0,0,0,.35)">
-                <span id="d-scan-progress-percent" dir="ltr" style="font-size:11px;font-weight:700;color:#7dd3fc">0%</span>
+          <div id="d-scan-progress" style="display:none;align-items:center;gap:14px;padding:12px 14px;border:1px solid var(--ui-line-strong);border-radius:10px;background:var(--ui-info-bg)">
+            <div id="d-scan-progress-bar" style="width:62px;height:62px;flex:none;display:grid;place-items:center;border-radius:50%;background:conic-gradient(#22c55e 0%,var(--ui-sunken) 0);transition:background .35s ease">
+              <div style="width:46px;height:46px;display:grid;place-items:center;border-radius:50%;background:var(--ui-sunken);box-shadow:inset 0 0 8px rgba(0,0,0,.35)">
+                <span id="d-scan-progress-percent" dir="ltr" style="font-size:11px;font-weight:700;color:var(--ui-info)">0%</span>
               </div>
             </div>
             <div>
-              <p style="font-size:12px;font-weight:700;color:#dbeafe;margin-bottom:3px">المسح الضوئي</p>
-              <span id="d-scan-progress-label" style="font-size:11px;color:#93c5fd">جاري بدء المسح الضوئي...</span>
+              <p style="font-size:12px;font-weight:700;color:var(--ui-text-strong);margin-bottom:3px">المسح الضوئي</p>
+              <span id="d-scan-progress-label" style="font-size:11px;color:var(--ui-info)">جاري بدء المسح الضوئي...</span>
             </div>
           </div>
           <div class="flex gap-3 items-center">
             <button id="btn-save-doc" class="btn-primary flex-1">حفظ</button>
             <button id="btn-cancel-doc" class="btn-secondary">إلغاء</button>
           </div>
-          ${isEdit && can(user, "documents.delete") ? `<div style="border-top:1px solid #2d2d2d;padding-top:12px;display:flex;justify-content:flex-end">
+          ${isEdit && can(user, "documents.delete") ? `<div style="border-top:1px solid var(--ui-line);padding-top:12px;display:flex;justify-content:flex-end">
             <button id="btn-delete-doc" class="btn-danger px-4">حذف الوثيقة نهائياً</button>
           </div>` : ""}
         </div>
@@ -1082,7 +1082,7 @@ export async function renderDocuments(container, user, ctx) {
       const menu = el.querySelector("#d-subject-menu");
       if (!menu) return;
       menu.innerHTML = documentTypes.map(type =>
-        `<button type="button" class="d-subject-option" data-value="${escHtml(type)}" style="display:block;width:100%;text-align:right;padding:10px 12px;border:0;border-bottom:1px solid #2d2d2d;background:transparent;color:#f3f4f6;cursor:pointer">${escHtml(type)}</button>`
+        `<button type="button" class="d-subject-option" data-value="${escHtml(type)}" style="display:block;width:100%;text-align:right;padding:10px 12px;border:0;border-bottom:1px solid var(--ui-line);background:transparent;color:var(--ui-text-strong);cursor:pointer">${escHtml(type)}</button>`
       ).join("");
       bindSubjectOptions();
     };
@@ -1268,7 +1268,7 @@ export async function renderDocuments(container, user, ctx) {
         percent = value;
         progress.style.display = "flex";
         const progressColor = progress.dataset.error === "true" ? "#dc2626" : "#22c55e";
-        progressBar.style.background = `conic-gradient(${progressColor} ${value}%,#0b2235 ${value}%)`;
+        progressBar.style.background = `conic-gradient(${progressColor} ${value}%,var(--ui-sunken) ${value}%)`;
         progressPercent.textContent = `${value}%`;
         progressLabel.textContent = label;
       };
@@ -1306,7 +1306,7 @@ export async function renderDocuments(container, user, ctx) {
         showDocForm(currentDocs().find(item => item.id === created.id));
       } catch (error) {
         clearInterval(progressTimer);
-        progress.style.borderColor = "#7f1d1d";
+        progress.style.borderColor = "var(--ui-danger-line)";
         progress.dataset.error = "true";
         updateProgress(100, "تعذر إكمال عملية المسح");
         showToast(error?.message ?? String(error || "تعذر استخدام الماسح الضوئي"), "error");
@@ -1340,7 +1340,7 @@ export async function renderDocuments(container, user, ctx) {
           <p class="section-title">رفع وثيقة لموظف موجود</p>
           <div class="grid grid-cols-1 md:grid-cols-[1fr_auto] gap-3 items-end">
             <div>
-              <label for="emp-doc-employee" style="display:block;font-size:11px;color:#6b7280;margin-bottom:4px">الموظف</label>
+              <label for="emp-doc-employee" style="display:block;font-size:11px;color:var(--ui-text-faint);margin-bottom:4px">الموظف</label>
               <select id="emp-doc-employee" class="input-field">
                 <option value="">— اختر موظفاً —</option>
                 ${employees.map(e => `
@@ -1362,8 +1362,8 @@ export async function renderDocuments(container, user, ctx) {
             ? `<p class="text-center text-gray-500 py-8">لا توجد وثائق موظفين مرفوعة</p>`
             : withDocs.map(e => {
                 const paths = parseAttachments(e);
-                return `<div style="border:1px solid #2d2d2d;border-radius:8px;margin-bottom:12px;overflow:hidden">
-                  <div style="display:flex;justify-content:space-between;gap:12px;align-items:center;padding:10px 12px;background:#181818">
+                return `<div style="border:1px solid var(--ui-line);border-radius:8px;margin-bottom:12px;overflow:hidden">
+                  <div style="display:flex;justify-content:space-between;gap:12px;align-items:center;padding:10px 12px;background:var(--ui-surface-2)">
                     <div>
                       <p class="font-medium text-gray-100">${escHtml(e.full_name)}</p>
                       <p class="text-xs text-gray-500" dir="ltr">${escHtml(e.employee_number ?? "—")}</p>
@@ -1443,8 +1443,8 @@ export async function renderDocuments(container, user, ctx) {
       activeTab = btn.dataset.tab;
       container.querySelectorAll(".doc-tab").forEach(b => {
         const a = b.dataset.tab === activeTab;
-        b.style.borderBottomColor = a ? "#24a9ff" : "transparent";
-        b.style.color = a ? "#24a9ff" : "#9ca3af";
+        b.style.borderBottomColor = a ? "var(--ui-accent)" : "transparent";
+        b.style.color = a ? "var(--ui-accent)" : "var(--ui-text-muted)";
         b.style.fontWeight = a ? "700" : "400";
       });
       renderGeneral();

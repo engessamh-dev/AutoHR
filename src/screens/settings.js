@@ -3,6 +3,7 @@
  */
 import { api }       from "../api.js";
 import { showToast, confirmAction, applyBranding, escHtml } from "../utils.js";
+import { getThemeChoice, setThemeChoice, onThemeChange, themeIcon, themeLabels } from "../theme.js";
 import { open }      from "@tauri-apps/plugin-dialog";
 import { can }       from "../permissions.js";
 import { listen }    from "@tauri-apps/api/event";
@@ -29,15 +30,15 @@ function openBackupProgress({ title = "إنشاء نسخة احتياطية", me
   overlay.setAttribute("dir", "rtl");
   overlay.style.cssText = "position:fixed;inset:0;z-index:10000;background:rgba(0,0,0,.62);display:flex;align-items:center;justify-content:center;padding:20px";
   overlay.innerHTML = `
-    <div style="width:min(440px,100%);background:#1f1f1f;border:1px solid #2d2d2d;border-radius:10px;padding:18px;box-shadow:0 18px 60px rgba(0,0,0,.45)">
+    <div style="width:min(440px,100%);background:var(--ui-surface);border:1px solid var(--ui-line);border-radius:10px;padding:18px;box-shadow:0 18px 60px rgba(0,0,0,.45)">
       <div style="display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:14px">
-        <p style="font-size:15px;font-weight:700;color:#f3f4f6;margin:0">${title}</p>
+        <p style="font-size:15px;font-weight:700;color:var(--ui-text-strong);margin:0">${title}</p>
         <span id="backup-progress-percent" class="badge badge-gray">0%</span>
       </div>
-      <div style="height:10px;background:#111827;border-radius:999px;overflow:hidden;border:1px solid #374151">
-        <div id="backup-progress-bar" style="height:100%;width:0%;background:#24a9ff;transition:width .2s ease"></div>
+      <div style="height:10px;background:var(--ui-sunken);border-radius:999px;overflow:hidden;border:1px solid var(--ui-line)">
+        <div id="backup-progress-bar" style="height:100%;width:0%;background:var(--ui-accent);transition:width .2s ease"></div>
       </div>
-      <p id="backup-progress-message" style="font-size:12px;color:#9ca3af;margin:12px 0 0">${message}</p>
+      <p id="backup-progress-message" style="font-size:12px;color:var(--ui-text-muted);margin:12px 0 0">${message}</p>
     </div>`;
   document.body.append(overlay);
   return {
@@ -57,7 +58,7 @@ function openBackupProgress({ title = "إنشاء نسخة احتياطية", me
       if (path) {
         const pathLine = document.createElement("p");
         pathLine.dir = "ltr";
-        pathLine.style.cssText = "font-size:12px;color:#e5e7eb;background:#111827;border:1px solid #374151;border-radius:6px;padding:8px;margin:10px 0 0;word-break:break-all;user-select:text";
+        pathLine.style.cssText = "font-size:12px;color:var(--ui-text-strong);background:var(--ui-sunken);border:1px solid var(--ui-line);border-radius:6px;padding:8px;margin:10px 0 0;word-break:break-all;user-select:text";
         pathLine.textContent = path;
         box.append(pathLine);
       }
@@ -82,17 +83,17 @@ function requestBackupPassword({ title, message, minLength = 1 }) {
       display:flex;align-items:center;justify-content:center;padding:20px;
     `;
     overlay.innerHTML = `
-      <div style="width:min(440px,100%);background:#1f1f1f;border:1px solid #2d2d2d;
+      <div style="width:min(440px,100%);background:var(--ui-surface);border:1px solid var(--ui-line);
         border-radius:10px;padding:18px;box-shadow:0 18px 60px rgba(0,0,0,.45)">
-        <p style="font-size:16px;font-weight:700;color:#f3f4f6;margin:0 0 8px">${title}</p>
-        <p style="font-size:13px;line-height:1.8;color:#9ca3af;margin:0 0 14px">${message}</p>
+        <p style="font-size:16px;font-weight:700;color:var(--ui-text-strong);margin:0 0 8px">${title}</p>
+        <p style="font-size:13px;line-height:1.8;color:var(--ui-text-muted);margin:0 0 14px">${message}</p>
         <div style="display:flex;gap:8px;margin-bottom:8px">
           <input id="backup-password-input" class="input-field" type="password"
             autocomplete="current-password" style="flex:1" />
           <button type="button" id="backup-password-toggle" class="btn-secondary"
             aria-pressed="false" style="min-width:74px">إظهار</button>
         </div>
-        <p id="backup-password-error" class="hidden" style="font-size:12px;color:#ef4444;margin:0 0 12px"></p>
+        <p id="backup-password-error" class="hidden" style="font-size:12px;color:var(--ui-danger);margin:0 0 12px"></p>
         <div style="display:flex;gap:10px;justify-content:flex-start">
           <button type="button" id="backup-password-confirm" class="btn-primary">تأكيد</button>
           <button type="button" id="backup-password-cancel" class="btn-secondary">إلغاء</button>
@@ -158,6 +159,7 @@ export async function renderSettings(container, user, ctx) {
     canSettings && { id: "storage", label: "مواقع الحفظ" },
     canBackups && { id: "backup", label: "النسخ الاحتياطي" },
     canSettings && canBackups && { id: "updates", label: "التحديثات" },
+    { id: "appearance", label: "المظهر" },
   ].filter(Boolean);
   if (!tabs.length) {
     container.innerHTML = `<div class="card text-gray-400">لا توجد إعدادات متاحة لهذا المستخدم.</div>`;
@@ -203,7 +205,7 @@ export async function renderSettings(container, user, ctx) {
 
       <section class="card settings-panel space-y-1" data-settings-panel="storage">
         <p class="text-xs text-gray-500">يمكن نقل مجلد البيانات أو تغيير مجلد النسخ الاحتياطية بأمان: يُنسخ كل شيء ويُتحقق منه أولًا، ويبقى الموقع القديم كما هو دون حذف.</p>
-        ${(storageStatus?.warnings || []).map(w => `<p class="settings-storage-warning text-xs" style="color:#fbbf24;background:rgba(251,191,36,.08);border:1px solid rgba(251,191,36,.3);border-radius:8px;padding:8px 10px;margin:6px 0">${escHtml(w)}</p>`).join("")}
+        ${(storageStatus?.warnings || []).map(w => `<p class="settings-storage-warning text-xs" style="color:var(--ui-warn);background:var(--ui-warn-bg);border:1px solid var(--ui-warn-line);border-radius:8px;padding:8px 10px;margin:6px 0">${escHtml(w)}</p>`).join("")}
         <div class="settings-path-row">
           <div class="min-w-0">
             <p class="settings-path-label">مجلد البيانات والمرفقات</p>
@@ -284,7 +286,25 @@ export async function renderSettings(container, user, ctx) {
           <button id="btn-install-update" type="button" class="btn-primary hidden">تثبيت التحديث</button>
         </div>
       </section>` : ""}
+
+      <section class="card settings-panel space-y-3" data-settings-panel="appearance">
+        <p class="section-title">مظهر البرنامج</p>
+        <p class="text-xs text-gray-400 leading-6">يُحفظ الاختيار على هذا الجهاز فقط. شاشة الدخول والمطبوعات لا تتغير.</p>
+        <div class="theme-choices" role="radiogroup" aria-label="مظهر البرنامج">
+          ${["light", "dark", "system"].map(choice => `<button type="button" role="radio" class="theme-choice" data-theme-option="${choice}"
+            aria-checked="${getThemeChoice() === choice}">${themeIcon(choice)}<span>${themeLabels[choice]}</span></button>`).join("")}
+        </div>
+      </section>
     </div>`;
+
+  const syncThemeOptions = choice => container.querySelectorAll("[data-theme-option]")
+    .forEach(option => option.setAttribute("aria-checked", String(option.dataset.themeOption === choice)));
+  container.querySelectorAll("[data-theme-option]").forEach(option =>
+    option.addEventListener("click", () => setThemeChoice(option.dataset.themeOption)));
+  const stopThemeSync = onThemeChange(choice => {
+    if (!container.isConnected || !container.querySelector("[data-theme-option]")) { stopThemeSync(); return; }
+    syncThemeOptions(choice);
+  });
 
   const showTab = id => {
     activeSettingsTab = id;
