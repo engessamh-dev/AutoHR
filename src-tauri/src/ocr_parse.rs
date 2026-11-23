@@ -742,6 +742,52 @@ fn parse_passport_text(lines: &[Line], result: &mut ReadResult) {
 }
 
 // ---------------------------------------------------------------------------------------------
+// Other cards (badges): no known layout, so only what can be told apart without one.
+
+/// Dates and the document number of a card whose layout is not known. The earliest date is taken
+/// as the issue date and the latest as the expiry; the number is the longest run of digits that is
+/// not part of a date. These are guesses and get a lower confidence.
+fn parse_generic(lines: &[Line], result: &mut ReadResult) {
+    let mut dates: Vec<(String, f32)> = Vec::new();
+    let mut number: Option<(String, f32)> = None;
+    for line in lines {
+        let text = ascii_digits(&line.text);
+        let found = find_all_dates(&text);
+        dates.extend(found.iter().map(|d| (d.clone(), line.confidence)));
+        let mut rest = text.clone();
+        // Remove the date strings so their digits are not taken for the number.
+        for token in text.split_whitespace() {
+            if find_date(token).is_some() {
+                rest = rest.replace(token, " ");
+            }
+        }
+        for token in rest.split(|c: char| !c.is_ascii_alphanumeric()) {
+            let digits = token.chars().filter(char::is_ascii_digit).count();
+            if digits >= 4 && digits * 2 >= token.len() && number.as_ref().is_none_or(|(n, _)| token.len() > n.len()) {
+                number = Some((token.to_uppercase(), line.confidence));
+            }
+        }
+    }
+    dates.sort_by(|a, b| a.0.cmp(&b.0));
+    dates.dedup_by(|a, b| a.0 == b.0);
+    if let Some((first, c)) = dates.first() {
+        if dates.len() >= 2 {
+            result.set("issue_date", first.clone(), c * 0.7, "text");
+        }
+    }
+    if let Some((last, c)) = dates.last() {
+        result.set("expiry_date", last.clone(), c * 0.7, "text");
+    }
+    if let Some((n, c)) = number {
+        result.set("doc_number", n, c * 0.7, "text");
+    }
+    if !result.fields.is_empty() {
+        result.document = "other".into();
+        result.warnings.push("تصميم هذه الوثيقة غير معروف للبرنامج: الأرقام والتواريخ مقروءة لكن تحديد أيها للإصدار وأيها للنفاذ تخمين، فراجعها.".into());
+    }
+}
+
+// ---------------------------------------------------------------------------------------------
 
 pub fn parse(lines: &[Line]) -> ReadResult {
     let mut result = ReadResult::default();
@@ -759,6 +805,9 @@ pub fn parse(lines: &[Line]) -> ReadResult {
             _ => "unknown",
         }
         .into();
+    }
+    if result.document == "unknown" {
+        parse_generic(lines, &mut result);
     }
     if result.fields.is_empty() {
         result.warnings.push("لم يُعثر على بيانات مقروءة في الصورة".into());
@@ -900,6 +949,18 @@ mod tests {
     fn blood_type_ignores_neighbouring_numbers() {
         assert_eq!(blood_type(":O+ XY0000000").as_deref(), Some("O+"));
         assert_eq!(blood_type("XY0000000"), None);
+    }
+
+    #[test]
+    fn other_cards_dates_and_number() {
+        let lines = vec![line("هوية دخول", 0.), line("رقم الهوية 004512", 20.), line("2024/01/10 الاصدار", 40.), line("النفاذ 2026/01/09", 60.)];
+        let r = parse(&lines);
+        assert_eq!(r.document, "other");
+        let v = |k: &str| r.get(k).map(|f| f.value.clone()).unwrap_or_default();
+        assert_eq!(v("issue_date"), "2024-01-10");
+        assert_eq!(v("expiry_date"), "2026-01-09");
+        assert_eq!(v("doc_number"), "004512");
+        assert!(r.get("doc_number").unwrap().confidence < 0.85);
     }
 
     #[test]

@@ -385,7 +385,8 @@ function attachmentTile({ label, path, fullPath, canManage, upload, remove, lock
 function sidedCardTile(label, side, path, fullPath, canUpload, cardType = "national") {
   const attrs = `data-card-type="${cardType}" data-side="${side}"`;
   return attachmentTile({
-    label, path, fullPath, canManage: canUpload, read: cardType === "national" ? "employee" : null,
+    label, path, fullPath, canManage: canUpload,
+    read: cardType === "national" ? "employee" : cardType === "airport" ? "employee:airport_badge" : cardType === "ministry" ? "employee:ministry_badge" : cardType === "residence" ? "employee:residence_card" : null,
     upload: { cls: "btn-upload-sided-card", attrs },
     remove: { cls: "btn-delete-sided-card", attrs },
   });
@@ -1423,7 +1424,9 @@ function attachTabEvents(emp) {
           else await api.uploadNationalCardAttachment(emp.id, btn.dataset.side, selected);
           showToast(`تم رفع مرفق ${cardName}`);
           await refreshDocumentAttachments(emp.id);
-          if (cardType === "national") await readUploadedFields("employee", _panelDraft?.[`civil_id_${btn.dataset.side}_path`], _panelDraft?.[`civil_id_${btn.dataset.side}_full_path`], `${cardName}، ${btn.dataset.side === "front" ? "الوجه الأمامي" : "الوجه الخلفي"}`);
+          const readTarget = { national: "employee", airport: "employee:airport_badge", ministry: "employee:ministry_badge", residence: "employee:residence_card" }[cardType];
+          const prefix = { national: "civil_id", airport: "airport_badge", ministry: "ministry_badge", residence: "residence_card" }[cardType];
+          if (readTarget) await readUploadedFields(readTarget, _panelDraft?.[`${prefix}_${btn.dataset.side}_path`], _panelDraft?.[`${prefix}_${btn.dataset.side}_full_path`], `${cardName}، ${btn.dataset.side === "front" ? "الوجه الأمامي" : "الوجه الخلفي"}`);
         } catch (err) { showToast(err?.message ?? String(err || "خطأ في الرفع"), "error"); }
       });
     });
@@ -2035,7 +2038,7 @@ function currentNameParts(record, key, passport = false) {
 
 function ocrTarget(target) {
   const [kind, index] = String(target).split(":");
-  if (kind === "employee") return { kind, record: _panelDraft };
+  if (kind === "employee") return { kind, badge: index ?? null, record: _panelDraft };
   const listKey = kind === "spouse" ? "spouses" : "family_members";
   let list = [];
   try { list = JSON.parse(_panelDraft?.[listKey] ?? "[]"); } catch {}
@@ -2044,7 +2047,7 @@ function ocrTarget(target) {
 }
 
 function ocrRows(result, target) {
-  const { kind, record } = ocrTarget(target);
+  const { kind, badge, record } = ocrTarget(target);
   const read = key => result.fields.find(f => f.key === key);
   const passport = result.document === "passport";
   const rows = [];
@@ -2052,6 +2055,18 @@ function ocrRows(result, target) {
     const field = read(key);
     if (field) rows.push({ id, label, value: field.value, confidence: field.confidence, source: field.source, current: current ?? "", ...opts });
   };
+  if (badge === "residence_card") {
+    // Old-style residence cards: only the printed serial is readable; the rest is handwritten.
+    add("field:residence_card_no", "رقم بطاقة السكن (التسلسل)", "doc_number", record?.residence_card_no, { ltr: true });
+    add("field:residence_card_issue_date", "تاريخ الإصدار", read("issue_date") ? "issue_date" : "expiry_date", record?.residence_card_issue_date, { date: true });
+    return rows;
+  }
+  if (badge) {
+    add(`field:${badge}_no`, "رقم الهوية", "doc_number", record?.[`${badge}_no`], { ltr: true });
+    add(`field:${badge}_issue_date`, "تاريخ الإصدار", "issue_date", record?.[`${badge}_issue_date`], { date: true });
+    add(`field:${badge}_expiry`, "تاريخ النفاذ", "expiry_date", record?.[`${badge}_expiry`], { date: true });
+    return rows;
+  }
   const nameKey = kind === "employee" ? "full_name" : "name";
   const names = currentNameParts(record, nameKey);
   OCR_NAME_PARTS.forEach(([part, label]) => add(`name:${nameKey}:${part}`, label, part, names[part]));

@@ -103,3 +103,40 @@ test("nothing read: a clear message and no dialog", async ({ page }) => {
   await expect.poll(() => page.evaluate(() => window.calls.some(c => c.command === "cmd_read_document_fields"))).toBe(true);
   await expect(page.locator(".id-reader")).toHaveCount(0);
 });
+
+test("badge: number and dates fill the badge section", async ({ page }) => {
+  await page.evaluate(() => {
+    window.employeePatch = { airport_badge_front_path: "Files/Employees/1/Documents/Airport/badge.jpg", airport_badge_front_full_path: "synthetic" };
+    window.readResult = {
+      document: "other",
+      warnings: ["تخمين"],
+      fields: [
+        { key: "doc_number", value: "004512", confidence: 0.6, source: "text" },
+        { key: "issue_date", value: "2024-01-10", confidence: 0.6, source: "text" },
+        { key: "expiry_date", value: "2026-01-09", confidence: 0.6, source: "text" },
+      ],
+    };
+  });
+  await openDocuments(page);
+  const tile = page.locator(".emp-tile.has-file", { has: page.locator('[data-target="employee:airport_badge"]') });
+  await tile.locator(".emp-tile-more").click();
+  await tile.getByRole("menuitem", { name: "قراءة البيانات" }).click();
+  const dialog = page.getByRole("dialog", { name: /قراءة البيانات/ });
+  await expect(dialog.locator("tr.is-low")).toHaveCount(3);
+  await dialog.getByRole("button", { name: "اعتماد المحدَّد" }).click();
+  await expect(page.locator("#f-airport_badge_no")).toHaveValue("004512");
+  await expect(page.locator("#f-airport_badge_expiry")).toHaveValue("2026-01-09");
+});
+
+test("residence card: the printed serial fills the card number", async ({ page }) => {
+  await page.evaluate(() => {
+    window.employeePatch = { residence_card_back_path: "Files/Employees/1/Documents/Residence/back.jpg", residence_card_back_full_path: "synthetic" };
+    window.readResult = { document: "other", warnings: [], fields: [{ key: "doc_number", value: "1000001", confidence: 0.6, source: "text" }] };
+  });
+  await openDocuments(page);
+  const tile = page.locator(".emp-tile.has-file", { has: page.locator('[data-target="employee:residence_card"]') });
+  await tile.locator(".emp-tile-more").click();
+  await tile.getByRole("menuitem", { name: "قراءة البيانات" }).click();
+  await page.getByRole("dialog", { name: /قراءة البيانات/ }).getByRole("button", { name: "اعتماد المحدَّد" }).click();
+  await expect(page.locator("#f-residence_card_no")).toHaveValue("1000001");
+});
