@@ -5,25 +5,29 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>CNSArch</title>
   <link rel="stylesheet" href="/src/styles/main.css" />
+  <link rel="stylesheet" href="/src/styles/login.css" />
 </head>
 <body class="overflow-hidden">
 
-  <div id="login-screen" class="login-background">
-    <main class="login-artboard" aria-label="نظام الأرشفة">
-      <form id="login-form" class="login-hotspots">
-        <input id="login-username" class="login-hotspot login-hotspot-username" type="text" placeholder="اسم المستخدم" dir="rtl" autocomplete="username" aria-label="اسم المستخدم" />
-        <input id="login-password" class="login-hotspot login-hotspot-password" type="password" placeholder="كلمة المرور" dir="rtl" autocomplete="current-password" aria-label="كلمة المرور" />
-        <button id="btn-toggle-password" class="login-hotspot login-hotspot-eye" type="button" aria-label="إظهار كلمة المرور" aria-pressed="false"></button>
-        <p id="login-error" class="login-message hidden" role="alert" aria-live="assertive"></p>
-        <button type="submit" class="login-hotspot login-hotspot-submit" aria-label="تسجيل الدخول"></button>
+  <div id="login-screen" class="login-screen">
+    <!-- The design (logo, title, frames, icons, button, footer) is the background
+         picture; only the parts that change or react are real elements, placed
+         on the picture's own coordinates (see login.css). -->
+    <main class="login-stage" aria-label="نظام الأرشفة الإلكتروني">
+      <h1 class="sr-only">نظام الأرشفة الإلكتروني وإدارة معلومات الموظفين</h1>
+      <form id="login-form" novalidate>
+        <label class="login-box login-box-username">
+          <input id="login-username" type="text" placeholder="اسم المستخدم" dir="rtl" autocomplete="username" aria-label="اسم المستخدم" />
+        </label>
+        <label class="login-box login-box-password">
+          <input id="login-password" type="password" placeholder="كلمة المرور" dir="rtl" autocomplete="current-password" aria-label="كلمة المرور" />
+        </label>
+        <button id="btn-toggle-password" class="login-hit login-hit-eye" type="button" aria-label="إظهار كلمة المرور" aria-pressed="false"></button>
+        <button type="submit" class="login-hit login-hit-submit" aria-label="تسجيل الدخول"></button>
       </form>
-      <button id="btn-forgot-password" type="button" class="login-hotspot login-hotspot-forgot" aria-label="نسيت كلمة المرور؟"></button>
-      <div class="login-title-overlay" aria-hidden="true">نظام الأرشفة الإلكتروني</div>
-      <div class="login-subtitle-overlay" aria-hidden="true">
-        <span class="login-subtitle-ar">نظام أرشفة وثائق صادر ووارد قسم اتصالات الطيران</span>
-        <span class="login-subtitle-en">General Company for Airports and Air Navigation</span>
-      </div>
+      <button id="btn-forgot-password" type="button" class="login-hit login-hit-forgot" aria-label="نسيت كلمة المرور؟"></button>
       <span id="login-unit-name" class="login-unit-name">وحدة الأتمتة</span>
+      <p id="login-error" class="login-message hidden" role="alert" aria-live="assertive"></p>
       <span id="login-app-version" class="login-version" data-app-version dir="rtl"></span>
     </main>
   </div>

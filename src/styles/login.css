@@ -1,0 +1,93 @@
+/* ── Login screen ─────────────────────────────────────────────────────────
+   The approved design is the background picture itself (1671×941):
+   logo, titles, card, field frames, icons, button, links and footer are
+   untouched pixels from the design. Only the parts that change or react
+   are real elements, placed on the picture's own coordinates:
+   inputs and their placeholders, the eye / login / forgot hit areas,
+   the unit name, the message box (a cut-out of the design's own error box)
+   and the version.
+
+   The picture is drawn with background-size:cover, so one design pixel is
+   --px = max(100vw/1671, 100vh/941) on every screen, and an element at
+   design point (x, y) sits at centre + ((x − 835.5), (y − 470.5)) × --px. */
+.login-screen{
+  --px:max(calc(100vw / 1671),calc(100vh / 941));
+  position:fixed;inset:0;z-index:40;overflow:hidden;
+  background:#04122d url('../assets/login-background-gcaan.jpg') center / cover no-repeat;
+  font-family:"Segoe UI","Cairo","Noto Sans Arabic",Tahoma,Arial,sans-serif;
+}
+.login-screen.hidden{display:none}
+.login-stage{position:absolute;left:50%;top:50%;width:0;height:0}
+.login-stage > *, .login-stage form > *{position:absolute}
+.login-stage form{position:static}
+
+/* x0 y0 x1 y1 in design pixels → box */
+.login-box-username{--x0:585;--y0:435;--x1:1085;--y1:484}
+.login-box-password{--x0:585;--y0:495;--x1:1085;--y1:543}
+.login-hit-eye{--x0:1028;--y0:500;--x1:1074;--y1:538}
+.login-hit-submit{--x0:585;--y0:559;--x1:1085;--y1:611}
+.login-hit-forgot{--x0:722;--y0:625;--x1:952;--y1:656}
+.login-unit-name{--x0:790;--y0:674;--x1:935;--y1:710}
+.login-message{--x0:534;--y0:728;--x1:1138;--y1:805}
+.login-version{--x0:1374;--y0:883;--x1:1508;--y1:915}
+.login-box,.login-hit,.login-unit-name,.login-message,.login-version{
+  left:calc((var(--x0) - 835.5) * var(--px));top:calc((var(--y0) - 470.5) * var(--px));
+  width:calc((var(--x1) - var(--x0)) * var(--px));height:calc((var(--y1) - var(--y0)) * var(--px));
+}
+
+/* Fields: the frame and icons are in the picture; the box only adds focus/error glow. */
+.login-box{display:block;border-radius:calc(12 * var(--px));cursor:text;transition:box-shadow .15s}
+.login-box input{
+  position:absolute;top:0;height:100%;
+  border:0;outline:0;background:transparent;padding:0;
+  color:#fff;font-size:calc(21 * var(--px));font-weight:600;text-align:right;caret-color:#3ab4ff;
+}
+.login-box input::placeholder{color:#e3e9f1;opacity:1}
+.login-box-username input{right:calc(28 * var(--px));left:calc(70 * var(--px))}   /* text ends at x≈1057 like the design */
+.login-box-password input{right:calc(80 * var(--px));left:calc(70 * var(--px))}   /* ends at x≈1005, left of the eye */
+.login-box input:-webkit-autofill,.login-box input:-webkit-autofill:hover,.login-box input:-webkit-autofill:focus{
+  -webkit-text-fill-color:#fff;transition:background-color 9999s ease-out;box-shadow:inset 0 0 0 1000px transparent;
+}
+.login-box:focus-within{box-shadow:0 0 0 calc(1.5 * var(--px)) #5cc8ff,0 0 calc(12 * var(--px)) rgba(58,180,255,.75)}
+.login-box:has(input.login-field-invalid){box-shadow:0 0 0 calc(2 * var(--px)) #ff4d5e,0 0 calc(12 * var(--px)) rgba(255,77,94,.7)}
+
+/* Hit areas over the drawn eye, login button and forgot link. */
+.login-hit{border:0;padding:0;background:transparent;cursor:pointer;outline:0;border-radius:calc(12 * var(--px))}
+.login-hit:focus-visible{box-shadow:0 0 0 calc(2 * var(--px)) #fff,0 0 calc(12 * var(--px)) rgba(58,180,255,.8)}
+.login-hit-eye{border-radius:50%}
+.login-hit-eye[aria-pressed="true"]{box-shadow:inset 0 0 0 100px rgba(58,180,255,.22)}
+.login-hit-submit{border-radius:calc(14 * var(--px))}
+.login-hit-submit:hover{background:rgba(255,255,255,.07)}
+.login-hit-submit:active{background:rgba(0,0,0,.12)}
+.login-hit-submit:disabled{cursor:not-allowed;background:rgba(3,14,40,.45)}
+.login-hit-forgot:hover{background:rgba(95,224,255,.08)}
+
+/* Unit name inside the drawn pill, next to the drawn gear. */
+.login-unit-name{
+  display:flex;align-items:center;justify-content:center;
+  color:#fff;font-size:calc(24 * var(--px));font-weight:700;white-space:nowrap;pointer-events:none;
+}
+.login-unit-name.is-hint{
+  --x1:955;justify-content:flex-start;padding-inline-start:calc(4 * var(--px));
+  color:#b7c8dc;font-size:calc(13 * var(--px));font-weight:500;font-style:italic;white-space:normal;line-height:1.25;
+}
+
+/* Message box: the design's own red error box (text removed), shown only when needed.
+   Info and Caps Lock messages use the same box tinted blue / amber. */
+.login-message{
+  display:flex;align-items:center;justify-content:flex-start;margin:0; /* RTL: text starts right after the drawn ⚠, like the design */
+  padding:0 calc(132 * var(--px)) 0 calc(24 * var(--px));
+  color:#fff;font-size:calc(21.5 * var(--px));font-weight:700;line-height:1.15;text-align:center;
+  white-space:nowrap;isolation:isolate;
+}
+/* Longer messages (e.g. lockout) get two smaller lines instead of overflowing. */
+.login-message.is-long{white-space:normal;font-size:calc(16 * var(--px));line-height:1.2}
+.login-message::before{content:"";position:absolute;inset:0;z-index:-1;background:url('../assets/login-error-box.png') center / 100% 100% no-repeat}
+.login-message.hidden{display:none}
+.login-message[data-kind="info"]::before{filter:hue-rotate(210deg) saturate(1.1)}
+.login-message[data-kind="caps"]::before{filter:hue-rotate(45deg) saturate(1.2)}
+
+.login-version{
+  display:flex;align-items:center;justify-content:center;
+  color:#fff;font-size:calc(20 * var(--px));font-weight:700;white-space:nowrap;pointer-events:none;
+}
