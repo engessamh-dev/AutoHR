@@ -7,6 +7,8 @@ import { convertFileSrc } from "@tauri-apps/api/core";
 import { open, save } from "@tauri-apps/plugin-dialog";
 import { showToast, formatDate, escHtml, debounce, confirmAction, confirmSaveChanges } from "../utils.js";
 import { can } from "../permissions.js";
+import { openNameReview } from "./name-review.js";
+import { employeeNameFields, recordNameFields, bindNameFields, readNameFields, readNameGroup, applyNames } from "./name-fields.js";
 
 let _employees = [];
 let _filter = "";
@@ -69,6 +71,7 @@ export async function renderEmployees(container, user, ctx) {
       <div class="flex items-center gap-3 flex-wrap">
         <input id="emp-search" type="text" class="input-field flex-1 min-w-[200px]"
                placeholder="بحث بالاسم أو القسم أو رقم الهوية أو الهاتف أو العنوان الوظيفي…" />
+        <button id="btn-name-review" class="btn-secondary px-4 py-2.5 whitespace-nowrap" hidden>مراجعة الأسماء</button>
         <button id="btn-add-emp" class="btn-primary px-4 py-2.5 whitespace-nowrap">+ إضافة موظف</button>
       </div>
       <div id="emp-table-wrap" class="card overflow-auto flex-1"></div>
@@ -84,6 +87,20 @@ export async function renderEmployees(container, user, ctx) {
   container.querySelector("#btn-add-emp").addEventListener("click", () => openPanel(null));
   container.querySelector("#emp-overlay").addEventListener("click", () => closePanel());
   if (!can(user, "employees.create")) container.querySelector("#btn-add-emp")?.remove();
+  if (can(user, "employees.edit")) {
+    const reviewButton = container.querySelector("#btn-name-review");
+    const refreshReviewCount = async () => {
+      const count = (await api.listNameReview().catch(() => [])).length;
+      reviewButton.hidden = count === 0;
+      reviewButton.textContent = `مراجعة الأسماء (${count})`;
+    };
+    reviewButton.addEventListener("click", () => openNameReview(async () => {
+      _employees = await api.listEmployees();
+      renderTable();
+      await refreshReviewCount();
+    }));
+    refreshReviewCount();
+  } else container.querySelector("#btn-name-review")?.remove();
 
   // Opened from another screen (e.g. a document alert): jump straight to that employee's tab.
   if (ctx?.openEmployeeId != null) {
@@ -187,14 +204,15 @@ function collectVisiblePanelFields(panel) {
     if (el.type === "checkbox") _panelDraft[key] = el.checked ? 1 : 0;
     else _panelDraft[key] = el.value?.trim() || null;
   });
+  applyNames(_panelDraft, readNameFields(panel, ".spouse-row,.family-row"));
 
   const familyList = panel.querySelector("#family-list");
   const rows = panel.querySelectorAll(".family-row");
   if (familyList) {
     const arr = [];
     rows.forEach(row => {
-      arr.push({
-        name:        row.querySelector(".fm-name")?.value?.trim() || "",
+      arr.push(applyNames({
+        name:        "",
         gender:      row.querySelector(".fm-gender")?.value || "",
         birthplace:  row.querySelector(".fm-birthplace")?.value?.trim() || "",
         birthdate:   row.querySelector(".fm-birthdate")?.value || "",
@@ -205,7 +223,7 @@ function collectVisiblePanelFields(panel) {
         blood_type:  row.querySelector(".fm-blood")?.value || "",
         national_card_front_path: row.dataset.nationalCardFrontPath || "",
         national_card_back_path:  row.dataset.nationalCardBackPath || "",
-      });
+      }, readNameFields(row)));
     });
     _panelDraft.family_members = JSON.stringify(arr);
   }
@@ -215,10 +233,10 @@ function collectVisiblePanelFields(panel) {
     const spouseConfig = spouseSectionConfig(_panelDraft ?? {});
     const spouses = [];
     panel.querySelectorAll(".spouse-row").forEach(row => {
-      spouses.push({
+      spouses.push(applyNames({
         civil_id:    row.querySelector(".sp-civil")?.value?.trim() || "",
-        name:        row.querySelector(".sp-name")?.value?.trim() || "",
-        mother_name: row.querySelector(".sp-mother")?.value?.trim() || "",
+        name:        "",
+        mother_name: "",
         gender:      row.querySelector(".sp-gender")?.value || "",
         birthplace:  row.querySelector(".sp-birthplace")?.value?.trim() || "",
         birthdate:   row.querySelector(".sp-birthdate")?.value || "",
@@ -229,7 +247,7 @@ function collectVisiblePanelFields(panel) {
         marriage_date: row.querySelector(".sp-marriage")?.value || "",
         national_card_front_path: row.dataset.nationalCardFrontPath || "",
         national_card_back_path:  row.dataset.nationalCardBackPath || "",
-      });
+      }, readNameFields(row)));
     });
     _panelDraft.spouses = JSON.stringify(spouses.slice(0, spouseConfig?.max ?? 4));
     const firstSpouse = spouses[0] ?? {};
@@ -508,7 +526,7 @@ function documentSections(emp) {
       fields: [
         field("رقم جواز السفر", "passport_no", emp, {ltr:true}),
         field("نوع جواز السفر", "passport_type", emp, {type:"select", options:[["","—"],["P","P"],["D","D"],["S","S"]]}),
-        field("الاسم حسب الجواز", "passport_name", emp, {ltr:true, span:true}),
+        employeeNameFields("الاسم حسب الجواز", "passport_name", emp, {passport:true}),
         field("تاريخ الإصدار", "passport_issue_date", emp, {date:true}),
         field("تاريخ النفاذ", "passport_expiry_date", emp, {date:true}),
       ],
@@ -519,7 +537,7 @@ function documentSections(emp) {
       keys: ["residence_card_issuer", "residence_head_name", "residence_address", "residence_form_no", "residence_card_no", "residence_card_issue_date"],
       fields: [
         field("مكتب معلومات", "residence_card_issuer", emp),
-        field("اسم رب الأسرة", "residence_head_name", emp),
+        employeeNameFields("اسم رب الأسرة", "residence_head_name", emp),
         field("عنوان السكن الحالي", "residence_address", emp, {span:true}),
         field("رقم الاستمارة", "residence_form_no", emp, {ltr:true}),
         field("رقم بطاقة السكن", "residence_card_no", emp, {ltr:true}),
@@ -611,7 +629,8 @@ function rowSummaryFromInputs(row) {
     return vehicleSummary({ brand: value(".vehicle-brand"), type: value(".vehicle-type"), color: value(".vehicle-color"), plate: value(".vehicle-plate") });
   }
   const prefix = row.classList.contains("spouse-row") ? "sp" : "fm";
-  return personSummary({ name: value(`.${prefix}-name`), gender: value(`.${prefix}-gender`), birthdate: value(`.${prefix}-birthdate`) });
+  const nameGroup = row.querySelector('.name-fields[data-name-key="name"]');
+  return personSummary({ name: nameGroup ? readNameGroup(nameGroup).text : "", gender: value(`.${prefix}-gender`), birthdate: value(`.${prefix}-birthdate`) });
 }
 
 function rowHead({ title, summary, extra = "", removeClass }) {
@@ -925,8 +944,8 @@ function tabContent(tab, emp) {
     case "basic": {
       const isNew = !emp?.id;
       const personal = `<div class="emp-grid">
-        ${field("الاسم الرباعي واللقب *", "full_name", emp, {span:true})}
-        ${field("اسم الأم الرباعي واللقب", "mother_name", emp, {span:true})}
+        ${employeeNameFields("اسم الموظف", "full_name", emp, {required:true})}
+        ${employeeNameFields("اسم الأم", "mother_name", emp)}
         ${field("الجنس", "gender", emp, {type:"select", options:[["","—"],["ذكر","ذكر"],["أنثى","أنثى"]]})}
         ${field("الحالة الاجتماعية", "marital_status", emp, {type:"select", options:[["","—"],["أعزب","أعزب"],["متزوج","متزوج"],["مطلق","مطلق"],["أرمل","أرمل"]]})}
         ${field("تاريخ ولادة الموظف", "birthdate", emp, {date:true})}
@@ -1180,6 +1199,7 @@ function renderPanel(emp) {
   updateTabCounts();
   panel.addEventListener("input", markPanelDirty);
   panel.addEventListener("change", markPanelDirty);
+  bindNameFields(panel);
 
   panel.querySelector("#panel-close").addEventListener("click",  () => closePanel());
   panel.querySelector("#panel-cancel").addEventListener("click", () => closePanel());
@@ -1242,6 +1262,7 @@ function renderPanel(emp) {
       passport_no:           g("passport_no"),
       passport_type:         g("passport_type"),
       passport_name:         g("passport_name"),
+      name_parts:            g("name_parts") || {},
       passport_issue_date:   g("passport_issue_date"),
       passport_expiry_date:  g("passport_expiry_date"),
       airport_badge_no:      g("airport_badge_no"),
@@ -1658,14 +1679,8 @@ function spouseRowHtml(spouse = {}, index = Date.now(), config = { itemLabel: "�
       <p style="font-size:10px;color:#6b7280;margin-bottom:3px">رقم البطاقة الموحدة</p>
       <input class="input-field sp-civil" dir="ltr" value="${escHtml(spouse.civil_id??"")}"/>
     </div>
-    <div style="grid-column:span 2">
-      <p style="font-size:10px;color:#6b7280;margin-bottom:3px">الاسم الرباعي</p>
-      <input class="input-field sp-name" value="${escHtml(spouse.name??"")}"/>
-    </div>
-    <div style="grid-column:span 2">
-      <p style="font-size:10px;color:#6b7280;margin-bottom:3px">اسم الأم الثلاثي</p>
-      <input class="input-field sp-mother" value="${escHtml(spouse.mother_name??"")}"/>
-    </div>
+    ${recordNameFields("الاسم", "name", spouse)}
+    ${recordNameFields("اسم الأم", "mother_name", spouse)}
     <div>
       <p style="font-size:10px;color:#6b7280;margin-bottom:3px">الجنس</p>
       <select class="input-field sp-gender">
@@ -1822,10 +1837,7 @@ function familyRowHtml(m = {}, i = Date.now()) {
       <p style="font-size:10px;color:#6b7280;margin-bottom:3px">رقم البطاقة الموحدة</p>
       <input class="input-field fm-civil" dir="ltr" value="${escHtml(m.civil_id??"")}"/>
     </div>
-    <div style="grid-column:span 2">
-      <p style="font-size:10px;color:#6b7280;margin-bottom:3px">الاسم الرباعي</p>
-      <input class="input-field fm-name" value="${escHtml(m.name??"")}"/>
-    </div>
+    ${recordNameFields("الاسم", "name", m)}
     <div>
       <p style="font-size:10px;color:#6b7280;margin-bottom:3px">الجنس</p>
       <select class="input-field fm-gender">

@@ -148,12 +148,14 @@ pub struct Employee {
     pub family_members: Option<String>,
     pub attachment_paths: Option<String>,
     pub notes: Option<String>,
+    /// Name parts per field (see names.rs).
+    pub name_parts: Option<serde_json::Value>,
     pub is_active: i64,
     pub created_at: Option<String>,
     pub updated_at: Option<String>,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct EmployeeData {
     pub employee_number: Option<String>,
     pub full_name: String,
@@ -228,6 +230,9 @@ pub struct EmployeeData {
     pub family_members: Option<String>,
     pub notes: Option<String>,
     pub is_active: Option<i64>,
+    /// JSON object of name parts sent by the form; the combined names are rebuilt from it.
+    #[serde(default)]
+    pub name_parts: Option<serde_json::Value>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -785,7 +790,7 @@ const EMP_COLS: &str = "id,employee_number,photo_path,full_name,mother_name,fath
   airport_badge_issue_date,airport_badge_front_path,airport_badge_back_path,
   ministry_badge_issue_date,ministry_badge_front_path,ministry_badge_back_path,
   vehicle_color,vehicle_manufacture_year,vehicle_type,vehicle_annual_issue_date,vehicle_annual_expiry_date,vehicles,spouses,
-  appointment_date,father_birthdate,mother_birthdate";
+  appointment_date,father_birthdate,mother_birthdate,name_parts";
 
 fn map_emp(r: &rusqlite::Row) -> rusqlite::Result<Employee> {
     Ok(Employee {
@@ -838,6 +843,7 @@ fn map_emp(r: &rusqlite::Row) -> rusqlite::Result<Employee> {
         appointment_date:r.get(85)?,
         father_birthdate:r.get(86)?,
         mother_birthdate:r.get(87)?,
+        name_parts:r.get::<_, Option<String>>(88)?.and_then(|value| serde_json::from_str(&value).ok()),
         residence_card_front_full_path:None,
         residence_card_back_full_path:None,
         airport_badge_front_full_path:None,
@@ -880,7 +886,7 @@ where
 
 fn load_employee_spouses(conn: &Connection, employee_id: i64) -> AppResult<Vec<serde_json::Value>> {
     repeating_array(conn,
-        "SELECT civil_id,name,mother_name,gender,birthplace,birthdate,issue_date,expiry_date,issuer,blood_type,marriage_date,national_card_front_path,national_card_back_path
+        "SELECT civil_id,name,mother_name,gender,birthplace,birthdate,issue_date,expiry_date,issuer,blood_type,marriage_date,national_card_front_path,national_card_back_path,name_parts
          FROM employee_spouses WHERE employee_id=?1 ORDER BY sort_order,id",
         employee_id,
         |row| {
@@ -898,6 +904,7 @@ fn load_employee_spouses(conn: &Connection, employee_id: i64) -> AppResult<Vec<s
                 "issuer": optional_json_value(row_text(row, 8)?),
                 "blood_type": optional_json_value(row_text(row, 9)?),
                 "marriage_date": optional_json_value(row_text(row, 10)?),
+                "name_parts": serde_json::Value::Object(crate::names::parts_object(row_text(row, 13)?.as_deref())),
                 "national_card_front_path": optional_json_value(front.clone()),
                 "national_card_back_path": optional_json_value(back.clone()),
                 "national_card_front_full_path": optional_json_value(attachment_full_path(conn, &front)),
@@ -908,7 +915,7 @@ fn load_employee_spouses(conn: &Connection, employee_id: i64) -> AppResult<Vec<s
 
 fn load_employee_family_members(conn: &Connection, employee_id: i64) -> AppResult<Vec<serde_json::Value>> {
     repeating_array(conn,
-        "SELECT civil_id,name,gender,birthplace,birthdate,issue_date,expiry_date,issuer,blood_type,national_card_front_path,national_card_back_path
+        "SELECT civil_id,name,gender,birthplace,birthdate,issue_date,expiry_date,issuer,blood_type,national_card_front_path,national_card_back_path,name_parts
          FROM employee_family_members WHERE employee_id=?1 ORDER BY sort_order,id",
         employee_id,
         |row| {
@@ -924,6 +931,7 @@ fn load_employee_family_members(conn: &Connection, employee_id: i64) -> AppResul
                 "expiry_date": optional_json_value(row_text(row, 6)?),
                 "issuer": optional_json_value(row_text(row, 7)?),
                 "blood_type": optional_json_value(row_text(row, 8)?),
+                "name_parts": serde_json::Value::Object(crate::names::parts_object(row_text(row, 11)?.as_deref())),
                 "national_card_front_path": optional_json_value(front.clone()),
                 "national_card_back_path": optional_json_value(back.clone()),
                 "national_card_front_full_path": optional_json_value(attachment_full_path(conn, &front)),
@@ -1059,39 +1067,76 @@ fn value_string(value: &serde_json::Value, key: &str) -> Option<String> {
         .map(str::to_owned)
 }
 
+/// Stored name parts of the spouse / family rows of one employee, by position.
+fn stored_row_parts(conn: &Connection, table: &str, employee_id: i64) -> AppResult<Vec<serde_json::Map<String, serde_json::Value>>> {
+    let mut stmt = conn.prepare(&format!("SELECT name_parts FROM {table} WHERE employee_id=?1 ORDER BY sort_order,id"))?;
+    let rows = stmt.query_map(params![employee_id], |r| r.get::<_, Option<String>>(0))?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    Ok(rows.iter().map(|value| crate::names::parts_object(value.as_deref())).collect())
+}
+
+/// Resolves the split names of one spouse / family JSON record. Returns the combined
+/// names (in `fields` order) and the `name_parts` JSON to store.
+fn resolve_row_names(record: &serde_json::Value, stored: Option<&serde_json::Map<String, serde_json::Value>>, fields: &[&str]) -> (Vec<Option<String>>, Option<String>) {
+    let sent = crate::names::parts_from_value(record.get("name_parts"));
+    let mut parts = serde_json::Map::new();
+    let mut names = Vec::new();
+    for field in fields {
+        let (text, value) = crate::names::resolve_arabic(sent.get(*field), stored.and_then(|s| s.get(*field)), value_string(record, field).as_deref());
+        if let Some(value) = value { parts.insert(field.to_string(), value); }
+        names.push(text);
+    }
+    (names, (!parts.is_empty()).then(|| serde_json::Value::Object(parts).to_string()))
+}
+
 fn replace_employee_spouses(conn: &Connection, employee_id: i64, spouses_json: &str) -> AppResult<()> {
+    let stored = stored_row_parts(conn, "employee_spouses", employee_id)?;
     conn.execute("DELETE FROM employee_spouses WHERE employee_id=?1", params![employee_id])?;
     let spouses: Vec<serde_json::Value> = serde_json::from_str(spouses_json).unwrap_or_default();
     for (index, spouse) in spouses.iter().enumerate() {
+        let (names, name_parts) = resolve_row_names(spouse, stored.get(index), &crate::names::SPOUSE_ARABIC);
         conn.execute(
-            "INSERT INTO employee_spouses(employee_id,sort_order,civil_id,name,mother_name,gender,birthplace,birthdate,issue_date,expiry_date,issuer,blood_type,marriage_date,national_card_front_path,national_card_back_path)
-             VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15)",
+            "INSERT INTO employee_spouses(employee_id,sort_order,civil_id,name,mother_name,gender,birthplace,birthdate,issue_date,expiry_date,issuer,blood_type,marriage_date,national_card_front_path,national_card_back_path,name_parts)
+             VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16)",
             params![
                 employee_id, index as i64,
-                value_string(spouse, "civil_id"), value_string(spouse, "name"), value_string(spouse, "mother_name"),
+                value_string(spouse, "civil_id"), names[0], names[1],
                 value_string(spouse, "gender"), value_string(spouse, "birthplace"), value_string(spouse, "birthdate"),
                 value_string(spouse, "issue_date"), value_string(spouse, "expiry_date"), value_string(spouse, "issuer"),
                 value_string(spouse, "blood_type"), value_string(spouse, "marriage_date"),
                 value_string(spouse, "national_card_front_path"), value_string(spouse, "national_card_back_path"),
+                name_parts,
             ],
+        )?;
+    }
+    // The legacy single-spouse columns mirror the first spouse (reports read them).
+    if !spouses.is_empty() {
+        conn.execute(
+            "UPDATE employees SET spouse_name=(SELECT name FROM employee_spouses WHERE employee_id=?1 AND sort_order=0),
+                                  spouse_mother_name=(SELECT mother_name FROM employee_spouses WHERE employee_id=?1 AND sort_order=0)
+             WHERE id=?1",
+            params![employee_id],
         )?;
     }
     Ok(())
 }
 
 fn replace_employee_family_members(conn: &Connection, employee_id: i64, family_json: &str) -> AppResult<()> {
+    let stored = stored_row_parts(conn, "employee_family_members", employee_id)?;
     conn.execute("DELETE FROM employee_family_members WHERE employee_id=?1", params![employee_id])?;
     let members: Vec<serde_json::Value> = serde_json::from_str(family_json).unwrap_or_default();
     for (index, member) in members.iter().enumerate() {
+        let (names, name_parts) = resolve_row_names(member, stored.get(index), &crate::names::FAMILY_ARABIC);
         conn.execute(
-            "INSERT INTO employee_family_members(employee_id,sort_order,civil_id,name,gender,birthplace,birthdate,issue_date,expiry_date,issuer,blood_type,national_card_front_path,national_card_back_path)
-             VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13)",
+            "INSERT INTO employee_family_members(employee_id,sort_order,civil_id,name,gender,birthplace,birthdate,issue_date,expiry_date,issuer,blood_type,national_card_front_path,national_card_back_path,name_parts)
+             VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14)",
             params![
                 employee_id, index as i64,
-                value_string(member, "civil_id"), value_string(member, "name"), value_string(member, "gender"),
+                value_string(member, "civil_id"), names[0], value_string(member, "gender"),
                 value_string(member, "birthplace"), value_string(member, "birthdate"), value_string(member, "issue_date"),
                 value_string(member, "expiry_date"), value_string(member, "issuer"), value_string(member, "blood_type"),
                 value_string(member, "national_card_front_path"), value_string(member, "national_card_back_path"),
+                name_parts,
             ],
         )?;
     }
@@ -1139,8 +1184,35 @@ pub fn get_employee(conn: &Connection, id: i64) -> AppResult<Employee> {
     Ok(employee)
 }
 
+/// Rebuilds the employee's combined names from their parts (see names.rs) and returns the
+/// data to save plus the `name_parts` JSON to store beside it.
+fn resolve_employee_names(conn: &Connection, id: Option<i64>, d: &EmployeeData) -> AppResult<(EmployeeData, String)> {
+    let stored = match id {
+        Some(id) => conn.query_row("SELECT name_parts FROM employees WHERE id=?1", params![id], |r| r.get::<_, Option<String>>(0))
+            .map_err(|_| AppError::NotFound)?,
+        None => None,
+    };
+    let stored = crate::names::parts_object(stored.as_deref());
+    let sent = crate::names::parts_from_value(d.name_parts.as_ref());
+    let mut data = d.clone();
+    let mut parts = serde_json::Map::new();
+    let mut apply = |field: &str, text: Option<String>, passport: bool| -> Option<String> {
+        let resolve = if passport { crate::names::resolve_passport } else { crate::names::resolve_arabic };
+        let (combined, value) = resolve(sent.get(field), stored.get(field), text.as_deref());
+        if let Some(value) = value { parts.insert(field.to_string(), value); }
+        combined
+    };
+    data.full_name = apply("full_name", Some(d.full_name.clone()), false).unwrap_or_default();
+    data.mother_name = apply("mother_name", d.mother_name.clone(), false);
+    data.residence_head_name = apply("residence_head_name", d.residence_head_name.clone(), false);
+    data.passport_name = apply("passport_name", d.passport_name.clone(), true);
+    Ok((data, serde_json::Value::Object(parts).to_string()))
+}
+
 pub fn create_employee(conn: &Connection, d: &EmployeeData, username: &str) -> AppResult<Employee> {
     assert_permission(conn, username, "employees.create")?;
+    let (d, name_parts) = resolve_employee_names(conn, None, d)?;
+    let d = &d;
     validate_employee_data(d)?;
     conn.execute("INSERT INTO employees(employee_number,full_name,mother_name,father_birthplace,mother_birthplace,
       gender,birthdate,birthplace,marital_status,blood_type,workplace,job_title,job_grade,
@@ -1181,6 +1253,7 @@ pub fn create_employee(conn: &Connection, d: &EmployeeData, username: &str) -> A
       d.vehicle_annual_issue_date,d.vehicle_annual_expiry_date,d.vehicles.as_deref().unwrap_or("[]"),
       d.spouses.as_deref().unwrap_or("[]"),d.appointment_date,d.father_birthdate,d.mother_birthdate])?;
     let id = conn.last_insert_rowid();
+    conn.execute("UPDATE employees SET name_parts=?1 WHERE id=?2", params![name_parts, id])?;
     replace_employee_repeating_data(conn, id, d)?;
     log_activity(conn, username, "CREATE_EMPLOYEE", Some("employee"), Some(id), Some(d.full_name.trim()), None);
     get_employee(conn, id)
@@ -1188,6 +1261,8 @@ pub fn create_employee(conn: &Connection, d: &EmployeeData, username: &str) -> A
 
 pub fn update_employee(conn: &Connection, id: i64, d: &EmployeeData, username: &str) -> AppResult<Employee> {
     assert_permission(conn, username, "employees.edit")?;
+    let (d, name_parts) = resolve_employee_names(conn, Some(id), d)?;
+    let d = &d;
     validate_employee_data(d)?;
     conn.execute("UPDATE employees SET employee_number=?1,full_name=?2,mother_name=?3,father_birthplace=?4,
       mother_birthplace=?5,gender=?6,birthdate=?7,birthplace=?8,marital_status=?9,blood_type=?10,
@@ -1225,9 +1300,24 @@ pub fn update_employee(conn: &Connection, id: i64, d: &EmployeeData, username: &
       d.airport_badge_issue_date,d.ministry_badge_issue_date,d.vehicle_color,d.vehicle_manufacture_year,d.vehicle_type,
       d.vehicle_annual_issue_date,d.vehicle_annual_expiry_date,d.vehicles.as_deref().unwrap_or("[]"),
       d.spouses.as_deref().unwrap_or("[]"),d.appointment_date,d.father_birthdate,d.mother_birthdate,id])?;
+    conn.execute("UPDATE employees SET name_parts=?1 WHERE id=?2", params![name_parts, id])?;
     replace_employee_repeating_data(conn, id, d)?;
     log_activity(conn, username, "UPDATE_EMPLOYEE", Some("employee"), Some(id), Some(d.full_name.trim()), None);
     get_employee(conn, id)
+}
+
+/// Names whose automatic split is unsure, for the "مراجعة الأسماء" screen.
+pub fn list_name_review(conn: &Connection, username: &str) -> AppResult<Vec<crate::names::ReviewItem>> {
+    assert_permission(conn, username, "employees.edit")?;
+    Ok(crate::names::list_review(conn)?)
+}
+
+/// Saves the corrected parts of one reviewed name and clears its review flag.
+pub fn save_name_review(conn: &Connection, employee_id: i64, owner: &str, index: i64, field: &str, parts: &serde_json::Value, username: &str) -> AppResult<String> {
+    assert_permission(conn, username, "employees.edit")?;
+    let combined = crate::names::save_review(conn, employee_id, owner, index, field, parts).map_err(AppError::Validation)?;
+    log_activity(conn, username, "REVIEW_NAME", Some("employee"), Some(employee_id), Some(&format!("{owner}/{field}: {combined}")), None);
+    Ok(combined)
 }
 
 pub fn delete_employee(conn: &Connection, id: i64, username: &str) -> AppResult<()> {
