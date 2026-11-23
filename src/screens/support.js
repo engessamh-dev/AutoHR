@@ -54,7 +54,10 @@ export async function renderSupport(container, user, ctx) {
           </div>
           <button type="button" id="btn-run-check" class="btn-primary">بدء الفحص</button>
         </div>
-        <div id="check-summary" class="support-summary hidden" role="status"></div>
+        <div class="support-summary-row">
+          <div id="check-summary" class="support-summary hidden" role="status"></div>
+          <button type="button" id="btn-toggle-results" class="btn-secondary text-sm hidden" aria-expanded="true" aria-controls="check-results">إخفاء التفاصيل</button>
+        </div>
         <div id="check-results" class="support-check-list"></div>
         <div id="check-actions" class="support-actions hidden">
           <button type="button" id="btn-save-report" class="btn-secondary">حفظ ملف التشخيص</button>
@@ -105,6 +108,13 @@ export async function renderSupport(container, user, ctx) {
   const summary = container.querySelector("#check-summary");
   const results = container.querySelector("#check-results");
   const actions = container.querySelector("#check-actions");
+  const toggle = container.querySelector("#btn-toggle-results");
+  const setResultsOpen = open => {
+    results.classList.toggle("hidden", !open);
+    toggle.setAttribute("aria-expanded", String(open));
+    toggle.textContent = open ? "إخفاء التفاصيل" : "عرض التفاصيل";
+  };
+  toggle.addEventListener("click", () => setResultsOpen(results.classList.contains("hidden")));
 
   runButton.addEventListener("click", async () => {
     runButton.disabled = true;
@@ -116,6 +126,8 @@ export async function renderSupport(container, user, ctx) {
       summary.className = `support-summary support-summary-${report.overall}`;
       summary.innerHTML = `${statusBadge(report.overall)} <span>${escHtml(OVERALL_TEXT[report.overall] ?? "")}</span>`;
       results.innerHTML = renderItems(report);
+      setResultsOpen(true);
+      toggle.classList.remove("hidden");
       actions.classList.remove("hidden");
     } catch (err) {
       showToast(err?.message ?? String(err), "error");

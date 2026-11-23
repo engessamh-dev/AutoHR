@@ -499,7 +499,11 @@
 .support-summary-warn{border-color:var(--ui-warn-line);background:var(--ui-warn-bg)}
 .support-summary-fail{border-color:var(--ui-danger-line);background:var(--ui-danger-bg)}
 .support-check-list{display:grid;gap:8px;margin-top:12px}
-.support-check-list:empty{display:none}
+.support-check-list:empty,.support-check-list.hidden{display:none}
+.support-summary-row{display:flex;align-items:center;gap:10px;margin-top:16px}
+.support-summary-row .support-summary{flex:1;margin-top:0}
+.support-summary-row #btn-toggle-results{flex:none}
+.support-summary-row #btn-toggle-results.hidden{display:none}
 .support-check-item{border:1px solid var(--ui-line);border-radius:8px;padding:10px 12px;background:color-mix(in srgb, var(--ui-accent) 6%, transparent)}
 .support-check-head{display:flex;align-items:center;justify-content:space-between;gap:12px;font-size:14px;color:var(--ui-text-strong)}
 .support-check-details{margin:6px 0 0;padding:0;list-style:none;font-size:12px;line-height:1.8;color:var(--ui-text-muted);word-break:break-word}

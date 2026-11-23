@@ -26,6 +26,12 @@ test("program check shows each result and saves the diagnostic file", async ({ p
   await expect(page.locator(".support-check-item")).toHaveCount(6);
   await expect(page.locator("#check-summary")).toHaveClass(/support-summary-warn/);
   await expect(page.locator(".support-check-item").nth(3).locator(".badge")).toHaveText("تنبيه");
+  // The results fold away after reading, leaving the summary and the save button.
+  await page.getByRole("button", { name: "إخفاء التفاصيل" }).click();
+  await expect(page.locator(".support-check-item").first()).toBeHidden();
+  await expect(page.locator("#check-summary")).toBeVisible();
+  await page.getByRole("button", { name: "عرض التفاصيل" }).click();
+  await expect(page.locator(".support-check-item").first()).toBeVisible();
   await page.getByRole("button", { name: "حفظ ملف التشخيص" }).click();
   await expect.poll(() => page.evaluate(() => window.calls.find(c => c.command === "cmd_save_health_report")?.args.destinationPath)).toBe("C:\\Synthetic\\diag.txt");
 });
