@@ -410,6 +410,7 @@ fn migrate(conn: &Connection) -> SqlResult<()> {
         ("airport_badge_no",         "TEXT"),
         ("airport_badge_issue_date", "TEXT"),
         ("airport_badge_expiry",     "TEXT"),
+        ("airport_badge_zones",      "TEXT"),
         ("airport_badge_front_path", "TEXT"),
         ("airport_badge_back_path",  "TEXT"),
         ("ministry_badge_no",        "TEXT"),

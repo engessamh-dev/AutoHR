@@ -140,3 +140,84 @@ test("residence card: the printed serial fills the card number", async ({ page }
   await page.getByRole("dialog", { name: /قراءة البيانات/ }).getByRole("button", { name: "اعتماد المحدَّد" }).click();
   await expect(page.locator("#f-residence_card_no")).toHaveValue("1000001");
 });
+
+test("ration card: number from the QR code and the head of household", async ({ page }) => {
+  await page.evaluate(() => {
+    window.employeePatch = { ration_card_attachment_paths: JSON.stringify(["Files/Employees/1/Documents/Ration/card.jpg"]), ration_card_attachment_full_paths: ["synthetic"] };
+    window.readResult = {
+      document: "ration", warnings: [],
+      fields: [
+        { key: "ration_no", value: "0100000001", confidence: 0.99, source: "qr" },
+        { key: "head_name", value: "أحمد علي حسين كاظم", confidence: 0.9, source: "text" },
+      ],
+    };
+  });
+  await openDocuments(page);
+  const tile = page.locator(".emp-tile.has-file", { has: page.locator('[data-target="employee:ration_card"]') });
+  await tile.locator(".emp-tile-more").click();
+  await tile.getByRole("menuitem", { name: "قراءة البيانات" }).click();
+  const dialog = page.getByRole("dialog", { name: /قراءة البيانات/ });
+  await expect(dialog.locator(".id-reader-badge.is-ok")).toHaveCount(1);
+  await dialog.getByRole("button", { name: "اعتماد المحدَّد" }).click();
+  await expect(page.locator("#f-ration_card_no")).toHaveValue("0100000001");
+  await expect(page.locator("#f-ration_center_name")).toHaveValue("أحمد علي حسين كاظم");
+});
+
+test("ministry badge: both sides are read and agreeing values are verified", async ({ page }) => {
+  await page.evaluate(() => {
+    window.employeePatch = {
+      ministry_badge_front_path: "Files/Employees/1/Documents/Ministry/front.jpg", ministry_badge_front_full_path: "synthetic",
+      ministry_badge_back_path: "Files/Employees/1/Documents/Ministry/back.jpg", ministry_badge_back_full_path: "synthetic",
+    };
+    const english = { document: "ministry_badge", warnings: [], fields: [
+      { key: "doc_number", value: "100000001", confidence: 0.95, source: "text" },
+      { key: "expiry_date", value: "2027-02-01", confidence: 0.95, source: "text" },
+    ] };
+    const arabic = { document: "ministry_badge", warnings: [], fields: [
+      { key: "doc_number", value: "100000001", confidence: 0.93, source: "text" },
+      { key: "expiry_date", value: "2027-02-02", confidence: 0.9, source: "text" },
+      { key: "job_title", value: "مهندس أقدم", confidence: 0.95, source: "text" },
+    ] };
+    window.readResults = { "Files/Employees/1/Documents/Ministry/front.jpg": english, "Files/Employees/1/Documents/Ministry/back.jpg": arabic };
+  });
+  await openDocuments(page);
+  const tile = page.locator(".emp-tile.has-file", { has: page.locator('[data-target="employee:ministry_badge"]') }).first();
+  await tile.locator(".emp-tile-more").click();
+  await tile.getByRole("menuitem", { name: "قراءة البيانات" }).click();
+  const dialog = page.getByRole("dialog", { name: /قراءة البيانات/ });
+  await expect(dialog.locator("tr", { hasText: "رقم الهوية" }).locator(".id-reader-badge.is-ok")).toHaveCount(1);
+  await expect(dialog.locator(".id-reader-warning", { hasText: "تاريخ النفاذ" })).toBeVisible();
+  await dialog.getByRole("button", { name: "اعتماد المحدَّد" }).click();
+  await expect(page.locator("#f-ministry_badge_no")).toHaveValue("100000001");
+  expect((await page.evaluate(() => window.calls.filter(c => c.command === "cmd_read_document_fields").map(c => c.args.relativePath))).sort())
+    .toEqual(["Files/Employees/1/Documents/Ministry/back.jpg", "Files/Employees/1/Documents/Ministry/front.jpg"]);
+});
+
+test("airport badge: access zones are read into chips, edited, and saved", async ({ page }) => {
+  await page.evaluate(() => {
+    window.employeePatch = { airport_badge_front_path: "Files/Employees/1/Documents/Airport/badge.jpg", airport_badge_front_full_path: "synthetic", airport_badge_zones: null };
+    window.readResult = { document: "airport_badge", warnings: [], fields: [
+      { key: "expiry_date", value: "2028-02-01", confidence: 0.95, source: "text" },
+      { key: "zones", value: "S1,T,VIP,C", confidence: 0.95, source: "text" },
+    ] };
+  });
+  await openDocuments(page);
+  const tile = page.locator(".emp-tile.has-file", { has: page.locator('[data-target="employee:airport_badge"]') });
+  await tile.locator(".emp-tile-more").click();
+  await tile.getByRole("menuitem", { name: "قراءة البيانات" }).click();
+  const dialog = page.getByRole("dialog", { name: /قراءة البيانات/ });
+  await expect(dialog.locator("tr", { hasText: "صلاحيات الباج" }).locator(".id-reader-value")).toHaveValue("S1,T,VIP,C");
+  await dialog.getByRole("button", { name: "اعتماد المحدَّد" }).click();
+  const chips = page.locator(".emp-zone-chip");
+  await expect(chips).toHaveText(["S1×", "T×", "VIP×", "C×"]);
+  await page.getByRole("button", { name: "حذف T" }).click();
+  await page.locator(".emp-zone-input").fill("s2");
+  await page.locator(".emp-zone-input").press("Enter");
+  await expect(chips).toHaveText(["S1×", "VIP×", "C×", "S2×"]);
+  await expect(page.locator("#f-airport_badge_zones")).toHaveValue("S1,VIP,C,S2");
+  await page.locator("#panel-save").click();
+  await page.getByRole("button", { name: "تأكيد", exact: true }).click();
+  await expect.poll(() => page.evaluate(() => window.calls.some(c => c.command === "cmd_update_employee"))).toBe(true);
+  const data = await page.evaluate(() => window.calls.find(c => c.command === "cmd_update_employee").args.data);
+  expect(data.airport_badge_zones).toBe("S1,VIP,C,S2");
+});

@@ -382,6 +382,42 @@ function field(label, id, emp, opts = {}) {
            dir="${opts.ltr ? 'ltr' : 'rtl'}" value="${opts.date ? (emp?.[id] ?? '') : val}" /></div>`;
 }
 
+/** Comma-separated codes ("S1,T,VIP") → unique upper-case codes. */
+function zoneCodes(value) {
+  return [...new Set(String(value ?? "").split(/[\s,،;|]+/).map(z => z.trim().toUpperCase()).filter(Boolean))];
+}
+
+function zoneChipsHtml(codes) {
+  return codes.map(code => `<span class="emp-zone-chip" dir="ltr">${escHtml(code)}<button type="button" class="emp-zone-remove" data-zone="${escHtml(code)}" aria-label="حذف ${escHtml(code)}" title="حذف">×</button></span>`).join("");
+}
+
+/** Several short codes shown as chips; the hidden input carries them as "S1,T,VIP". */
+function zonesField(label, id, emp) {
+  const codes = zoneCodes(emp?.[id]);
+  return `<div style="grid-column:span 2">
+    <p style="font-size:11px;color:var(--ui-text-faint);text-transform:uppercase;letter-spacing:.05em;margin-bottom:4px">${label}</p>
+    <div class="emp-zones input-field">
+      <input type="hidden" id="f-${id}" value="${escHtml(codes.join(","))}" />
+      <span class="emp-zone-list">${zoneChipsHtml(codes)}</span>
+      <input type="text" class="emp-zone-input" dir="ltr" maxlength="12" placeholder="أضف رمزاً" aria-label="${label}" />
+    </div></div>`;
+}
+
+function setZones(box, codes) {
+  const hidden = box.querySelector("input[type=hidden]");
+  hidden.value = codes.join(",");
+  box.querySelector(".emp-zone-list").innerHTML = zoneChipsHtml(codes);
+  markPanelDirty();
+}
+
+function addZonesFromInput(input) {
+  const box = input.closest(".emp-zones");
+  const added = zoneCodes(input.value);
+  input.value = "";
+  if (!box || !added.length) return;
+  setZones(box, zoneCodes([box.querySelector("input[type=hidden]").value, ...added].join(",")));
+}
+
 function fixedCompanyField(label, id, value) {
   return `<div>
     <p style="font-size:11px;color:var(--ui-text-faint);text-transform:uppercase;letter-spacing:.05em;margin-bottom:4px">${label}</p>
@@ -453,7 +489,7 @@ function passportTile(emp) {
 function rationCardTile(emp) {
   const path = firstJsonPath(emp?.ration_card_attachment_paths);
   return attachmentTile({
-    label: "نسخة البطاقة", path, fullPath: emp?.ration_card_attachment_full_paths?.[0], canManage: Boolean(emp?.id),
+    label: "نسخة البطاقة", path, fullPath: emp?.ration_card_attachment_full_paths?.[0], canManage: Boolean(emp?.id), read: "employee:ration_card",
     upload: { cls: "", attrs: `id="btn-upload-ration-card"` },
     remove: { cls: "btn-delete-ration-card", attrs: `data-path="${escHtml(path ?? "")}"` },
   });
@@ -701,6 +737,7 @@ function documentSections(emp) {
         field("رقم الهوية", "airport_badge_no", emp, {ltr:true, span:true}),
         field("تاريخ الإصدار", "airport_badge_issue_date", emp, {date:true}),
         field("تاريخ النفاذ", "airport_badge_expiry", emp, {date:true}),
+        zonesField("صلاحيات الباج", "airport_badge_zones", emp),
       ],
       tiles: sided("airport", "airport_badge"), attached: sidedCount("airport_badge"), expected: 2,
     },
@@ -1216,6 +1253,12 @@ function handlePanelUiClick(event) {
     const buttons = [...scope.querySelectorAll(".emp-view-attachment")];
     openAttachmentViewer(buttons.map(viewerItemFromButton), Math.max(0, buttons.indexOf(viewer)));
   }
+  const zoneRemove = target.closest(".emp-zone-remove");
+  if (zoneRemove) {
+    const box = zoneRemove.closest(".emp-zones");
+    setZones(box, zoneCodes(box.querySelector("input[type=hidden]").value).filter(z => z !== zoneRemove.dataset.zone));
+    return;
+  }
   const reader = target.closest(".emp-read-fields");
   if (reader) readFieldsInto(reader.dataset.target, reader.dataset.path, reader.dataset.url, reader.dataset.title);
   const thumb = target.closest(".emp-tile-thumb");
@@ -1337,7 +1380,16 @@ function renderPanel(emp) {
 
   if (!panel.dataset.sectionUiBound) {
     panel.addEventListener("click", handlePanelUiClick);
-    panel.addEventListener("keydown", event => { if (event.key === "Escape") closeEmployeeMenus(); });
+    panel.addEventListener("keydown", event => {
+      if (event.key === "Escape") closeEmployeeMenus();
+      if (event.target.matches?.(".emp-zone-input") && (event.key === "Enter" || event.key === ",")) {
+        event.preventDefault();
+        addZonesFromInput(event.target);
+      }
+    });
+    panel.addEventListener("focusout", event => {
+      if (event.target.matches?.(".emp-zone-input")) addZonesFromInput(event.target);
+    });
     panel.dataset.sectionUiBound = "1";
   }
   bindHeaderPhoto(emp);
@@ -1414,6 +1466,7 @@ function renderPanel(emp) {
       airport_badge_no:      g("airport_badge_no"),
       airport_badge_issue_date:g("airport_badge_issue_date"),
       airport_badge_expiry:  g("airport_badge_expiry"),
+      airport_badge_zones:   g("airport_badge_zones"),
       ministry_badge_no:     g("ministry_badge_no"),
       ministry_badge_issue_date:g("ministry_badge_issue_date"),
       ministry_badge_expiry: g("ministry_badge_expiry"),
@@ -1599,6 +1652,9 @@ function attachTabEvents(emp) {
         await api.uploadRationCardAttachment(emp.id, selected);
         showToast("تم رفع نسخة البطاقة التموينية");
         await refreshDocumentAttachments(emp.id);
+        const rationPaths = parseJsonList(_panelDraft?.ration_card_attachment_paths);
+        const rationIndex = rationPaths.length - 1;
+        await readUploadedFields("employee:ration_card", rationPaths[rationIndex], _panelDraft?.ration_card_attachment_full_paths?.[rationIndex], "البطاقة التموينية");
       } catch (err) { showToast(err?.message ?? String(err || "خطأ في الرفع"), "error"); }
     });
 
@@ -2160,6 +2216,11 @@ function ocrRows(result, target) {
     const field = read(key);
     if (field) rows.push({ id, label, value: field.value, confidence: field.confidence, source: field.source, current: current ?? "", ...opts });
   };
+  if (badge === "ration_card") {
+    add("field:ration_card_no", "رقم البطاقة التموينية", "ration_no", record?.ration_card_no, { ltr: true });
+    add("field:ration_center_name", "اسم رب الأسرة", "head_name", record?.ration_center_name);
+    return rows;
+  }
   if (badge === "residence_card") {
     // Old-style residence cards: only the printed serial is readable; the rest is handwritten.
     add("field:residence_card_no", "رقم بطاقة السكن (التسلسل)", "doc_number", record?.residence_card_no, { ltr: true });
@@ -2170,6 +2231,11 @@ function ocrRows(result, target) {
     add(`field:${badge}_no`, "رقم الهوية", "doc_number", record?.[`${badge}_no`], { ltr: true });
     add(`field:${badge}_issue_date`, "تاريخ الإصدار", "issue_date", record?.[`${badge}_issue_date`], { date: true });
     add(`field:${badge}_expiry`, "تاريخ النفاذ", "expiry_date", record?.[`${badge}_expiry`], { date: true });
+    if (badge === "airport_badge") add("field:airport_badge_zones", "صلاحيات الباج", "zones", record?.airport_badge_zones, { ltr: true });
+    // Suggestions for the employee record from the badge (unticked when they differ).
+    add("field:job_title", "العنوان الوظيفي", "job_title", record?.job_title);
+    const names = currentNameParts(record, "full_name");
+    OCR_NAME_PARTS.forEach(([part, label]) => add(`name:full_name:${part}`, label, part, names[part]));
     return rows;
   }
   const nameKey = kind === "employee" ? "full_name" : "name";
@@ -2243,11 +2309,22 @@ async function readUploadedFields(target, path, fullPath, title) {
   await readFieldsInto(target, path, fullPath ? convertFileSrc(fullPath) : "", title);
 }
 
+const OCR_FIELD_LABELS = { doc_number: "رقم الهوية", issue_date: "تاريخ الإصدار", expiry_date: "تاريخ النفاذ", job_title: "العنوان الوظيفي", zones: "صلاحيات الباج", first: "الاسم", father: "اسم الأب", grandfather: "اسم الجد" };
+
+/** The other side of a two-sided badge, when it is an image too. */
+function otherBadgeSide(target, path) {
+  const badge = ocrTarget(target).badge;
+  if (!["airport_badge", "ministry_badge"].includes(badge)) return null;
+  const sides = [_panelDraft?.[`${badge}_front_path`], _panelDraft?.[`${badge}_back_path`]];
+  const other = sides.find(p => p && p !== path);
+  return other && OCR_IMAGE_EXTENSIONS.includes(other.split(".").pop()?.toLowerCase()) ? other : null;
+}
+
 async function readFieldsInto(target, path, imageUrl, title) {
   const extension = String(path ?? "").split(".").pop()?.toLowerCase();
   if (!path || !OCR_IMAGE_EXTENSIONS.includes(extension)) return;
   const chosen = await readDocumentFields({
-    path, imageUrl, title: `قراءة البيانات: ${title ?? ""}`,
+    path, otherPath: otherBadgeSide(target, path), labels: OCR_FIELD_LABELS, imageUrl, title: `قراءة البيانات: ${title ?? ""}`,
     buildRows: result => ocrRows(result, target),
   });
   if (chosen && Object.keys(chosen).length) applyOcrValues(target, chosen);

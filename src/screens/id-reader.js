@@ -21,8 +21,11 @@ function rowHtml(row, index) {
   const conflict = row.current && row.current !== row.value;
   const checked = !row.current || row.current === row.value ? "checked" : "";
   const low = row.confidence < LOW_CONFIDENCE;
-  const badge = row.source === "mrz" && !low
-    ? `<span class="id-reader-badge is-ok" title="تطابق مع أرقام التحقق في الشريط السفلي">مُتحقَّق</span>`
+  const verified = row.source === "mrz" ? "تطابق مع أرقام التحقق في الشريط السفلي"
+    : row.source === "qr" ? "قُرئ من رمز QR على البطاقة"
+    : row.source === "both" ? "متطابق على وجهي البطاقة" : "";
+  const badge = verified && !low
+    ? `<span class="id-reader-badge is-ok" title="${verified}">مُتحقَّق</span>`
     : low ? `<span class="id-reader-badge is-warn" title="القراءة غير مؤكدة، راجعها مع الصورة">راجِع</span>` : "";
   return `<tr class="${low ? "is-low" : ""} ${conflict ? "is-conflict" : ""}">
     <td><input type="checkbox" class="id-reader-pick" data-index="${index}" ${checked} aria-label="اعتماد ${escHtml(row.label)}" /></td>
@@ -92,11 +95,39 @@ function reviewDialog({ title, imageUrl, rows, warnings }) {
  * buildRows(result) returns [{ id, label, current, value, confidence, source, ltr?, date? }].
  * Resolves to { id: value } for the confirmed rows, or null when cancelled or nothing was read.
  */
-export async function readDocumentFields({ path, imageUrl, title, buildRows }) {
+/**
+ * Combines the readings of two sides of one card. A value both sides agree on is verified; when
+ * they disagree the clearer reading is kept, marked unsure, and a warning names the field.
+ */
+export function mergeSides(results, labels = {}) {
+  const fields = new Map();
+  const warnings = results.flatMap(r => r.warnings ?? []);
+  for (const result of results) {
+    for (const field of result.fields ?? []) {
+      const seen = fields.get(field.key);
+      if (!seen) { fields.set(field.key, { ...field }); continue; }
+      if (seen.value === field.value) {
+        fields.set(field.key, { ...seen, confidence: Math.max(seen.confidence, field.confidence, 0.99), source: "both" });
+      } else {
+        const better = field.confidence > seen.confidence ? field : seen;
+        fields.set(field.key, { ...better, confidence: Math.min(better.confidence, 0.6) });
+        warnings.push(`الوجهان مختلفان في «${labels[field.key] ?? field.key}»: راجعه مع الصورة.`);
+      }
+    }
+  }
+  return { document: results[0]?.document ?? "unknown", fields: [...fields.values()], warnings: [...new Set(warnings)] };
+}
+
+export async function readDocumentFields({ path, otherPath = null, imageUrl, title, buildRows, labels = {} }) {
   const done = busyOverlay("جارِ قراءة البيانات من الصورة…");
   let result;
   try {
     result = await api.readDocumentFields(path);
+    if (otherPath) {
+      // The other side of the same card: read too, to check the values both sides carry.
+      const other = await api.readDocumentFields(otherPath).catch(() => null);
+      if (other) result = mergeSides([result, other], labels);
+    }
   } catch (err) {
     showToast(err?.message ?? String(err || "تعذّرت قراءة الصورة"), "error");
     return null;

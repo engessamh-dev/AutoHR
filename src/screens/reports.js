@@ -96,6 +96,7 @@ const fieldGroups = [
       ["airport_badge_no", "رقم باج المطار"],
       ["airport_badge_issue_date", "تاريخ إصدار باج المطار", "date"],
       ["airport_badge_expiry", "تاريخ نفاذ باج المطار", "date"],
+      ["airport_badge_zones", "صلاحيات باج المطار"],
       ["has_airport_front", "مرفق وجه باج المطار"],
       ["has_airport_back", "مرفق خلف باج المطار"],
       ["ministry_badge_no", "رقم هوية وزارة النقل"],

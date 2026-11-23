@@ -10,9 +10,9 @@ use serde::Serialize;
 pub struct Field {
     pub key: String,
     pub value: String,
-    /// 0..1. MRZ values that pass their check digit get 0.99.
+    /// 0..1. MRZ values that pass their check digit, and QR values, get 0.99.
     pub confidence: f32,
-    /// "mrz" or "text".
+    /// "mrz", "qr" or "text".
     pub source: &'static str,
 }
 
@@ -33,8 +33,8 @@ impl ReadResult {
             return;
         }
         match self.fields.iter_mut().find(|f| f.key == key) {
-            // An MRZ value that passed its check digit wins over printed text.
-            Some(existing) if existing.source == "mrz" && existing.confidence >= confidence => {}
+            // An MRZ or QR value that passed its check wins over printed text.
+            Some(existing) if existing.source != "text" && existing.confidence >= confidence => {}
             Some(existing) => *existing = Field { key: key.into(), value, confidence, source },
             None => self.fields.push(Field { key: key.into(), value, confidence, source }),
         }
@@ -789,8 +789,280 @@ fn parse_generic(lines: &[Line], result: &mut ReadResult) {
 
 // ---------------------------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------------------------
+// Electronic ration card
+
+fn is_ration_card(lines: &[Line]) -> bool {
+    lines.iter().any(|l| has_label(&l.text, "البطاقة التموينية") || has_label(&l.text, "رقم البطاقة التموينية"))
+}
+
+/// Card number (printed under its label, and in the QR code) and the head of household's name.
+fn parse_ration(lines: &[Line], codes: &[String], result: &mut ReadResult) {
+    let printed = lines
+        .iter()
+        .position(|l| has_label(&l.text, "رقم البطاقة"))
+        .and_then(|i| lines[i + 1..].iter().take(3).find_map(|l| {
+            let digits = ascii_digits(&l.text).replace(' ', "");
+            (digits.len() >= 6 && digits.chars().all(|c| c.is_ascii_digit())).then(|| (digits, l.confidence))
+        }));
+    let qr = codes.iter().find(|c| c.len() >= 6 && c.chars().all(|ch| ch.is_ascii_digit()));
+    match (printed, qr) {
+        (Some((p, _)), Some(q)) if &p == q => result.set("ration_no", p, 0.99, "qr"),
+        (_, Some(q)) => result.set("ration_no", q.clone(), 0.97, "qr"),
+        (Some((p, c)), None) => result.set("ration_no", p, c, "text"),
+        (None, None) => {}
+    }
+    if let Some(i) = lines.iter().position(|l| has_label(&l.text, "اسم رب الاسره")) {
+        // Below the label: the Kurdish label line, then the printed name.
+        let name = lines[i + 1..].iter().take(4).find(|l| {
+            let words = tokens(&l.text);
+            !words.is_empty() && words.iter().all(|w| w.chars().all(is_arabic_letter)) && !words.iter().any(|w| is_kurdish_word(w) || matches!(normalize(w).as_str(), "سه" | "روكي" | "مالبات" | "سهروكي" | "ناوي"))
+        });
+        if let Some(line) = name {
+            result.set("head_name", merge_single_letters(&arabic_only(&line.text)).join(" "), line.confidence, "text");
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------------------------
+// Ministry of Transport ID badge: an English side and an Arabic side with the same fields.
+
+fn is_ministry_badge(lines: &[Line]) -> bool {
+    lines.iter().any(|l| {
+        let lower = l.text.to_lowercase();
+        lower.contains("ministry of transport") || has_label(&l.text, "وزارة النقل")
+    })
+}
+
+/// English side: "Label : value" lines (the colon is often read as "8").
+fn english_badge_field(text: &str) -> Option<(&'static str, String)> {
+    let letters: String = text.chars().take(14).filter(|c| c.is_ascii_alphanumeric()).collect::<String>().to_lowercase();
+    let key = if letters.starts_with("name") {
+        "badge_name_latin"
+    } else if letters.starts_with("off") || letters.starts_with("ofc") || letters.starts_with("ofi") {
+        "department_latin"
+    } else if letters.starts_with("job") {
+        "job_title_latin"
+    } else if letters.starts_with("idn") || letters.starts_with("id") && text.chars().any(|c| c.is_ascii_digit()) {
+        "doc_number"
+    } else if letters.starts_with("iss") || letters.starts_with("1ss") || letters.starts_with("lss") {
+        "issue_date"
+    } else if letters.starts_with("exp") {
+        "expiry_date"
+    } else {
+        return None;
+    };
+    // The value starts after the separator; a misread colon is a lone "8" or ":"/";".
+    let words: Vec<&str> = text.split_whitespace().collect();
+    let start = words.iter().position(|w| matches!(*w, "8" | ":" | ";" | "%" | "&") || w.ends_with(':')).map(|i| i + 1).unwrap_or(1);
+    Some((key, words.get(start..).unwrap_or_default().join(" ")))
+}
+
+const ARABIC_BADGE_LABELS: &[(&str, &str, usize)] = &[
+    ("الاسم", "badge_name", 1),
+    ("الدائره", "department", 1),
+    ("العنوان الوظيفي", "job_title", 2),
+    ("رقم الهويه", "doc_number", 2),
+    ("تاريخ الاصدار", "issue_date", 2),
+    ("تاريخ النفاذ", "expiry_date", 2),
+];
+
+fn parse_ministry_badge(lines: &[Line], result: &mut ReadResult) {
+    for line in lines {
+        if !line.text.chars().any(|c| c.is_ascii_alphabetic()) {
+            continue;
+        }
+        let Some((key, value)) = english_badge_field(&line.text) else { continue };
+        match key {
+            "issue_date" | "expiry_date" => {
+                if let Some(date) = find_date(&value) {
+                    result.set(key, date, line.confidence, "text");
+                }
+            }
+            "doc_number" => {
+                let digits: String = ascii_digits(&value).chars().filter(char::is_ascii_digit).collect();
+                if digits.len() >= 5 {
+                    result.set(key, digits, line.confidence, "text");
+                }
+            }
+            _ => result.set(key, value.trim().to_owned(), line.confidence, "text"),
+        }
+    }
+    for (row, _) in rows(lines) {
+        let Some((_, key, label_words)) = ARABIC_BADGE_LABELS.iter().find(|(label, _, _)| has_label(&row.text, label)) else { continue };
+        // The signature block at the bottom ("الدائرة الإدارية…") repeats a label: the first wins.
+        if *key == "department" && result.get("department").is_some() {
+            continue;
+        }
+        let rest: Vec<String> = tokens(&row.text).into_iter().skip(*label_words).collect();
+        let rest = rest.join(" ");
+        match *key {
+            "issue_date" | "expiry_date" => {
+                if let Some(date) = find_date(&rest) {
+                    result.set(key, date, row.confidence, "text");
+                }
+            }
+            "doc_number" => {
+                let digits: String = ascii_digits(&rest).chars().filter(char::is_ascii_digit).collect();
+                if digits.len() >= 5 {
+                    result.set(key, digits, row.confidence, "text");
+                }
+            }
+            "badge_name" => {
+                let words = merge_single_letters(&arabic_only(&rest));
+                for (part, word) in ["first", "father", "grandfather", "surname"].iter().zip(words.iter()) {
+                    result.set(part, word.clone(), row.confidence * if words.len() <= 4 { 1. } else { 0.6 }, "text");
+                }
+            }
+            _ => {
+                let value = merge_single_letters(&arabic_only(&rest)).join(" ");
+                result.set(key, value, row.confidence, "text");
+            }
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------------------------
+// Baghdad International Airport badge. Front: names, company, expiry, zone codes. Back: ID number,
+// issue date, job title, and a QR code whose content is encoded (not readable as text).
+
+fn compact_arabic(text: &str) -> String { normalize(text).chars().filter(|c| is_arabic_letter(*c)).collect() }
+
+fn is_airport_badge(lines: &[Line]) -> bool {
+    let has = |f: &dyn Fn(&Line) -> bool| lines.iter().any(f);
+    has(&|l| compact_arabic(&l.text).contains("مطاربغداد"))
+        || has(&|l| { let t = l.text.to_lowercase(); t.contains("airport") || t.trim() == "bgw" })
+        || (has(&|l| l.text.to_lowercase().replace(' ', "").starts_with("idno")) && has(&|l| compact_arabic(&l.text).contains("حاملالهويه")))
+}
+
+/// One access-zone code as printed at the bottom of the airport badge front ("S1", "T", "VIP", "C"),
+/// with the usual OCR confusions repaired ("SI"/"Sl" → "S1").
+fn zone_code(token: &str) -> Option<String> {
+    let t: String = token.trim().to_uppercase();
+    if t.is_empty() || t.len() > 4 || !t.chars().all(|c| c.is_ascii_alphanumeric()) { return None; }
+    if !t.chars().next()?.is_ascii_alphabetic() { return None; }
+    let mut chars: Vec<char> = t.chars().collect();
+    // A letter followed by digits: I/L/O read for 1/1/0 after the first letter.
+    if chars.len() == 2 { chars[1] = match chars[1] { 'I' | 'L' => '1', 'O' => '0', c => c }; }
+    let t: String = chars.into_iter().collect();
+    // Up to three letters, then up to two digits.
+    let letters = t.chars().take_while(|c| c.is_ascii_alphabetic()).count();
+    if letters > 3 || t.len() - letters > 2 || !t[letters..].chars().all(|c| c.is_ascii_digit()) { return None; }
+    if ["BGW", "ID", "NO"].contains(&t.as_str()) { return None; }
+    Some(t)
+}
+
+fn known_zone(z: &str) -> bool {
+    ["T", "VIP", "C"].contains(&z) || (z.len() == 2 && z.starts_with('S') && z.as_bytes()[1].is_ascii_digit())
+}
+
+/// Access zones: a row of short Latin codes below the company line (or in the bottom third
+/// of the card when the company line was not read).
+fn airport_zones(all_rows: &[Line], result: &mut ReadResult) {
+    let start = all_rows.iter().position(|r| compact_arabic(&r.text).starts_with("شركه")).map(|i| i + 1);
+    let top = all_rows.iter().map(|r| r.bbox[1]).fold(f32::MAX, f32::min);
+    let bottom = all_rows.iter().map(|r| r.bbox[3]).fold(f32::MIN, f32::max);
+    let candidates: Vec<&Line> = match start {
+        Some(i) => all_rows[i..].iter().collect(),
+        None => all_rows.iter().filter(|r| r.bbox[1] >= top + (bottom - top) * 0.66).collect(),
+    };
+    let mut zones: Vec<String> = Vec::new();
+    let mut confidence = 1f32;
+    for row in candidates {
+        let lower = row.text.to_lowercase();
+        if row.text.chars().any(is_arabic_letter) || lower.contains("expire") || find_date(&row.text).is_some() { continue; }
+        let tokens: Vec<&str> = row.text.split(|c: char| c.is_whitespace() || ",|/-·•.".contains(c)).filter(|t| !t.is_empty()).collect();
+        let codes: Vec<String> = tokens.iter().filter_map(|t| zone_code(t)).collect();
+        // Every token must be a code and one of them a known one, so a Latin name or
+        // company line ("ABC CO") is not taken for zones.
+        if codes.is_empty() || codes.len() != tokens.len() || !codes.iter().any(|c| known_zone(c)) { continue; }
+        for code in codes {
+            if !zones.contains(&code) { zones.push(code); }
+        }
+        confidence = confidence.min(row.confidence);
+    }
+    if zones.is_empty() { return; }
+    // Codes outside the known set are offered at low confidence for review.
+    if !zones.iter().all(|z| known_zone(z)) { confidence = confidence.min(0.7); }
+    result.set("zones", zones.join(","), confidence, "text");
+}
+
+fn parse_airport_badge(lines: &[Line], result: &mut ReadResult) {
+    let all_rows: Vec<Line> = rows(lines).into_iter().map(|(row, _)| row).collect();
+    airport_zones(&all_rows, result);
+    let arabic_row = |r: &Line| r.text.chars().any(is_arabic_letter) && !r.text.chars().any(|c| c.is_ascii_alphanumeric());
+    for (i, row) in all_rows.iter().enumerate() {
+        let lower = row.text.to_lowercase();
+        let compact = compact_arabic(&row.text);
+        if lower.contains("expire") || compact.contains("الانتهاء") {
+            if let Some(date) = find_date(&row.text) {
+                result.set("expiry_date", date, row.confidence, "text");
+            }
+        }
+        if lower.contains("issue") || compact.contains("الاصدار") {
+            if let Some(date) = find_date(&row.text) {
+                result.set("issue_date", date, row.confidence, "text");
+            }
+            // The job title is printed under the issue date.
+            if let Some(next) = all_rows[i + 1..].iter().take(2).find(|r| arabic_row(r) && !compact_arabic(&r.text).starts_with("يلتزم")) {
+                result.set("job_title", merge_single_letters(&arabic_only(&next.text)).join(" "), next.confidence, "text");
+            }
+        }
+        if lower.replace(' ', "").starts_with("idno") || lower.contains("id no") {
+            let id = row.text.split(|c: char| !c.is_ascii_alphanumeric()).map(str::to_uppercase).filter(|t| t.chars().filter(char::is_ascii_digit).count() >= 6).max_by_key(String::len);
+            if let Some(mut id) = id {
+                // "ID No.A2026…" glued: drop the label letters.
+                if id.starts_with("NO") { id = id[2..].to_owned(); }
+                result.set("doc_number", id, row.confidence, "text");
+            }
+        }
+        if compact.starts_with("شركه") {
+            result.set("company", merge_single_letters(&arabic_only(&row.text)).join(" "), row.confidence, "text");
+            // The Arabic name is the Arabic row above the company (the Latin name sits between).
+            if let Some(name_row) = all_rows[..i].iter().rev().take(4).find(|r| arabic_row(r) && !compact_arabic(&r.text).contains("مطار")) {
+                let words = merge_single_letters(&arabic_only(&name_row.text));
+                let confidence = name_row.confidence * if (3..=4).contains(&words.len()) { 1. } else { 0.6 };
+                for (part, word) in ["first", "father", "grandfather", "surname"].iter().zip(words.iter()) {
+                    result.set(part, word.clone(), confidence, "text");
+                }
+            }
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------------------------
+
 pub fn parse(lines: &[Line]) -> ReadResult {
+    parse_with_codes(lines, &[])
+}
+
+/// `codes` are the contents of QR codes found on the image.
+pub fn parse_with_codes(lines: &[Line], codes: &[String]) -> ReadResult {
     let mut result = ReadResult::default();
+    if is_ration_card(lines) {
+        parse_ration(lines, codes, &mut result);
+        result.document = "ration".into();
+        if result.fields.is_empty() {
+            result.warnings.push("لم يُعثر على بيانات مقروءة في الصورة".into());
+        }
+        return result;
+    }
+    if is_airport_badge(lines) {
+        parse_airport_badge(lines, &mut result);
+        result.document = "airport_badge".into();
+        if result.fields.is_empty() {
+            result.warnings.push("لم يُعثر على بيانات مقروءة في الصورة".into());
+        }
+        return result;
+    }
+    if is_ministry_badge(lines) {
+        parse_ministry_badge(lines, &mut result);
+        result.document = "ministry_badge".into();
+        if result.fields.is_empty() {
+            result.warnings.push("لم يُعثر على بيانات مقروءة في الصورة".into());
+        }
+        return result;
+    }
     let mrz = parse_mrz(lines, &mut result);
     if mrz == Some("td3") {
         parse_passport_text(lines, &mut result);
@@ -961,6 +1233,108 @@ mod tests {
         assert_eq!(v("expiry_date"), "2026-01-09");
         assert_eq!(v("doc_number"), "004512");
         assert!(r.get("doc_number").unwrap().confidence < 0.85);
+    }
+
+    #[test]
+    fn ration_card_number_and_head_of_household() {
+        let lines = vec![
+            line("البطاقة التموينية الالكترونية", 0.),
+            line("رقم البطاقة التموينية ازمارهى كارتي خوراك", 20.),
+            line("0100000001", 40.),
+            line("اسم رب الأسرة", 60.),
+            line("ناوى سه روكى مالبات", 80.),
+            line("أحمد علي حسين كاظم", 100.),
+            line("1000000000001", 140.),
+        ];
+        let r = parse_with_codes(&lines, &["0100000001".to_string()]);
+        assert_eq!(r.document, "ration");
+        assert_eq!(r.get("ration_no").unwrap().value, "0100000001");
+        assert_eq!(r.get("ration_no").unwrap().source, "qr");
+        assert_eq!(r.get("head_name").unwrap().value, "أحمد علي حسين كاظم");
+        // Without the QR code the printed number is used.
+        let r = parse(&lines);
+        assert_eq!(r.get("ration_no").unwrap().source, "text");
+    }
+
+    #[test]
+    fn ministry_badge_both_sides() {
+        let english = vec![
+            line("Ministry of Transport", 0.),
+            line("Name 8 Ahmed Ali Hussein", 20.),
+            line("Ofce 8 Test Dep.", 40.),
+            line("Job Title 8 Engineer", 60.),
+            line("IDN0 8 100000001", 80.),
+            line("1SS Date 8 01/02/2022", 100.),
+            line("ExP. Date 8 01/02/2027", 120.),
+        ];
+        let r = parse(&english);
+        assert_eq!(r.document, "ministry_badge");
+        let v = |r: &ReadResult, k: &str| r.get(k).map(|f| f.value.clone()).unwrap_or_default();
+        assert_eq!(v(&r, "doc_number"), "100000001");
+        assert_eq!(v(&r, "issue_date"), "2022-02-01");
+        assert_eq!(v(&r, "expiry_date"), "2027-02-01");
+        assert_eq!(v(&r, "badge_name_latin"), "Ahmed Ali Hussein");
+        let arabic = vec![
+            line("وزارة النقل", 0.),
+            line("الأسم أحمد علي حسين", 20.),
+            line("الدائرة قسم الاختبار", 40.),
+            line("العنوان الوظيفي مهندس أقدم", 60.),
+            line("الدائرة الإدارية", 140.),
+            line("رقم الهوية 100000001", 80.),
+            line("تاريخ الأصدارة 2022/02/01", 100.),
+            line("تاريخ النفاذة 2027/02/01", 120.),
+        ];
+        let r = parse(&arabic);
+        assert_eq!(r.document, "ministry_badge");
+        assert_eq!(v(&r, "first"), "أحمد");
+        assert_eq!(v(&r, "grandfather"), "حسين");
+        assert_eq!(v(&r, "department"), "قسم الاختبار");
+        assert_eq!(v(&r, "job_title"), "مهندس أقدم");
+        assert_eq!(v(&r, "doc_number"), "100000001");
+        assert_eq!(v(&r, "issue_date"), "2022-02-01");
+        assert_eq!(v(&r, "expiry_date"), "2027-02-01");
+    }
+
+    #[test]
+    fn airport_badge_front_and_back() {
+        let v = |r: &ReadResult, k: &str| r.get(k).map(|f| f.value.clone()).unwrap_or_default();
+        let front = vec![
+            line("BGW", 0.),
+            line("مطار بغداد الدولي", 20.),
+            line("أحمد علي حسين", 40.),
+            line("AHMED ALI HUSSEIN", 60.),
+            line("شركة الاختبار", 80.),
+            line("Expire Date 01-02-2028 تاريخ الانتهاء", 100.),
+        ];
+        let r = parse(&front);
+        assert_eq!(r.document, "airport_badge");
+        assert_eq!(v(&r, "expiry_date"), "2028-02-01");
+        assert_eq!(v(&r, "first"), "أحمد");
+        assert_eq!(v(&r, "grandfather"), "حسين");
+        assert_eq!(v(&r, "zones"), "", "no zone row on this front");
+        let mut with_zones = front.clone();
+        with_zones.push(line("SI  T  VIP  C", 120.));
+        with_zones.push(line("ABC CO", 130.));
+        let r = parse(&with_zones);
+        assert_eq!(v(&r, "zones"), "S1,T,VIP,C");
+        assert!(r.get("zones").unwrap().confidence >= 0.85);
+        // An unfamiliar code next to known ones is kept, but marked for review.
+        let mut odd = front.clone();
+        odd.push(line("S2 VIP R", 120.));
+        let r = parse(&odd);
+        assert_eq!(v(&r, "zones"), "S2,VIP,R");
+        assert!(r.get("zones").unwrap().confidence < 0.85);
+        let back = vec![
+            line("ID No. X100000001", 0.),
+            line("تاريخ الاصدار : 2026-02-01 Date Issue", 20.),
+            line("مهندس أقدم", 40.),
+            line("يلتزم حامل الهوية بمعايير", 80.),
+        ];
+        let r = parse(&back);
+        assert_eq!(r.document, "airport_badge");
+        assert_eq!(v(&r, "doc_number"), "X100000001");
+        assert_eq!(v(&r, "issue_date"), "2026-02-01");
+        assert_eq!(v(&r, "job_title"), "مهندس أقدم");
     }
 
     #[test]

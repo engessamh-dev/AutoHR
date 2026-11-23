@@ -119,6 +119,8 @@ pub struct Employee {
     pub airport_badge_no: Option<String>,
     pub airport_badge_issue_date: Option<String>,
     pub airport_badge_expiry: Option<String>,
+    /// Access zones printed on the airport badge, comma-separated (e.g. "S1,T,VIP").
+    pub airport_badge_zones: Option<String>,
     pub airport_badge_front_path: Option<String>,
     pub airport_badge_back_path: Option<String>,
     pub airport_badge_front_full_path: Option<String>,
@@ -209,6 +211,8 @@ pub struct EmployeeData {
     pub airport_badge_no: Option<String>,
     pub airport_badge_issue_date: Option<String>,
     pub airport_badge_expiry: Option<String>,
+    /// Access zones printed on the airport badge, comma-separated (e.g. "S1,T,VIP").
+    pub airport_badge_zones: Option<String>,
     pub ministry_badge_no: Option<String>,
     pub ministry_badge_issue_date: Option<String>,
     pub ministry_badge_expiry: Option<String>,
@@ -799,7 +803,7 @@ const EMP_COLS: &str = "id,employee_number,photo_path,full_name,mother_name,fath
   airport_badge_issue_date,airport_badge_front_path,airport_badge_back_path,
   ministry_badge_issue_date,ministry_badge_front_path,ministry_badge_back_path,
   vehicle_color,vehicle_manufacture_year,vehicle_type,vehicle_annual_issue_date,vehicle_annual_expiry_date,vehicles,spouses,
-  appointment_date,father_birthdate,mother_birthdate,name_parts";
+  appointment_date,father_birthdate,mother_birthdate,name_parts,airport_badge_zones";
 
 fn map_emp(r: &rusqlite::Row) -> rusqlite::Result<Employee> {
     Ok(Employee {
@@ -853,6 +857,7 @@ fn map_emp(r: &rusqlite::Row) -> rusqlite::Result<Employee> {
         father_birthdate:r.get(86)?,
         mother_birthdate:r.get(87)?,
         name_parts:r.get::<_, Option<String>>(88)?.and_then(|value| serde_json::from_str(&value).ok()),
+        airport_badge_zones:r.get(89)?,
         residence_card_front_full_path:None,
         residence_card_back_full_path:None,
         airport_badge_front_full_path:None,
@@ -1239,11 +1244,11 @@ pub fn create_employee(conn: &Connection, d: &EmployeeData, username: &str) -> A
       residence_card_issue_date,residence_head_name,residence_form_no,
       airport_badge_issue_date,ministry_badge_issue_date,vehicle_color,vehicle_manufacture_year,vehicle_type,
       vehicle_annual_issue_date,vehicle_annual_expiry_date,vehicles,spouses,appointment_date,
-      father_birthdate,mother_birthdate)
+      father_birthdate,mother_birthdate,airport_badge_zones)
     VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,
            ?21,?22,?23,?24,?25,?26,?27,?28,?29,?30,?31,?32,?33,?34,?35,?36,?37,?38,
            ?39,?40,?41,?42,?43,?44,?45,?46,?47,?48,?49,?50,?51,?52,?53,?54,?55,?56,?57,?58,
-           ?59,?60,?61,?62,?63,?64,?65,?66,?67,?68,?69,?70,?71,?72,?73)",
+           ?59,?60,?61,?62,?63,?64,?65,?66,?67,?68,?69,?70,?71,?72,?73,?74)",
     params![d.employee_number,d.full_name.trim(),d.mother_name,d.father_birthplace,d.mother_birthplace,
       d.gender,d.birthdate,d.birthplace,d.marital_status,d.blood_type,
       d.workplace,d.job_title,d.job_grade,d.hire_date,d.contract_type,d.department,d.division,d.phone,d.email,
@@ -1260,7 +1265,7 @@ pub fn create_employee(conn: &Connection, d: &EmployeeData, username: &str) -> A
       d.residence_card_issue_date,d.residence_head_name,d.residence_form_no,
       d.airport_badge_issue_date,d.ministry_badge_issue_date,d.vehicle_color,d.vehicle_manufacture_year,d.vehicle_type,
       d.vehicle_annual_issue_date,d.vehicle_annual_expiry_date,d.vehicles.as_deref().unwrap_or("[]"),
-      d.spouses.as_deref().unwrap_or("[]"),d.appointment_date,d.father_birthdate,d.mother_birthdate])?;
+      d.spouses.as_deref().unwrap_or("[]"),d.appointment_date,d.father_birthdate,d.mother_birthdate,d.airport_badge_zones])?;
     let id = conn.last_insert_rowid();
     conn.execute("UPDATE employees SET name_parts=?1 WHERE id=?2", params![name_parts, id])?;
     replace_employee_repeating_data(conn, id, d)?;
@@ -1291,7 +1296,7 @@ pub fn update_employee(conn: &Connection, id: i64, d: &EmployeeData, username: &
       vehicle_color=?64,vehicle_manufacture_year=?65,vehicle_type=?66,
       vehicle_annual_issue_date=?67,vehicle_annual_expiry_date=?68,
       vehicles=?69,spouses=?70,appointment_date=?71,father_birthdate=?72,mother_birthdate=?73,
-      updated_at=datetime('now') WHERE id=?74",
+      airport_badge_zones=?74,updated_at=datetime('now') WHERE id=?75",
     params![d.employee_number,d.full_name.trim(),d.mother_name,d.father_birthplace,d.mother_birthplace,
       d.gender,d.birthdate,d.birthplace,d.marital_status,d.blood_type,
       d.workplace,d.job_title,d.job_grade,d.hire_date,d.contract_type,d.department,d.division,d.phone,d.email,
@@ -1308,7 +1313,7 @@ pub fn update_employee(conn: &Connection, id: i64, d: &EmployeeData, username: &
       d.residence_card_issue_date,d.residence_head_name,d.residence_form_no,
       d.airport_badge_issue_date,d.ministry_badge_issue_date,d.vehicle_color,d.vehicle_manufacture_year,d.vehicle_type,
       d.vehicle_annual_issue_date,d.vehicle_annual_expiry_date,d.vehicles.as_deref().unwrap_or("[]"),
-      d.spouses.as_deref().unwrap_or("[]"),d.appointment_date,d.father_birthdate,d.mother_birthdate,id])?;
+      d.spouses.as_deref().unwrap_or("[]"),d.appointment_date,d.father_birthdate,d.mother_birthdate,d.airport_badge_zones,id])?;
     conn.execute("UPDATE employees SET name_parts=?1 WHERE id=?2", params![name_parts, id])?;
     replace_employee_repeating_data(conn, id, d)?;
     log_activity(conn, username, "UPDATE_EMPLOYEE", Some("employee"), Some(id), Some(d.full_name.trim()), None);
