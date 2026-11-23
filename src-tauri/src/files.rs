@@ -352,6 +352,76 @@ pub fn delete_family_national_card_attachment(
     Ok(())
 }
 
+fn vehicle_annual_column(side: &str) -> AppResult<&'static str> {
+    match side {
+        "front" => Ok("annual_front_path"),
+        "back" => Ok("annual_back_path"),
+        _ => Err(AppError::Validation("Invalid vehicle registration side".into())),
+    }
+}
+
+fn stored_vehicle_annual_path(conn: &Connection, employee_id: i64, vehicle_index: usize, column: &str) -> AppResult<Option<String>> {
+    use rusqlite::OptionalExtension;
+    conn.query_row(
+        &format!("SELECT {column} FROM employee_vehicles WHERE employee_id=?1 AND sort_order=?2"),
+        params![employee_id, vehicle_index as i64],
+        |r| r.get::<_, Option<String>>(0),
+    ).optional()?.ok_or(AppError::NotFound)
+}
+
+/// Car registration (السنوية) image of one saved vehicle.
+pub fn upload_vehicle_annual_attachment(
+    conn: &Connection,
+    employee_id: i64,
+    vehicle_index: usize,
+    side: &str,
+    source_path: &str,
+) -> AppResult<String> {
+    ensure_storage_layout(conn)?;
+    let column = vehicle_annual_column(side)?;
+    let previous = stored_vehicle_annual_path(conn, employee_id, vehicle_index, column)?;
+    let dest_dir = storage_path(conn)
+        .join("Files").join("Employees").join(employee_id.to_string())
+        .join("Vehicles").join((vehicle_index + 1).to_string()).join("Annual");
+    let rel = copy_validated_upload(conn, source_path, &dest_dir,
+        &format!("Files/Employees/{}/Vehicles/{}/Annual", employee_id, vehicle_index + 1),
+        true, false, MAX_DOCUMENT_SIZE)?;
+    let updated = conn.execute(
+        &format!("UPDATE employee_vehicles SET {column}=?1, updated_at=datetime('now') WHERE employee_id=?2 AND sort_order=?3"),
+        params![rel, employee_id, vehicle_index as i64],
+    )?;
+    if updated == 0 {
+        return Err(AppError::NotFound);
+    }
+    if let Some(old) = previous {
+        if old != rel {
+            if let Ok(path) = safe_relative_path(&old) {
+                crate::scanner::remove_replaced(conn, source_path, path);
+            }
+        }
+    }
+    Ok(rel)
+}
+
+pub fn delete_vehicle_annual_attachment(
+    conn: &Connection,
+    employee_id: i64,
+    vehicle_index: usize,
+    side: &str,
+) -> AppResult<()> {
+    let column = vehicle_annual_column(side)?;
+    let existing = stored_vehicle_annual_path(conn, employee_id, vehicle_index, column)?;
+    conn.execute(
+        &format!("UPDATE employee_vehicles SET {column}=NULL, updated_at=datetime('now') WHERE employee_id=?1 AND sort_order=?2"),
+        params![employee_id, vehicle_index as i64],
+    )?;
+    if let Some(relative_path) = existing {
+        let path = safe_relative_path(&relative_path)?;
+        crate::scanner::cleanup_metadata_file(conn, &path.to_string_lossy());
+    }
+    Ok(())
+}
+
 fn spouses_json(conn: &Connection, employee_id: i64) -> AppResult<Vec<serde_json::Value>> {
     let mut stmt = conn.prepare(
         "SELECT civil_id,name,mother_name,gender,birthplace,birthdate,issue_date,expiry_date,issuer,blood_type,marriage_date,national_card_front_path,national_card_back_path

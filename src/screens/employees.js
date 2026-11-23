@@ -49,7 +49,8 @@ function bindAttachmentDownloadButtons(container) {
     if (_activeTab === "family") {
       if (path.includes("/Spouses/")) await refreshSpouseAttachments(_panelDraft.id);
       else await refreshFamilyAttachments(_panelDraft.id);
-    } else await refreshDocumentAttachments(_panelDraft.id);
+    } else if (_activeTab === "vehicle") await refreshVehicleAttachments(_panelDraft.id);
+    else await refreshDocumentAttachments(_panelDraft.id);
   }, () => {
     if (_panelDirty) throw new Error("احفظ التعديلات الحالية قبل إعادة معالجة المرفق");
   });
@@ -353,6 +354,8 @@ function collectVisiblePanelFields(panel) {
         annual_no:   row.querySelector(".vehicle-annual-no")?.value?.trim() || "",
         issue_date:  row.querySelector(".vehicle-issue-date")?.value || "",
         expiry_date: row.querySelector(".vehicle-expiry-date")?.value || "",
+        annual_front_path: row.dataset.annualFrontPath || "",
+        annual_back_path:  row.dataset.annualBackPath || "",
       });
     });
     _panelDraft.vehicles = JSON.stringify(vehicles);
@@ -1695,6 +1698,7 @@ function attachTabEvents(emp) {
 
   if (_activeTab === "vehicle") {
     renderVehicleList(_panelDraft ?? emp);
+    bindAttachmentDownloadButtons(document.getElementById("tab-content"));
     panel.querySelector("#btn-add-vehicle")?.addEventListener("click", () => {
       markPanelDirty();
       addVehicleRow();
@@ -2116,6 +2120,7 @@ function renderVehicleList(emp) {
     `<p class="vehicle-empty" style="font-size:13px;color:var(--ui-text-faint);padding:8px 0">لا توجد مركبات مسجلة</p>`;
 
   attachVehicleRemoveEvents(container);
+  attachVehicleAnnualEvents(container);
 }
 
 function vehicleRowHtml(vehicle = {}, index = Date.now()) {
@@ -2125,11 +2130,12 @@ function vehicleRowHtml(vehicle = {}, index = Date.now()) {
   const annual = vehicle.expiry_date
     ? `<span class="emp-pill ${status.tone}">السنوية: ${["bad", "warn"].includes(status.tone) ? status.label : formatDate(vehicle.expiry_date)}</span>`
     : "";
-  return `<div class="vehicle-row emp-row${rowOpenClass(rowKey, existing)}" data-row-key="${rowKey}">
+  const attached = [vehicle.annual_front_path, vehicle.annual_back_path].filter(Boolean).length;
+  return `<div class="vehicle-row emp-row${rowOpenClass(rowKey, existing)}" data-row-key="${rowKey}" data-annual-front-path="${escHtml(vehicle.annual_front_path ?? "")}" data-annual-back-path="${escHtml(vehicle.annual_back_path ?? "")}">
     ${rowHead({
       title: existing ? `مركبة رقم ${index + 1}` : "مركبة جديدة",
       summary: vehicleSummary(vehicle),
-      extra: annual,
+      extra: `${annual}${existing ? `<span class="emp-pill ${attached === 2 ? "ok" : "none"}">المرفقات ${attached}/2</span>` : ""}`,
       removeClass: "btn-remove-vehicle",
     })}
     ${vehicleInput("رقم اللوحة", "vehicle-plate", vehicle.plate, true)}
@@ -2139,7 +2145,73 @@ function vehicleRowHtml(vehicle = {}, index = Date.now()) {
     ${vehicleInput("رقم السنوية", "vehicle-annual-no", vehicle.annual_no, true)}
     ${vehicleInput("تاريخ الإصدار", "vehicle-issue-date", vehicle.issue_date, false, true)}
     ${vehicleInput("تاريخ النفاذ", "vehicle-expiry-date", vehicle.expiry_date, false, true)}
+    <div style="grid-column:span 2">
+      <p class="emp-att-title">مرفقات السنوية</p>
+      <div class="emp-tiles">
+        ${vehicleAnnualTile("الوجه الأمامي", "front", vehicle, existing ? index : null)}
+        ${vehicleAnnualTile("الوجه الخلفي", "back", vehicle, existing ? index : null)}
+      </div>
+    </div>
   </div>`;
+}
+
+function vehicleAnnualTile(label, side, vehicle, vehicleIndex) {
+  const attrs = `data-vehicle-index="${vehicleIndex ?? ""}" data-side="${side}"`;
+  return attachmentTile({
+    label, path: vehicle?.[`annual_${side}_path`], fullPath: vehicle?.[`annual_${side}_full_path`],
+    canManage: Boolean(_panelDraft?.id) && Number.isInteger(vehicleIndex) && can(_currentUser, "documents.upload"),
+    read: Number.isInteger(vehicleIndex) ? `vehicle:${vehicleIndex}` : null,
+    upload: { cls: "btn-upload-vehicle-annual", attrs },
+    remove: { cls: "btn-delete-vehicle-annual", attrs },
+    lockedNote: "احفظ أولاً",
+  });
+}
+
+async function refreshVehicleAttachments(employeeId) {
+  _employees = await api.listEmployees();
+  const updated = _employees.find(e => e.id === employeeId);
+  if (!updated) return;
+  _panelDraft = { ...updated, ..._panelDraft, vehicles: updated.vehicles };
+  document.getElementById("tab-content").innerHTML = tabContent("vehicle", _panelDraft);
+  attachTabEvents(updated);
+}
+
+function attachVehicleAnnualEvents(container) {
+  container.querySelectorAll(".btn-upload-vehicle-annual").forEach(btn => {
+    btn.addEventListener("click", async () => {
+      if (_panelDirty) {
+        showToast("احفظ تعديلات المركبات قبل رفع المرفقات", "error");
+        return;
+      }
+      try {
+        const selected = await open({ multiple: false, filters: [{ name: "مرفق السنوية", extensions: DOCUMENT_EXTENSIONS }] });
+        if (!selected) return;
+        const sideName = btn.dataset.side === "front" ? "الوجه الأمامي" : "الوجه الخلفي";
+        if (!(await confirmAction(`تأكيد رفع ${sideName} لسنوية المركبة؟`))) return;
+        const index = Number(btn.dataset.vehicleIndex);
+        await api.uploadVehicleAnnualAttachment(_panelDraft.id, index, btn.dataset.side, selected);
+        showToast("تم رفع مرفق السنوية");
+        await refreshVehicleAttachments(_panelDraft.id);
+        const vehicle = ocrTarget(`vehicle:${index}`).record;
+        await readUploadedFields(`vehicle:${index}`, vehicle?.[`annual_${btn.dataset.side}_path`], vehicle?.[`annual_${btn.dataset.side}_full_path`], "سنوية المركبة");
+      } catch (err) { showToast(err?.message ?? String(err || "خطأ في رفع المرفق"), "error"); }
+    });
+  });
+  container.querySelectorAll(".btn-delete-vehicle-annual").forEach(btn => {
+    btn.addEventListener("click", async () => {
+      if (_panelDirty) {
+        showToast("احفظ تعديلات المركبات قبل حذف المرفقات", "error");
+        return;
+      }
+      const sideName = btn.dataset.side === "front" ? "الوجه الأمامي" : "الوجه الخلفي";
+      if (!(await confirmAction(`تأكيد حذف ${sideName} لسنوية المركبة؟`))) return;
+      try {
+        await api.deleteVehicleAnnualAttachment(_panelDraft.id, Number(btn.dataset.vehicleIndex), btn.dataset.side);
+        showToast("تم حذف مرفق السنوية");
+        await refreshVehicleAttachments(_panelDraft.id);
+      } catch (err) { showToast(err?.message ?? String(err || "خطأ في حذف المرفق"), "error"); }
+    });
+  });
 }
 
 function vehicleInput(label, className, value = "", ltr = false, date = false) {
@@ -2200,7 +2272,7 @@ function currentNameParts(record, key, passport = false) {
 function ocrTarget(target) {
   const [kind, index] = String(target).split(":");
   if (kind === "employee") return { kind, badge: index ?? null, record: _panelDraft };
-  const listKey = kind === "spouse" ? "spouses" : "family_members";
+  const listKey = kind === "spouse" ? "spouses" : kind === "vehicle" ? "vehicles" : "family_members";
   let list = [];
   try { list = JSON.parse(_panelDraft?.[listKey] ?? "[]"); } catch {}
   if (kind === "spouse" && list.length === 0) list = spouseListFromEmployee(_panelDraft);
@@ -2216,6 +2288,16 @@ function ocrRows(result, target) {
     const field = read(key);
     if (field) rows.push({ id, label, value: field.value, confidence: field.confidence, source: field.source, current: current ?? "", ...opts });
   };
+  if (kind === "vehicle") {
+    add("field:plate", "رقم اللوحة", "plate", record?.plate);
+    add("field:annual_no", "رقم السنوية", "annual_no", record?.annual_no, { ltr: true });
+    add("field:brand", "العلامة التجارية للمركبة", "brand", record?.brand);
+    add("field:type", "نوع المركبة", "vehicle_type", record?.type);
+    add("field:color", "لون المركبة", "color", record?.color);
+    add("field:issue_date", "تاريخ الإصدار", "issue_date", record?.issue_date, { date: true });
+    add("field:expiry_date", "تاريخ النفاذ", "expiry_date", record?.expiry_date, { date: true });
+    return rows;
+  }
   if (badge === "ration_card") {
     add("field:ration_card_no", "رقم البطاقة التموينية", "ration_no", record?.ration_card_no, { ltr: true });
     add("field:ration_center_name", "اسم رب الأسرة", "head_name", record?.ration_center_name);
@@ -2291,7 +2373,7 @@ function applyOcrValues(target, chosen) {
     parts[key] = group;
     record[key] = joinNameParts(group, passport);
   }
-  record.name_parts = parts;
+  if (info.kind !== "vehicle") record.name_parts = parts;
   if (info.kind !== "employee") {
     info.list[info.index] = record;
     _panelDraft[info.listKey] = JSON.stringify(info.list);
@@ -2309,11 +2391,16 @@ async function readUploadedFields(target, path, fullPath, title) {
   await readFieldsInto(target, path, fullPath ? convertFileSrc(fullPath) : "", title);
 }
 
-const OCR_FIELD_LABELS = { doc_number: "رقم الهوية", issue_date: "تاريخ الإصدار", expiry_date: "تاريخ النفاذ", job_title: "العنوان الوظيفي", zones: "صلاحيات الباج", first: "الاسم", father: "اسم الأب", grandfather: "اسم الجد" };
+const OCR_FIELD_LABELS = { plate: "رقم اللوحة", annual_no: "رقم السنوية", brand: "العلامة التجارية", vehicle_type: "نوع المركبة", color: "اللون", doc_number: "رقم الهوية", issue_date: "تاريخ الإصدار", expiry_date: "تاريخ النفاذ", job_title: "العنوان الوظيفي", zones: "صلاحيات الباج", first: "الاسم", father: "اسم الأب", grandfather: "اسم الجد" };
 
 /** The other side of a two-sided badge, when it is an image too. */
 function otherBadgeSide(target, path) {
-  const badge = ocrTarget(target).badge;
+  const info = ocrTarget(target);
+  if (info.kind === "vehicle") {
+    const other = [info.record?.annual_front_path, info.record?.annual_back_path].find(p => p && p !== path);
+    return other && OCR_IMAGE_EXTENSIONS.includes(other.split(".").pop()?.toLowerCase()) ? other : null;
+  }
+  const badge = info.badge;
   if (!["airport_badge", "ministry_badge"].includes(badge)) return null;
   const sides = [_panelDraft?.[`${badge}_front_path`], _panelDraft?.[`${badge}_back_path`]];
   const other = sides.find(p => p && p !== path);

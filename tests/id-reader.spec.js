@@ -221,3 +221,47 @@ test("airport badge: access zones are read into chips, edited, and saved", async
   const data = await page.evaluate(() => window.calls.find(c => c.command === "cmd_update_employee").args.data);
   expect(data.airport_badge_zones).toBe("S1,VIP,C,S2");
 });
+
+test("car registration: both sides fill the vehicle row and keep the images on save", async ({ page }) => {
+  const front = "Files/Employees/1/Vehicles/1/Annual/front.jpg";
+  const back = "Files/Employees/1/Vehicles/1/Annual/back.jpg";
+  await page.evaluate(({ front, back }) => {
+    window.employeePatch = { vehicles: JSON.stringify([{ plate: "", annual_front_path: front, annual_back_path: back, annual_front_full_path: "synthetic", annual_back_full_path: "synthetic" }]) };
+    window.readResults = {
+      [front]: { document: "vehicle_registration", warnings: [], fields: [
+        { key: "plate", value: "12 A34567 خصوصي", confidence: 0.6, source: "text" },
+        { key: "annual_no", value: "X12345678", confidence: 0.99, source: "mrz" },
+        { key: "issue_date", value: "2025-02-03", confidence: 0.9, source: "text" },
+        { key: "expiry_date", value: "2030-02-02", confidence: 0.9, source: "text" },
+      ] },
+      [back]: { document: "vehicle_registration", warnings: [], fields: [
+        { key: "brand", value: "تويوتا", confidence: 0.95, source: "text" },
+        { key: "vehicle_type", value: "كامري", confidence: 0.95, source: "text" },
+        { key: "color", value: "أبيض", confidence: 0.95, source: "text" },
+      ] },
+    };
+  }, { front, back });
+  await page.evaluate(() => window.renderActual("employees"));
+  await page.locator('.table-row[data-id="1"]').click();
+  await page.locator('.tab-btn[data-tab="vehicle"]').click();
+  const row = page.locator(".vehicle-row").first();
+  if (!(await row.locator(".vehicle-brand").isVisible())) await row.locator(".emp-row-title").click();
+  const tile = row.locator(".emp-tile.has-file").first();
+  await tile.locator(".emp-tile-more").click();
+  await tile.getByRole("menuitem", { name: "قراءة البيانات" }).click();
+  const dialog = page.getByRole("dialog", { name: /قراءة البيانات/ });
+  await expect(dialog.locator("tr", { hasText: "رقم السنوية" }).locator(".id-reader-badge.is-ok")).toHaveCount(1);
+  await expect(dialog.locator("tr", { hasText: "رقم اللوحة" })).toHaveClass(/is-low/);
+  await dialog.getByRole("button", { name: "اعتماد المحدَّد" }).click();
+  await expect(dialog).toBeHidden();
+  await expect(row.locator(".vehicle-brand")).toHaveValue("تويوتا");
+  await expect(row.locator(".vehicle-annual-no")).toHaveValue("X12345678");
+  await expect(row.locator(".vehicle-plate")).toHaveValue("12 A34567 خصوصي");
+  await expect(row.locator(".vehicle-expiry-date")).toHaveValue("2030-02-02");
+  await page.locator("#panel-save").click();
+  await page.getByRole("button", { name: "تأكيد", exact: true }).click();
+  await expect.poll(() => page.evaluate(() => window.calls.some(c => c.command === "cmd_update_employee"))).toBe(true);
+  const data = await page.evaluate(() => window.calls.find(c => c.command === "cmd_update_employee").args.data);
+  const [vehicle] = JSON.parse(data.vehicles);
+  expect(vehicle).toMatchObject({ brand: "تويوتا", type: "كامري", color: "أبيض", annual_no: "X12345678", issue_date: "2025-02-03", annual_front_path: front, annual_back_path: back });
+});

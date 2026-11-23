@@ -1032,6 +1032,135 @@ fn parse_airport_badge(lines: &[Line], result: &mut ReadResult) {
 
 // ---------------------------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------------------------
+// Car registration (السنوية: «إجازة تسجيل مركبة», Vehicle Registration Licence)
+//
+// Fields carry the EU-style codes printed beside them. Front: A. plate, B. first registration,
+// I. issue, H. expiry, and a bottom line "V<" + licence number + fillers + check digit.
+// Back: D.1 brand, D.3 type, R colour, 11 year of production, each in a table cell right of
+// its code.
+
+fn is_vehicle_registration(lines: &[Line]) -> bool {
+    lines.iter().any(|l| {
+        let lower = l.text.to_lowercase();
+        lower.contains("vehicle registration") || lower.contains("vehicle brand") || lower.contains("chassis number")
+            || compact_arabic(&l.text).contains("اجازهتسجيلمركبه")
+    })
+}
+
+/// "V<X1234567<<<…<N": the licence number, and whether the check digit (over everything
+/// before it) holds.
+fn vehicle_licence_line(text: &str) -> Option<(String, bool)> {
+    let line: String = ascii_digits(text).to_uppercase().chars().filter(|c| !c.is_whitespace()).collect();
+    if !line.starts_with("V<") || line.len() < 20 { return None; }
+    let (body, check) = line.split_at(line.len() - 1);
+    let number: String = body[2..].chars().take_while(|c| *c != '<').collect();
+    if number.len() < 6 || !number.chars().all(|c| c.is_ascii_alphanumeric()) { return None; }
+    let check = check.chars().next()?;
+    if check_digit(body) == check { return Some((number, true)); }
+    // Repair digit confusions after the leading letter, as on MRZ lines.
+    let mut fixed: String = number.chars().take(1).collect();
+    fixed.extend(number.chars().skip(1).map(to_digit));
+    let repaired = format!("V<{}{}", fixed, &body[2 + number.len()..]);
+    Some(if check_digit(&repaired) == check { (fixed, true) } else { (number, false) })
+}
+
+/// The plate as printed: province digits, a Latin letter with the number, then the category
+/// (for example "12 A34567 خصوصي").
+fn vehicle_plate(text: &str) -> Option<String> {
+    let text = ascii_digits(text);
+    let tokens: Vec<&str> = text.split_whitespace().collect();
+    let pos = tokens.iter().position(|t| {
+        let letters = t.chars().filter(|c| c.is_ascii_uppercase()).count();
+        (1..=2).contains(&letters) && t.chars().filter(char::is_ascii_digit).count() >= 4 && t.chars().all(|c| c.is_ascii_alphanumeric())
+    })?;
+    let token = tokens[pos];
+    // Province digits glued in front of the letter: "12A34567" → "12", "A34567".
+    let split = token.find(|c: char| c.is_ascii_uppercase()).unwrap_or(0);
+    let (province, number) = token.split_at(split);
+    let mut parts: Vec<String> = Vec::new();
+    let before: Vec<&str> = tokens[..pos].iter().copied().filter(|t| t.chars().all(|c| c.is_ascii_digit())).collect();
+    if !province.is_empty() { parts.push(province.to_owned()); } else if let Some(p) = before.last() { parts.push((*p).to_owned()); }
+    parts.push(number.to_owned());
+    let category: Vec<&str> = tokens.iter().copied().filter(|t| t.chars().any(is_arabic_letter)).collect();
+    if !category.is_empty() { parts.push(category.join(" ")); }
+    Some(parts.join(" "))
+}
+
+/// A table code such as "D.1." or "R." on its own (a label cell, not a value).
+fn vehicle_code(text: &str) -> Option<String> {
+    let t: String = text.trim().to_uppercase().chars().filter(|c| !c.is_whitespace()).collect();
+    let t = t.trim_end_matches('.');
+    let ok = !t.is_empty() && t.len() <= 9
+        && t.chars().all(|c| c.is_ascii_alphanumeric() || c == '.' || c == '/')
+        && t.chars().next().is_some_and(|c| c.is_ascii_alphanumeric())
+        && !t.chars().all(|c| c.is_ascii_digit() && t.len() > 2);
+    ok.then(|| t.to_owned())
+}
+
+/// The value cell right of a label cell on the same table row.
+fn cell_right_of<'a>(lines: &'a [Line], label: &Line) -> Option<&'a Line> {
+    lines.iter()
+        .filter(|l| !std::ptr::eq(*l, label))
+        .filter(|l| (l.center_y() - label.center_y()).abs() < label.height().max(l.height()) * 0.7)
+        .filter(|l| l.bbox[0] >= label.bbox[2] - 2.)
+        .min_by(|a, b| a.bbox[0].total_cmp(&b.bbox[0]))
+}
+
+fn parse_vehicle_registration(lines: &[Line], result: &mut ReadResult) {
+    // Front.
+    let mut dates: Vec<(String, f32)> = Vec::new();
+    for line in lines {
+        if let Some((number, verified)) = vehicle_licence_line(&line.text) {
+            if verified {
+                result.set("annual_no", number, 0.99, "mrz");
+            } else {
+                result.set("annual_no", number, line.confidence.min(0.6), "text");
+            }
+            continue;
+        }
+        if line.text.contains('<') { continue; }
+        if let Some(date) = find_date(&line.text) {
+            // B. is the first registration, not this licence.
+            if !line.text.trim_start().to_uppercase().starts_with('B') {
+                dates.push((date, line.confidence));
+            }
+            continue;
+        }
+        if line.text.chars().any(is_arabic_letter) && result.get("plate").is_none() {
+            if let Some(plate) = vehicle_plate(&line.text) {
+                // Province digits are often merged by the reader: always reviewed.
+                result.set("plate", plate, line.confidence.min(0.6), "text");
+            }
+        }
+    }
+    dates.sort_by(|a, b| a.0.cmp(&b.0));
+    dates.dedup_by(|a, b| a.0 == b.0);
+    if dates.len() >= 2 {
+        let (issue, expiry) = (&dates[0], &dates[dates.len() - 1]);
+        result.set("issue_date", issue.0.clone(), issue.1.min(0.9), "text");
+        result.set("expiry_date", expiry.0.clone(), expiry.1.min(0.9), "text");
+    } else if let Some((date, confidence)) = dates.first() {
+        result.set("expiry_date", date.clone(), confidence.min(0.6), "text");
+    }
+    // Back.
+    for label in lines {
+        let Some(code) = vehicle_code(&label.text) else { continue };
+        let key = match code.as_str() { "D.1" => "brand", "D.3" => "vehicle_type", "R" => "color", "11" => "year", _ => continue };
+        let Some(cell) = cell_right_of(lines, label) else { continue };
+        if vehicle_code(&cell.text).is_some() && key != "year" { continue; }
+        let value = cell.text.trim().to_owned();
+        let valid = match key {
+            "year" => value.len() == 4 && value.chars().all(|c| c.is_ascii_digit()),
+            _ => value.chars().any(is_arabic_letter) || value.chars().any(|c| c.is_ascii_alphabetic()),
+        };
+        if valid {
+            result.set(key, value, cell.confidence, "text");
+        }
+    }
+}
+
+#[cfg(test)]
 pub fn parse(lines: &[Line]) -> ReadResult {
     parse_with_codes(lines, &[])
 }
@@ -1058,6 +1187,14 @@ pub fn parse_with_codes(lines: &[Line], codes: &[String]) -> ReadResult {
     if is_ministry_badge(lines) {
         parse_ministry_badge(lines, &mut result);
         result.document = "ministry_badge".into();
+        if result.fields.is_empty() {
+            result.warnings.push("لم يُعثر على بيانات مقروءة في الصورة".into());
+        }
+        return result;
+    }
+    if is_vehicle_registration(lines) {
+        parse_vehicle_registration(lines, &mut result);
+        result.document = "vehicle_registration".into();
         if result.fields.is_empty() {
             result.warnings.push("لم يُعثر على بيانات مقروءة في الصورة".into());
         }
@@ -1335,6 +1472,51 @@ mod tests {
         assert_eq!(v(&r, "doc_number"), "X100000001");
         assert_eq!(v(&r, "issue_date"), "2026-02-01");
         assert_eq!(v(&r, "job_title"), "مهندس أقدم");
+    }
+
+    #[test]
+    fn vehicle_registration_front_and_back() {
+        let v = |r: &ReadResult, k: &str| r.get(k).map(|f| f.value.clone()).unwrap_or_default();
+        let at = |text: &str, x: f32, y: f32| Line { text: text.into(), confidence: 0.95, bbox: [x, y, x + 60., y + 20.] };
+        // Synthetic licence number; the check digit is computed here.
+        let body = format!("V<X12345678{}", "<".repeat(18));
+        let check = check_digit(&body);
+        let front = vec![
+            at("Vehicle Registration Licence", 0., 0.),
+            at("خصوصي 12A34567", 300., 100.),
+            at("B. 01.02.2020", 600., 140.),
+            at("1. 03.02.2025", 600., 300.),
+            at("02.02.2030", 300., 340.),
+            at(&format!("{body}{check}"), 0., 420.),
+        ];
+        let r = parse(&front);
+        assert_eq!(r.document, "vehicle_registration");
+        assert_eq!(v(&r, "annual_no"), "X12345678");
+        assert_eq!(r.get("annual_no").unwrap().source, "mrz");
+        assert_eq!(v(&r, "plate"), "12 A34567 خصوصي");
+        assert!(r.get("plate").unwrap().confidence < 0.85);
+        assert_eq!(v(&r, "issue_date"), "2025-02-03");
+        assert_eq!(v(&r, "expiry_date"), "2030-02-02");
+        // A wrong check digit is offered for review only.
+        let wrong = char::from_digit((check.to_digit(10).unwrap() + 1) % 10, 10).unwrap();
+        let mut bad = front.clone();
+        bad.pop();
+        bad.push(at(&format!("{body}{wrong}"), 0., 420.));
+        assert!(parse(&bad).get("annual_no").unwrap().confidence < 0.85);
+
+        let back = vec![
+            at("D.1.", 0., 0.), at("تويوتا", 100., 2.), at("E.", 500., 0.), at("ABC123", 600., 0.),
+            at("D.3.", 0., 40.), at("كامري", 100., 41.), at("11.", 500., 40.), at("2022", 600., 40.),
+            at("R.", 0., 80.), at("أبيض", 100., 80.), at("13.", 500., 80.),
+            at("18.", 0., 120.), at("19.", 300., 120.),
+            at("D.1.Vehicle brand name E.Chassis number", 0., 200.),
+        ];
+        let r = parse(&back);
+        assert_eq!(r.document, "vehicle_registration");
+        assert_eq!(v(&r, "brand"), "تويوتا");
+        assert_eq!(v(&r, "vehicle_type"), "كامري");
+        assert_eq!(v(&r, "color"), "أبيض");
+        assert_eq!(v(&r, "year"), "2022");
     }
 
     #[test]
