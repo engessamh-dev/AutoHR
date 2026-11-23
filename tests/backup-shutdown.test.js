@@ -34,6 +34,7 @@ function harness({ fail = false } = {}) {
     getCurrentWindow: () => ({ onCloseRequested(fn) { context.closeHandler = fn; } }),
     confirmAction: async () => true,
     clearLoginMessage: () => {},
+    applyUiScale: () => {},
     listen: async () => () => {},
     requestAnimationFrame: fn => fn(),
     setTimeout: fn => { fn(); },

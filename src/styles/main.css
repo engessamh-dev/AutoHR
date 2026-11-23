@@ -576,3 +576,33 @@
 .theme-choice:hover{border-color:var(--ui-accent)}
 .theme-choice[aria-checked="true"]{border-color:var(--ui-accent);box-shadow:0 0 0 1px var(--ui-accent);color:var(--ui-accent);font-weight:600}
 .theme-choice .theme-icon{width:24px;height:24px}
+
+/* ── Compact density (1.0.4): sizes and spacing only, colours untouched ──────
+   Tuned for 1920×1080 at 125% Windows scaling (1536×864 CSS px). Kept inside the
+   components layer so per-element Tailwind utilities still win. */
+@layer components {
+  .input-field { padding: .375rem .75rem; font-size: .875rem; line-height: 1.25rem; border-radius: .5rem; }
+  textarea.input-field { line-height: 1.5rem; }
+  .btn-primary { padding: .375rem 1rem; font-size: .875rem; line-height: 1.25rem; }
+  .btn-secondary, .btn-danger { padding: .375rem .75rem; font-size: .875rem; line-height: 1.25rem; }
+  .card { padding: 1rem 1.25rem; border-radius: .75rem; }
+  .card-sm, .stat-card { padding: .75rem 1rem; }
+  .stat-value { font-size: 1.5rem; line-height: 2rem; }
+  .table-header { padding: .5rem .75rem; }
+  .table-cell { padding: .5rem .75rem; }
+  .nav-item { padding-block: .45rem; }
+  .section-title { margin-bottom: .5rem; }
+}
+.app-header { padding-block: .5rem !important; padding-inline: 1.25rem !important; }
+#screen-container { padding: 1rem 1.25rem; }
+.app-sidebar { width: 13.5rem; }
+.sidebar-collapsed .app-sidebar { width: 4rem; }
+
+/* «حجم الواجهة»: per-machine scale applied while signed in (never on the login screen). */
+html[data-ui-scale] #app-shell { height: calc(100vh / var(--ui-scale)); }
+.ui-scale-picker { display: flex; align-items: center; justify-content: space-between; gap: 6px; margin-bottom: 8px; font-size: 11px; color: var(--ui-text-muted); white-space: nowrap; }
+.ui-scale-options { display: inline-flex; border: 1px solid var(--ui-line-strong); border-radius: 6px; overflow: hidden; }
+.ui-scale-options button { padding: 2px 7px; font-size: 11px; color: var(--ui-text); background: transparent; border: 0; cursor: pointer; }
+.ui-scale-options button + button { border-inline-start: 1px solid var(--ui-line-strong); }
+.ui-scale-options button[aria-pressed="true"] { background: var(--ui-accent-soft); color: var(--ui-text-strong); font-weight: 600; }
+.sidebar-collapsed .ui-scale-picker { display: none; }

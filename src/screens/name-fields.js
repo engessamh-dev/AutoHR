@@ -7,7 +7,6 @@ export const ARABIC_PARTS = [
   ["first", "الاسم"],
   ["father", "الأب"],
   ["grandfather", "الجد"],
-  ["great_grandfather", "جد الأب"],
   ["surname", "اللقب"],
 ];
 

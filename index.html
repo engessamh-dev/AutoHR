@@ -18,17 +18,18 @@
       <div class="login-card-top" aria-hidden="true"></div>
       <div class="login-card-ext" aria-hidden="true"></div>
       <div class="login-card-cap" aria-hidden="true"></div>
-      <form id="login-form" novalidate>
+      <form id="login-form" novalidate autocomplete="off">
         <label class="login-box login-box-username">
-          <input id="login-username" type="text" placeholder="اسم المستخدم" dir="rtl" autocomplete="username" aria-label="اسم المستخدم" />
+          <input id="login-username" name="cnsarch-login-user" type="text" placeholder="اسم المستخدم" dir="ltr" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false" aria-label="اسم المستخدم" role="combobox" aria-autocomplete="list" aria-controls="login-suggestions" aria-expanded="false" />
         </label>
         <label class="login-box login-box-password">
-          <input id="login-password" type="password" placeholder="كلمة المرور" dir="rtl" autocomplete="current-password" aria-label="كلمة المرور" />
+          <input id="login-password" name="cnsarch-login-secret" type="password" placeholder="كلمة المرور" dir="ltr" autocomplete="off" aria-label="كلمة المرور" />
         </label>
         <button id="btn-toggle-password" class="login-hit login-hit-eye" type="button" aria-label="إظهار كلمة المرور" aria-pressed="false"></button>
         <button type="submit" class="login-hit login-hit-submit" aria-label="تسجيل الدخول"></button>
       </form>
       <button id="btn-forgot-password" type="button" class="login-hit login-hit-forgot" aria-label="نسيت كلمة المرور؟"></button>
+      <ul id="login-suggestions" class="login-suggestions hidden" role="listbox" aria-label="أسماء مستخدمين سابقة"></ul>
       <span id="login-unit-name" class="login-unit-name">وحدة الأتمتة</span>
       <p id="login-error" class="login-message hidden" role="alert" aria-live="assertive"></p>
     </main>
@@ -133,6 +134,14 @@
           <div class="sidebar-user-text min-w-0">
             <p id="current-user" class="sidebar-user-name" dir="ltr">sysadmin</p>
             <p id="current-user-role" class="sidebar-user-role"></p>
+          </div>
+        </div>
+        <div class="ui-scale-picker">
+          <span id="ui-scale-label">حجم الواجهة</span>
+          <div class="ui-scale-options" role="group" aria-labelledby="ui-scale-label">
+            <button type="button" data-ui-scale-option="90" aria-pressed="false" title="أصغر">90%</button>
+            <button type="button" data-ui-scale-option="100" aria-pressed="true" title="عادي">100%</button>
+            <button type="button" data-ui-scale-option="110" aria-pressed="false" title="أكبر">110%</button>
           </div>
         </div>
         <button id="btn-logout-side" class="sidebar-logout btn-secondary" title="تسجيل الخروج"><svg class="nav-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M14 4h4.5A1.5 1.5 0 0 1 20 5.5v13a1.5 1.5 0 0 1-1.5 1.5H14"/><path d="M10 8l-4 4 4 4"/><path d="M6 12h10"/></svg><span class="nav-label" data-i18n="logout">تسجيل الخروج</span></button>
