@@ -41,6 +41,7 @@
   --ui-ok: #4ade80;      --ui-ok-bg: #052e16;      --ui-ok-line: #14532d;
   --ui-warn: #fbbf24;    --ui-warn-bg: #2a1a04;    --ui-warn-line: #78350f;
   --ui-danger: #f87171;  --ui-danger-bg: #2a0a0a;  --ui-danger-line: #7f1d1d;
+  --ui-danger-outline-text: #fca5a5;
   --ui-info: #93c5fd;    --ui-info-bg: rgba(5, 35, 62, .75); --ui-info-line: rgba(59, 130, 246, .3);
   --ui-avatar-bg: linear-gradient(160deg, #1e3a5f, #0b1220);
 
@@ -95,6 +96,7 @@
   --ui-ok: #166534;      --ui-ok-bg: #e7f6ec;      --ui-ok-line: #a7d9b7;
   --ui-warn: #8a4b00;    --ui-warn-bg: #fff5df;    --ui-warn-line: #ecc47a;
   --ui-danger: #b42318;  --ui-danger-bg: #fdeceb;  --ui-danger-line: #f0b4ae;
+  --ui-danger-outline-text: #b42318;
   --ui-info: #1d4f8c;    --ui-info-bg: #eaf3fc;    --ui-info-line: #b6d2f0;
   --ui-avatar-bg: linear-gradient(160deg, #dbe9f8, #c3d7ee);
 
@@ -606,3 +608,9 @@ html[data-ui-scale] #app-shell { height: calc(100vh / var(--ui-scale)); }
 .ui-scale-options button + button { border-inline-start: 1px solid var(--ui-line-strong); }
 .ui-scale-options button[aria-pressed="true"] { background: var(--ui-accent-soft); color: var(--ui-text-strong); font-weight: 600; }
 .sidebar-collapsed .ui-scale-picker { display: none; }
+
+/* Settings → backup: restore lives in its own warning card (same card, red accent on the start edge). */
+.card.danger-zone { border-inline-start: 3px solid var(--ui-danger); }
+.danger-zone-title { display: flex; align-items: center; gap: 6px; margin: 0; font-size: .8125rem; font-weight: 700; color: var(--ui-danger); }
+.btn-danger-outline { padding: .375rem .9rem; font-size: .875rem; line-height: 1.25rem; font-weight: 600; color: var(--ui-danger-outline-text); background: transparent; border: 1px solid rgba(239,68,68,.7); border-radius: .5rem; cursor: pointer; transition: background-color .15s, color .15s; }
+.btn-danger-outline:hover, .btn-danger-outline:focus-visible { background: #dc2626; border-color: #dc2626; color: #fff; }
