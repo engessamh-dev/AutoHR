@@ -1,25 +1,31 @@
 /* ── Login screen ─────────────────────────────────────────────────────────
-   The approved design is the background picture itself (1671×941):
-   logo, titles, card, field frames, icons, button, links and footer are
-   untouched pixels from the design. Only the parts that change or react
-   are real elements, placed on the picture's own coordinates:
-   inputs and their placeholders, the eye / login / forgot hit areas,
-   the unit name, the message box (a cut-out of the design's own error box)
-   and the version.
-
-   The picture is drawn with background-size:cover, so one design pixel is
-   --px = max(100vw/1671, 100vh/941) on every screen, and an element at
-   design point (x, y) sits at centre + ((x − 835.5), (y − 470.5)) × --px. */
+   Built from the approved design (1671×941) in three layers, so every part
+   stays visible and in proportion on any window size and Windows scaling:
+   1. the airport scene, full-bleed (background-size:cover);
+   2. the centre block (logo circle + card), cut out of the design and sized
+      by --pc, centred in the space above the footer;
+   3. the footer bar, cut out of the design, fitted to the window width and
+      always fully shown at the bottom (--pf).
+   Only the parts that change or react are real elements (inputs, hit areas,
+   unit name, message box, version), placed on the design's own coordinates:
+   inside a layer, design point (x, y) sits at ((x − 835.5), y) × --px. */
 .login-screen{
-  --px:max(calc(100vw / 1671),calc(100vh / 941));
+  --pf:min(calc(100vw / 1671),calc(100vh / 941));                     /* footer: fits the window */
+  --pc:min(calc(100vh / 941 * .85),calc(100vw / 1671 * .95));         /* centre block: ~85% of the design size */
   position:fixed;inset:0;z-index:40;overflow:hidden;
   background:#04122d url('../assets/login-background-gcaan.jpg') center / cover no-repeat;
   font-family:"Segoe UI","Cairo","Noto Sans Arabic",Tahoma,Arial,sans-serif;
 }
 .login-screen.hidden{display:none}
-.login-stage{position:absolute;left:50%;top:50%;width:0;height:0}
+.login-stage{
+  --px:var(--pc);
+  position:absolute;left:50%;width:0;height:0;
+  /* centre the collapsed block (design y 0…800) in the space above the footer (83 design px tall) */
+  top:max(0px,calc((100vh - 83 * var(--pf) - 800 * var(--pc)) / 2));
+}
 .login-stage > *, .login-stage form > *{position:absolute}
 .login-stage form{position:static}
+.login-card-top{--x0:498;--y0:0;--x1:1174;--y1:740;pointer-events:none;background:url('../assets/login-card-top.png') 0 0 / 100% 100% no-repeat}
 
 /* x0 y0 x1 y1 in design pixels → box */
 .login-box-username{--x0:585;--y0:435;--x1:1085;--y1:484}
@@ -29,9 +35,8 @@
 .login-hit-forgot{--x0:722;--y0:625;--x1:952;--y1:656}
 .login-unit-name{--x0:790;--y0:674;--x1:935;--y1:710}
 .login-message{--x0:534;--y0:728;--x1:1138;--y1:805}
-.login-version{--x0:1374;--y0:883;--x1:1508;--y1:915}
-.login-box,.login-hit,.login-unit-name,.login-message,.login-version,.login-card-ext,.login-card-cap{
-  left:calc((var(--x0) - 835.5) * var(--px));top:calc((var(--y0) - 470.5) * var(--px));
+.login-box,.login-hit,.login-unit-name,.login-message,.login-card-top,.login-card-ext,.login-card-cap{
+  left:calc((var(--x0) - 835.5) * var(--px));top:calc(var(--y0) * var(--px));
   width:calc((var(--x1) - var(--x0)) * var(--px));height:calc((var(--y1) - var(--y0)) * var(--px));
 }
 
@@ -40,13 +45,9 @@
    behind the old bottom shows through when it is collapsed. */
 .login-card-ext,.login-card-cap{--x0:498;--x1:1174;pointer-events:none;transition:height .25s ease,top .25s ease}
 .login-stage{--ext:0}
-.login-stage:has(.login-message:not(.hidden)){--ext:54}
-.login-card-ext{--y0:722;--y1:calc(722 + var(--ext));background:url('../assets/login-card-side.png') 0 0 / 100% 100% no-repeat}
-.login-card-cap{--y0:calc(722 + var(--ext));--y1:calc(808 + var(--ext));background:url('../assets/login-card-bottom.png') 0 0 / 100% 100% no-repeat}
-/* Blend the first rows into the card above, so there is no seam where the cut-outs start. */
-.login-card-ext,.login-stage:not(:has(.login-message:not(.hidden))) .login-card-cap{
-  -webkit-mask-image:linear-gradient(to bottom,transparent 0,#000 calc(10 * var(--px)));mask-image:linear-gradient(to bottom,transparent 0,#000 calc(10 * var(--px)));
-}
+.login-stage:has(.login-message:not(.hidden)){--ext:36}
+.login-card-ext{--y0:740;--y1:calc(740 + var(--ext));background:url('../assets/login-card-side.png') 0 0 / 100% 100% no-repeat}
+.login-card-cap{--y0:calc(740 + var(--ext));--y1:calc(826 + var(--ext));background:url('../assets/login-card-bottom.png') 0 0 / 100% 100% no-repeat}
 
 /* Fields: the frame and icons are in the picture; the box only adds focus/error glow. */
 .login-box{display:block;border-radius:calc(12 * var(--px));cursor:text;transition:box-shadow .15s}
@@ -103,7 +104,16 @@
 .login-message[data-kind="info"]::before{filter:hue-rotate(210deg) saturate(1.1)}
 .login-message[data-kind="caps"]::before{filter:hue-rotate(45deg) saturate(1.2)}
 
+/* Footer bar (design x 22…1649, y 858…941) with the live version text in it. */
+.login-footer{
+  --px:var(--pf);
+  position:absolute;left:50%;bottom:0;transform:translateX(-50%);
+  width:calc(1627 * var(--px));height:calc(83 * var(--px));
+  background:url('../assets/login-footer.png') 0 0 / 100% 100% no-repeat;pointer-events:none;
+}
 .login-version{
+  position:absolute;left:calc((1374 - 22) * var(--px));top:calc((883 - 858) * var(--px));
+  width:calc(134 * var(--px));height:calc(32 * var(--px));
   display:flex;align-items:center;justify-content:center;
-  color:#fff;font-size:calc(20 * var(--px));font-weight:700;white-space:nowrap;pointer-events:none;
+  color:#fff;font-size:calc(20 * var(--px));font-weight:700;white-space:nowrap;
 }

@@ -15,6 +15,7 @@
          on the picture's own coordinates (see login.css). -->
     <main class="login-stage" aria-label="نظام الأرشفة الإلكتروني">
       <h1 class="sr-only">نظام الأرشفة الإلكتروني وإدارة معلومات الموظفين</h1>
+      <div class="login-card-top" aria-hidden="true"></div>
       <div class="login-card-ext" aria-hidden="true"></div>
       <div class="login-card-cap" aria-hidden="true"></div>
       <form id="login-form" novalidate>
@@ -30,8 +31,10 @@
       <button id="btn-forgot-password" type="button" class="login-hit login-hit-forgot" aria-label="نسيت كلمة المرور؟"></button>
       <span id="login-unit-name" class="login-unit-name">وحدة الأتمتة</span>
       <p id="login-error" class="login-message hidden" role="alert" aria-live="assertive"></p>
-      <span id="login-app-version" class="login-version" data-app-version dir="rtl"></span>
     </main>
+    <footer class="login-footer">
+      <span id="login-app-version" class="login-version" data-app-version dir="rtl"></span>
+    </footer>
   </div>
 
   <div id="setup-screen" class="hidden min-h-screen flex items-center justify-center" dir="rtl">
