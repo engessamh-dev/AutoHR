@@ -61,6 +61,10 @@
    Arabic placeholder keeps its place on the right like the design. */
 .login-box input{direction:ltr;text-align:left}
 .login-box input:placeholder-shown{direction:rtl;text-align:right}
+/* The password caret starts on the left even before typing; only the Arabic
+   placeholder text stays on the right. */
+#login-password:placeholder-shown{direction:ltr;text-align:left}
+#login-password::placeholder{direction:rtl;text-align:right}
 .login-box input:focus,.login-box input:focus-visible{outline:0;border:0;box-shadow:none;background:transparent}
 .login-box-username input{right:calc(28 * var(--px));left:calc(70 * var(--px))}   /* text ends at x≈1057 like the design */
 .login-box-password input{right:calc(80 * var(--px));left:calc(70 * var(--px))}   /* ends at x≈1005, left of the eye */

@@ -21,11 +21,11 @@ function itemLabel(item) {
 
 function itemHtml(item, i) {
   const original = item.original_text && item.original_text !== item.text
-    ? `<span style="color:#6b7280"> · الأصل: ${escHtml(item.original_text)}</span>` : "";
+    ? `<span style="color:var(--ui-text-faint)"> · الأصل: ${escHtml(item.original_text)}</span>` : "";
   return `<div class="name-review-item card" data-i="${i}" style="padding:12px;display:flex;flex-direction:column;gap:8px">
     <div style="font-size:13px;display:flex;justify-content:space-between;gap:8px;flex-wrap:wrap">
       <span><strong>${escHtml(item.employee_name)}</strong> · ${escHtml(itemLabel(item))}</span>
-      <span style="color:#9ca3af">${escHtml(item.text)}${original}</span>
+      <span style="color:var(--ui-text-muted)">${escHtml(item.text)}${original}</span>
     </div>
     ${nameFieldsHtml({ key: item.field, label: "", parts: item.parts, text: item.text, passport: item.field === "passport_name" })}
     <div style="display:flex;justify-content:flex-end">
@@ -40,13 +40,13 @@ export async function openNameReview(onChanged) {
   const overlay = document.createElement("div");
   overlay.style.cssText = "position:fixed;inset:0;z-index:60;background:rgba(0,0,0,.6);display:flex;align-items:center;justify-content:center;padding:16px";
   overlay.innerHTML = `<div role="dialog" aria-label="مراجعة الأسماء" dir="rtl"
-      style="background:#1f1f1f;border:1px solid #2d2d2d;border-radius:12px;width:min(760px,100%);max-height:90vh;display:flex;flex-direction:column">
-    <div style="padding:14px 16px;border-bottom:1px solid #2d2d2d;display:flex;align-items:center;gap:8px">
+      style="background:var(--ui-surface);border:1px solid var(--ui-line);border-radius:12px;width:min(760px,100%);max-height:90vh;display:flex;flex-direction:column">
+    <div style="padding:14px 16px;border-bottom:1px solid var(--ui-line);display:flex;align-items:center;gap:8px">
       <strong style="font-size:15px">مراجعة الأسماء</strong>
-      <span id="name-review-count" style="font-size:12px;color:#9ca3af"></span>
+      <span id="name-review-count" style="font-size:12px;color:var(--ui-text-muted)"></span>
       <button id="name-review-close" class="btn-secondary text-sm" style="margin-right:auto">إغلاق</button>
     </div>
-    <p style="padding:10px 16px 0;font-size:12px;color:#9ca3af">قُسّمت هذه الأسماء تلقائيًا ولم يكن التقسيم مؤكدًا. صحّح الحقول إن لزم ثم اضغط «تأكيد». الاسم الكامل يُعاد تجميعه من الحقول.</p>
+    <p style="padding:10px 16px 0;font-size:12px;color:var(--ui-text-muted)">قُسّمت هذه الأسماء تلقائيًا ولم يكن التقسيم مؤكدًا. صحّح الحقول إن لزم ثم اضغط «تأكيد». الاسم الكامل يُعاد تجميعه من الحقول.</p>
     <div id="name-review-list" style="padding:12px 16px;overflow:auto;display:flex;flex-direction:column;gap:10px"></div>
   </div>`;
   document.body.append(overlay);
@@ -60,7 +60,7 @@ export async function openNameReview(onChanged) {
     const list = overlay.querySelector("#name-review-list");
     list.innerHTML = items.length
       ? items.map(itemHtml).join("")
-      : `<p style="font-size:13px;color:#9ca3af;padding:12px 0">لا توجد أسماء بحاجة لمراجعة.</p>`;
+      : `<p style="font-size:13px;color:var(--ui-text-muted);padding:12px 0">لا توجد أسماء بحاجة لمراجعة.</p>`;
     list.querySelectorAll(".btn-confirm-name").forEach(button => {
       button.addEventListener("click", async () => {
         const row = button.closest(".name-review-item");

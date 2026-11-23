@@ -89,8 +89,8 @@ export async function renderEmployees(container, user, ctx) {
     </div>
     <div id="emp-overlay" style="display:none;position:fixed;inset:0;z-index:40;background:rgba(0,0,0,0.5)"></div>
     <div id="emp-panel" style="position:fixed;top:0;bottom:0;right:0;width:min(580px,100vw);z-index:50;
-      background:#1f1f1f;border-left:1px solid #2d2d2d;box-shadow:-8px 0 32px rgba(0,0,0,0.5);
-      display:flex;flex-direction:column;transform:translateX(100%);transition:transform 0.3s ease"></div>`;
+      background:var(--ui-surface);border-left:1px solid var(--ui-line);box-shadow:-8px 0 32px rgba(0,0,0,0.5);
+      display:flex;flex-direction:column;transform:translateX(calc(100% + 40px));transition:transform 0.3s ease"></div>`;
 
   renderTable();
   container.querySelector("#emp-search").addEventListener("input",
@@ -223,7 +223,7 @@ async function closePanel(force = false) {
       return;
     }
   }
-  document.getElementById("emp-panel").style.transform = "translateX(100%)";
+  document.getElementById("emp-panel").style.transform = "translateX(calc(100% + 40px))";
   document.getElementById("emp-overlay").style.display = "none";
   _panelDraft = null;
   _panelDirty = false;
@@ -320,32 +320,32 @@ function field(label, id, emp, opts = {}) {
   const val = f(id, emp);
   if (opts.type === "select") {
     return `<div>
-      <p style="font-size:11px;color:#6b7280;text-transform:uppercase;letter-spacing:.05em;margin-bottom:4px">${label}</p>
+      <p style="font-size:11px;color:var(--ui-text-faint);text-transform:uppercase;letter-spacing:.05em;margin-bottom:4px">${label}</p>
       <select id="f-${id}" class="input-field">
         ${opts.options.map(([v,l]) => `<option value="${v}" ${emp?.[id]===v?"selected":""}>${l}</option>`).join("")}
       </select></div>`;
   }
   if (opts.type === "textarea") {
     return `<div style="${opts.span ? 'grid-column:span 2' : ''}">
-      <p style="font-size:11px;color:#6b7280;text-transform:uppercase;letter-spacing:.05em;margin-bottom:4px">${label}</p>
+      <p style="font-size:11px;color:var(--ui-text-faint);text-transform:uppercase;letter-spacing:.05em;margin-bottom:4px">${label}</p>
       <textarea id="f-${id}" class="input-field" style="height:70px;resize:none">${val}</textarea></div>`;
   }
   return `<div style="${opts.span ? 'grid-column:span 2' : ''}">
-    <p style="font-size:11px;color:#6b7280;text-transform:uppercase;letter-spacing:.05em;margin-bottom:4px">${label}</p>
+    <p style="font-size:11px;color:var(--ui-text-faint);text-transform:uppercase;letter-spacing:.05em;margin-bottom:4px">${label}</p>
     <input id="f-${id}" class="input-field" type="${opts.date ? 'date' : 'text'}"
            dir="${opts.ltr ? 'ltr' : 'rtl'}" value="${opts.date ? (emp?.[id] ?? '') : val}" /></div>`;
 }
 
 function fixedCompanyField(label, id, value) {
   return `<div>
-    <p style="font-size:11px;color:#6b7280;text-transform:uppercase;letter-spacing:.05em;margin-bottom:4px">${label}</p>
+    <p style="font-size:11px;color:var(--ui-text-faint);text-transform:uppercase;letter-spacing:.05em;margin-bottom:4px">${label}</p>
     <input id="f-${id}" class="input-field" type="text" value="${escHtml(value ?? "")}" readonly />
   </div>`;
 }
 
 function sectionTitle(title) {
-  return `<div style="grid-column:span 2;border-bottom:1px solid #2d2d2d;padding-bottom:6px;margin-top:8px">
-    <p style="font-size:12px;font-weight:700;color:#24a9ff;text-transform:uppercase;letter-spacing:.08em">${title}</p>
+  return `<div style="grid-column:span 2;border-bottom:1px solid var(--ui-line);padding-bottom:6px;margin-top:8px">
+    <p style="font-size:12px;font-weight:700;color:var(--ui-accent);text-transform:uppercase;letter-spacing:.08em">${title}</p>
   </div>`;
 }
 
@@ -934,18 +934,18 @@ function openDocumentsPrintDialog(emp) {
   overlay.setAttribute("dir", "rtl");
   overlay.style.cssText = "position:fixed;inset:0;z-index:10000;background:rgba(0,0,0,.72);display:flex;flex-direction:column";
   overlay.innerHTML = `
-    <div style="height:64px;background:#1f1f1f;border-bottom:1px solid #333;display:flex;align-items:center;gap:10px;padding:10px 18px">
+    <div style="height:64px;background:var(--ui-surface);border-bottom:1px solid var(--ui-line);display:flex;align-items:center;gap:10px;padding:10px 18px">
       <strong style="font-size:16px;margin-left:auto">طباعة مستمسكات ${escHtml(emp.full_name)}</strong>
       <button type="button" id="docs-print" class="btn-primary">طباعة</button>
       <button type="button" id="docs-print-close" class="btn-secondary">إغلاق</button>
     </div>
     <div style="display:grid;grid-template-columns:260px 1fr;min-height:0;flex:1">
-      <aside style="background:#181818;border-left:1px solid #333;padding:16px;overflow:auto">
-        <p style="font-size:12px;color:#9ca3af;margin-bottom:12px">أزل التأشير عن المستمسكات التي لا تريد ظهورها في الطباعة.</p>
+      <aside style="background:var(--ui-surface-2);border-left:1px solid var(--ui-line);padding:16px;overflow:auto">
+        <p style="font-size:12px;color:var(--ui-text-muted);margin-bottom:12px">أزل التأشير عن المستمسكات التي لا تريد ظهورها في الطباعة.</p>
         ${visiblePrintableDocumentDefinitions(emp).map(definition => `
-          <label style="display:flex;align-items:center;gap:8px;padding:9px 6px;border-bottom:1px solid #2d2d2d;cursor:pointer">
-            <input type="checkbox" class="docs-print-choice" value="${definition.id}" checked style="width:16px;height:16px;accent-color:#24a9ff" />
-            <span style="font-size:13px;color:#e5e7eb">${escHtml(printableDefinitionTitle(definition, emp))}</span>
+          <label style="display:flex;align-items:center;gap:8px;padding:9px 6px;border-bottom:1px solid var(--ui-line);cursor:pointer">
+            <input type="checkbox" class="docs-print-choice" value="${definition.id}" checked style="width:16px;height:16px;accent-color:var(--ui-accent)" />
+            <span style="font-size:13px;color:var(--ui-text-strong)">${escHtml(printableDefinitionTitle(definition, emp))}</span>
           </label>`).join("")}
       </aside>
       <main id="docs-print-preview" style="overflow:auto;background:#555;padding:18px"></main>
@@ -1016,9 +1016,9 @@ function tabContent(tab, emp) {
       const extra = `<div class="emp-grid">
         ${field("ملاحظات", "notes", emp, {type:"textarea", span:true})}
         <div style="grid-column:span 2;display:flex;align-items:center;gap:8px">
-          <input id="f-is_active" type="checkbox" style="width:16px;height:16px;accent-color:#24a9ff"
+          <input id="f-is_active" type="checkbox" style="width:16px;height:16px;accent-color:var(--ui-accent)"
                  ${(!emp || emp.is_active) ? "checked" : ""} />
-          <label for="f-is_active" style="font-size:14px;color:#d1d5db">موظف نشط</label>
+          <label for="f-is_active" style="font-size:14px;color:var(--ui-text)">موظف نشط</label>
         </div>
       </div>`;
       return `<div class="emp-sec-tools"><button type="button" class="emp-link" data-sections-all="open">فتح الكل</button><button type="button" class="emp-link" data-sections-all="close">طيّ الكل</button></div>
@@ -1155,28 +1155,28 @@ function renderPanel(emp) {
 
   panel.innerHTML = `
     <!-- Header -->
-    <div style="flex-shrink:0;padding:14px 20px;border-bottom:1px solid #2d2d2d;
+    <div style="flex-shrink:0;padding:14px 20px;border-bottom:1px solid var(--ui-line);
                 display:flex;align-items:center;justify-content:space-between">
       <div style="display:flex;align-items:center;gap:12px;min-width:0">
         <div id="emp-panel-photo">${headerPhotoHtml(draft)}</div>
         <div style="min-width:0">
           <h3 style="font-weight:700;font-size:15px">${isNew ? "إضافة موظف جديد" : escHtml(emp.full_name)}</h3>
-          ${!isNew ? `<p style="font-size:11px;color:#6b7280">${escHtml(emp.job_title??"")} ${emp.department ? "· "+escHtml(emp.department) : ""}</p>` : ""}
+          ${!isNew ? `<p style="font-size:11px;color:var(--ui-text-faint)">${escHtml(emp.job_title??"")} ${emp.department ? "· "+escHtml(emp.department) : ""}</p>` : ""}
         </div>
         ${!isNew ? `<span class="emp-pill ${emp.is_active ? "ok" : "none"}">${emp.is_active ? "نشط" : "غير نشط"}</span>` : ""}
       </div>
-      <button id="panel-close" style="color:#9ca3af;font-size:20px;background:none;border:none;cursor:pointer">✕</button>
+      <button id="panel-close" style="color:var(--ui-text-muted);font-size:20px;background:none;border:none;cursor:pointer">✕</button>
     </div>
 
     <!-- Tabs -->
     <div style="flex-shrink:0;display:flex;gap:2px;padding:8px 12px;
-                border-bottom:1px solid #2d2d2d;overflow-x:auto;flex-wrap:nowrap">
+                border-bottom:1px solid var(--ui-line);overflow-x:auto;flex-wrap:nowrap">
       ${TABS.map(t => `
         <button class="tab-btn" data-tab="${t.id}" style="
           white-space:nowrap;padding:6px 10px;border-radius:6px;font-size:12px;border:none;
           cursor:pointer;transition:all .15s;
-          background:${_activeTab===t.id ? "rgba(36,169,255,.14)" : "transparent"};
-          color:${_activeTab===t.id ? "#24a9ff" : "#9ca3af"};
+          background:${_activeTab===t.id ? "var(--ui-accent-soft)" : "transparent"};
+          color:${_activeTab===t.id ? "var(--ui-accent)" : "var(--ui-text-muted)"};
           font-weight:${_activeTab===t.id ? "700" : "400"}">
           ${t.label}<span class="emp-tab-count" data-count-for="${t.id}" hidden></span>
         </button>`).join("")}
@@ -1211,8 +1211,8 @@ function renderPanel(emp) {
       _activeTab = btn.dataset.tab;
       panel.querySelectorAll(".tab-btn").forEach(b => {
         const active = b.dataset.tab === _activeTab;
-        b.style.background = active ? "rgba(36,169,255,.14)" : "transparent";
-        b.style.color       = active ? "#24a9ff"   : "#9ca3af";
+        b.style.background = active ? "var(--ui-accent-soft)" : "transparent";
+        b.style.color       = active ? "var(--ui-accent)"   : "var(--ui-text-muted)";
         b.style.fontWeight  = active ? "700"        : "400";
       });
       document.getElementById("tab-content").innerHTML = tabContent(_activeTab, _panelDraft ?? draft);
@@ -1626,7 +1626,7 @@ function renderSpouseList(emp) {
   if (!config) return;
   const spouses = spouseListFromEmployee(emp);
   container.innerHTML = spouses.map((spouse, index) => spouseRowHtml(spouse, index, config)).join("") ||
-    `<p class="spouse-empty" style="font-size:13px;color:#6b7280;padding:8px 0">${config.emptyLabel}</p>`;
+    `<p class="spouse-empty" style="font-size:13px;color:var(--ui-text-faint);padding:8px 0">${config.emptyLabel}</p>`;
   const addButton = document.getElementById("btn-add-spouse");
   if (addButton) {
     addButton.style.display = spouses.length >= config.max ? "none" : "inline-flex";
@@ -1708,47 +1708,47 @@ function spouseRowHtml(spouse = {}, index = Date.now(), config = { itemLabel: "�
       removeClass: "btn-remove-spouse",
     })}
     <div style="grid-column:span 2">
-      <p style="font-size:10px;color:#6b7280;margin-bottom:3px">رقم البطاقة الموحدة</p>
+      <p style="font-size:10px;color:var(--ui-text-faint);margin-bottom:3px">رقم البطاقة الموحدة</p>
       <input class="input-field sp-civil" dir="ltr" value="${escHtml(spouse.civil_id??"")}"/>
     </div>
     ${recordNameFields("الاسم", "name", spouse)}
     ${recordNameFields("اسم الأم", "mother_name", spouse)}
     <div>
-      <p style="font-size:10px;color:#6b7280;margin-bottom:3px">الجنس</p>
+      <p style="font-size:10px;color:var(--ui-text-faint);margin-bottom:3px">الجنس</p>
       <select class="input-field sp-gender">
         ${[["","—"],["ذكر","ذكر"],["أنثى","أنثى"]].map(([value, label]) =>
           `<option value="${value}" ${(spouse.gender || config.defaultGender)===value?"selected":""}>${label}</option>`).join("")}
       </select>
     </div>
     <div>
-      <p style="font-size:10px;color:#6b7280;margin-bottom:3px">فصيلة الدم</p>
+      <p style="font-size:10px;color:var(--ui-text-faint);margin-bottom:3px">فصيلة الدم</p>
       <select class="input-field sp-blood">
         ${["","A+","A-","B+","B-","AB+","AB-","O+","O-"].map(b =>
           `<option ${spouse.blood_type===b?"selected":""}>${b}</option>`).join("")}
       </select>
     </div>
     <div>
-      <p style="font-size:10px;color:#6b7280;margin-bottom:3px">جهة الإصدار</p>
+      <p style="font-size:10px;color:var(--ui-text-faint);margin-bottom:3px">جهة الإصدار</p>
       <input class="input-field sp-issuer" value="${escHtml(spouse.issuer??"")}"/>
     </div>
     <div>
-      <p style="font-size:10px;color:#6b7280;margin-bottom:3px">تاريخ الإصدار</p>
+      <p style="font-size:10px;color:var(--ui-text-faint);margin-bottom:3px">تاريخ الإصدار</p>
       <input class="input-field sp-issue" type="date" value="${spouse.issue_date??""}" />
     </div>
     <div>
-      <p style="font-size:10px;color:#6b7280;margin-bottom:3px">تاريخ النفاذ</p>
+      <p style="font-size:10px;color:var(--ui-text-faint);margin-bottom:3px">تاريخ النفاذ</p>
       <input class="input-field sp-expiry" type="date" value="${spouse.expiry_date??""}" />
     </div>
     <div>
-      <p style="font-size:10px;color:#6b7280;margin-bottom:3px">محل الولادة</p>
+      <p style="font-size:10px;color:var(--ui-text-faint);margin-bottom:3px">محل الولادة</p>
       <input class="input-field sp-birthplace" value="${escHtml(spouse.birthplace??"")}"/>
     </div>
     <div>
-      <p style="font-size:10px;color:#6b7280;margin-bottom:3px">تاريخ الولادة</p>
+      <p style="font-size:10px;color:var(--ui-text-faint);margin-bottom:3px">تاريخ الولادة</p>
       <input class="input-field sp-birthdate" type="date" value="${spouse.birthdate??""}" />
     </div>
     <div style="grid-column:span 2">
-      <p style="font-size:10px;color:#6b7280;margin-bottom:3px">تاريخ الزواج</p>
+      <p style="font-size:10px;color:var(--ui-text-faint);margin-bottom:3px">تاريخ الزواج</p>
       <input class="input-field sp-marriage" type="date" value="${spouse.marriage_date??""}" />
     </div>
     <div style="grid-column:span 2">
@@ -1792,7 +1792,7 @@ function renderFamilyList(emp) {
   try { members = JSON.parse(emp?.family_members ?? "[]"); } catch {}
 
   container.innerHTML = members.map((m, i) => familyRowHtml(m, i)).join("") ||
-    `<p style="font-size:13px;color:#6b7280;padding:8px 0">لا يوجد أفراد مسجلون</p>`;
+    `<p style="font-size:13px;color:var(--ui-text-faint);padding:8px 0">لا يوجد أفراد مسجلون</p>`;
 
   container.querySelectorAll(".btn-remove-member").forEach(btn => {
     btn.addEventListener("click", async () => {
@@ -1865,42 +1865,42 @@ function familyRowHtml(m = {}, i = Date.now()) {
       removeClass: "btn-remove-member",
     })}
     <div style="grid-column:span 2">
-      <p style="font-size:10px;color:#6b7280;margin-bottom:3px">رقم البطاقة الموحدة</p>
+      <p style="font-size:10px;color:var(--ui-text-faint);margin-bottom:3px">رقم البطاقة الموحدة</p>
       <input class="input-field fm-civil" dir="ltr" value="${escHtml(m.civil_id??"")}"/>
     </div>
     ${recordNameFields("الاسم", "name", m)}
     <div>
-      <p style="font-size:10px;color:#6b7280;margin-bottom:3px">الجنس</p>
+      <p style="font-size:10px;color:var(--ui-text-faint);margin-bottom:3px">الجنس</p>
       <select class="input-field fm-gender">
         ${[["","—"],["ذكر","ذكر"],["أنثى","أنثى"]].map(([value, label]) =>
           `<option value="${value}" ${m.gender===value?"selected":""}>${label}</option>`).join("")}
       </select>
     </div>
     <div>
-      <p style="font-size:10px;color:#6b7280;margin-bottom:3px">فصيلة الدم</p>
+      <p style="font-size:10px;color:var(--ui-text-faint);margin-bottom:3px">فصيلة الدم</p>
       <select class="input-field fm-blood">
         ${["","A+","A-","B+","B-","AB+","AB-","O+","O-"].map(b =>
           `<option ${m.blood_type===b?"selected":""}>${b}</option>`).join("")}
       </select>
     </div>
     <div>
-      <p style="font-size:10px;color:#6b7280;margin-bottom:3px">جهة الإصدار</p>
+      <p style="font-size:10px;color:var(--ui-text-faint);margin-bottom:3px">جهة الإصدار</p>
       <input class="input-field fm-issuer" value="${escHtml(m.issuer??"")}"/>
     </div>
     <div>
-      <p style="font-size:10px;color:#6b7280;margin-bottom:3px">تاريخ الإصدار</p>
+      <p style="font-size:10px;color:var(--ui-text-faint);margin-bottom:3px">تاريخ الإصدار</p>
       <input class="input-field fm-issue" type="date" value="${m.issue_date??""}" />
     </div>
     <div>
-      <p style="font-size:10px;color:#6b7280;margin-bottom:3px">تاريخ النفاذ</p>
+      <p style="font-size:10px;color:var(--ui-text-faint);margin-bottom:3px">تاريخ النفاذ</p>
       <input class="input-field fm-expiry" type="date" value="${m.expiry_date??""}" />
     </div>
     <div>
-      <p style="font-size:10px;color:#6b7280;margin-bottom:3px">محل الولادة</p>
+      <p style="font-size:10px;color:var(--ui-text-faint);margin-bottom:3px">محل الولادة</p>
       <input class="input-field fm-birthplace" value="${escHtml(m.birthplace??"")}"/>
     </div>
     <div>
-      <p style="font-size:10px;color:#6b7280;margin-bottom:3px">تاريخ الولادة</p>
+      <p style="font-size:10px;color:var(--ui-text-faint);margin-bottom:3px">تاريخ الولادة</p>
       <input class="input-field fm-birthdate" type="date" value="${m.birthdate??""}" />
     </div>
     <div style="grid-column:span 2">
@@ -1937,7 +1937,7 @@ function renderVehicleList(emp) {
   try { vehicles = JSON.parse(emp?.vehicles ?? "[]"); } catch {}
 
   container.innerHTML = vehicles.map((vehicle, index) => vehicleRowHtml(vehicle, index)).join("") ||
-    `<p class="vehicle-empty" style="font-size:13px;color:#6b7280;padding:8px 0">لا توجد مركبات مسجلة</p>`;
+    `<p class="vehicle-empty" style="font-size:13px;color:var(--ui-text-faint);padding:8px 0">لا توجد مركبات مسجلة</p>`;
 
   attachVehicleRemoveEvents(container);
 }
@@ -1968,7 +1968,7 @@ function vehicleRowHtml(vehicle = {}, index = Date.now()) {
 
 function vehicleInput(label, className, value = "", ltr = false, date = false) {
   return `<div>
-    <p style="font-size:10px;color:#6b7280;margin-bottom:3px">${label}</p>
+    <p style="font-size:10px;color:var(--ui-text-faint);margin-bottom:3px">${label}</p>
     <input class="input-field ${className}" type="${date ? "date" : "text"}"
       dir="${ltr ? "ltr" : "rtl"}" value="${date ? (value ?? "") : escHtml(value ?? "")}" />
   </div>`;
@@ -1981,7 +1981,7 @@ function attachVehicleRemoveEvents(container) {
       markPanelDirty();
       button.closest(".vehicle-row").remove();
       if (!container.querySelector(".vehicle-row")) {
-        container.innerHTML = `<p class="vehicle-empty" style="font-size:13px;color:#6b7280;padding:8px 0">لا توجد مركبات مسجلة</p>`;
+        container.innerHTML = `<p class="vehicle-empty" style="font-size:13px;color:var(--ui-text-faint);padding:8px 0">لا توجد مركبات مسجلة</p>`;
       }
     });
   });
