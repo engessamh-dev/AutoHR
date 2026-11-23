@@ -57,6 +57,10 @@
   color:#fff;font-size:calc(21 * var(--px));font-weight:600;text-align:right;caret-color:#3ab4ff;
 }
 .login-box input::placeholder{color:#e3e9f1;opacity:1}
+/* Usernames and passwords are Latin: typed left-to-right from the left, while the
+   Arabic placeholder keeps its place on the right like the design. */
+.login-box input{direction:ltr;text-align:left}
+.login-box input:placeholder-shown{direction:rtl;text-align:right}
 .login-box input:focus,.login-box input:focus-visible{outline:0;border:0;box-shadow:none;background:transparent}
 .login-box-username input{right:calc(28 * var(--px));left:calc(70 * var(--px))}   /* text ends at x≈1057 like the design */
 .login-box-password input{right:calc(80 * var(--px));left:calc(70 * var(--px))}   /* ends at x≈1005, left of the eye */
@@ -117,3 +121,20 @@
   display:flex;align-items:center;justify-content:center;
   color:#fff;font-size:calc(20 * var(--px));font-weight:700;white-space:nowrap;
 }
+
+/* Recent-usernames list under the username field (replaces the WebView's dark "Saved info" box). */
+.login-suggestions{
+  --x0:600;--y0:488;--x1:1070;
+  left:calc((var(--x0) - 835.5) * var(--px));top:calc(var(--y0) * var(--px));width:calc((var(--x1) - var(--x0)) * var(--px));
+  z-index:5;margin:0;padding:calc(4 * var(--px));list-style:none;
+  border:calc(1.5 * var(--px)) solid rgba(92,200,255,.7);border-radius:calc(12 * var(--px));
+  background:rgba(4,20,52,.55);backdrop-filter:blur(8px);-webkit-backdrop-filter:blur(8px);
+  box-shadow:0 0 calc(12 * var(--px)) rgba(58,180,255,.45);
+}
+.login-suggestions.hidden{display:none}
+.login-suggestions li{
+  padding:calc(6 * var(--px)) calc(14 * var(--px));border-radius:calc(8 * var(--px));
+  color:#fff;font-size:calc(19 * var(--px));font-weight:600;text-align:left;cursor:pointer;
+  text-shadow:0 1px 3px rgba(0,0,0,.7);
+}
+.login-suggestions li:hover,.login-suggestions li.is-active{background:rgba(58,180,255,.3)}
