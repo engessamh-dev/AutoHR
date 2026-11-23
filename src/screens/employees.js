@@ -12,6 +12,7 @@ import { employeeNameFields, recordNameFields, bindNameFields, readNameFields, r
 
 let _employees = [];
 let _filter = "";
+let _statusFilter = "all";
 let _activeTab = "basic";
 let _panelDraft = null;
 let _panelDirty = false;
@@ -65,12 +66,19 @@ export async function renderEmployees(container, user, ctx) {
   _employees = employees;
   _companyConfig = companyConfig;
   _filter = "";
+  _statusFilter = "all";
 
   container.innerHTML = `
     <div class="flex flex-col gap-4 h-full">
       <div class="flex items-center gap-3 flex-wrap">
         <input id="emp-search" type="text" class="input-field flex-1 min-w-[200px]"
-               placeholder="بحث بالاسم أو القسم أو رقم الهوية أو الهاتف أو العنوان الوظيفي…" />
+               placeholder="بحث بالاسم أو الرقم الوظيفي أو القسم أو رقم الهوية أو الهاتف أو العنوان الوظيفي…" aria-label="بحث في الموظفين" />
+        <select id="emp-status-filter" class="input-field" style="width:auto;min-width:150px" aria-label="حالة الموظف">
+          <option value="all">كل الموظفين</option>
+          <option value="active">النشطون فقط</option>
+          <option value="inactive">غير النشطين فقط</option>
+        </select>
+        <span id="emp-count" class="badge badge-gray"></span>
         <button id="btn-name-review" class="btn-secondary px-4 py-2.5 whitespace-nowrap" hidden>مراجعة الأسماء</button>
         <button id="btn-add-emp" class="btn-primary px-4 py-2.5 whitespace-nowrap">+ إضافة موظف</button>
       </div>
@@ -83,7 +91,11 @@ export async function renderEmployees(container, user, ctx) {
 
   renderTable();
   container.querySelector("#emp-search").addEventListener("input",
-    debounce(e => { _filter = e.target.value.toLowerCase(); renderTable(); }, 250));
+    debounce(e => { _filter = e.target.value.trim().toLowerCase(); renderTable(); }, 250));
+  container.querySelector("#emp-status-filter").addEventListener("change", e => {
+    _statusFilter = e.target.value;
+    renderTable();
+  });
   container.querySelector("#btn-add-emp").addEventListener("click", () => openPanel(null));
   container.querySelector("#emp-overlay").addEventListener("click", () => closePanel());
   if (!can(user, "employees.create")) container.querySelector("#btn-add-emp")?.remove();
@@ -112,9 +124,13 @@ export async function renderEmployees(container, user, ctx) {
 }
 
 function filtered() {
-  if (!_filter) return _employees;
-  return _employees.filter(e =>
+  const byStatus = _statusFilter === "all"
+    ? _employees
+    : _employees.filter(e => (_statusFilter === "active") === Boolean(e.is_active));
+  if (!_filter) return byStatus;
+  return byStatus.filter(e =>
     e.full_name?.toLowerCase().includes(_filter) ||
+    String(e.employee_number ?? "").toLowerCase().includes(_filter) ||
     e.department?.toLowerCase().includes(_filter) ||
     e.civil_id?.includes(_filter) ||
     e.phone?.includes(_filter) ||
@@ -126,6 +142,12 @@ function renderTable() {
   const wrap = document.getElementById("emp-table-wrap");
   if (!wrap) return;
   const rows = filtered();
+  const countEl = document.getElementById("emp-count");
+  if (countEl) countEl.textContent = `${rows.length} / ${_employees.length}`;
+  const canCreate = can(_currentUser, "employees.create");
+  const emptyMessage = _employees.length === 0
+    ? (canCreate ? "لا يوجد موظفون بعد. اضغط «+ إضافة موظف» لإضافة أول موظف." : "لا يوجد موظفون بعد.")
+    : "لا توجد نتائج مطابقة للبحث أو الفلتر";
   wrap.innerHTML = `
     <table class="w-full">
       <thead><tr>
@@ -137,7 +159,7 @@ function renderTable() {
       </tr></thead>
       <tbody>
         ${rows.length === 0
-          ? `<tr><td colspan="5" class="table-cell text-center text-gray-500 py-10">لا توجد نتائج</td></tr>`
+          ? `<tr><td colspan="5" class="table-cell text-center text-gray-500 py-10">${emptyMessage}</td></tr>`
           : rows.map(e => `
             <tr class="table-row" data-id="${e.id}" style="cursor:pointer">
               <td class="table-cell font-medium text-gray-100">${escHtml(e.full_name)}</td>

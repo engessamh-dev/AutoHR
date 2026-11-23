@@ -3,7 +3,10 @@
  */
 import { isScannable, reprocessAttachment } from "../attachments/scanner.js";
 import { api }       from "../api.js";
-import { showToast, escHtml, confirmAction, confirmSaveChanges } from "../utils.js";
+import { showToast, escHtml, confirmAction, confirmSaveChanges, arCount, AR_NOUNS } from "../utils.js";
+
+const FILE_GEN = { ...AR_NOUNS.file, two: "ملفين" };
+const DOC_GEN = { ...AR_NOUNS.document, two: "وثيقتين" };
 import { open, save } from "@tauri-apps/plugin-dialog";
 import { can }       from "../permissions.js";
 import * as pdfjsLib from "pdfjs-dist";
@@ -292,7 +295,7 @@ export async function renderDocuments(container, user, ctx) {
     overlay.innerHTML = `
       <div style="height:64px;background:#1f1f1f;border-bottom:1px solid #333;display:flex;align-items:center;gap:10px;padding:10px 18px">
         <strong style="font-size:15px;margin-left:auto;color:#f3f4f6">استعراض كل مرفقات: ${escHtml(title)}</strong>
-        <span class="badge badge-gray">${assets.length} ملف</span>
+        <span class="badge badge-gray">${arCount(assets.length, "file")}</span>
         ${can(user, "documents.print") ? `<button type="button" id="all-documents-print" class="btn-primary">طباعة الكل</button>` : ""}
         <button type="button" id="all-documents-close" class="btn-secondary">إغلاق</button>
       </div>
@@ -421,22 +424,22 @@ export async function renderDocuments(container, user, ctx) {
           ${generalFiltersOpen ? `
           <div class="grid grid-cols-1 md:grid-cols-3 gap-3">
             <div>
-              <p style="font-size:11px;color:#6b7280;margin-bottom:4px">الجهة المصدرة للوثيقة</p>
+              <label for="general-issuer-filter" style="display:block;font-size:11px;color:#6b7280;margin-bottom:4px">الجهة المصدرة للوثيقة</label>
               <input id="general-issuer-filter" class="input-field"
                 placeholder="فلترة حسب الجهة..." value="${escHtml(generalIssuerFilter)}" />
             </div>
             <div>
-              <p style="font-size:11px;color:#6b7280;margin-bottom:4px">إلى</p>
+              <label for="general-recipient-filter" style="display:block;font-size:11px;color:#6b7280;margin-bottom:4px">إلى</label>
               <input id="general-recipient-filter" class="input-field"
                 placeholder="فلترة حسب الجهة المستلمة..." value="${escHtml(generalRecipientFilter)}" />
             </div>
             <div>
-              <p style="font-size:11px;color:#6b7280;margin-bottom:4px">الموضوع</p>
+              <label for="general-subject-filter" style="display:block;font-size:11px;color:#6b7280;margin-bottom:4px">الموضوع</label>
               <input id="general-subject-filter" class="input-field"
                 placeholder="فلترة حسب الموضوع..." value="${escHtml(generalSubjectFilter)}" />
             </div>
             <div>
-              <p style="font-size:11px;color:#6b7280;margin-bottom:4px">حالة المرفق</p>
+              <label for="general-file-filter" style="display:block;font-size:11px;color:#6b7280;margin-bottom:4px">حالة المرفق</label>
               <select id="general-file-filter" class="input-field">
                 <option value="all" ${generalFileFilter === "all" ? "selected" : ""}>الكل</option>
                 <option value="with" ${generalFileFilter === "with" ? "selected" : ""}>لديه مرفق</option>
@@ -444,25 +447,25 @@ export async function renderDocuments(container, user, ctx) {
               </select>
             </div>
             <div>
-              <p style="font-size:11px;color:#6b7280;margin-bottom:4px">من تاريخ إصدار</p>
+              <label for="general-date-from" style="display:block;font-size:11px;color:#6b7280;margin-bottom:4px">من تاريخ إصدار</label>
               <input id="general-date-from" class="input-field" type="date" value="${escHtml(generalDateFrom)}" />
             </div>
             <div>
-              <p style="font-size:11px;color:#6b7280;margin-bottom:4px">إلى تاريخ إصدار</p>
+              <label for="general-date-to" style="display:block;font-size:11px;color:#6b7280;margin-bottom:4px">إلى تاريخ إصدار</label>
               <input id="general-date-to" class="input-field" type="date" value="${escHtml(generalDateTo)}" />
             </div>
             <div>
-              <p style="font-size:11px;color:#6b7280;margin-bottom:4px">العدد</p>
+              <label for="general-count-filter" style="display:block;font-size:11px;color:#6b7280;margin-bottom:4px">العدد</label>
               <input id="general-count-filter" class="input-field"
                 placeholder="فلترة حسب العدد..." value="${escHtml(generalCountFilter)}" />
             </div>
             <div>
-              <p style="font-size:11px;color:#6b7280;margin-bottom:4px">الهامش</p>
+              <label for="general-margin-filter" style="display:block;font-size:11px;color:#6b7280;margin-bottom:4px">الهامش</label>
               <input id="general-margin-filter" class="input-field"
                 placeholder="فلترة حسب الهامش..." value="${escHtml(generalMarginFilter)}" />
             </div>
             <div>
-              <p style="font-size:11px;color:#6b7280;margin-bottom:4px">مذكرة داخلية</p>
+              <label for="general-memo-filter" style="display:block;font-size:11px;color:#6b7280;margin-bottom:4px">مذكرة داخلية</label>
               <select id="general-memo-filter" class="input-field">
                 <option value="all" ${generalMemoFilter === "all" ? "selected" : ""}>الكل</option>
                 <option value="yes" ${generalMemoFilter === "yes" ? "selected" : ""}>نعم</option>
@@ -470,13 +473,13 @@ export async function renderDocuments(container, user, ctx) {
               </select>
             </div>
             <div>
-              <p style="font-size:11px;color:#6b7280;margin-bottom:4px">الموظفون المرتبطون</p>
+              <label for="general-employee-filter" style="display:block;font-size:11px;color:#6b7280;margin-bottom:4px">الموظفون المرتبطون</label>
               <input id="general-employee-filter" class="input-field"
                 placeholder="فلترة باسم الموظف..." value="${escHtml(generalEmployeeFilter)}" />
             </div>
           </div>
           <div>
-            <p style="font-size:11px;color:#6b7280;margin-bottom:4px">البحث في نبذة عامة عن الوثيقة</p>
+            <label for="general-notes-search" style="display:block;font-size:11px;color:#6b7280;margin-bottom:4px">البحث في نبذة عامة عن الوثيقة</label>
             <input id="general-notes-search" class="input-field"
               placeholder="اكتب جزءا من نبذة الوثيقة..." value="${escHtml(generalNotesSearch)}" />
           </div>
@@ -508,7 +511,7 @@ export async function renderDocuments(container, user, ctx) {
                   : filteredDocs.map(d => `
                   <tr class="table-row general-doc-row" data-id="${d.id}" title="اضغط لتعديل الوثيقة">
                     <td class="table-cell font-medium text-gray-100">${escHtml(d.title || "—")}</td>
-                    <td class="table-cell" dir="ltr">${escHtml(d.doc_number ?? "—")}</td>
+                    <td class="table-cell">${escHtml(d.doc_number || "—")}</td>
                     <td class="table-cell" dir="ltr">${formatIncomingDate(d.issue_date)}</td>
                     <td class="table-cell">${escHtml(d.issuer ?? "—")}</td>
                     <td class="table-cell">${escHtml(d.doc_count ?? "—")}</td>
@@ -536,7 +539,6 @@ export async function renderDocuments(container, user, ctx) {
         </div>
       </div>`;
     if (!can(user, "documents.manage")) el.querySelectorAll("#btn-add-doc,#btn-save-doc").forEach(node => node.remove());
-    if (!can(user, "documents.delete")) 
     el.querySelector("#btn-toggle-general-filters")?.addEventListener("click", () => {
       generalFiltersOpen = !generalFiltersOpen;
       renderGeneral();
@@ -886,11 +888,11 @@ export async function renderDocuments(container, user, ctx) {
             label: "حذف كل المرفقات…",
             danger: true,
             run: async () => {
-              if (!(await confirmAction(`تأكيد حذف جميع مرفقات الوثيقة (${attachments.length} ملف)؟ لا يمكن التراجع عن هذا الإجراء.`))) return;
+              if (!(await confirmAction(`تأكيد حذف جميع مرفقات الوثيقة (${arCount(attachments.length, "file")})؟ لا يمكن التراجع عن هذا الإجراء.`))) return;
               try {
                 for (const path of attachments) await deleteCurrentDocAttachment(docId, path);
                 await refreshCurrentDocs();
-                showToast(`تم حذف جميع مرفقات الوثيقة (${attachments.length} ملف)`);
+                showToast(`تم حذف جميع مرفقات الوثيقة (${arCount(attachments.length, "file")})`);
                 renderManager();
               } catch (error) {
                 await refreshCurrentDocs();
@@ -913,13 +915,13 @@ export async function renderDocuments(container, user, ctx) {
           if (!selected) return;
           const files = Array.isArray(selected) ? selected : [selected];
           if (files.length > remaining) {
-            showToast(`يمكن إضافة ${remaining} ملف فقط لهذه الوثيقة`, "warn");
+            showToast(`يمكن إضافة ${arCount(remaining, FILE_GEN)} فقط لهذه الوثيقة`, "warn");
             return;
           }
-          if (!(await confirmAction(`تأكيد رفع ${files.length} ملف للوثيقة؟`))) return;
+          if (!(await confirmAction(`تأكيد رفع ${arCount(files.length, FILE_GEN)} للوثيقة؟`))) return;
           for (const file of files) await uploadCurrentDocFile(docId, file);
           await refreshCurrentDocs();
-          showToast(`تم رفع ${files.length} ملف`);
+          showToast(`تم رفع ${arCount(files.length, FILE_GEN)}`);
           renderManager();
         } catch (err) { showToast(err?.message ?? "خطأ", "error"); }
       });
@@ -942,16 +944,16 @@ export async function renderDocuments(container, user, ctx) {
         <div id="doc-form-card" class="card max-w-2xl space-y-4">
           <p class="section-title">${isEdit ? "تعديل وثيقة" : "إضافة وثيقة جديدة"}</p>
           <div>
-            <p style="font-size:11px;color:#6b7280;margin-bottom:4px">الجهة المصدرة للوثيقة</p>
+            <label for="d-title" style="display:block;font-size:11px;color:#6b7280;margin-bottom:4px">الجهة المصدرة للوثيقة</label>
             <input id="d-title" class="input-field" placeholder="الجهة المصدرة للوثيقة" value="${escHtml(doc?.title ?? "")}" />
           </div>
           <div class="grid grid-cols-2 gap-3">
             <div>
-              <p style="font-size:11px;color:#6b7280;margin-bottom:4px">إلى</p>
+              <label for="d-number" style="display:block;font-size:11px;color:#6b7280;margin-bottom:4px">إلى</label>
               <input id="d-number" class="input-field" value="${escHtml(doc?.doc_number ?? "")}" />
             </div>
             <div>
-              <p style="font-size:11px;color:#6b7280;margin-bottom:4px">الموضوع</p>
+              <label for="d-issuer" style="display:block;font-size:11px;color:#6b7280;margin-bottom:4px">الموضوع</label>
               <div style="display:grid;grid-template-columns:1fr auto auto;gap:8px;align-items:center">
                 <div style="position:relative;min-width:0">
                   <input id="d-issuer" class="input-field" value="${escHtml(doc?.issuer ?? "")}" autocomplete="off" />
@@ -962,25 +964,27 @@ export async function renderDocuments(container, user, ctx) {
                 <datalist id="d-subject-options">
                   ${documentTypes.map(type => `<option value="${escHtml(type)}"></option>`).join("")}
                 </datalist>
-                <button type="button" id="d-add-subject" class="btn-secondary px-3" title="إضافة الموضوع للقائمة">+</button>
-                <button type="button" id="d-delete-subject" class="btn-danger px-3" title="حذف الموضوع من القائمة">-</button>
+                <button type="button" id="d-add-subject" class="btn-secondary px-3" style="align-self:stretch" title="إضافة الموضوع المكتوب إلى قائمة المواضيع" aria-label="إضافة الموضوع المكتوب إلى قائمة المواضيع">+</button>
+                <button type="button" id="d-delete-subject" class="btn-secondary px-3" style="align-self:stretch;display:grid;place-items:center" title="حذف الموضوع المكتوب من قائمة المواضيع" aria-label="حذف الموضوع المكتوب من قائمة المواضيع">
+                  <svg aria-hidden="true" viewBox="0 0 24 24" style="width:16px;height:16px;fill:none;stroke:#f87171;stroke-width:1.8;stroke-linecap:round;stroke-linejoin:round"><path d="M4 7h16M10 11v6M14 11v6M6 7l1 13h10l1-13M9 7V4h6v3"/></svg>
+                </button>
               </div>
             </div>
             <div>
-              <p style="font-size:11px;color:#6b7280;margin-bottom:4px">تاريخ الإصدار</p>
+              <label for="d-date" style="display:block;font-size:11px;color:#6b7280;margin-bottom:4px">تاريخ الإصدار</label>
               <input id="d-date" class="input-field" type="date" value="${escHtml(doc?.issue_date ?? "")}" />
             </div>
             <div>
-              <p style="font-size:11px;color:#6b7280;margin-bottom:4px">العدد</p>
+              <label for="d-count" style="display:block;font-size:11px;color:#6b7280;margin-bottom:4px">العدد</label>
               <input id="d-count" class="input-field" value="${escHtml(doc?.doc_count ?? "")}" />
             </div>
           </div>
           <div>
-            <p style="font-size:11px;color:#6b7280;margin-bottom:4px">نبذه عامة عن الوثيقة</p>
+            <label for="d-notes" style="display:block;font-size:11px;color:#6b7280;margin-bottom:4px">نبذة عامة عن الوثيقة</label>
             <textarea id="d-notes" class="input-field" style="height:70px;resize:none">${escHtml(doc?.notes ?? "")}</textarea>
           </div>
           <div>
-            <p style="font-size:11px;color:#6b7280;margin-bottom:4px">الهامش</p>
+            <label for="d-margin" style="display:block;font-size:11px;color:#6b7280;margin-bottom:4px">الهامش</label>
             <textarea id="d-margin" class="input-field" style="height:70px;resize:none">${escHtml(doc?.margin ?? "")}</textarea>
           </div>
           <label style="display:flex;align-items:center;gap:8px;cursor:pointer;font-size:13px;color:#d1d5db">
@@ -998,7 +1002,7 @@ export async function renderDocuments(container, user, ctx) {
               <input id="d-employee-search" class="input-field" placeholder="بحث باسم الموظف أو رقمه الوظيفي..." />
               <div class="flex items-center justify-between">
                 <p style="font-size:11px;color:#6b7280">يمكن تحديد موظف واحد أو أكثر</p>
-                <span id="d-selected-count" class="badge badge-gray">${selectedEmployeeIds.size} محدد</span>
+                <span id="d-selected-count" class="badge badge-gray">المحدد: ${selectedEmployeeIds.size}</span>
               </div>
               <div id="d-employee-list" style="max-height:240px;overflow:auto;border:1px solid #2d2d2d;border-radius:8px">
                 ${employees.map(employee => `
@@ -1047,11 +1051,13 @@ export async function renderDocuments(container, user, ctx) {
               <span id="d-scan-progress-label" style="font-size:11px;color:#93c5fd">جاري بدء المسح الضوئي...</span>
             </div>
           </div>
-          <div class="flex gap-3">
+          <div class="flex gap-3 items-center">
             <button id="btn-save-doc" class="btn-primary flex-1">حفظ</button>
-            ${isEdit && can(user, "documents.delete") ? `<button id="btn-delete-doc" class="btn-danger px-4">حذف الوثيقة</button>` : ""}
             <button id="btn-cancel-doc" class="btn-secondary">إلغاء</button>
           </div>
+          ${isEdit && can(user, "documents.delete") ? `<div style="border-top:1px solid #2d2d2d;padding-top:12px;display:flex;justify-content:flex-end">
+            <button id="btn-delete-doc" class="btn-danger px-4">حذف الوثيقة نهائياً</button>
+          </div>` : ""}
         </div>
       </div>`;
     if (!can(user, "documents.upload")) el.querySelector("#btn-upload-emp-doc")?.remove();
@@ -1201,7 +1207,7 @@ export async function renderDocuments(container, user, ctx) {
     const employeeLinking = el.querySelector("#d-employee-linking");
     const updateSelectedCount = () => {
       const count = el.querySelectorAll(".d-employee-checkbox:checked").length;
-      el.querySelector("#d-selected-count").textContent = `${count} محدد`;
+      el.querySelector("#d-selected-count").textContent = `المحدد: ${count}`;
     };
     hasEmployeesCheckbox.addEventListener("change", () => {
       employeeLinking.style.display = hasEmployeesCheckbox.checked ? "block" : "none";
@@ -1235,7 +1241,7 @@ export async function renderDocuments(container, user, ctx) {
       badge.classList.toggle("badge-green", pendingAttachments.length > 0);
       badge.classList.toggle("badge-gray", pendingAttachments.length === 0);
       badge.querySelector("[dir='ltr']").textContent = String(pendingAttachments.length);
-      showToast(`تم اختيار ${pendingAttachments.length} مرفق وسيتم رفعها بعد الحفظ`);
+      showToast(`تم اختيار ${arCount(pendingAttachments.length, { ...AR_NOUNS.attachment, two: "مرفقين" })}، وستُرفع بعد الحفظ`);
     });
     el.querySelector("#d-scan-attachment")?.addEventListener("click", async () => {
       const attachmentCount = isEdit ? generalDocAttachments(doc).length : pendingAttachments.length;
@@ -1334,7 +1340,7 @@ export async function renderDocuments(container, user, ctx) {
           <p class="section-title">رفع وثيقة لموظف موجود</p>
           <div class="grid grid-cols-1 md:grid-cols-[1fr_auto] gap-3 items-end">
             <div>
-              <p style="font-size:11px;color:#6b7280;margin-bottom:4px">الموظف</p>
+              <label for="emp-doc-employee" style="display:block;font-size:11px;color:#6b7280;margin-bottom:4px">الموظف</label>
               <select id="emp-doc-employee" class="input-field">
                 <option value="">— اختر موظفاً —</option>
                 ${employees.map(e => `
@@ -1350,7 +1356,7 @@ export async function renderDocuments(container, user, ctx) {
         <div class="card overflow-auto">
           <div class="flex items-center justify-between gap-3 mb-4">
             <p class="section-title mb-0">الوثائق المرفوعة للموظفين</p>
-            <span class="badge badge-gray">${withDocs.reduce((sum, e) => sum + parseAttachments(e).length, 0)} وثيقة</span>
+            <span class="badge badge-gray">${arCount(withDocs.reduce((sum, e) => sum + parseAttachments(e).length, 0), "document")}</span>
           </div>
           ${withDocs.length === 0
             ? `<p class="text-center text-gray-500 py-8">لا توجد وثائق موظفين مرفوعة</p>`
@@ -1399,12 +1405,12 @@ export async function renderDocuments(container, user, ctx) {
         });
         if (!selected) return;
         const files = Array.isArray(selected) ? selected : [selected];
-        if (!(await confirmAction(`تأكيد رفع ${files.length} وثيقة للموظف؟`))) return;
+        if (!(await confirmAction(`تأكيد رفع ${arCount(files.length, DOC_GEN)} للموظف؟`))) return;
         for (const file of files) {
           await api.uploadDocumentAttachment(empId, file);
         }
         employees = await api.listEmployees();
-        showToast(`تم رفع ${files.length} وثيقة`);
+        showToast(`تم رفع ${arCount(files.length, DOC_GEN)}`);
         renderEmployeeDocs();
       } catch (err) { showToast(err?.message ?? String(err || "خطأ في الرفع"), "error"); }
     });

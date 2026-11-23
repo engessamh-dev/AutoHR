@@ -278,7 +278,8 @@ async function navigateTo(screen, options = {}) {
   activeScreen = screen;
   window.autohrCanLeaveCurrentScreen = null;
   document.querySelectorAll(".nav-item").forEach(el => {
-    el.classList.toggle("active", el.dataset.screen === screen);
+    const navScreen = screen === "documentAlerts" ? "dashboard" : screen;
+    el.classList.toggle("active", el.dataset.screen === navScreen);
   });
 
   const titleMap = {
@@ -296,7 +297,12 @@ async function navigateTo(screen, options = {}) {
       await renderer(container, currentUser, { t, navigateTo, showToast, ...options });
     } catch (err) {
       console.error(err);
-      container.innerHTML = `<div class="card text-autohr-red" role="alert">خطأ: ${escHtml(err?.message ?? err)}</div>`;
+      container.innerHTML = `<div class="card space-y-3" role="alert">
+        <p class="font-semibold text-autohr-red">تعذر تحميل هذه الصفحة</p>
+        <p class="text-sm text-gray-400" dir="auto">${escHtml(err?.message ?? err)}</p>
+        <button type="button" id="btn-screen-retry" class="btn-secondary">إعادة المحاولة</button>
+      </div>`;
+      container.querySelector("#btn-screen-retry")?.addEventListener("click", () => navigateTo(screen, options));
     }
   }
 }
