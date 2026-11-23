@@ -349,7 +349,7 @@ function clearLoginMessage() {
 
 function setLoginBusy(busy) {
   loginBusy = busy;
-  const submit = document.querySelector(".login-hotspot-submit");
+  const submit = document.querySelector(".login-submit");
   if (submit) submit.disabled = busy || Boolean(loginLockoutTimer);
   document.getElementById("login-form")?.setAttribute("aria-busy", String(busy));
 }

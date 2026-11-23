@@ -5,27 +5,52 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>CNSArch</title>
   <link rel="stylesheet" href="/src/styles/main.css" />
+  <link rel="stylesheet" href="/src/styles/login.css" />
 </head>
 <body class="overflow-hidden">
 
-  <div id="login-screen" class="login-background">
-    <main class="login-artboard" aria-label="نظام الأرشفة">
-      <form id="login-form" class="login-hotspots">
-        <input id="login-username" class="login-hotspot login-hotspot-username" type="text" placeholder="اسم المستخدم" dir="rtl" autocomplete="username" aria-label="اسم المستخدم" />
-        <input id="login-password" class="login-hotspot login-hotspot-password" type="password" placeholder="كلمة المرور" dir="rtl" autocomplete="current-password" aria-label="كلمة المرور" />
-        <button id="btn-toggle-password" class="login-hotspot login-hotspot-eye" type="button" aria-label="إظهار كلمة المرور" aria-pressed="false"></button>
-        <p id="login-error" class="login-message hidden" role="alert" aria-live="assertive"></p>
-        <button type="submit" class="login-hotspot login-hotspot-submit" aria-label="تسجيل الدخول"></button>
-      </form>
-      <button id="btn-forgot-password" type="button" class="login-hotspot login-hotspot-forgot" aria-label="نسيت كلمة المرور؟"></button>
-      <div class="login-title-overlay" aria-hidden="true">نظام الأرشفة الإلكتروني</div>
-      <div class="login-subtitle-overlay" aria-hidden="true">
-        <span class="login-subtitle-ar">نظام أرشفة وثائق صادر ووارد قسم اتصالات الطيران</span>
-        <span class="login-subtitle-en">General Company for Airports and Air Navigation</span>
+  <div id="login-screen" class="login-screen" data-variant="card">
+    <div class="login-shell">
+      <div class="login-crest" aria-hidden="true">
+        <img src="/src/assets/branding/company-logo-256.png" alt="" />
       </div>
-      <span id="login-unit-name" class="login-unit-name">وحدة الأتمتة</span>
+      <main class="login-panel" aria-label="نظام الأرشفة">
+        <img class="login-logo" src="/src/assets/branding/company-logo-256.png" alt="شعار الشركة العامة لإدارة المطارات والملاحة الجوية" />
+        <h1 class="login-title">نظام الأرشفة الإلكتروني</h1>
+        <p class="login-subtitle-ar">نظام أرشفة وثائق صادر ووارد قسم اتصالات الطيران</p>
+        <p class="login-subtitle-en" dir="ltr">General Company for Airports and Air Navigation</p>
+        <form id="login-form" class="login-form" novalidate>
+          <label class="login-field">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 12a4.5 4.5 0 1 0 0-9 4.5 4.5 0 0 0 0 9Zm0 2c-4.2 0-8 2.1-8 5v2h16v-2c0-2.9-3.8-5-8-5Z"/></svg>
+            <input id="login-username" type="text" placeholder="اسم المستخدم" dir="rtl" autocomplete="username" aria-label="اسم المستخدم" />
+          </label>
+          <label class="login-field">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M17 9h-1V7a4 4 0 0 0-8 0v2H7a2 2 0 0 0-2 2v9a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2v-9a2 2 0 0 0-2-2Zm-7-2a2 2 0 1 1 4 0v2h-4V7Zm2 11a2 2 0 1 1 0-4 2 2 0 0 1 0 4Z"/></svg>
+            <input id="login-password" type="password" placeholder="كلمة المرور" dir="rtl" autocomplete="current-password" aria-label="كلمة المرور" />
+            <button id="btn-toggle-password" class="login-eye" type="button" aria-label="إظهار كلمة المرور" aria-pressed="false">
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5C6.5 5 2.7 9.2 1.5 12c1.2 2.8 5 7 10.5 7s9.3-4.2 10.5-7C21.3 9.2 17.5 5 12 5Zm0 11a4 4 0 1 1 0-8 4 4 0 0 1 0 8Zm0-2.2a1.8 1.8 0 1 0 0-3.6 1.8 1.8 0 0 0 0 3.6Z"/></svg>
+            </button>
+          </label>
+          <button type="submit" class="login-submit">
+            <span>تسجيل الدخول</span>
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M10 17l1.4-1.4-2.6-2.6H20v-2H8.8l2.6-2.6L10 7l-5 5 5 5ZM4 5h8V3H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h8v-2H4V5Z"/></svg>
+          </button>
+        </form>
+        <button id="btn-forgot-password" type="button" class="login-link">نسيت كلمة المرور؟</button>
+        <div class="login-message-slot">
+          <p id="login-error" class="login-message hidden" role="alert" aria-live="assertive"></p>
+        </div>
+        <span id="login-unit-name" class="login-unit-name">وحدة الأتمتة</span>
+      </main>
+    </div>
+    <footer class="login-footer">
+      <span class="login-security">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 2 4 5v6c0 5 3.4 9.7 8 11 4.6-1.3 8-6 8-11V5l-8-3Zm-1.2 14.2-3.5-3.5 1.4-1.4 2.1 2.1 4.9-4.9 1.4 1.4-6.3 6.3Z"/></svg>
+        آمن • موثوق • احترافي
+      </span>
+      <span class="login-developer" dir="ltr">Developer: Eng. Essam Hassan</span>
       <span id="login-app-version" class="login-version" data-app-version dir="rtl"></span>
-    </main>
+    </footer>
   </div>
 
   <div id="setup-screen" class="hidden min-h-screen flex items-center justify-center" dir="rtl">
