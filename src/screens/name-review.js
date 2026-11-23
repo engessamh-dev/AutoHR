@@ -1,7 +1,7 @@
 // "مراجعة الأسماء": names that were split automatically but need a person to confirm them.
 
 import { api } from "../api.js";
-import { showToast, escHtml } from "../utils.js";
+import { showToast, escHtml, confirmAction } from "../utils.js";
 import { nameFieldsHtml, readNameGroup } from "./name-fields.js";
 
 const FIELD_LABELS = {
@@ -44,9 +44,10 @@ export async function openNameReview(onChanged) {
     <div style="padding:14px 16px;border-bottom:1px solid var(--ui-line);display:flex;align-items:center;gap:8px">
       <strong style="font-size:15px">مراجعة الأسماء</strong>
       <span id="name-review-count" style="font-size:12px;color:var(--ui-text-muted)"></span>
-      <button id="name-review-close" class="btn-secondary text-sm" style="margin-right:auto">إغلاق</button>
+      <button id="name-review-accept-all" class="btn-primary text-sm px-3 py-1.5" style="margin-right:auto" title="حفظ كل الأسماء كما قُسّمت تلقائيًا">✓ اعتماد الكل كما هو مقترح</button>
+      <button id="name-review-close" class="btn-secondary text-sm">إغلاق</button>
     </div>
-    <p style="padding:10px 16px 0;font-size:12px;color:var(--ui-text-muted)">قُسّمت هذه الأسماء تلقائيًا ولم يكن التقسيم مؤكدًا. صحّح الحقول إن لزم ثم اضغط «تأكيد». الاسم الكامل يُعاد تجميعه من الحقول.</p>
+    <p style="padding:10px 16px 0;font-size:12px;color:var(--ui-text-muted)">قُسّمت هذه الأسماء تلقائيًا ولم يكن التقسيم مؤكدًا. إن كان التقسيم صحيحًا اضغط «تأكيد»، أو «اعتماد الكل» لاعتماد كل الأسماء مرة واحدة. ويمكنك تصحيح الحقول قبل التأكيد.</p>
     <div id="name-review-list" style="padding:12px 16px;overflow:auto;display:flex;flex-direction:column;gap:10px"></div>
   </div>`;
   document.body.append(overlay);
@@ -55,8 +56,38 @@ export async function openNameReview(onChanged) {
   overlay.querySelector("#name-review-close").addEventListener("click", close);
   overlay.addEventListener("click", event => { if (event.target === overlay) close(); });
 
+  const saveItem = async (item, row) => {
+    const group = row.querySelector(".name-fields");
+    group.dataset.touched = "1";
+    group.dataset.review = "0";
+    const values = readNameGroup(group).parts;
+    await api.saveNameReview(item.employee_id, item.owner, item.index, item.field, values);
+  };
+
+  const acceptAll = overlay.querySelector("#name-review-accept-all");
+  acceptAll.addEventListener("click", async () => {
+    const rows = [...overlay.querySelectorAll(".name-review-item")];
+    if (!rows.length) return;
+    if (rows.length > 1 && !(await confirmAction(`اعتماد ${rows.length} أسماء كما تظهر في الحقول؟`))) return;
+    acceptAll.disabled = true;
+    let saved = 0;
+    const failed = [];
+    for (const row of rows) {
+      const item = items[Number(row.dataset.i)];
+      try { await saveItem(item, row); saved += 1; }
+      catch { failed.push(item); }
+    }
+    items = failed;
+    render();
+    acceptAll.disabled = false;
+    if (saved) showToast(`تم اعتماد ${saved} ${saved === 1 ? "اسم" : "أسماء"}`);
+    if (failed.length) showToast(`تعذر حفظ ${failed.length} من الأسماء`, "error");
+    await onChanged?.();
+  });
+
   const render = () => {
     overlay.querySelector("#name-review-count").textContent = items.length ? `${items.length} اسم` : "";
+    acceptAll.hidden = items.length === 0;
     const list = overlay.querySelector("#name-review-list");
     list.innerHTML = items.length
       ? items.map(itemHtml).join("")
@@ -65,13 +96,9 @@ export async function openNameReview(onChanged) {
       button.addEventListener("click", async () => {
         const row = button.closest(".name-review-item");
         const item = items[Number(row.dataset.i)];
-        const group = row.querySelector(".name-fields");
-        group.dataset.touched = "1";
-        group.dataset.review = "0";
-        const values = readNameGroup(group).parts;
         button.disabled = true;
         try {
-          await api.saveNameReview(item.employee_id, item.owner, item.index, item.field, values);
+          await saveItem(item, row);
           items = items.filter(other => other !== item);
           render();
           showToast("تم تأكيد الاسم");

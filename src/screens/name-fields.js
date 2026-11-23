@@ -47,6 +47,7 @@ export function nameFieldsHtml({ key, label, parts, text, passport = false, requ
       <span>${label}${required ? " *" : ""}</span>
       <span class="name-review-badge" ${review ? "" : "hidden"} title="قُسّم الاسم تلقائيًا ويحتاج تأكيدًا"
         style="font-size:11px;color:var(--ui-warn);background:var(--ui-warn-bg);border-radius:999px;padding:1px 8px">بحاجة لمراجعة</span>
+      <button type="button" class="name-review-accept" ${review && hasParts ? "" : "hidden"} title="الإبقاء على التقسيم الظاهر في الحقول">✓ اعتماد التقسيم</button>
     </p>
     <div style="display:grid;grid-template-columns:repeat(${fields.length}, minmax(0, 1fr));gap:6px">
       ${fields.map(([part, partLabel]) => `<label style="display:block;min-width:0">
@@ -67,7 +68,7 @@ export function recordNameFields(label, key, record, opts = {}) {
   return nameFieldsHtml({ key, label, parts: storedParts(record, key), text: record?.[key], span: true, ...opts });
 }
 
-/** Typing in a split name confirms it: the review badge goes away. */
+/** Typing in a split name, or «اعتماد التقسيم», confirms it: the review badge goes away. */
 export function bindNameFields(root) {
   root.addEventListener("input", event => {
     const group = event.target.closest?.(".name-fields");
@@ -75,6 +76,13 @@ export function bindNameFields(root) {
     group.dataset.review = "0";
     group.dataset.touched = "1";
     group.querySelector(".name-review-badge")?.setAttribute("hidden", "");
+    group.querySelector(".name-review-accept")?.setAttribute("hidden", "");
+  });
+  root.addEventListener("click", event => {
+    const accept = event.target.closest?.(".name-review-accept");
+    if (!accept) return;
+    // Same path as typing, so the form is marked as changed and the parts are saved as confirmed.
+    accept.closest(".name-fields")?.querySelector(".name-part")?.dispatchEvent(new Event("input", { bubbles: true }));
   });
 }
 
