@@ -30,9 +30,22 @@
 .login-unit-name{--x0:790;--y0:674;--x1:935;--y1:710}
 .login-message{--x0:534;--y0:728;--x1:1138;--y1:805}
 .login-version{--x0:1374;--y0:883;--x1:1508;--y1:915}
-.login-box,.login-hit,.login-unit-name,.login-message,.login-version{
+.login-box,.login-hit,.login-unit-name,.login-message,.login-version,.login-card-ext,.login-card-cap{
   left:calc((var(--x0) - 835.5) * var(--px));top:calc((var(--y0) - 470.5) * var(--px));
   width:calc((var(--x1) - var(--x0)) * var(--px));height:calc((var(--y1) - var(--y0)) * var(--px));
+}
+
+/* Card bottom: drawn from two cut-outs of the design so the card can end right
+   under the unit pill and grow only while a message is shown. The airport scene
+   behind the old bottom shows through when it is collapsed. */
+.login-card-ext,.login-card-cap{--x0:498;--x1:1174;pointer-events:none;transition:height .25s ease,top .25s ease}
+.login-stage{--ext:0}
+.login-stage:has(.login-message:not(.hidden)){--ext:54}
+.login-card-ext{--y0:722;--y1:calc(722 + var(--ext));background:url('../assets/login-card-side.png') 0 0 / 100% 100% no-repeat}
+.login-card-cap{--y0:calc(722 + var(--ext));--y1:calc(808 + var(--ext));background:url('../assets/login-card-bottom.png') 0 0 / 100% 100% no-repeat}
+/* Blend the first rows into the card above, so there is no seam where the cut-outs start. */
+.login-card-ext,.login-stage:not(:has(.login-message:not(.hidden))) .login-card-cap{
+  -webkit-mask-image:linear-gradient(to bottom,transparent 0,#000 calc(10 * var(--px)));mask-image:linear-gradient(to bottom,transparent 0,#000 calc(10 * var(--px)));
 }
 
 /* Fields: the frame and icons are in the picture; the box only adds focus/error glow. */
@@ -43,6 +56,7 @@
   color:#fff;font-size:calc(21 * var(--px));font-weight:600;text-align:right;caret-color:#3ab4ff;
 }
 .login-box input::placeholder{color:#e3e9f1;opacity:1}
+.login-box input:focus,.login-box input:focus-visible{outline:0;border:0;box-shadow:none;background:transparent}
 .login-box-username input{right:calc(28 * var(--px));left:calc(70 * var(--px))}   /* text ends at x≈1057 like the design */
 .login-box-password input{right:calc(80 * var(--px));left:calc(70 * var(--px))}   /* ends at x≈1005, left of the eye */
 .login-box input:-webkit-autofill,.login-box input:-webkit-autofill:hover,.login-box input:-webkit-autofill:focus{
@@ -84,6 +98,8 @@
 .login-message.is-long{white-space:normal;font-size:calc(16 * var(--px));line-height:1.2}
 .login-message::before{content:"";position:absolute;inset:0;z-index:-1;background:url('../assets/login-error-box.png') center / 100% 100% no-repeat}
 .login-message.hidden{display:none}
+.login-message:not(.hidden){animation:login-message-in .25s ease .12s both}
+@keyframes login-message-in{from{opacity:0;transform:translateY(calc(-6 * var(--px)))}to{opacity:1;transform:none}}
 .login-message[data-kind="info"]::before{filter:hue-rotate(210deg) saturate(1.1)}
 .login-message[data-kind="caps"]::before{filter:hue-rotate(45deg) saturate(1.2)}
 
