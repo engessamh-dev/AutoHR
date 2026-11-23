@@ -21,7 +21,7 @@ window.__TAURI_INTERNALS__={convertFileSrc:()=>canvas.toDataURL("image/jpeg"),in
   window.calls.push({command,args});
   if(command==="cmd_scanner_settings")return window.settings;
   if(command==="cmd_set_scanner_settings"){window.settings=args.settings;return;}
-  if(command==="cmd_scanner_prepare")return window.prepared || {token:"synthetic-token",width:640,height:480,corners:[[100,70],[540,70],[540,410],[100,410]],confidence:window.reliable?.92:0,reliable:window.reliable,preview:bytes,settings:window.settings};
+  if(command==="cmd_scanner_prepare")return window.prepared || {token:"synthetic-token",width:640,height:480,corners:[[100,70],[540,70],[540,410],[100,410]],confidence:window.reliable?.92:0,reliable:window.reliable,preview:bytes,settings:window.settings,...(window.prepareOverrides||{})};
   if(command==="cmd_scanner_detect")return {corners:[[100,70],[540,70],[540,410],[100,410]],confidence:.92,reliable:true};
   if(command==="cmd_scanner_render"){if(window.holdRender)await new Promise(resolve=>{window.releaseRender=resolve;});if(window.failRender)throw "Injected processing failure";return window.renderBytes || bytes;}
   if(command==="cmd_scanner_upload" || command==="cmd_scanner_save_existing"){if(window.failSave)throw "Injected database/Audit failure";return "Files/Synthetic/result.jpg";}

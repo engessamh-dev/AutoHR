@@ -127,6 +127,7 @@ fn prepared(source: &Path, target: Option<String>) -> scanner::ScanPreview {
         &input.token,
         scanner::full_corners(input.width, input.height),
         0,
+        scanner::Adjustments::default(),
     )
     .unwrap();
     input
@@ -269,6 +270,7 @@ fn attachment_endpoints_originals_reprocessing_permissions_and_rollback() {
             &input.token,
             scanner::full_corners(120, 90),
             90,
+            scanner::Adjustments::default(),
         )
         .unwrap();
         scanner::save_existing(&conn, "scanner-admin", &input.token, &path).unwrap();
@@ -434,4 +436,73 @@ fn personal_photo_delete_clears_only_photo_and_removes_file() {
     files::delete_employee_photo(&conn, 1).unwrap();
     assert!(files::delete_employee_photo(&conn, 999).is_err());
     services::TEST_STORAGE_ROOT.with(|v| *v.borrow_mut() = None);
+}
+
+#[test]
+fn editor_adjustments_card_aspect_and_validation() {
+    use image::{DynamicImage, Rgb, RgbImage};
+    // Low-contrast grey ramp: auto levels must widen the range.
+    let mut ramp = RgbImage::new(200, 100);
+    for (x, _, pixel) in ramp.enumerate_pixels_mut() {
+        let v = 100 + (x / 4) as u8;
+        *pixel = Rgb([v, v, v]);
+    }
+    let image = DynamicImage::ImageRgb8(ramp);
+    let levelled = scanner::apply_adjustments(image.clone(), &scanner::Adjustments { auto_levels: true, ..Default::default() }).to_rgb8();
+    let (min, max) = levelled.pixels().fold((255u8, 0u8), |(lo, hi), p| (lo.min(p.0[0]), hi.max(p.0[0])));
+    assert!(min <= 5 && max >= 250, "auto levels stretched {min}..{max}");
+
+    let grey = scanner::apply_adjustments(DynamicImage::ImageRgb8(RgbImage::from_pixel(8, 8, Rgb([200, 40, 40]))), &scanner::Adjustments { grayscale: true, ..Default::default() }).to_rgb8();
+    let p = grey.get_pixel(0, 0).0;
+    assert!(p[0] == p[1] && p[1] == p[2]);
+
+    let brighter = scanner::apply_adjustments(image.clone(), &scanner::Adjustments { brightness: 30, ..Default::default() }).to_rgb8();
+    assert!(brighter.get_pixel(0, 0).0[0] > image.to_rgb8().get_pixel(0, 0).0[0]);
+
+    // A square selection becomes an ID-1 card shape when the card ratio is locked.
+    let canvas = DynamicImage::ImageRgb8(RgbImage::from_pixel(400, 400, Rgb([255, 255, 255])));
+    let corners = [[50., 50.], [349., 50.], [349., 349.], [50., 349.]];
+    let card = scanner::transform_with(&canvas, corners, 0, 0, true).unwrap();
+    let ratio = card.width() as f32 / card.height() as f32;
+    assert!((ratio - scanner::CARD_ASPECT).abs() < 0.01, "ratio {ratio}");
+    let free = scanner::transform_with(&canvas, corners, 0, 0, false).unwrap();
+    assert_eq!(free.width(), free.height());
+
+    assert!(scanner::Adjustments { brightness: 61, ..Default::default() }.validate().is_err());
+    assert!(scanner::Adjustments { sharpness: 4, ..Default::default() }.validate().is_err());
+    assert!(scanner::Adjustments { contrast: -50, sharpness: 3, ..Default::default() }.validate().is_ok());
+}
+
+// Opt-in: SCANNER_AI_SCENE points at a local photo; writes nothing, prints detected corners.
+#[test]
+#[ignore]
+fn ai_detects_card_in_scene() {
+    let path = std::env::var("SCANNER_AI_SCENE").expect("SCANNER_AI_SCENE");
+    let image = scanner::load_image(std::path::Path::new(&path)).unwrap();
+    let started = std::time::Instant::now();
+    let result = crate::ai_detect::detect(&image);
+    println!("ai result {:?} in {:?}", result, started.elapsed());
+    assert!(result.is_some());
+}
+
+#[test]
+fn ai_detects_synthetic_document() {
+    use image::{DynamicImage, Rgb, RgbImage};
+    let mut pixels = RgbImage::from_pixel(600, 500, Rgb([25, 35, 45]));
+    imageproc::drawing::draw_polygon_mut(
+        &mut pixels,
+        &[
+            imageproc::point::Point::new(100, 65),
+            imageproc::point::Point::new(520, 105),
+            imageproc::point::Point::new(490, 425),
+            imageproc::point::Point::new(70, 390),
+        ],
+        Rgb([235, 235, 230]),
+    );
+    let (corners, confidence) = crate::ai_detect::detect(&DynamicImage::ImageRgb8(pixels)).expect("model output");
+    let expected = [[100., 65.], [520., 105.], [490., 425.], [70., 390.]];
+    for (got, want) in corners.iter().zip(expected.iter()) {
+        assert!((got[0] - want[0]).hypot(got[1] - want[1]) < 20., "corner {got:?} vs {want:?}");
+    }
+    assert!(confidence > 0.8, "confidence {confidence}");
 }

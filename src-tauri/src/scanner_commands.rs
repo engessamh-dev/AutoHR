@@ -97,9 +97,11 @@ pub(crate) async fn cmd_scanner_render(
     token: String,
     corners: [[f32; 2]; 4],
     rotation: u16,
+    adjustments: Option<scanner::Adjustments>,
 ) -> Result<Vec<u8>, AppError> {
     let owner = session_user(&sess)?;
-    tauri::async_runtime::spawn_blocking(move || scanner::render(&owner, &token, corners, rotation))
+    let adjustments = adjustments.unwrap_or_default();
+    tauri::async_runtime::spawn_blocking(move || scanner::render(&owner, &token, corners, rotation, adjustments))
         .await
         .map_err(|e| AppError::Other(e.to_string()))?
 }
