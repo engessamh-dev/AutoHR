@@ -18,7 +18,7 @@ export async function renderAbout(container, user, ctx) {
       <img src="${escHtml(COMPANY_LOGO.medium)}" alt="${escHtml(COMPANY_LOGO.alt)}" class="about-logo company-logo-tile" />
       <div class="min-w-0">
         <h2 class="text-xl font-bold">CNSArch</h2>
-        <p class="text-sm text-gray-300">نظام الأرشفة الإلكتروني</p>
+        <p class="text-sm text-gray-300">نظام الأرشفة الإلكتروني وإدارة معلومات الموظفين</p>
         ${companyLine ? `<p class="text-sm text-gray-400 mt-1">${escHtml(companyLine)}</p>` : ""}
         <dl class="about-facts">
           <div><dt>الإصدار</dt><dd><span dir="ltr">${escHtml(APP_VERSION)}</span></dd></div>
