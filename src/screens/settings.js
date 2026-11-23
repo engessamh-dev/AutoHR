@@ -3,7 +3,6 @@
  */
 import { api }       from "../api.js";
 import { showToast, confirmAction, applyBranding, escHtml } from "../utils.js";
-import { getThemeChoice, setThemeChoice, onThemeChange, themeIcon, themeLabels } from "../theme.js";
 import { open }      from "@tauri-apps/plugin-dialog";
 import { can }       from "../permissions.js";
 import { listen }    from "@tauri-apps/api/event";
@@ -185,7 +184,6 @@ export async function renderSettings(container, user, ctx) {
     canSettings && { id: "storage", label: "مواقع الحفظ" },
     canBackups && { id: "backup", label: "النسخ الاحتياطي" },
     canSettings && canBackups && { id: "updates", label: "التحديثات" },
-    { id: "appearance", label: "المظهر" },
     { id: "support", label: "الفحص والدعم" },
     { id: "about", label: "حول النظام" },
   ].filter(Boolean);
@@ -315,27 +313,11 @@ export async function renderSettings(container, user, ctx) {
         </div>
       </section>` : ""}
 
-      <section class="card settings-panel space-y-3" data-settings-panel="appearance">
-        <p class="section-title">مظهر البرنامج</p>
-        <p class="text-xs text-gray-400 leading-6">يُحفظ الاختيار على هذا الجهاز فقط. شاشة الدخول والمطبوعات لا تتغير.</p>
-        <div class="theme-choices" role="radiogroup" aria-label="مظهر البرنامج">
-          ${["light", "dark"].map(choice => `<button type="button" role="radio" class="theme-choice" data-theme-option="${choice}"
-            aria-checked="${getThemeChoice() === choice}">${themeIcon(choice)}<span>${themeLabels[choice]}</span></button>`).join("")}
-        </div>
-      </section>
 
       <div class="settings-panel" data-settings-panel="support"></div>
       <div class="settings-panel" data-settings-panel="about"></div>
     </div>`;
 
-  const syncThemeOptions = choice => container.querySelectorAll("[data-theme-option]")
-    .forEach(option => option.setAttribute("aria-checked", String(option.dataset.themeOption === choice)));
-  container.querySelectorAll("[data-theme-option]").forEach(option =>
-    option.addEventListener("click", () => setThemeChoice(option.dataset.themeOption)));
-  const stopThemeSync = onThemeChange(choice => {
-    if (!container.isConnected || !container.querySelector("[data-theme-option]")) { stopThemeSync(); return; }
-    syncThemeOptions(choice);
-  });
 
   // «الفحص والدعم» and «حول النظام» are their own screens, drawn into their tab on first open.
   const embeddedScreens = { support: renderSupport, about: renderAbout };
