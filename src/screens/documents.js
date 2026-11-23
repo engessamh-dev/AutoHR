@@ -1072,21 +1072,20 @@ export async function renderDocuments(container, user, ctx) {
                 <p style="font-size:11px;color:var(--ui-text-faint);margin-top:3px">${isEdit ? "اضغط على الأيقونة لإدارة الملفات المرفقة" : "أضف المرفقات الآن، وتُحفظ مع الوثيقة عند الضغط على «حفظ»"}</p>
               </div>
               <div style="display:flex;align-items:center;gap:8px">
-                ${isEdit ? "" : `<button type="button" id="d-pick-attachments" class="btn-secondary" title="اختيار ملفات من الحاسوب">+ إضافة مرفقات</button>`}
-                <button type="button" id="d-scan-attachment" class="btn-secondary" title="مسح وثيقة ضوئياً">
-                  <svg aria-hidden="true" viewBox="0 0 24 24" style="width:17px;height:17px;fill:none;stroke:currentColor;stroke-width:1.8">
-                    <path d="M7 3h10v5H7zM5 14h14v7H5zM4 8h16a2 2 0 0 1 2 2v6h-3M5 16H2v-6a2 2 0 0 1 2-2"/>
-                    <path d="M8 17h8M8 19h8M18 11h.01"/>
+                <button type="button" id="d-manage-attachments" class="btn-secondary doc-att-button"
+                  title="${isEdit ? "عرض المرفقات وإدارتها" : "اختيار ملفات من الحاسوب، وتُحفظ مع الوثيقة"}">
+                  <svg aria-hidden="true" class="doc-att-icon" viewBox="0 0 24 24"><path d="m20.5 11.5-8.2 8.2a5 5 0 0 1-7.1-7.1l8.5-8.5a3.3 3.3 0 0 1 4.7 4.7l-8.4 8.4a1.7 1.7 0 0 1-2.4-2.4l7.7-7.7"/></svg>
+                  <span>المرفقات</span>
+                  <span class="badge ${isEdit && generalDocAttachments(doc).length ? "badge-green" : "badge-gray"} doc-att-count"><span dir="ltr">${isEdit ? generalDocAttachments(doc).length : 0}</span></span>
+                </button>
+                <button type="button" id="d-scan-attachment" class="btn-secondary doc-att-button" title="مسح وثيقة ضوئياً وإضافتها إلى المرفقات">
+                  <svg aria-hidden="true" class="doc-att-icon" viewBox="0 0 24 24">
+                    <path d="M5 10V7a1.5 1.5 0 0 1 1.5-1.5h11A1.5 1.5 0 0 1 19 7v3"/>
+                    <rect x="3" y="10" width="18" height="9" rx="2"/>
+                    <path d="M3 14h18"/>
+                    <path d="M6.5 16.5h6M17 16.5h.01"/>
                   </svg>
                   <span>ماسح ضوئي</span>
-                </button>
-                <button type="button" id="d-manage-attachments" title="${isEdit ? "إدارة مرفقات الوثيقة" : "إضافة مرفقات"}"
-                  style="border:none;background:transparent;cursor:pointer;padding:2px">
-                  <span class="badge ${isEdit && generalDocAttachments(doc).length ? "badge-green" : "badge-gray"}"
-                    style="gap:6px;font-size:12px;padding:5px 11px">
-                    <span>📎</span>
-                    <span dir="ltr">${isEdit ? generalDocAttachments(doc).length : 0}</span>
-                  </span>
                 </button>
               </div>
             </div>
@@ -1324,7 +1323,6 @@ export async function renderDocuments(container, user, ctx) {
       }
       await pickPendingAttachments();
     });
-    el.querySelector("#d-pick-attachments")?.addEventListener("click", () => pickPendingAttachments());
     el.querySelector("#d-scan-attachment")?.addEventListener("click", async () => {
       const attachmentCount = isEdit ? generalDocAttachments(doc).length : pendingAttachments.length;
       if (attachmentCount >= 20) {
