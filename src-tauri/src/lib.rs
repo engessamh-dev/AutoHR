@@ -358,6 +358,11 @@ fn cmd_scan_document(state: State<DbState>, sess: State<SessionState>, device_id
 #[tauri::command] fn cmd_login(state: State<DbState>, sess: State<SessionState>, username: String, password: String) -> Result<User, AppError> {
     let conn = state.conn()?;
     let user = login(&conn, &username, &password)?;
+    if user.permissions.iter().any(|p| p == "documents.upload") {
+        // Load and optimise the document-detection model in the background, so the first scan
+        // does not wait for it. Only users who can upload documents ever need it.
+        std::thread::spawn(|| { ai_detect::available(); });
+    }
     *sess.0.lock().unwrap() = Some(Session {
         username,
         must_change_password: user.must_change_password,

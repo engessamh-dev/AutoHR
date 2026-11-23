@@ -13,6 +13,9 @@ import { employeeNameFields, recordNameFields, bindNameFields, readNameFields, r
 let _employees = [];
 let _filter = "";
 let _statusFilter = "all";
+// Large lists render in steps so the screen stays responsive with thousands of employees.
+const TABLE_STEP = 300;
+let _visibleRows = TABLE_STEP;
 let _activeTab = "basic";
 let _panelDraft = null;
 let _panelDirty = false;
@@ -138,12 +141,15 @@ function filtered() {
   );
 }
 
-function renderTable() {
+function renderTable({ keepVisibleRows = false } = {}) {
   const wrap = document.getElementById("emp-table-wrap");
   if (!wrap) return;
-  const rows = filtered();
+  if (!keepVisibleRows) _visibleRows = TABLE_STEP;
+  const matching = filtered();
+  const rows = matching.slice(0, _visibleRows);
+  const hiddenCount = matching.length - rows.length;
   const countEl = document.getElementById("emp-count");
-  if (countEl) countEl.textContent = `${rows.length} / ${_employees.length}`;
+  if (countEl) countEl.textContent = `${matching.length} / ${_employees.length}`;
   const canCreate = can(_currentUser, "employees.create");
   const emptyMessage = _employees.length === 0
     ? (canCreate ? "لا يوجد موظفون بعد. اضغط «+ إضافة موظف» لإضافة أول موظف." : "لا يوجد موظفون بعد.")
@@ -173,12 +179,21 @@ function renderTable() {
               </td>
             </tr>`).join("")}
       </tbody>
-    </table>`;
-  wrap.querySelectorAll("tr[data-id]").forEach(row =>
-    row.addEventListener("click", () => {
-      const emp = _employees.find(e => e.id == row.dataset.id);
-      if (emp) openPanel(emp);
-    }));
+    </table>
+    ${hiddenCount > 0 ? `<div class="text-center py-3">
+      <button type="button" id="emp-show-more" class="btn-secondary text-sm px-4 py-1.5">عرض المزيد (${hiddenCount} متبقٍ)</button>
+    </div>` : ""}`;
+  // One delegated listener instead of one per row.
+  wrap.querySelector("tbody")?.addEventListener("click", event => {
+    const row = event.target.closest("tr[data-id]");
+    if (!row) return;
+    const emp = _employees.find(e => e.id == row.dataset.id);
+    if (emp) openPanel(emp);
+  });
+  wrap.querySelector("#emp-show-more")?.addEventListener("click", () => {
+    _visibleRows += TABLE_STEP;
+    renderTable({ keepVisibleRows: true });
+  });
 }
 
 function openPanel(emp, tab = "basic") {
@@ -459,7 +474,6 @@ function bindHeaderPhoto(emp) {
   holder.querySelector("#btn-upload-photo")?.addEventListener("click", async () => {
     try {
       collectVisiblePanelFields(panel);
-      const { open } = await import("@tauri-apps/plugin-dialog");
       const selected = await open({
         multiple: false,
         filters: [{ name: "الصورة الشخصية", extensions: ["jpg", "jpeg", "png", "webp"] }],
@@ -1393,7 +1407,6 @@ function attachTabEvents(emp) {
             airport: "باج دخول مطار بغداد",
             ministry: "هوية وزارة النقل",
           }[cardType] ?? "البطاقة الوطنية";
-          const { open } = await import("@tauri-apps/plugin-dialog");
           const selected = await open({
             multiple: false,
             filters: [{ name: `ملفات ${cardName}`, extensions: DOCUMENT_EXTENSIONS }],
@@ -1434,7 +1447,6 @@ function attachTabEvents(emp) {
     panel.querySelector("#btn-upload-passport")?.addEventListener("click", async () => {
       try {
         collectVisiblePanelFields(panel);
-        const { open } = await import("@tauri-apps/plugin-dialog");
         const selected = await open({
           multiple: false,
           filters: [{ name: "نسخة جواز السفر", extensions: DOCUMENT_EXTENSIONS }],
@@ -1462,7 +1474,6 @@ function attachTabEvents(emp) {
     panel.querySelector("#btn-upload-ration-card")?.addEventListener("click", async () => {
       try {
         collectVisiblePanelFields(panel);
-        const { open } = await import("@tauri-apps/plugin-dialog");
         const selected = await open({
           multiple: false,
           filters: [{ name: "نسخة البطاقة التموينية", extensions: DOCUMENT_EXTENSIONS }],
@@ -1640,7 +1651,6 @@ function renderSpouseList(emp) {
         return;
       }
       try {
-        const { open } = await import("@tauri-apps/plugin-dialog");
         const selected = await open({
           multiple: false,
           filters: [{ name: "مرفق البطاقة الوطنية", extensions: DOCUMENT_EXTENSIONS }],
@@ -1799,7 +1809,6 @@ function renderFamilyList(emp) {
         return;
       }
       try {
-        const { open } = await import("@tauri-apps/plugin-dialog");
         const selected = await open({
           multiple: false,
           filters: [{ name: "مرفق البطاقة الوطنية", extensions: DOCUMENT_EXTENSIONS }],

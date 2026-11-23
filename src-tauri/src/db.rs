@@ -295,6 +295,10 @@ pub fn upgrade_restored(conn: &Connection) -> Result<(), OpenError> {
     Ok(())
 }
 
+/// Builds the current schema on an empty connection (tests only).
+#[cfg(test)]
+pub(crate) fn migrate_for_tests(conn: &Connection) { upgrade(conn, 0).unwrap(); }
+
 fn migrate(conn: &Connection) -> SqlResult<()> {
     conn.execute("DELETE FROM app_settings WHERE key='biometric_username'", []).ok();
     let user_columns: Vec<String> = {

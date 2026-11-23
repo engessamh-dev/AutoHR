@@ -2909,6 +2909,27 @@ pub fn set_document_types(conn: &Connection, user: &str, types: &[String]) -> Ap
 mod phase3_security_tests {
     use super::*;
 
+    // Opt-in timing check: `cargo test -p autohr --lib list_employees_timing -- --ignored --nocapture`.
+    #[test]
+    #[ignore]
+    fn list_employees_timing() {
+        let conn = Connection::open_in_memory().unwrap();
+        crate::db::migrate_for_tests(&conn);
+        for count in [75_i64, 1000] {
+            conn.execute("DELETE FROM employees", []).unwrap();
+            for id in 1..=count {
+                conn.execute("INSERT INTO employees(id,full_name,employee_number,photo_path) VALUES(?1,?2,?3,?4)",
+                    params![id, format!("موظف {id}"), format!("E-{id}"), format!("Files/Employees/{id}/p.jpg")]).unwrap();
+                for order in 0..2 { conn.execute("INSERT INTO employee_spouses(employee_id,name,sort_order) VALUES(?1,'x',?2)", params![id, order]).unwrap(); }
+                for order in 0..3 { conn.execute("INSERT INTO employee_attachments(employee_id,kind,file_path,sort_order) VALUES(?1,'general',?2,?3)", params![id, format!("Files/Employees/{id}/a{order}.pdf"), order]).unwrap(); }
+            }
+            list_employees(&conn).unwrap();
+            let started = std::time::Instant::now();
+            let employees = list_employees(&conn).unwrap();
+            println!("list_employees: {} employees in {:?}", employees.len(), started.elapsed());
+        }
+    }
+
     #[test]
     fn daily_backup_after_employee_change_is_verified_and_not_repeated() {
         let dir = tempfile::tempdir().unwrap();
