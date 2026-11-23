@@ -22,6 +22,21 @@ async function run(page, method = "uploadAttachment", args = [1, "synthetic.png"
   await page.getByRole("button", { name: "تحديد حدود المرفق وتدويره", exact: true }).click();
   await expect(page.getByRole("button", { name: "تطبيق القص / إعادة المعالجة" })).toBeVisible();
 }
+// Employee panel actions live in collapsible sections, collapsed rows, ⋯ menus or the header photo menu.
+async function reveal(page, selector) {
+  const target = page.locator(selector).first();
+  const where = await target.evaluate(el => ({
+    section: el.closest(".emp-sec:not(.open)")?.id || null,
+    row: el.closest(".emp-row.collapsed")?.dataset.rowKey || null,
+    tileMenu: Boolean(el.closest(".emp-tile-menu")),
+    avatar: Boolean(el.closest(".emp-avatar-menu")),
+  }));
+  if (where.section) await page.locator(`#${where.section} > .emp-sec-head`).click();
+  if (where.row) await page.locator(`.emp-row[data-row-key="${where.row}"] .emp-row-title`).click();
+  if (where.tileMenu) await target.locator("xpath=ancestor::div[contains(concat(' ',normalize-space(@class),' '),' emp-tile ')][1]").locator(".emp-tile-more").click();
+  if (where.avatar) await page.locator("#emp-avatar-btn").click();
+  return target;
+}
 async function save(page) {
   await page.getByRole("button", { name: "تطبيق القص / إعادة المعالجة" }).click();
   await page.waitForFunction(() => window.result !== null || window.failure !== null);
@@ -123,7 +138,7 @@ for (const [selector,command] of [
   await page.evaluate(()=>window.renderActual("employees"));
   await page.locator('.table-row[data-id="1"]').click();
   await page.locator(`.tab-btn[data-tab="${command.includes("family")||command.includes("spouse")?"family":"documents"}"]`).click();
-  await page.locator(selector).first().click();
+  await (await reveal(page, selector)).click();
   await page.getByRole("button",{name:"تأكيد",exact:true}).click();
   await page.getByRole("button",{name:"تحديد حدود المرفق وتدويره",exact:true}).click();
   await expect(page.locator("[data-process]")).toBeVisible();
@@ -163,7 +178,7 @@ test("settings screen removes attachment processing settings and preserves logo 
 });
 test("existing employee document opens the same editor and preserves its association",async({page})=>{
   await page.evaluate(()=>window.renderActual("employees"));await page.locator('.table-row[data-id="1"]').click();await page.locator('.tab-btn[data-tab="documents"]').click();
-  await page.locator('[data-scanner-for="Files/Employees/1/Documents/NationalCard/card.jpg"] button').filter({hasText:"إعادة معالجة"}).click();
+  await (await reveal(page, '[data-scanner-for="Files/Employees/1/Documents/NationalCard/card.jpg"] button')).click();
   await page.locator("[data-process]").click();
   await page.waitForFunction(()=>window.calls.some(c=>c.command==="cmd_scanner_save_existing"));
   expect((await page.evaluate(()=>window.calls.find(c=>c.command==="cmd_scanner_save_existing"))).args.relativePath).toBe("Files/Employees/1/Documents/NationalCard/card.jpg");
@@ -355,13 +370,12 @@ test("personal photo reprocesses and delete clears the visible photo", async ({ 
   await page.evaluate(()=>window.renderActual("employees"));
   await page.locator('.table-row[data-id="1"]').click();
   await page.locator('.tab-btn[data-tab="documents"]').click();
-  const photo = page.locator('[data-scanner-for="Files/Employees/1/Photo/photo.jpg"] button');
-  await photo.click();
+  await (await reveal(page, '[data-scanner-for="Files/Employees/1/Photo/photo.jpg"] button')).click();
   await expect(page.locator("[data-result]")).toBeVisible();
   await page.locator("[data-process]").click();
   await page.waitForFunction(()=>window.calls.some(c=>c.command==="cmd_scanner_save_existing"));
   expect(await page.evaluate(()=>window.calls.find(c=>c.command==="cmd_scanner_prepare").args.relativePath)).toBe("Files/Employees/1/Photo/photo.jpg");
-  await page.locator("#btn-delete-photo").click();
+  await (await reveal(page, "#btn-delete-photo")).click();
   await page.getByRole("button",{name:"\u062a\u0623\u0643\u064a\u062f",exact:true}).click();
   await expect(page.locator("#btn-delete-photo")).toHaveCount(0);
   await expect(page.locator('img[data-scan-path="Files/Employees/1/Photo/photo.jpg"]')).toHaveCount(0);
