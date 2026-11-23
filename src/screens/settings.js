@@ -181,13 +181,13 @@ export async function renderSettings(container, user, ctx) {
 
   const tabs = [
     canSettings && { id: "company", label: "الجهة والشعار" },
-    canSettings && { id: "storage", label: "مواقع الحفظ" },
-    canBackups && { id: "backup", label: "النسخ الاحتياطي" },
+    (canSettings || canBackups) && { id: "storage", label: "الحفظ والنسخ الاحتياطي" },
     canSettings && canBackups && { id: "updates", label: "التحديثات" },
-    { id: "support", label: "الفحص والدعم" },
-    { id: "about", label: "حول النظام" },
+    { id: "support", label: "الدعم وحول النظام" },
   ].filter(Boolean);
   if (ctx?.tab) activeSettingsTab = ctx.tab;
+  if (activeSettingsTab === "backup") activeSettingsTab = "storage";
+  if (activeSettingsTab === "about") activeSettingsTab = "support";
   if (!tabs.some(tab => tab.id === activeSettingsTab)) activeSettingsTab = tabs[0].id;
 
   const logoMarkup = () =>
@@ -224,82 +224,100 @@ export async function renderSettings(container, user, ctx) {
             <button id="btn-save-cfg" type="button" class="btn-primary px-6">حفظ</button>
           </div>
         </div>
-      </section>
+      </section>` : ""}
 
-      <section class="card settings-panel space-y-1" data-settings-panel="storage">
-        <p class="text-xs text-gray-500">يمكن نقل مجلد البيانات أو تغيير مجلد النسخ الاحتياطية بأمان: يُنسخ كل شيء ويُتحقق منه أولًا، ويبقى الموقع القديم كما هو دون حذف.</p>
+
+      ${canSettings || canBackups ? `<section class="settings-panel settings-stack" data-settings-panel="storage">
+      ${canSettings ? `<div class="card settings-block">
+        <div class="settings-block-head">
+          <p class="settings-block-title">مواقع الحفظ</p>
+          <p class="settings-block-help">يمكن نقل مجلد البيانات أو تغيير مجلد النسخ بأمان: يُنسخ كل شيء ويُتحقق منه أولًا، ويبقى الموقع القديم كما هو.</p>
+        </div>
         ${(storageStatus?.warnings || []).filter(w => !isStorageWarningDismissed(storageWarningKey(w, storageStatus))).map(w => `<div class="settings-storage-warning text-xs" role="status" data-warning-key="${escHtml(storageWarningKey(w, storageStatus))}">
           <span>${escHtml(w)}</span>
           <button type="button" class="settings-warning-dismiss" title="إخفاء هذا التنبيه على هذا الجهاز">حسنًا</button>
         </div>`).join("")}
-        <div class="settings-path-row">
-          <div class="min-w-0">
-            <p class="settings-path-label">مجلد البيانات والمرفقات</p>
-            <p id="storage-path-text" class="settings-path-value" dir="ltr">${escHtml(storageStatus?.data_root || "—")}</p>
-          </div>
-          <div class="flex gap-2">
-            <button id="btn-open-storage" type="button" class="btn-secondary whitespace-nowrap">فتح المجلد</button>
-            ${canBackups ? `<button id="btn-move-storage" type="button" class="btn-secondary whitespace-nowrap">نقل مجلد البيانات…</button>` : ""}
-          </div>
-        </div>
-        <div class="settings-path-row">
-          <div class="min-w-0">
-            <p class="settings-path-label">مجلد النسخ الاحتياطية</p>
-            <p id="backup-path-text" class="settings-path-value" dir="ltr">${escHtml(storageStatus?.backup_root || "—")}</p>
-          </div>
-          <div class="flex gap-2">
-            <button id="btn-open-backup" type="button" class="btn-secondary whitespace-nowrap">فتح المجلد</button>
-            <button id="btn-change-backup" type="button" class="btn-secondary whitespace-nowrap">تغيير المجلد…</button>
-          </div>
-        </div>
-      </section>` : ""}
-
-      ${canBackups ? `<section class="settings-panel" data-settings-panel="backup">
-      <div class="card space-y-3">
-        <p class="section-title">عمليات النسخ الاحتياطي</p>
-        <p class="text-xs text-gray-400">تشمل النسخة الاحتياطية قاعدة البيانات وجميع المرفقات والوثائق المرفوعة.</p>
-        <div class="grid grid-cols-1 sm:grid-cols-3 gap-3 border border-autohr-border rounded-lg p-3 bg-autohr-bg/40">
-          <label class="flex items-center gap-2 text-sm">
-            <input id="auto-backup-daily" type="checkbox" ${autoBackup?.daily_enabled ? "checked" : ""} />
-            <span>تفعيل النسخ اليومي التلقائي</span>
-          </label>
-          <label class="flex items-center gap-2 text-sm">
-            <input id="auto-backup-weekly" type="checkbox" ${autoBackup?.weekly_enabled ? "checked" : ""} />
-            <span>تفعيل النسخ الأسبوعي التلقائي</span>
-          </label>
-          <label class="flex items-center gap-2 text-sm">
-            <input id="auto-backup-monthly" type="checkbox" ${autoBackup?.monthly_enabled ? "checked" : ""} />
-            <span>تفعيل النسخ الشهري التلقائي</span>
-          </label>
-          <div class="sm:col-span-3">
-            <label class="section-title">كلمة مرور النسخ التلقائية</label>
+        <div>
+          <div class="settings-path-row">
+            <div class="min-w-0">
+              <p class="settings-path-label">مجلد البيانات والمرفقات</p>
+              <p id="storage-path-text" class="settings-path-value" dir="ltr">${escHtml(storageStatus?.data_root || "—")}</p>
+            </div>
             <div class="flex gap-2">
-              <input id="auto-backup-password" class="input-field flex-1" type="password"
-                placeholder="${autoBackup?.has_password ? "اتركها فارغة للإبقاء على كلمة المرور الحالية" : "أدخل كلمة مرور 8 أحرف على الأقل"}"
-                autocomplete="new-password" />
-              <button type="button" id="auto-backup-password-toggle" class="btn-secondary whitespace-nowrap"
-                aria-pressed="false">إظهار</button>
+              <button id="btn-open-storage" type="button" class="btn-secondary whitespace-nowrap">فتح المجلد</button>
+              ${canBackups ? `<button id="btn-move-storage" type="button" class="btn-secondary whitespace-nowrap">نقل مجلد البيانات…</button>` : ""}
             </div>
           </div>
-          <p class="text-xs text-gray-500 sm:col-span-3">
-            آخر نسخة يومية: ${autoBackup?.last_daily || "—"} · آخر نسخة أسبوعية: ${autoBackup?.last_weekly || "—"} · آخر نسخة شهرية: ${autoBackup?.last_monthly || "—"}
-          </p>
-          <div class="sm:col-span-3">
-            <button id="btn-save-auto-backup" class="btn-secondary">حفظ إعدادات النسخ التلقائي</button>
+          <div class="settings-path-row">
+            <div class="min-w-0">
+              <p class="settings-path-label">مجلد النسخ الاحتياطية</p>
+              <p id="backup-path-text" class="settings-path-value" dir="ltr">${escHtml(storageStatus?.backup_root || "—")}</p>
+            </div>
+            <div class="flex gap-2">
+              <button id="btn-open-backup" type="button" class="btn-secondary whitespace-nowrap">فتح المجلد</button>
+              <button id="btn-change-backup" type="button" class="btn-secondary whitespace-nowrap">تغيير المجلد…</button>
+            </div>
           </div>
+        </div>
+      </div>` : ""}
+
+      ${canBackups ? `<div class="card settings-block">
+        <div class="settings-block-head">
+          <p class="settings-block-title">النسخ التلقائي</p>
+          <p class="settings-block-help">تشمل كل نسخة قاعدة البيانات وجميع المرفقات والوثائق، وتُشفَّر بكلمة المرور أدناه.</p>
+        </div>
+        <div class="backup-schedules">
+            <label class="backup-schedule">
+              <input id="auto-backup-daily" type="checkbox" ${autoBackup?.daily_enabled ? "checked" : ""} />
+              <span class="backup-schedule-name">يومي</span>
+              <span class="backup-schedule-last">آخر نسخة: <span dir="ltr">${escHtml(autoBackup?.last_daily || "—")}</span></span>
+            </label>
+            <label class="backup-schedule">
+              <input id="auto-backup-weekly" type="checkbox" ${autoBackup?.weekly_enabled ? "checked" : ""} />
+              <span class="backup-schedule-name">أسبوعي</span>
+              <span class="backup-schedule-last">آخر نسخة: <span dir="ltr">${escHtml(autoBackup?.last_weekly || "—")}</span></span>
+            </label>
+            <label class="backup-schedule">
+              <input id="auto-backup-monthly" type="checkbox" ${autoBackup?.monthly_enabled ? "checked" : ""} />
+              <span class="backup-schedule-name">شهري</span>
+              <span class="backup-schedule-last">آخر نسخة: <span dir="ltr">${escHtml(autoBackup?.last_monthly || "—")}</span></span>
+            </label>
+        </div>
+        <div class="backup-password-row">
+          <label class="settings-path-label" for="auto-backup-password">كلمة مرور النسخ التلقائية</label>
+          <div class="flex gap-2">
+            <input id="auto-backup-password" class="input-field flex-1" type="password"
+              placeholder="${autoBackup?.has_password ? "اتركها فارغة للإبقاء على كلمة المرور الحالية" : "أدخل كلمة مرور 8 أحرف على الأقل"}"
+              autocomplete="new-password" />
+            <button type="button" id="auto-backup-password-toggle" class="btn-secondary whitespace-nowrap"
+              aria-pressed="false">إظهار</button>
+          </div>
+        </div>
+        <div class="settings-block-foot">
+          <button id="btn-save-auto-backup" class="btn-primary">حفظ إعدادات النسخ التلقائي</button>
+        </div>
+      </div>
+
+      <div class="card settings-block">
+        <div class="settings-block-head">
+          <p class="settings-block-title">نسخة يدوية</p>
+          <p class="settings-block-help">أنشئ نسخة الآن في مجلد النسخ، أو صدّرها إلى قرص خارجي أو مجلد شبكة.</p>
         </div>
         <div class="flex gap-3 flex-wrap">
           <button id="btn-create-backup" class="btn-primary">إنشاء نسخة احتياطية الآن</button>
           <button id="btn-export-backup" class="btn-secondary">تصدير نسخة إلى…</button>
         </div>
       </div>
-      ${canRestore ? `<div class="card danger-zone space-y-3 mt-4">
-        <p class="danger-zone-title"><span aria-hidden="true">⚠</span> استعادة نسخة احتياطية</p>
-        <p class="text-xs text-gray-400 leading-6">تستبدل الاستعادة كل البيانات والمرفقات الحالية بمحتوى النسخة المختارة، وتضيع أي تغييرات أُجريت بعد تاريخ تلك النسخة. يُنصح بإنشاء نسخة احتياطية الآن قبل الاستعادة.</p>
+
+      ${canRestore ? `<div class="card danger-zone settings-block">
+        <div class="settings-block-head">
+          <p class="danger-zone-title"><span aria-hidden="true">⚠</span> استعادة نسخة احتياطية</p>
+          <p class="settings-block-help">تستبدل الاستعادة كل البيانات والمرفقات الحالية بمحتوى النسخة المختارة، وتضيع أي تغييرات بعد تاريخها. يُنصح بإنشاء نسخة الآن قبل الاستعادة.</p>
+        </div>
         <div>
           <button id="btn-restore-backup" class="btn-danger-outline">استعادة نسخة احتياطية…</button>
         </div>
-      </div>` : ""}
+      </div>` : ""}` : ""}
       </section>` : ""}
 
       ${canSettings && canBackups ? `<section class="card settings-panel space-y-3" data-settings-panel="updates">
@@ -314,23 +332,26 @@ export async function renderSettings(container, user, ctx) {
       </section>` : ""}
 
 
-      <div class="settings-panel" data-settings-panel="support"></div>
-      <div class="settings-panel" data-settings-panel="about"></div>
+      <div class="settings-panel settings-stack" data-settings-panel="support">
+        <div data-embedded="about"></div>
+        <div data-embedded="support"></div>
+      </div>
     </div>`;
 
 
-  // «الفحص والدعم» and «حول النظام» are their own screens, drawn into their tab on first open.
-  const embeddedScreens = { support: renderSupport, about: renderAbout };
-  const embeddedRendered = new Set();
+  // «الدعم وحول النظام» draws the about card and the check/contact screen into one tab on first open.
+  let supportRendered = false;
   const showTab = id => {
     activeSettingsTab = id;
-    const embedded = embeddedScreens[id];
-    if (embedded && !embeddedRendered.has(id)) {
-      embeddedRendered.add(id);
-      const panel = container.querySelector(`[data-settings-panel="${id}"]`);
-      embedded(panel, user, { ...ctx, embedded: true }).catch(err => {
-        panel.innerHTML = `<div class="card text-sm text-gray-400" dir="auto">${escHtml(err?.message ?? String(err))}</div>`;
-      });
+    if (id === "support" && !supportRendered) {
+      supportRendered = true;
+      const panel = container.querySelector('[data-settings-panel="support"]');
+      for (const [key, render] of [["about", renderAbout], ["support", renderSupport]]) {
+        const host = panel.querySelector(`[data-embedded="${key}"]`);
+        render(host, user, { ...ctx, embedded: true }).catch(err => {
+          host.innerHTML = `<div class="card text-sm text-gray-400" dir="auto">${escHtml(err?.message ?? String(err))}</div>`;
+        });
+      }
     }
     container.querySelectorAll("[data-settings-tab]").forEach(tab => tab.setAttribute("aria-selected", String(tab.dataset.settingsTab === id)));
     container.querySelectorAll("[data-settings-panel]").forEach(panel => panel.classList.toggle("hidden", panel.dataset.settingsPanel !== id));

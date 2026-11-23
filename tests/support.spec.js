@@ -52,16 +52,19 @@ test("update check reports the latest version or leads to settings", async ({ pa
   expect(await page.evaluate(() => window.navigated)).toEqual({ target: "settings", options: { tab: "updates" } });
 });
 
-test("settings holds «الفحص والدعم» and «حول النظام» as tabs for every user", async ({ page }) => {
+test("settings has one «الدعم وحول النظام» tab for every user, and one tab for storage and backups", async ({ page }) => {
   await page.evaluate(() => window.renderActual("settings"));
   const tabs = page.locator("[data-settings-tab]");
-  await expect(tabs.filter({ hasText: "الفحص والدعم" })).toHaveCount(1);
-  await expect(tabs.filter({ hasText: "حول النظام" })).toHaveCount(1);
-  await tabs.filter({ hasText: "الفحص والدعم" }).click();
-  await expect(page.getByRole("button", { name: "بدء الفحص" })).toBeVisible();
-  // The «التحديثات» tab already covers updates, so the support tab leaves that card out.
-  await expect(page.locator("#btn-support-check-update")).toHaveCount(0);
-  await tabs.filter({ hasText: "حول النظام" }).click();
+  await expect(tabs.filter({ hasText: "الحفظ والنسخ الاحتياطي" })).toHaveCount(1);
+  await tabs.filter({ hasText: "الحفظ والنسخ الاحتياطي" }).click();
+  await expect(page.locator('[data-settings-panel="storage"] .settings-block-title').first()).toHaveText("مواقع الحفظ");
+  const support = tabs.filter({ hasText: "الدعم وحول النظام" });
+  await expect(support).toHaveCount(1);
+  await expect(tabs.filter({ hasText: /^حول النظام$/ })).toHaveCount(0);
+  await support.click();
   await expect(page.locator(".about-card")).toBeVisible();
+  await expect(page.getByRole("button", { name: "بدء الفحص" })).toBeVisible();
+  // The «التحديثات» tab already covers updates, and the user is already in Settings.
+  await expect(page.locator("#btn-support-check-update")).toHaveCount(0);
   await expect(page.locator("#btn-open-settings")).toHaveCount(0);
 });

@@ -476,6 +476,23 @@
 .settings-logo{width:96px;height:96px;border-radius:12px;object-fit:contain;background:#fff;border:1px solid var(--ui-line-strong)}
 /* Fixed company logo: always shown whole (never cropped) on a white tile, since the artwork has a white background. */
 .company-logo-tile{object-fit:contain;background:#fff;border-radius:8px}
+/* ── «الحفظ والنسخ الاحتياطي»: one tab, one card per topic ── */
+.settings-stack{display:grid;gap:16px}
+.settings-stack.hidden{display:none}
+.settings-block{display:grid;gap:14px}
+.settings-block-head{display:grid;gap:4px}
+.settings-block-title{margin:0;font-size:15px;font-weight:700;color:var(--ui-text-strong)}
+.settings-block-help{margin:0;font-size:12px;line-height:1.8;color:var(--ui-text-muted)}
+.settings-block-foot{display:flex;justify-content:flex-start}
+.backup-schedules{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px}
+@media (max-width:760px){.backup-schedules{grid-template-columns:1fr}}
+.backup-schedule{display:grid;grid-template-columns:auto 1fr;align-items:center;gap:4px 10px;padding:12px 14px;border:1px solid var(--ui-line);border-radius:10px;background:color-mix(in srgb, var(--ui-accent) 5%, transparent);cursor:pointer;transition:border-color .15s,background .15s}
+.backup-schedule:hover{border-color:var(--ui-line-strong)}
+.backup-schedule:has(input:checked){border-color:var(--ui-accent);background:var(--ui-accent-soft)}
+.backup-schedule input{width:16px;height:16px;accent-color:var(--ui-accent)}
+.backup-schedule-name{font-size:14px;font-weight:600;color:var(--ui-text-strong)}
+.backup-schedule-last{grid-column:2;font-size:12px;color:var(--ui-text-muted)}
+.backup-password-row{display:grid;gap:6px;max-width:34rem}
 .settings-path-row{display:flex;align-items:center;justify-content:space-between;gap:16px;padding:12px 0}
 .settings-path-row + .settings-path-row{border-top:1px solid var(--ui-line)}
 .settings-path-label{font-size:13px;font-weight:600;color:var(--ui-text)}
@@ -742,3 +759,5 @@ html[data-ui-scale] #app-shell { height: calc(100vh / var(--ui-scale)); }
 .emp-zone-remove{display:inline-flex;align-items:center;justify-content:center;width:18px;height:18px;border:0;border-radius:999px;background:transparent;color:var(--ui-text-faint);font-size:14px;line-height:1;cursor:pointer}
 .emp-zone-remove:hover,.emp-zone-remove:focus-visible{background:var(--ui-accent-hover);color:var(--ui-text-strong);outline:none}
 .emp-zone-input{flex:1;min-width:110px;border:0;background:transparent;color:inherit;font-size:13px;outline:none;padding:4px 0}
+.settings-stack .about-card{max-width:none}
+.about-card h2{color:var(--ui-text-strong)}
