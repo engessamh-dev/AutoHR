@@ -192,3 +192,32 @@ test("ministry badge: both sides are read and agreeing values are verified", asy
   expect((await page.evaluate(() => window.calls.filter(c => c.command === "cmd_read_document_fields").map(c => c.args.relativePath))).sort())
     .toEqual(["Files/Employees/1/Documents/Ministry/back.jpg", "Files/Employees/1/Documents/Ministry/front.jpg"]);
 });
+
+test("airport badge: access zones are read into chips, edited, and saved", async ({ page }) => {
+  await page.evaluate(() => {
+    window.employeePatch = { airport_badge_front_path: "Files/Employees/1/Documents/Airport/badge.jpg", airport_badge_front_full_path: "synthetic", airport_badge_zones: null };
+    window.readResult = { document: "airport_badge", warnings: [], fields: [
+      { key: "expiry_date", value: "2028-02-01", confidence: 0.95, source: "text" },
+      { key: "zones", value: "S1,T,VIP,C", confidence: 0.95, source: "text" },
+    ] };
+  });
+  await openDocuments(page);
+  const tile = page.locator(".emp-tile.has-file", { has: page.locator('[data-target="employee:airport_badge"]') });
+  await tile.locator(".emp-tile-more").click();
+  await tile.getByRole("menuitem", { name: "قراءة البيانات" }).click();
+  const dialog = page.getByRole("dialog", { name: /قراءة البيانات/ });
+  await expect(dialog.locator("tr", { hasText: "صلاحيات الباج" }).locator(".id-reader-value")).toHaveValue("S1,T,VIP,C");
+  await dialog.getByRole("button", { name: "اعتماد المحدَّد" }).click();
+  const chips = page.locator(".emp-zone-chip");
+  await expect(chips).toHaveText(["S1×", "T×", "VIP×", "C×"]);
+  await page.getByRole("button", { name: "حذف T" }).click();
+  await page.locator(".emp-zone-input").fill("s2");
+  await page.locator(".emp-zone-input").press("Enter");
+  await expect(chips).toHaveText(["S1×", "VIP×", "C×", "S2×"]);
+  await expect(page.locator("#f-airport_badge_zones")).toHaveValue("S1,VIP,C,S2");
+  await page.locator("#panel-save").click();
+  await page.getByRole("button", { name: "تأكيد", exact: true }).click();
+  await expect.poll(() => page.evaluate(() => window.calls.some(c => c.command === "cmd_update_employee"))).toBe(true);
+  const data = await page.evaluate(() => window.calls.find(c => c.command === "cmd_update_employee").args.data);
+  expect(data.airport_badge_zones).toBe("S1,VIP,C,S2");
+});

@@ -935,8 +935,61 @@ fn is_airport_badge(lines: &[Line]) -> bool {
         || (has(&|l| l.text.to_lowercase().replace(' ', "").starts_with("idno")) && has(&|l| compact_arabic(&l.text).contains("حاملالهويه")))
 }
 
+/// One access-zone code as printed at the bottom of the airport badge front ("S1", "T", "VIP", "C"),
+/// with the usual OCR confusions repaired ("SI"/"Sl" → "S1").
+fn zone_code(token: &str) -> Option<String> {
+    let t: String = token.trim().to_uppercase();
+    if t.is_empty() || t.len() > 4 || !t.chars().all(|c| c.is_ascii_alphanumeric()) { return None; }
+    if !t.chars().next()?.is_ascii_alphabetic() { return None; }
+    let mut chars: Vec<char> = t.chars().collect();
+    // A letter followed by digits: I/L/O read for 1/1/0 after the first letter.
+    if chars.len() == 2 { chars[1] = match chars[1] { 'I' | 'L' => '1', 'O' => '0', c => c }; }
+    let t: String = chars.into_iter().collect();
+    // Up to three letters, then up to two digits.
+    let letters = t.chars().take_while(|c| c.is_ascii_alphabetic()).count();
+    if letters > 3 || t.len() - letters > 2 || !t[letters..].chars().all(|c| c.is_ascii_digit()) { return None; }
+    if ["BGW", "ID", "NO"].contains(&t.as_str()) { return None; }
+    Some(t)
+}
+
+fn known_zone(z: &str) -> bool {
+    ["T", "VIP", "C"].contains(&z) || (z.len() == 2 && z.starts_with('S') && z.as_bytes()[1].is_ascii_digit())
+}
+
+/// Access zones: a row of short Latin codes below the company line (or in the bottom third
+/// of the card when the company line was not read).
+fn airport_zones(all_rows: &[Line], result: &mut ReadResult) {
+    let start = all_rows.iter().position(|r| compact_arabic(&r.text).starts_with("شركه")).map(|i| i + 1);
+    let top = all_rows.iter().map(|r| r.bbox[1]).fold(f32::MAX, f32::min);
+    let bottom = all_rows.iter().map(|r| r.bbox[3]).fold(f32::MIN, f32::max);
+    let candidates: Vec<&Line> = match start {
+        Some(i) => all_rows[i..].iter().collect(),
+        None => all_rows.iter().filter(|r| r.bbox[1] >= top + (bottom - top) * 0.66).collect(),
+    };
+    let mut zones: Vec<String> = Vec::new();
+    let mut confidence = 1f32;
+    for row in candidates {
+        let lower = row.text.to_lowercase();
+        if row.text.chars().any(is_arabic_letter) || lower.contains("expire") || find_date(&row.text).is_some() { continue; }
+        let tokens: Vec<&str> = row.text.split(|c: char| c.is_whitespace() || ",|/-·•.".contains(c)).filter(|t| !t.is_empty()).collect();
+        let codes: Vec<String> = tokens.iter().filter_map(|t| zone_code(t)).collect();
+        // Every token must be a code and one of them a known one, so a Latin name or
+        // company line ("ABC CO") is not taken for zones.
+        if codes.is_empty() || codes.len() != tokens.len() || !codes.iter().any(|c| known_zone(c)) { continue; }
+        for code in codes {
+            if !zones.contains(&code) { zones.push(code); }
+        }
+        confidence = confidence.min(row.confidence);
+    }
+    if zones.is_empty() { return; }
+    // Codes outside the known set are offered at low confidence for review.
+    if !zones.iter().all(|z| known_zone(z)) { confidence = confidence.min(0.7); }
+    result.set("zones", zones.join(","), confidence, "text");
+}
+
 fn parse_airport_badge(lines: &[Line], result: &mut ReadResult) {
     let all_rows: Vec<Line> = rows(lines).into_iter().map(|(row, _)| row).collect();
+    airport_zones(&all_rows, result);
     let arabic_row = |r: &Line| r.text.chars().any(is_arabic_letter) && !r.text.chars().any(|c| c.is_ascii_alphanumeric());
     for (i, row) in all_rows.iter().enumerate() {
         let lower = row.text.to_lowercase();
@@ -1258,6 +1311,19 @@ mod tests {
         assert_eq!(v(&r, "expiry_date"), "2028-02-01");
         assert_eq!(v(&r, "first"), "أحمد");
         assert_eq!(v(&r, "grandfather"), "حسين");
+        assert_eq!(v(&r, "zones"), "", "no zone row on this front");
+        let mut with_zones = front.clone();
+        with_zones.push(line("SI  T  VIP  C", 120.));
+        with_zones.push(line("ABC CO", 130.));
+        let r = parse(&with_zones);
+        assert_eq!(v(&r, "zones"), "S1,T,VIP,C");
+        assert!(r.get("zones").unwrap().confidence >= 0.85);
+        // An unfamiliar code next to known ones is kept, but marked for review.
+        let mut odd = front.clone();
+        odd.push(line("S2 VIP R", 120.));
+        let r = parse(&odd);
+        assert_eq!(v(&r, "zones"), "S2,VIP,R");
+        assert!(r.get("zones").unwrap().confidence < 0.85);
         let back = vec![
             line("ID No. X100000001", 0.),
             line("تاريخ الاصدار : 2026-02-01 Date Issue", 20.),
