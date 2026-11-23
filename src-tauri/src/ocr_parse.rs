@@ -1226,6 +1226,18 @@ fn parse_vehicle_registration(lines: &[Line], result: &mut ReadResult) {
     }
     dates.sort_by(|a, b| a.0.cmp(&b.0));
     dates.dedup_by(|a, b| a.0 == b.0);
+    // No governorate from the plate (the code before the letter is often merged or lost):
+    // the owner's address (C.1.3) usually names it. Offered for review only.
+    if result.get("plate").is_some() && result.get("governorate").is_none() {
+        let address = lines.iter().find_map(|l| {
+            if !l.text.to_uppercase().contains("C.1.3") { return None; }
+            let text = normalize(&l.text);
+            GOVERNORATE_NAMES.iter().find(|g| text.contains(&normalize(g))).map(|g| (g.to_string(), l.confidence))
+        });
+        if let Some((name, confidence)) = address {
+            result.set("governorate", name, confidence.min(0.5), "text");
+        }
+    }
     if dates.len() >= 2 {
         let (issue, expiry) = (&dates[0], &dates[dates.len() - 1]);
         result.set("issue_date", issue.0.clone(), issue.1.min(0.9), "text");
@@ -1621,6 +1633,13 @@ mod tests {
         assert_eq!(v(&r, "plate_category"), "خصوصي");
         assert_eq!(v(&r, "governorate"), "نينوى");
         assert!(r.get("governorate").unwrap().confidence < 0.85, "from the code table: reviewed");
+        // Code lost by the reader: the owner's address names the governorate, for review.
+        let mut lost = front.clone();
+        lost[1] = at("خصوصي A34567", 300., 100.);
+        lost.push(at("كربلاء المركز 3 C.1.3.", 300., 200.));
+        let rl = parse(&lost);
+        assert_eq!(v(&rl, "governorate"), "كربلاء");
+        assert!(rl.get("governorate").unwrap().confidence < 0.85);
         // Older plates: Arabic-Indic number glued to an Arabic letter, then the governorate.
         let mut arabic = front.clone();
         arabic[1] = at("٤٥٦٧٨ب كربلاء أجرة", 300., 100.);
