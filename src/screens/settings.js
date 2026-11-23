@@ -9,6 +9,8 @@ import { can }       from "../permissions.js";
 import { listen }    from "@tauri-apps/api/event";
 import { APP_VERSION } from "../version.js";
 import { COMPANY_LOGO } from "../branding.js";
+import { renderSupport } from "./support.js";
+import { renderAbout } from "./about.js";
 
 let activeSettingsTab = null;
 
@@ -184,11 +186,9 @@ export async function renderSettings(container, user, ctx) {
     canBackups && { id: "backup", label: "النسخ الاحتياطي" },
     canSettings && canBackups && { id: "updates", label: "التحديثات" },
     { id: "appearance", label: "المظهر" },
+    { id: "support", label: "الفحص والدعم" },
+    { id: "about", label: "حول النظام" },
   ].filter(Boolean);
-  if (!tabs.length) {
-    container.innerHTML = `<div class="card text-gray-400">لا توجد إعدادات متاحة لهذا المستخدم.</div>`;
-    return;
-  }
   if (ctx?.tab) activeSettingsTab = ctx.tab;
   if (!tabs.some(tab => tab.id === activeSettingsTab)) activeSettingsTab = tabs[0].id;
 
@@ -323,6 +323,9 @@ export async function renderSettings(container, user, ctx) {
             aria-checked="${getThemeChoice() === choice}">${themeIcon(choice)}<span>${themeLabels[choice]}</span></button>`).join("")}
         </div>
       </section>
+
+      <div class="settings-panel" data-settings-panel="support"></div>
+      <div class="settings-panel" data-settings-panel="about"></div>
     </div>`;
 
   const syncThemeOptions = choice => container.querySelectorAll("[data-theme-option]")
@@ -334,8 +337,19 @@ export async function renderSettings(container, user, ctx) {
     syncThemeOptions(choice);
   });
 
+  // «الفحص والدعم» and «حول النظام» are their own screens, drawn into their tab on first open.
+  const embeddedScreens = { support: renderSupport, about: renderAbout };
+  const embeddedRendered = new Set();
   const showTab = id => {
     activeSettingsTab = id;
+    const embedded = embeddedScreens[id];
+    if (embedded && !embeddedRendered.has(id)) {
+      embeddedRendered.add(id);
+      const panel = container.querySelector(`[data-settings-panel="${id}"]`);
+      embedded(panel, user, { ...ctx, embedded: true }).catch(err => {
+        panel.innerHTML = `<div class="card text-sm text-gray-400" dir="auto">${escHtml(err?.message ?? String(err))}</div>`;
+      });
+    }
     container.querySelectorAll("[data-settings-tab]").forEach(tab => tab.setAttribute("aria-selected", String(tab.dataset.settingsTab === id)));
     container.querySelectorAll("[data-settings-panel]").forEach(panel => panel.classList.toggle("hidden", panel.dataset.settingsPanel !== id));
   };

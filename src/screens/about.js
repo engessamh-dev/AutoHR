@@ -11,7 +11,7 @@ export async function renderAbout(container, user, ctx) {
   let companyConfig = null;
   try { companyConfig = await api.getPublicCompanyConfig(); } catch {}
   const companyLine = [companyConfig?.company_name, companyConfig?.department_name].filter(Boolean).join(" · ");
-  const canOpenSettings = can(user, "settings.manage") || can(user, "backups.manage");
+  const canOpenSettings = !ctx?.embedded && (can(user, "settings.manage") || can(user, "backups.manage"));
 
   container.innerHTML = `
     <div class="card about-card">

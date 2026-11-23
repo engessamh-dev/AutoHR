@@ -270,8 +270,14 @@ async function navigateTo(screen, options = {}) {
     return;
   }
 
+  // «الفحص والدعم» and «حول النظام» now live as tabs inside «الإعدادات».
+  if (screen === "support" || screen === "about") {
+    options = { ...options, tab: screen };
+    screen = "settings";
+  }
+
   // RBAC guard
-  const required = { users: ["users.manage"], audit: ["audit.view"], settings: ["settings.manage", "backups.manage"] };
+  const required = { users: ["users.manage"], audit: ["audit.view"] };
   if (required[screen] && !required[screen].some(permission => can(currentUser, permission))) {
     document.getElementById("screen-container").innerHTML = `
       <div class="flex flex-col items-center justify-center h-full text-gray-500">
@@ -358,9 +364,8 @@ async function enterApp(user) {
   const canViewAudit = can(user, "audit.view");
   document.getElementById("nav-users")?.classList.toggle("hidden", !canManageUsers);
   document.getElementById("nav-audit")?.classList.toggle("hidden", !canViewAudit);
-  const canOpenSettings = can(user, "settings.manage") || can(user, "backups.manage");
-  document.getElementById("nav-settings")?.classList.toggle("hidden", !canOpenSettings);
-  document.getElementById("nav-admin-section")?.classList.toggle("hidden", !canManageUsers && !canViewAudit && !canOpenSettings);
+  // «الإعدادات» is open to every user: it holds «المظهر», «الفحص والدعم» and «حول النظام»,
+  // and shows the administrative tabs only to those with the permission.
   document.getElementById("login-screen").classList.add("hidden");
   document.getElementById("password-change-screen").classList.add("hidden");
   document.getElementById("app-shell").classList.remove("hidden");

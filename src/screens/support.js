@@ -41,6 +41,8 @@ export async function renderSupport(container, user, ctx) {
   let contact = null;
   try { contact = await api.getSupportContact(); } catch { /* shown as unavailable below */ }
   const canUpdate = can(user, "settings.manage");
+  // Inside «الإعدادات» the «التحديثات» tab already does this, so the card is left out there.
+  const showUpdateCard = !ctx?.embedded;
 
   container.innerHTML = `
     <div class="support-grid">
@@ -81,7 +83,7 @@ export async function renderSupport(container, user, ctx) {
         </div>` : `<p class="text-sm text-gray-400 mt-3">تعذر عرض بيانات التواصل.</p>`}
       </section>
 
-      <section class="card support-card" aria-labelledby="support-update-title">
+      ${showUpdateCard ? `<section class="card support-card" aria-labelledby="support-update-title">
         <h2 id="support-update-title" class="text-lg font-bold">التحقق من التحديثات</h2>
         <p class="text-sm text-gray-400 mt-1">الإصدار الحالي: <span dir="ltr">${escHtml(APP_VERSION)}</span></p>
         ${canUpdate ? `
@@ -91,7 +93,7 @@ export async function renderSupport(container, user, ctx) {
         </div>
         <p id="support-update-status" class="text-sm mt-2 support-card-status" dir="auto"></p>`
         : `<p class="text-sm text-gray-400 mt-3">تثبيت التحديثات متاح لمسؤول النظام.</p>`}
-      </section>
+      </section>` : ""}
       </div>
     </div>`;
 
