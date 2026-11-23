@@ -295,3 +295,28 @@ fn scanner_upload_inner(
     scanner::finish_upload(conn, token);
     result
 }
+/// Reads the fields of a stored national card or passport image on this device. The image and the
+/// text never leave the computer, and nothing is written: the user reviews the values in the form.
+#[tauri::command]
+pub(crate) async fn cmd_read_document_fields(
+    state: State<'_, DbState>,
+    sess: State<'_, SessionState>,
+    relative_path: String,
+) -> Result<ocr_parse::ReadResult, AppError> {
+    let path = {
+        let conn = state.conn()?;
+        let owner = authorize(&conn, &sess, "employees.edit")?;
+        scanner::associated_path(&conn, &owner, &relative_path, false)?;
+        let path = scanner::effective_path(&conn, &relative_path)?;
+        log_audit(&conn, Some(&owner), "DOCUMENT_TEXT_READ", Some("document"), None, Some(&relative_path), "Success", None);
+        path
+    };
+    tauri::async_runtime::spawn_blocking(move || {
+        let image = scanner::load_image(&path)
+            .map_err(|_| AppError::Validation("قراءة البيانات تعمل على الصور فقط (JPEG أو PNG أو WebP)".into()))?;
+        let lines = ocr::read_lines(&image).ok_or_else(|| AppError::Other("text reader unavailable".into()))?;
+        Ok(ocr_parse::parse(&lines))
+    })
+    .await
+    .map_err(|e| AppError::Other(e.to_string()))?
+}
