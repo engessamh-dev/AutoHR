@@ -215,27 +215,59 @@ fn check_files(conn: &Connection) -> HealthItem {
 fn days_since(timestamp: &str) -> Option<i64> {
     let trimmed = timestamp.trim();
     let parsed = chrono::NaiveDateTime::parse_from_str(trimmed, "%Y-%m-%d %H:%M:%S")
+        .or_else(|_| chrono::NaiveDateTime::parse_from_str(trimmed, "%Y-%m-%d %H:%M"))
         .or_else(|_| chrono::NaiveDateTime::parse_from_str(trimmed, "%Y-%m-%dT%H:%M:%S%.f"))
         .ok()
         .or_else(|| chrono::DateTime::parse_from_rfc3339(trimmed).ok().map(|d| d.naive_utc()))
         .or_else(|| chrono::NaiveDate::parse_from_str(trimmed.get(..10)?, "%Y-%m-%d").ok()?.and_hms_opt(0, 0, 0))?;
-    Some((chrono::Utc::now().naive_utc() - parsed).num_days())
+    Some((chrono::Local::now().naive_local() - parsed).num_days())
+}
+
+/// Counts the backup files (.autohrbak) under the backup folder and finds the newest one.
+/// The folder holds Manual, PreUpdate, Daily, Weekly and Monthly, each split by year.
+fn scan_backup_files(root: &Path) -> (usize, Option<chrono::DateTime<chrono::Local>>) {
+    fn walk(dir: &Path, depth: usize, count: &mut usize, newest: &mut Option<std::time::SystemTime>) {
+        let Ok(entries) = std::fs::read_dir(dir) else { return };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                if depth < 4 { walk(&path, depth + 1, count, newest); }
+            } else if path.extension().and_then(|e| e.to_str()).is_some_and(|e| e.eq_ignore_ascii_case("autohrbak")) {
+                *count += 1;
+                if let Ok(modified) = entry.metadata().and_then(|m| m.modified()) {
+                    if newest.is_none_or(|n| modified > n) { *newest = Some(modified); }
+                }
+            }
+        }
+    }
+    let (mut count, mut newest) = (0, None);
+    walk(root, 0, &mut count, &mut newest);
+    (count, newest.map(chrono::DateTime::<chrono::Local>::from))
 }
 
 fn check_backups(conn: &Connection) -> HealthItem {
     let mut details = Vec::new();
-    let total = count(conn, "SELECT COUNT(*) FROM backup_log").unwrap_or(0);
-    let last: Option<String> = conn
-        .query_row("SELECT MAX(created_at) FROM backup_log", [], |r| r.get(0))
+    let (files, newest_file) = scan_backup_files(&crate::paths::backup_root());
+    // Fall back to the audit log when the backup folder cannot be read right now.
+    let logged: Option<String> = conn
+        .query_row(
+            "SELECT datetime(MAX(created_at),'localtime') FROM activity_log WHERE action IN ('CREATE_BACKUP','CREATE_AUTO_BACKUP') AND result='Success'",
+            [],
+            |r| r.get(0),
+        )
         .ok()
         .flatten();
+    let last = newest_file
+        .map(|d| d.format("%Y-%m-%d %H:%M").to_string())
+        .or(logged);
     let mut status = match last.as_deref().and_then(days_since) {
         None => {
-            details.push("لم تُسجل أي نسخة احتياطية بعد".into());
+            details.push("لا توجد أي نسخة احتياطية في مجلد النسخ".into());
             "fail"
         }
         Some(days) => {
-            details.push(format!("آخر نسخة احتياطية: {} (قبل {days} يوم) · العدد: {total}", last.unwrap_or_default()));
+            let age = if days <= 0 { "اليوم".to_string() } else { format!("قبل {days} يوم") };
+            details.push(format!("آخر نسخة احتياطية: {} ({age}) · عدد ملفات النسخ: {files}", last.unwrap_or_default()));
             if days > 7 { "warn" } else { "ok" }
         }
     };
@@ -416,6 +448,30 @@ mod tests {
         }
         assert!(report.text.contains("LOGIN: 1"));
         assert!(report.items.iter().any(|i| i.key == "database" && i.status != "fail"));
+    }
+
+    #[test]
+    fn a_logged_automatic_backup_counts() {
+        let conn = test_db();
+        conn.execute(
+            "INSERT INTO activity_log(username,action,result,created_at) VALUES('system','CREATE_AUTO_BACKUP','Success',datetime('now'))",
+            [],
+        ).unwrap();
+        let report = run(&conn, "1.0.5", true);
+        let backups = report.items.iter().find(|i| i.key == "backups").unwrap();
+        assert_ne!(backups.status, "fail", "{:?}", backups.details);
+    }
+
+    #[test]
+    fn backup_files_are_found_in_year_folders() {
+        let dir = tempfile::tempdir().unwrap();
+        let year = dir.path().join("Daily").join("2026");
+        std::fs::create_dir_all(&year).unwrap();
+        std::fs::write(year.join("autohr_daily_2026-11-24_020000.autohrbak"), b"x").unwrap();
+        std::fs::write(year.join("notes.txt"), b"x").unwrap();
+        let (count, newest) = scan_backup_files(dir.path());
+        assert_eq!(count, 1);
+        assert!(newest.is_some());
     }
 
     #[test]
