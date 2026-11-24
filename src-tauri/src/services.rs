@@ -3028,6 +3028,10 @@ mod phase3_security_tests {
         let conn = Connection::open(dir.path().join("database.db")).unwrap();
         conn.execute_batch(include_str!("../../database/schema.sql")).unwrap();
         conn.execute("INSERT INTO users(username,password,role) VALUES('testadmin','unused','system_admin')", []).unwrap();
+        // As in the program: the seal triggers are active, and the backup bookkeeping updates
+        // existing settings rows through them (1.0.5 failed here with a UNIQUE error).
+        crate::integrity::test_use_new_key(true);
+        assert_eq!(crate::integrity::attach(&conn, false), crate::integrity::State::Verified);
         set_setting(&conn, "auto_backup_daily_enabled", "1").unwrap();
         set_setting(&conn, "auto_backup_password", "strong-password").unwrap();
         // No data changes means no backup.
