@@ -256,11 +256,13 @@ test("car registration: both sides fill the vehicle row and keep the images on s
   const dialog = page.getByRole("dialog", { name: /قراءة البيانات/ });
   await expect(dialog.locator("tr", { hasText: "رقم السنوية" }).locator(".id-reader-badge.is-ok")).toHaveCount(1);
   await expect(dialog.locator("tr", { hasText: "رقم اللوحة" })).toHaveClass(/is-low/);
+  await expect(dialog.locator("tr", { hasText: "رقم اللوحة" }).locator(".id-reader-value")).toHaveAttribute("dir", "auto");
   await dialog.getByRole("button", { name: "اعتماد المحدَّد" }).click();
   await expect(dialog).toBeHidden();
   await expect(row.locator(".vehicle-brand")).toHaveValue("تويوتا");
   await expect(row.locator(".vehicle-annual-no")).toHaveValue("X12345678");
   await expect(row.locator(".vehicle-plate")).toHaveValue("12 A34567");
+  await expect(row.locator(".vehicle-plate")).toHaveAttribute("dir", "auto");
   await expect(row.locator(".vehicle-governorate")).toHaveValue("نينوى");
   await expect(row.locator(".vehicle-plate-category")).toHaveValue("خصوصي");
   await expect(row.locator(".vehicle-chassis")).toHaveValue("ABCDE1234567890XY");
