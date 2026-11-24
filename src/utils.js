@@ -52,7 +52,7 @@ export function confirmAction(message = "هل أنت متأكد من تنفيذ 
 
     const body = document.createElement("p");
     body.textContent = message;
-    body.style.cssText = "font-size:14px;line-height:1.8;color:var(--ui-text);margin:0 0 18px";
+    body.style.cssText = "font-size:14px;line-height:1.8;color:var(--ui-text);margin:0 0 18px;white-space:pre-line";
 
     const actions = document.createElement("div");
     actions.style.cssText = "display:flex;gap:10px;justify-content:flex-start";
@@ -125,7 +125,7 @@ export function confirmSaveChanges(message = "توجد تغييرات غير م�
 
     const body = document.createElement("p");
     body.textContent = message;
-    body.style.cssText = "font-size:14px;line-height:1.8;color:var(--ui-text);margin:0 0 18px";
+    body.style.cssText = "font-size:14px;line-height:1.8;color:var(--ui-text);margin:0 0 18px;white-space:pre-line";
 
     const actions = document.createElement("div");
     actions.style.cssText = "display:flex;gap:10px;justify-content:flex-start;flex-wrap:wrap";

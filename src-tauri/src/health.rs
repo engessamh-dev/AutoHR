@@ -1,5 +1,5 @@
 //! «فحص البرنامج»: a read-only health check of the database, data and backup folders,
-//! stored files and recent failures, plus a plain-text report the user can send to support.
+//! stored files, recent failures and recent technical errors, plus a plain-text report the user can send to support.
 //!
 //! Privacy rule: nothing here reads or reports employee names, numbers, document contents,
 //! usernames or passwords. Only counts, statuses, versions and anonymised folder paths.
@@ -327,6 +327,66 @@ fn check_recent_failures(conn: &Connection) -> HealthItem {
     item("failures", title, if backup_failed { "warn" } else { "info" }, details)
 }
 
+fn error_kind_label(kind: &str) -> &'static str {
+    match kind {
+        "database" => "قاعدة البيانات",
+        "file" => "الملفات والمرفقات",
+        "backup" => "النسخ الاحتياطي والاستعادة",
+        "ocr" => "قراءة بيانات المستمسكات",
+        "scanner" => "الماسح الضوئي",
+        "update" => "التحديث",
+        "script" => "واجهة البرنامج",
+        "panic" => "توقف مفاجئ",
+        _ => "البرنامج",
+    }
+}
+
+fn screen_label(screen: &str) -> String {
+    match screen {
+        "dashboard" => "الرئيسية".into(),
+        "employees" => "الموظفون".into(),
+        "documents" => "الوثائق".into(),
+        "settings" => "الإعدادات".into(),
+        "audit" => "سجل النظام".into(),
+        "login" => "تسجيل الدخول".into(),
+        other => other.into(),
+    }
+}
+
+/// «آخر الأخطاء التقنية» from the local error log (errlog.rs), already cleaned of personal data.
+/// Identical errors are shown once with how often they happened and when last.
+fn check_technical_errors(entries: &[crate::errlog::ErrorEntry]) -> HealthItem {
+    let title = "آخر الأخطاء التقنية خلال آخر 30 يومًا";
+    let since = (chrono::Local::now() - chrono::Duration::days(30)).format("%Y-%m-%d %H:%M:%S").to_string();
+    // entries are newest first, so the first of each group carries the latest time.
+    let mut groups: Vec<(&crate::errlog::ErrorEntry, usize, &str)> = Vec::new();
+    for e in entries.iter().filter(|e| e.time >= since) {
+        match groups.iter_mut().find(|(g, _, _)| g.kind == e.kind && g.operation == e.operation && g.message == e.message) {
+            Some(group) => { group.1 += 1; group.2 = e.time.as_str(); }
+            None => groups.push((e, 1, e.time.as_str())),
+        }
+    }
+    if groups.is_empty() {
+        return item("errors", title, "ok", vec!["لا توجد أخطاء تقنية مسجلة".into()]);
+    }
+    let serious = groups.iter().any(|(e, _, _)| matches!(e.kind.as_str(), "database" | "backup" | "panic"));
+    let total = groups.len();
+    let mut details = Vec::new();
+    for (e, count, first) in groups.into_iter().take(20) {
+        let mut line = format!("{} | {}", &e.time[..e.time.len().min(16)], error_kind_label(&e.kind));
+        if !e.operation.is_empty() { line.push_str(&format!(" | العملية: {}", e.operation)); }
+        if !e.screen.is_empty() { line.push_str(&format!(" | الشاشة: {}", screen_label(&e.screen))); }
+        line.push_str(&format!(" | الإصدار {}", e.version));
+        line.push_str(&format!(" | الخطأ: {}", e.message));
+        if count > 1 { line.push_str(&format!(" | تكرر {count} مرات منذ {}", &first[..first.len().min(16)])); }
+        if !e.context.is_empty() { line.push_str(&format!(" | السياق: {}", e.context)); }
+        details.push(line);
+    }
+    if total > 20 { details.push(format!("و{} أخطاء أخرى أقدم", total - 20)); }
+    details.push("أُزيلت من هذه الرسائل المسارات وأسماء الملفات والأرقام الطويلة وعناوين البريد وكلمات المرور.".into());
+    item("errors", title, if serious { "warn" } else { "info" }, details)
+}
+
 fn status_label(status: &str) -> &'static str {
     match status {
         "ok" => "سليم",
@@ -352,15 +412,31 @@ fn render_text(report: &HealthReport) -> String {
     out.replace('\n', "\r\n")
 }
 
-pub fn run(conn: &Connection, app_version: &str, updater_configured: bool) -> HealthReport {
-    let items = vec![
-        check_app(app_version, updater_configured),
-        check_database(conn),
-        check_folders(conn),
-        check_files(conn),
-        check_backups(conn),
-        check_recent_failures(conn),
-    ];
+/// `errors` is the local error log, newest first (`errlog::recent`).
+pub fn run(conn: &Connection, app_version: &str, updater_configured: bool, errors: &[crate::errlog::ErrorEntry]) -> HealthReport {
+    run_with_progress(conn, app_version, updater_configured, errors, |_, _| {})
+}
+
+/// Number of steps reported to `progress` (the screen shows the same steps in the same order).
+pub const STEPS: usize = 7;
+
+/// Same as `run`, calling `progress(step, STEPS)` before each step starts (step counts from 0).
+pub fn run_with_progress(
+    conn: &Connection,
+    app_version: &str,
+    updater_configured: bool,
+    errors: &[crate::errlog::ErrorEntry],
+    mut progress: impl FnMut(usize, usize),
+) -> HealthReport {
+    let mut items = Vec::with_capacity(STEPS);
+    progress(0, STEPS); items.push(check_app(app_version, updater_configured));
+    progress(1, STEPS); items.push(check_database(conn));
+    progress(2, STEPS); items.push(check_folders(conn));
+    progress(3, STEPS); items.push(check_files(conn));
+    progress(4, STEPS); items.push(check_backups(conn));
+    progress(5, STEPS); items.push(check_recent_failures(conn));
+    progress(6, STEPS); items.push(check_technical_errors(errors));
+    progress(STEPS, STEPS);
     let overall = if items.iter().any(|i| i.status == "fail") {
         "fail"
     } else if items.iter().any(|i| i.status == "warn") {
@@ -453,12 +529,29 @@ mod tests {
             "INSERT INTO activity_log(username,action,target_name,result,details) VALUES('secret_user','LOGIN','target-secret','Failure','detail-secret')",
             [],
         ).unwrap();
-        let report = run(&conn, "1.0.5", true);
+        let report = run(&conn, "1.0.5", true, &[]);
         for secret in ["موظف سري", "secret_user", "target-secret", "detail-secret"] {
             assert!(!report.text.contains(secret), "report leaked {secret}");
         }
         assert!(report.text.contains("محاولات دخول فاشلة: 1"), "{}", report.text);
         assert!(report.items.iter().any(|i| i.key == "database" && i.status != "fail"));
+    }
+
+    #[test]
+    fn technical_errors_are_grouped_with_time_and_operation() {
+        let now = chrono::Local::now().format("%Y-%m-%d %H:%M:%S").to_string();
+        let e = |op: &str, msg: &str| crate::errlog::ErrorEntry {
+            time: now.clone(), version: "1.0.5".into(), kind: "backup".into(), operation: op.into(),
+            screen: "settings".into(), message: msg.into(), context: String::new(),
+        };
+        let entries = vec![e("cmd_create_backup", "database is locked"), e("cmd_create_backup", "database is locked"), e("cmd_restore_backup", "wrong password")];
+        let item = check_technical_errors(&entries);
+        assert_eq!(item.status, "warn");
+        assert!(item.details[0].contains("العملية: cmd_create_backup") && item.details[0].contains("تكرر 2 مرات"), "{:?}", item.details);
+        assert!(item.details[0].contains("الشاشة: الإعدادات"), "{:?}", item.details);
+        assert_eq!(check_technical_errors(&[]).status, "ok");
+        let report = run(&test_db(), "1.0.5", true, &entries);
+        assert!(report.text.contains("آخر الأخطاء التقنية"), "{}", report.text);
     }
 
     #[test]
@@ -468,7 +561,7 @@ mod tests {
             "INSERT INTO activity_log(username,action,result,created_at) VALUES('system','CREATE_AUTO_BACKUP','Success',datetime('now'))",
             [],
         ).unwrap();
-        let report = run(&conn, "1.0.5", true);
+        let report = run(&conn, "1.0.5", true, &[]);
         let backups = report.items.iter().find(|i| i.key == "backups").unwrap();
         assert_ne!(backups.status, "fail", "{:?}", backups.details);
     }
@@ -488,7 +581,7 @@ mod tests {
     #[test]
     fn missing_backup_is_a_failure() {
         let conn = test_db();
-        let report = run(&conn, "1.0.5", true);
+        let report = run(&conn, "1.0.5", true, &[]);
         let backups = report.items.iter().find(|i| i.key == "backups").unwrap();
         assert_eq!(backups.status, "fail");
         assert_eq!(report.overall, "fail");

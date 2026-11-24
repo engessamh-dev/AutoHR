@@ -209,7 +209,39 @@ function dismissStorageWarning(key) {
   try { localStorage.setItem(DISMISSED_STORAGE_WARNINGS_KEY, JSON.stringify(list)); } catch { /* storage is optional */ }
 }
 
+/**
+ * Installs an available update the safe way: the user confirms, gives a password for the
+ * encrypted backup taken first, then Rust verifies the backup and the developer's signature.
+ * Used by the «التحديثات» section and by the offer shown after sign-in (automatic updates).
+ */
+export async function installUpdateFlow({ confirmed = false } = {}) {
+  if (!confirmed && !(await confirmAction("سيتم إنشاء نسخة احتياطية ثم تنزيل التحديث وتثبيته، وسيُغلق البرنامج ويُعاد فتحه. هل تريد المتابعة؟"))) return;
+  const password = await requestBackupPassword({
+    title: "نسخة احتياطية قبل التحديث",
+    message: "أدخل كلمة مرور للنسخة الاحتياطية التي تُنشأ قبل التحديث (8 أحرف على الأقل).",
+    minLength: 8,
+  });
+  if (!password) return;
+  const progress = openBackupProgress({ title: "تحديث البرنامج", message: "جاري التحضير..." });
+  let unlisten = null;
+  try {
+    unlisten = await listen("update-progress", event => progress.update(event.payload));
+    await api.installUpdate(password);
+  } catch (err) {
+    showToast(err?.message ?? String(err), "error");
+    progress.close();
+  } finally {
+    if (unlisten) unlisten();
+  }
+}
+
 export async function renderSettings(container, user, ctx) {
+  // Opening «الإعدادات» always starts on the first tab and the first item of its inner list.
+  // Only a redraw from inside this screen (keepPosition) stays where the user was.
+  if (!ctx?.keepPosition) {
+    activeSettingsTab = null;
+    Object.keys(activeSubsection).forEach(key => delete activeSubsection[key]);
+  }
   const canSettings = can(user, "settings.manage");
   const canBackups = can(user, "backups.manage");
   const canUsers = can(user, "users.manage");
@@ -232,16 +264,22 @@ export async function renderSettings(container, user, ctx) {
     } catch {}
   }
 
+  let autoUpdate = true;
+  if (canSettings && canBackups) {
+    try { autoUpdate = await api.getAutoUpdate(); } catch {}
+  }
+
   const tabs = [
     canSettings && { id: "company", label: "الجهة والشعار" },
     canUsers && { id: "users", label: "المستخدمين والصلاحيات" },
     (canSettings || canBackups) && { id: "storage", label: "الحفظ والنسخ الاحتياطي" },
-    canSettings && canBackups && { id: "updates", label: "التحديثات" },
     { id: "support", label: "الدعم وحول النظام" },
   ].filter(Boolean);
   if (ctx?.tab) activeSettingsTab = ctx.tab;
   if (activeSettingsTab === "backup") activeSettingsTab = "storage";
   if (activeSettingsTab === "about") activeSettingsTab = "support";
+  // «التحديثات» is now a section of «الدعم وحول النظام».
+  if (activeSettingsTab === "updates") { activeSettingsTab = "support"; activeSubsection.support = "updates"; }
   if (!tabs.some(tab => tab.id === activeSettingsTab)) activeSettingsTab = tabs[0].id;
 
   const logoMarkup = () =>
@@ -380,24 +418,30 @@ export async function renderSettings(container, user, ctx) {
       </div>` : ""}` : ""}
       </section>` : ""}
 
-      ${canSettings && canBackups ? `<section class="card settings-panel settings-block" data-settings-panel="updates">
-        <div class="settings-block-head">
-          <p class="settings-block-title">تحديث البرنامج</p>
-          <p class="settings-block-help">يتحقق البرنامج من وجود إصدار جديد موقّع. قبل التثبيت تُنشأ نسخة احتياطية مشفرة ويُتحقق منها، ولا يُثبَّت أي ملف لا يحمل توقيع المطوّر.</p>
-        </div>
-        <p id="update-status" class="settings-status-line">الإصدار الحالي: <span dir="ltr">${escHtml(APP_VERSION)}</span></p>
-        <div id="update-notes" class="hidden text-xs text-gray-400 whitespace-pre-line border border-autohr-border rounded-lg p-3"></div>
-        <div class="settings-block-foot">
-          <button id="btn-check-update" type="button" class="btn-primary">التحقق من التحديثات</button>
-          <button id="btn-install-update" type="button" class="btn-primary hidden">تثبيت التحديث</button>
-        </div>
-      </section>` : ""}
+
 
 
       ${canUsers ? `<div class="settings-panel" data-settings-panel="users"></div>` : ""}
       <div class="settings-panel settings-stack" data-settings-panel="support">
         <div data-embedded="about"></div>
         <div data-embedded="support"></div>
+        ${canSettings && canBackups ? `<section class="card settings-block" data-sub="updates" data-sub-label="التحديثات">
+          <div class="settings-block-head">
+            <p class="settings-block-title">تحديث البرنامج</p>
+            <p class="settings-block-help">يتحقق البرنامج من وجود إصدار جديد موقّع. قبل التثبيت تُنشأ نسخة احتياطية مشفرة ويُتحقق منها، ولا يُثبَّت أي ملف لا يحمل توقيع المطوّر.</p>
+          </div>
+          <label class="backup-schedule auto-update-toggle">
+          <input id="auto-update-enabled" type="checkbox" ${autoUpdate ? "checked" : ""} />
+          <span class="backup-schedule-name">التحديث التلقائي</span>
+          <span class="backup-schedule-last">عند الدخول يتحقق البرنامج من وجود إصدار جديد ويعرض عليك تثبيته. لا يبدأ التثبيت إلا بموافقتك وبعد نسخة احتياطية مشفرة.</span>
+        </label>
+        <p id="update-status" class="settings-status-line">الإصدار الحالي: <span dir="ltr">${escHtml(APP_VERSION)}</span></p>
+          <div id="update-notes" class="hidden text-xs text-gray-400 whitespace-pre-line border border-autohr-border rounded-lg p-3"></div>
+          <div class="settings-block-foot">
+            <button id="btn-check-update" type="button" class="btn-primary">التحقق من التحديثات</button>
+            <button id="btn-install-update" type="button" class="btn-primary hidden">تثبيت التحديث</button>
+          </div>
+        </section>` : ""}
       </div>
     </div>`;
 
@@ -478,7 +522,7 @@ export async function renderSettings(container, user, ctx) {
     try {
       await api.changeBackupFolder(selected);
       showToast("تم تغيير مجلد النسخ الاحتياطية");
-      renderSettings(container, user, ctx);
+      renderSettings(container, user, { ...ctx, tab: undefined, keepPosition: true });
     } catch (err) {
       showToast(err?.message ?? String(err), "error");
     }
@@ -536,24 +580,18 @@ export async function renderSettings(container, user, ctx) {
       button.disabled = false;
     }
   });
-  installButton?.addEventListener("click", async () => {
-    if (!(await confirmAction("سيتم إنشاء نسخة احتياطية ثم تنزيل التحديث وتثبيته، وسيُغلق البرنامج ويُعاد فتحه. هل تريد المتابعة؟"))) return;
-    const password = await requestBackupPassword({
-      title: "نسخة احتياطية قبل التحديث",
-      message: "أدخل كلمة مرور للنسخة الاحتياطية التي تُنشأ قبل التحديث (8 أحرف على الأقل).",
-      minLength: 8,
-    });
-    if (!password) return;
-    const progress = openBackupProgress({ title: "تحديث البرنامج", message: "جاري التحضير..." });
-    let unlisten = null;
+  installButton?.addEventListener("click", () => installUpdateFlow());
+  container.querySelector("#auto-update-enabled")?.addEventListener("change", async event => {
+    const input = event.currentTarget;
+    input.disabled = true;
     try {
-      unlisten = await listen("update-progress", event => progress.update(event.payload));
-      await api.installUpdate(password);
+      input.checked = await api.setAutoUpdate(input.checked);
+      showToast(input.checked ? "تم تفعيل التحديث التلقائي" : "تم إيقاف التحديث التلقائي");
     } catch (err) {
+      input.checked = !input.checked;
       showToast(err?.message ?? String(err), "error");
-      progress.close();
     } finally {
-      if (unlisten) unlisten();
+      input.disabled = false;
     }
   });
 

@@ -28,8 +28,14 @@ impl serde::Serialize for AppError {
             Self::Unauthorized => "You are not authorized to perform this action",
             Self::NotFound => "The requested item was not found",
             Self::Validation(message) => message,
-            Self::Db(_) => "The database operation could not be completed",
-            Self::Other(_) => "The operation could not be completed",
+            Self::Db(error) => {
+                crate::errlog::record_backend("database", &error.to_string());
+                crate::errlog::GENERIC_DB_MESSAGE
+            }
+            Self::Other(detail) => {
+                crate::errlog::record_backend("app", detail);
+                crate::errlog::GENERIC_OTHER_MESSAGE
+            }
         };
         s.serialize_str(message)
     }
@@ -2112,6 +2118,20 @@ fn set_setting(conn: &Connection, key: &str, value: &str) -> AppResult<()> {
         params![key, value],
     )?;
     Ok(())
+}
+
+/// «التحديث التلقائي»: when on (the default), the program checks for a signed update after an
+/// administrator signs in and offers to install it through the usual safe flow (encrypted,
+/// verified backup first; only installers signed by the developer).
+pub fn get_auto_update(conn: &Connection) -> AppResult<bool> {
+    Ok(!matches!(get_setting(conn, "auto_update_check")?.as_deref(), Some("0") | Some("false")))
+}
+
+pub fn set_auto_update(conn: &Connection, username: &str, enabled: bool) -> AppResult<bool> {
+    set_setting(conn, "auto_update_check", if enabled { "1" } else { "0" })?;
+    log_activity(conn, username, "UPDATE_AUTO_UPDATE_SETTING", Some("settings"), None, None,
+        Some(if enabled { "enabled" } else { "disabled" }));
+    Ok(enabled)
 }
 
 fn setting_bool(conn: &Connection, key: &str) -> AppResult<bool> {

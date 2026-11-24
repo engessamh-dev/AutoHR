@@ -36,6 +36,37 @@ test("program check shows each result and saves the diagnostic file", async ({ p
   await expect.poll(() => page.evaluate(() => window.calls.find(c => c.command === "cmd_save_health_report")?.args.destinationPath)).toBe("C:\\Synthetic\\diag.txt");
 });
 
+test("a progress bar runs while checking and the result banner takes the result's colour", async ({ page }) => {
+  await page.evaluate(() => { window.healthDelay = 700; });
+  await page.getByRole("button", { name: "بدء الفحص" }).click();
+  const progress = page.locator("#check-progress");
+  await expect(progress).toBeVisible();
+  await expect(page.locator("#check-progress-label")).toContainText("جارٍ فحص");
+  await expect(progress).toBeHidden();
+  await expect(page.locator("#check-summary")).toHaveClass(/support-summary-warn/);
+  const warnBg = await page.locator("#check-summary").evaluate(el => getComputedStyle(el).backgroundImage);
+  expect(warnBg).toContain("rgb(251, 146, 60)");
+  // A clean result is bright green, a real problem red.
+  await page.evaluate(() => { window.healthDelay = 0; window.healthReport = { ...window.healthReport, overall: "ok" }; });
+  await page.getByRole("button", { name: "إعادة الفحص" }).click();
+  await expect(page.locator("#check-summary")).toHaveClass(/support-summary-ok/);
+  expect(await page.locator("#check-summary").evaluate(el => getComputedStyle(el).backgroundImage)).toContain("rgb(34, 197, 94)");
+  await page.evaluate(() => { window.healthReport = { ...window.healthReport, overall: "fail" }; });
+  await page.getByRole("button", { name: "إعادة الفحص" }).click();
+  await expect(page.locator("#check-summary")).toHaveClass(/support-summary-fail/);
+  expect(await page.locator("#check-summary").evaluate(el => getComputedStyle(el).backgroundImage)).toContain("rgb(239, 68, 68)");
+});
+
+test("technical command failures go to the error log, input mistakes do not", async ({ page }) => {
+  await page.evaluate(() => { window.failRead = "The operation could not be completed"; window.runUpload("readDocumentFields", ["synthetic.jpg"]); return window.pending; });
+  const logged = await page.evaluate(() => window.calls.filter(c => c.command === "cmd_log_client_error").map(c => c.args));
+  expect(logged).toHaveLength(1);
+  expect(logged[0].operation).toBe("cmd_read_document_fields");
+  expect(logged[0].message).toBe("The operation could not be completed");
+  await page.evaluate(() => { window.failRead = "قراءة البيانات تعمل على الصور فقط"; window.runUpload("readDocumentFields", ["synthetic.jpg"]); return window.pending; });
+  expect(await page.evaluate(() => window.calls.filter(c => c.command === "cmd_log_client_error").length)).toBe(1);
+});
+
 test("contact buttons send only a channel and a topic", async ({ page }) => {
   await page.locator('[data-channel="whatsapp"][data-topic="problem"]').click();
   await page.locator('[data-channel="email"][data-topic="suggestion"]').click();
@@ -72,14 +103,48 @@ test("settings has one «الدعم وحول النظام» tab for every user, 
   await expect(tabs.filter({ hasText: /^حول النظام$/ })).toHaveCount(0);
   await support.click();
   const panel = page.locator('[data-settings-panel="support"]');
-  await expect(panel.locator(".settings-subnav-item")).toHaveText(["حول النظام", "فحص البرنامج", "اتصل بنا"]);
+  await expect(tabs.filter({ hasText: "التحديثات" })).toHaveCount(0);
+  await expect(panel.locator(".settings-subnav-item")).toHaveText(["حول النظام", "فحص البرنامج", "اتصل بنا", "التحديثات"]);
+  await panel.getByRole("button", { name: "التحديثات" }).click();
+  await expect(page.locator("#btn-check-update")).toBeVisible();
+  // «التحديث التلقائي» is on by default and saved as soon as it is switched.
+  const autoUpdate = page.locator("#auto-update-enabled");
+  await expect(autoUpdate).toBeChecked();
+  await autoUpdate.uncheck();
+  await expect.poll(() => page.evaluate(() => window.calls.filter(c => c.command === "cmd_set_auto_update").map(c => c.args.enabled))).toEqual([false]);
+  await expect(autoUpdate).not.toBeChecked();
+  await panel.getByRole("button", { name: "حول النظام" }).click();
   await expect(page.locator(".about-card")).toBeVisible();
   await panel.getByRole("button", { name: "فحص البرنامج" }).click();
   await expect(page.getByRole("button", { name: "بدء الفحص" })).toBeVisible();
   await expect(page.locator(".about-card")).toBeHidden();
-  // The «التحديثات» tab already covers updates, and the user is already in Settings.
+  // The «التحديثات» section already covers updates, and the user is already in Settings.
   await expect(page.locator("#btn-support-check-update")).toHaveCount(0);
   await expect(page.locator("#btn-open-settings")).toHaveCount(0);
+});
+
+test("opening settings again starts on the first tab and the first inner item", async ({ page }) => {
+  const open = () => page.evaluate(async () => {
+    const { renderSettings } = await import("/src/screens/settings.js");
+    await renderSettings(document.querySelector("#root"), { username: "admin", permissions: ["settings.manage", "backups.manage"] }, {});
+  });
+  await open();
+  await page.locator("[data-settings-tab]").filter({ hasText: "الحفظ والنسخ الاحتياطي" }).click();
+  await page.locator('[data-settings-panel="storage"]').getByRole("button", { name: "نسخة يدوية" }).click();
+  await open();
+  await expect(page.locator('[data-settings-tab][aria-selected="true"]')).toHaveText("الجهة والشعار");
+  await page.locator("[data-settings-tab]").filter({ hasText: "الحفظ والنسخ الاحتياطي" }).click();
+  await expect(page.locator('[data-settings-panel="storage"] [aria-current="true"]')).toHaveText("مواقع الحفظ");
+});
+
+test("users without settings and backup rights do not see the updates section", async ({ page }) => {
+  await page.evaluate(async () => {
+    const { renderSettings } = await import("/src/screens/settings.js");
+    await renderSettings(document.querySelector("#root"), { username: "viewer", permissions: [] }, { tab: "updates" });
+  });
+  const panel = page.locator('[data-settings-panel="support"]');
+  await expect(panel.locator(".settings-subnav-item")).toHaveText(["حول النظام", "فحص البرنامج", "اتصل بنا"]);
+  await expect(page.locator("#btn-check-update")).toHaveCount(0);
 });
 
 test("save buttons stay dim until something changes", async ({ page }) => {

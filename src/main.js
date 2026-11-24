@@ -11,7 +11,7 @@ import { renderDocuments }  from "./screens/documents.js";
 import { renderUsers }     from "./screens/users.js";
 import { renderAbout }     from "./screens/about.js";
 import { renderSupport }   from "./screens/support.js";
-import { renderSettings }  from "./screens/settings.js";
+import { renderSettings, installUpdateFlow } from "./screens/settings.js";
 import { runStartupGate } from "./screens/setup.js";
 import { renderAudit }     from "./screens/audit.js";
 import { can, roleLabels } from "./permissions.js";
@@ -20,8 +20,10 @@ import { isPermissionGranted, requestPermission, sendNotification } from "@tauri
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { initTheme, mountThemeMenu } from "./theme.js";
+import { installErrorReporting, setErrorScreen } from "./error-log.js";
 
 // Apply the saved light/dark choice before anything is shown.
+installErrorReporting();
 initTheme();
 
 // ── i18n ───────────────────────────────────────────────────────────────────
@@ -290,6 +292,7 @@ async function navigateTo(screen, options = {}) {
   }
 
   activeScreen = screen;
+  setErrorScreen(screen);
   window.autohrCanLeaveCurrentScreen = null;
   document.querySelectorAll(".nav-item").forEach(el => {
     const navScreen = screen === "documentAlerts" ? "dashboard" : screen;
@@ -373,6 +376,24 @@ async function enterApp(user) {
   } catch (_) { /* non-fatal */ }
   await navigateTo("dashboard");
   notifyDocumentAlerts();
+  offerAvailableUpdate(user);
+}
+
+// «التحديث التلقائي»: once per run, after an administrator signs in, check quietly for a
+// signed update and offer to install it. Nothing is installed without the user's yes.
+let updateOffered = false;
+async function offerAvailableUpdate(user) {
+  if (updateOffered || !can(user, "settings.manage") || !can(user, "backups.manage")) return;
+  updateOffered = true;
+  try {
+    if (!(await api.getAutoUpdate())) return;
+    const info = await api.checkForUpdate();
+    if (!info?.configured || !info.available) return;
+    const notes = info.notes ? `\n\n${String(info.notes).slice(0, 400)}` : "";
+    if (await confirmAction(`يوجد إصدار جديد من البرنامج: ${info.version} (الإصدار الحالي ${info.current_version}).${notes}\n\nسيتم إنشاء نسخة احتياطية ثم تثبيت التحديث، وسيُغلق البرنامج ويُعاد فتحه. هل تريد التثبيت الآن؟`)) {
+      await installUpdateFlow({ confirmed: true });
+    }
+  } catch { /* offline or not configured: the «التحديثات» section reports it when opened */ }
 }
 
 // ── Login messages ─────────────────────────────────────────────────────────

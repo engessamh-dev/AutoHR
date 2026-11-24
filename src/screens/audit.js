@@ -35,6 +35,7 @@ const actionDetails = {
   UPLOAD_COMPANY_LOGO: "تم تحديث شعار الجهة",
   CREATE_BACKUP: "تم إنشاء نسخة احتياطية",
   CREATE_AUTO_BACKUP: "تم إنشاء نسخة احتياطية تلقائية",
+  UPDATE_AUTO_UPDATE_SETTING: "تم تغيير إعداد التحديث التلقائي",
   RESTORE_BACKUP: "تمت استعادة نسخة احتياطية",
   UPDATE_DOCUMENT_TYPES: "تم تحديث أنواع الوثائق",
 };
