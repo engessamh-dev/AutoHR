@@ -308,6 +308,9 @@ pub fn detach(conn: &Connection) {
 fn install_triggers(conn: &Connection) -> rusqlite::Result<()> {
     detach(conn);
     // REPLACE conflicts then fire the delete triggers, so a replaced row's seal is removed too.
+    // The trigger bodies use no `OR REPLACE` of their own: when the statement that fires them is
+    // an UPSERT (`ON CONFLICT … DO UPDATE`, as `set_setting` uses), SQLite applies that statement's
+    // conflict handling inside the trigger, and an `INSERT OR REPLACE` there fails as UNIQUE.
     conn.pragma_update(None, "recursive_triggers", "ON")?;
     let mut sql = String::new();
     for table in sealed_tables(conn)? {
@@ -325,7 +328,8 @@ fn install_triggers(conn: &Connection) -> rusqlite::Result<()> {
         sql.push_str(&format!(
             "CREATE TEMP TRIGGER {} AFTER INSERT ON main.{qt} BEGIN
                {acc_new}
-               INSERT OR REPLACE INTO main.integrity_rows(tbl,rid,seal) VALUES({t},new.rowid,{mac_new});
+               DELETE FROM main.integrity_rows WHERE tbl={t} AND rid=new.rowid;
+               INSERT INTO main.integrity_rows(tbl,rid,seal) VALUES({t},new.rowid,{mac_new});
                {acc_new}
              END;
              CREATE TEMP TRIGGER {} AFTER DELETE ON main.{qt} BEGIN
@@ -334,10 +338,12 @@ fn install_triggers(conn: &Connection) -> rusqlite::Result<()> {
              END;
              CREATE TEMP TRIGGER {} AFTER UPDATE ON main.{qt} BEGIN
                {acc_old}
-               INSERT OR REPLACE INTO main.integrity_rows(tbl,rid,seal) VALUES({t},new.rowid,
-                 CASE WHEN (SELECT seal FROM main.integrity_rows WHERE tbl={t} AND rid=old.rowid)={mac_old}
-                      THEN {mac_new} ELSE '{TAMPERED}' END);
-               DELETE FROM main.integrity_rows WHERE tbl={t} AND rid=old.rowid AND old.rowid<>new.rowid;
+               DELETE FROM main.integrity_rows WHERE tbl={t} AND rid=new.rowid AND old.rowid<>new.rowid;
+               UPDATE main.integrity_rows SET rid=new.rowid,
+                 seal=CASE WHEN seal={mac_old} THEN {mac_new} ELSE '{TAMPERED}' END
+                 WHERE tbl={t} AND rid=old.rowid;
+               INSERT INTO main.integrity_rows(tbl,rid,seal) SELECT {t},new.rowid,'{TAMPERED}'
+                 WHERE NOT EXISTS(SELECT 1 FROM main.integrity_rows WHERE tbl={t} AND rid=new.rowid);
                {acc_new}
              END;\n",
             quote(&format!("cns_i_{table}")), quote(&format!("cns_d_{table}")), quote(&format!("cns_u_{table}")),
@@ -349,9 +355,11 @@ fn install_triggers(conn: &Connection) -> rusqlite::Result<()> {
         let pairs = cols.iter().map(|c| format!(", {}, new.{}", literal(c), quote(c))).collect::<String>();
         sql.push_str(&format!(
             "CREATE TEMP TRIGGER cns_log AFTER INSERT ON main.activity_log BEGIN
-               INSERT OR REPLACE INTO main.integrity_audit(log_id,chain) VALUES(new.rowid,
+               DELETE FROM main.integrity_audit WHERE log_id=new.rowid;
+               INSERT INTO main.integrity_audit(log_id,chain) VALUES(new.rowid,
                  cns_mac('log',(SELECT chain FROM main.integrity_audit WHERE log_id<new.rowid ORDER BY log_id DESC LIMIT 1),new.rowid{pairs}));
-               INSERT OR REPLACE INTO main.integrity_meta(key,value) VALUES('audit_head',
+               DELETE FROM main.integrity_meta WHERE key='audit_head';
+               INSERT INTO main.integrity_meta(key,value) VALUES('audit_head',
                  cns_head((SELECT chain FROM main.integrity_audit WHERE log_id=new.rowid),new.rowid));
              END;\n"
         ));
@@ -881,6 +889,19 @@ mod tests {
         let result = report(&conn, true);
         assert_eq!(result.status, "ok", "{:?}", result.details);
         assert!(user_trusted(&conn, user_id(&conn, "admin")));
+    }
+
+    /// The program saves settings with an UPSERT (`ON CONFLICT … DO UPDATE`). The seal triggers
+    /// must keep working when that UPSERT updates an existing row (automatic backup bookkeeping).
+    #[test]
+    fn upsert_of_an_existing_row_keeps_its_seal() {
+        let conn = sealed_db();
+        let upsert = "INSERT INTO app_settings(key,value) VALUES(?1,?2) ON CONFLICT(key) DO UPDATE SET value=excluded.value";
+        conn.execute(upsert, ["auto_backup_last_daily", "2026-11-23"]).unwrap();
+        conn.execute(upsert, ["auto_backup_last_daily", "2026-11-24"]).unwrap();
+        conn.execute(upsert, ["auto_backup_last_daily", "2026-11-25"]).unwrap();
+        let result = report(&conn, true);
+        assert_eq!(result.status, "ok", "{:?}", result.details);
     }
 
     #[test]
