@@ -1303,7 +1303,7 @@ pub fn run() {
             cmd_upload_attachment, cmd_delete_attachment,
             cmd_scanner_settings, cmd_set_scanner_settings, cmd_scanner_prepare, cmd_scanner_render,
             cmd_scanner_release, cmd_scanner_save_existing, cmd_scanner_upload, cmd_scanner_detect, cmd_scanner_versions,
-            cmd_get_document_download_name, cmd_read_document_fields,
+            cmd_get_document_download_name, cmd_read_document_fields, cmd_read_image_fields,
             cmd_list_grade_history, cmd_add_grade_history, cmd_delete_grade_history,
             cmd_list_general_docs, cmd_create_general_doc, cmd_update_general_doc, cmd_delete_general_doc,
             cmd_upload_general_doc_file, cmd_delete_general_doc_attachment, cmd_move_general_doc_attachment,

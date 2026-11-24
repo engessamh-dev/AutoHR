@@ -208,14 +208,14 @@ pub fn load_image(path: &Path) -> AppResult<DynamicImage> {
     });
     Ok(DynamicImage::ImageRgb8(rgb))
 }
-fn jpeg(image: &DynamicImage, quality: u8) -> AppResult<Vec<u8>> {
+pub(crate) fn jpeg(image: &DynamicImage, quality: u8) -> AppResult<Vec<u8>> {
     let mut bytes = Vec::new();
     image::codecs::jpeg::JpegEncoder::new_with_quality(&mut bytes, quality)
         .encode_image(image)
         .map_err(error)?;
     Ok(bytes)
 }
-fn thumbnail(image: &DynamicImage, max: u32) -> DynamicImage {
+pub(crate) fn thumbnail(image: &DynamicImage, max: u32) -> DynamicImage {
     if image.width() <= max && image.height() <= max {
         image.clone()
     } else {

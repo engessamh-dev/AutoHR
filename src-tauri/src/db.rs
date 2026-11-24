@@ -174,7 +174,7 @@ pub fn db_path() -> PathBuf {
 /// To change the schema later: bump this constant and add an `if from < N { ... }` step in
 /// `upgrade()`. Every upgrade of an existing database runs only after a verified
 /// pre-upgrade snapshot exists, and the snapshot is restored automatically if a step fails.
-pub const SCHEMA_VERSION: i64 = 4;
+pub const SCHEMA_VERSION: i64 = 5;
 
 #[derive(Debug)]
 pub enum OpenError {
@@ -277,7 +277,11 @@ fn upgrade(conn: &Connection, from: i64) -> SqlResult<()> {
             add_column_if_missing(conn, "employee_vehicles", column, "TEXT")?;
         }
     }
-    // Future steps go here, for example: if from < 5 { ... }
+    if from < 5 {
+        // How each family member is related to the employee (ابن، ابنة، ...).
+        add_column_if_missing(conn, "employee_family_members", "relation", "TEXT")?;
+    }
+    // Future steps go here, for example: if from < 6 { ... }
     #[cfg(test)]
     if FAIL_UPGRADE.with(|flag| flag.get()) {
         return Err(rusqlite::Error::InvalidQuery);
@@ -543,6 +547,7 @@ fn migrate(conn: &Connection) -> SqlResult<()> {
           id INTEGER PRIMARY KEY AUTOINCREMENT,
           employee_id INTEGER NOT NULL REFERENCES employees(id) ON DELETE CASCADE,
           sort_order INTEGER NOT NULL DEFAULT 0,
+          relation TEXT,
           civil_id TEXT,
           name TEXT,
           gender TEXT,
@@ -854,6 +859,23 @@ mod v3_tests {
         conn.prepare("SELECT annual_front_path, annual_back_path, governorate, plate_category, chassis_no, model_year FROM employee_vehicles").unwrap();
         // Running the step again changes nothing.
         upgrade_to_v3(&conn).unwrap();
+    }
+}
+
+#[cfg(test)]
+mod v5_tests {
+    use super::*;
+
+    /// A v4 database gains the family-member relation column; existing rows keep their data.
+    #[test]
+    fn v4_database_gains_family_relation_column() {
+        let conn = Connection::open_in_memory().unwrap();
+        migrate_for_tests(&conn);
+        conn.execute_batch("ALTER TABLE employee_family_members DROP COLUMN relation;
+            PRAGMA user_version = 4;").unwrap();
+        upgrade_restored(&conn).unwrap();
+        assert_eq!(schema_version(&conn).unwrap(), SCHEMA_VERSION);
+        conn.prepare("SELECT relation FROM employee_family_members").unwrap();
     }
 }
 
