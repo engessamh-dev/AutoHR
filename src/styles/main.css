@@ -464,7 +464,7 @@
 .nav-section.hidden{display:none}
 
 /* ── Settings & About screens ──────────────────────────────────────────── */
-.settings-screen{max-width:72rem}
+.settings-screen{max-width:66rem}
 .settings-tabs{display:flex;flex-wrap:wrap;gap:4px;border-bottom:1px solid var(--ui-line)}
 .settings-tab{padding:9px 16px;font-size:14px;color:var(--ui-text-muted);background:transparent;border:0;border-bottom:2px solid transparent;margin-bottom:-1px;cursor:pointer;white-space:nowrap}
 .settings-tab:hover{color:var(--ui-text-strong)}
@@ -770,7 +770,7 @@ html[data-ui-scale] #app-shell { height: calc(100vh / var(--ui-scale)); }
 .about-card h2{color:var(--ui-text-strong)}
 
 /* ── Inner list inside a settings tab: side menu, one card at a time ── */
-.settings-subnav-layout{display:grid;grid-template-columns:13rem minmax(0,1fr);gap:20px;align-items:start}
+.settings-subnav-layout{display:grid;grid-template-columns:13rem minmax(0,50rem);gap:20px;align-items:start}
 .settings-subnav-layout.hidden{display:none}
 .settings-subnav-body{display:grid;gap:16px;min-width:0}
 .settings-subnav-body .support-grid,.settings-subnav-body .support-side{display:contents}
@@ -785,3 +785,7 @@ html[data-ui-scale] #app-shell { height: calc(100vh / var(--ui-scale)); }
 
 /* A save button with nothing to save stays dim until a field changes. */
 .btn-primary:disabled{opacity:.45;filter:saturate(.35);box-shadow:none;background:var(--ui-accent-soft);color:var(--ui-text-muted);border-color:var(--ui-line)}
+
+/* Keep settings cards compact on wide windows: content sized to ~800px, the users table excepted. */
+.settings-panel.settings-block,.settings-subnav-body{max-width:50rem}
+.settings-subnav-body [data-embedded]{display:contents}
