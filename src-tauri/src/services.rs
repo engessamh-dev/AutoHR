@@ -2120,6 +2120,20 @@ fn set_setting(conn: &Connection, key: &str, value: &str) -> AppResult<()> {
     Ok(())
 }
 
+/// «التحديث التلقائي»: when on (the default), the program checks for a signed update after an
+/// administrator signs in and offers to install it through the usual safe flow (encrypted,
+/// verified backup first; only installers signed by the developer).
+pub fn get_auto_update(conn: &Connection) -> AppResult<bool> {
+    Ok(!matches!(get_setting(conn, "auto_update_check")?.as_deref(), Some("0") | Some("false")))
+}
+
+pub fn set_auto_update(conn: &Connection, username: &str, enabled: bool) -> AppResult<bool> {
+    set_setting(conn, "auto_update_check", if enabled { "1" } else { "0" })?;
+    log_activity(conn, username, "UPDATE_AUTO_UPDATE_SETTING", Some("settings"), None, None,
+        Some(if enabled { "enabled" } else { "disabled" }));
+    Ok(enabled)
+}
+
 fn setting_bool(conn: &Connection, key: &str) -> AppResult<bool> {
     Ok(matches!(get_setting(conn, key)?.as_deref(), Some("1") | Some("true")))
 }

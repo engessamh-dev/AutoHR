@@ -1052,6 +1052,22 @@ async fn cmd_check_for_update(app: AppHandle, state: State<'_, DbState>, sess: S
     Ok(info)
 }
 
+#[tauri::command]
+fn cmd_get_auto_update(state: State<DbState>, sess: State<SessionState>) -> Result<bool, AppError> {
+    let conn = state.conn()?;
+    let user = authorize(&conn, &sess, "settings.manage")?;
+    assert_permission(&conn, &user, "backups.manage")?;
+    get_auto_update(&conn)
+}
+
+#[tauri::command]
+fn cmd_set_auto_update(state: State<DbState>, sess: State<SessionState>, enabled: bool) -> Result<bool, AppError> {
+    let conn = state.conn()?;
+    let user = authorize(&conn, &sess, "settings.manage")?;
+    assert_permission(&conn, &user, "backups.manage")?;
+    set_auto_update(&conn, &user, enabled)
+}
+
 /// Takes a verified encrypted backup (Backups/PreUpdate), then downloads, verifies the
 /// signature of, and installs the update. Windows closes the app while the installer runs.
 #[tauri::command]
@@ -1248,7 +1264,7 @@ pub fn run() {
             cmd_get_startup_status, cmd_check_setup_folders, cmd_complete_setup, cmd_retry_data_folder,
             cmd_get_storage_status, cmd_change_backup_folder, cmd_export_backup_to, cmd_move_data_folder,
             cmd_check_for_update, cmd_install_update,
-            cmd_run_health_check, cmd_save_health_report, cmd_get_support_contact, cmd_open_support_link, cmd_log_client_error,
+            cmd_run_health_check, cmd_save_health_report, cmd_get_support_contact, cmd_open_support_link, cmd_log_client_error, cmd_get_auto_update, cmd_set_auto_update,
             cmd_get_auto_backup_settings, cmd_set_auto_backup_settings,
             cmd_run_due_auto_backups, cmd_exit_app,
             cmd_get_document_types, cmd_set_document_types,

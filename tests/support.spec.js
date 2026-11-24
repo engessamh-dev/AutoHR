@@ -107,6 +107,12 @@ test("settings has one «الدعم وحول النظام» tab for every user, 
   await expect(panel.locator(".settings-subnav-item")).toHaveText(["حول النظام", "فحص البرنامج", "اتصل بنا", "التحديثات"]);
   await panel.getByRole("button", { name: "التحديثات" }).click();
   await expect(page.locator("#btn-check-update")).toBeVisible();
+  // «التحديث التلقائي» is on by default and saved as soon as it is switched.
+  const autoUpdate = page.locator("#auto-update-enabled");
+  await expect(autoUpdate).toBeChecked();
+  await autoUpdate.uncheck();
+  await expect.poll(() => page.evaluate(() => window.calls.filter(c => c.command === "cmd_set_auto_update").map(c => c.args.enabled))).toEqual([false]);
+  await expect(autoUpdate).not.toBeChecked();
   await panel.getByRole("button", { name: "حول النظام" }).click();
   await expect(page.locator(".about-card")).toBeVisible();
   await panel.getByRole("button", { name: "فحص البرنامج" }).click();
