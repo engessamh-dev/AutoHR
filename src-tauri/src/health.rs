@@ -65,14 +65,16 @@ fn count(conn: &Connection, sql: &str) -> Option<i64> {
     conn.query_row(sql, [], |r| r.get(0)).ok()
 }
 
-fn check_app(app_version: &str, updater_configured: bool) -> HealthItem {
+fn check_app(conn: &Connection, app_version: &str, updater_configured: bool) -> HealthItem {
     let build = if cfg!(debug_assertions) { "تطوير" } else { "إصدار نهائي" };
     let mut details = vec![
         format!("الإصدار: {app_version} ({build})"),
         format!("نظام التشغيل: {} {}", std::env::consts::OS, std::env::consts::ARCH),
     ];
     let status = if updater_configured {
-        details.push("التحديث التلقائي: مُعد".into());
+        // The «التحديث التلقائي» switch (on unless turned off). Off is the user's choice, not a fault.
+        let enabled = !matches!(setting(conn, "auto_update_check").as_deref(), Some("0") | Some("false"));
+        details.push(if enabled { "التحديث التلقائي: مفعّل".into() } else { "التحديث التلقائي: معطّل (يمكن تفعيله من الإعدادات ← التحديثات)".into() });
         "ok"
     } else {
         details.push("التحديث التلقائي: غير مُعد في هذه النسخة".into());
@@ -429,7 +431,7 @@ pub fn run_with_progress(
     mut progress: impl FnMut(usize, usize),
 ) -> HealthReport {
     let mut items = Vec::with_capacity(STEPS);
-    progress(0, STEPS); items.push(check_app(app_version, updater_configured));
+    progress(0, STEPS); items.push(check_app(conn, app_version, updater_configured));
     progress(1, STEPS); items.push(check_database(conn));
     progress(2, STEPS); items.push(check_folders(conn));
     progress(3, STEPS); items.push(check_files(conn));
@@ -552,6 +554,16 @@ mod tests {
         assert_eq!(check_technical_errors(&[]).status, "ok");
         let report = run(&test_db(), "1.0.5", true, &entries);
         assert!(report.text.contains("آخر الأخطاء التقنية"), "{}", report.text);
+    }
+
+    #[test]
+    fn automatic_update_line_follows_the_switch() {
+        let conn = test_db();
+        assert!(check_app(&conn, "1.0.5", true).details.iter().any(|l| l == "التحديث التلقائي: مفعّل"));
+        conn.execute("INSERT OR REPLACE INTO app_settings(key,value) VALUES('auto_update_check','0')", []).unwrap();
+        let item = check_app(&conn, "1.0.5", true);
+        assert!(item.details.iter().any(|l| l.starts_with("التحديث التلقائي: معطّل")), "{:?}", item.details);
+        assert_eq!(item.status, "ok");
     }
 
     #[test]
