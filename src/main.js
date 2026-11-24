@@ -10,6 +10,7 @@ import { renderReports }    from "./screens/reports.js";
 import { renderDocuments }  from "./screens/documents.js";
 import { renderUsers }     from "./screens/users.js";
 import { renderAbout }     from "./screens/about.js";
+import { renderSupport }   from "./screens/support.js";
 import { renderSettings }  from "./screens/settings.js";
 import { runStartupGate } from "./screens/setup.js";
 import { renderAudit }     from "./screens/audit.js";
@@ -37,6 +38,7 @@ const i18n = {
   nav_users:     "المستخدمين والصلاحيات",
   nav_audit:     "سجل النظام",
   nav_settings:  "الإعدادات",
+  nav_support:   "الفحص والدعم",
   nav_about:     "حول النظام",
   loginError:    "اسم المستخدم أو كلمة المرور غير صحيحة",
 };
@@ -58,7 +60,7 @@ function applyLang() {
   // update sidebar nav labels
   const navMap = {
     dashboard: "nav_dashboard", employees: "nav_employees", reports: "nav_reports", documents: "nav_documents",
-    users: "nav_users", audit: "nav_audit", settings: "nav_settings", about: "nav_about",
+    users: "nav_users", audit: "nav_audit", settings: "nav_settings", support: "nav_support", about: "nav_about",
   };
   document.querySelectorAll(".nav-item[data-screen]").forEach(el => {
     const screen = el.dataset.screen;
@@ -257,6 +259,7 @@ const screenRenderers = {
   users:     renderUsers,
   settings:  renderSettings,
   audit:     renderAudit,
+  support:   renderSupport,
   about:     renderAbout,
 };
 
@@ -267,8 +270,15 @@ async function navigateTo(screen, options = {}) {
     return;
   }
 
+  // «الفحص والدعم» and «حول النظام» now live as tabs inside «الإعدادات».
+  // «المستخدمين والصلاحيات» is a tab of «الإعدادات» too (shown only with users.manage).
+  if (screen === "support" || screen === "about" || screen === "users") {
+    options = { ...options, tab: screen };
+    screen = "settings";
+  }
+
   // RBAC guard
-  const required = { users: ["users.manage"], audit: ["audit.view"], settings: ["settings.manage", "backups.manage"] };
+  const required = { audit: ["audit.view"] };
   if (required[screen] && !required[screen].some(permission => can(currentUser, permission))) {
     document.getElementById("screen-container").innerHTML = `
       <div class="flex flex-col items-center justify-center h-full text-gray-500">
@@ -288,7 +298,7 @@ async function navigateTo(screen, options = {}) {
 
   const titleMap = {
     dashboard: "nav_dashboard", documentAlerts: "nav_document_alerts", employees: "nav_employees", reports: "nav_reports", documents: "nav_documents",
-    users: "nav_users", audit: "nav_audit", settings: "nav_settings", about: "nav_about",
+    users: "nav_users", audit: "nav_audit", settings: "nav_settings", support: "nav_support", about: "nav_about",
   };
   document.getElementById("page-title").textContent = t(titleMap[screen] ?? screen);
 
@@ -351,13 +361,10 @@ async function enterApp(user) {
   currentUser = user;
   applyUiScale(savedUiScale());
   renderSidebarUser(user);
-  const canManageUsers = can(user, "users.manage");
   const canViewAudit = can(user, "audit.view");
-  document.getElementById("nav-users")?.classList.toggle("hidden", !canManageUsers);
   document.getElementById("nav-audit")?.classList.toggle("hidden", !canViewAudit);
-  const canOpenSettings = can(user, "settings.manage") || can(user, "backups.manage");
-  document.getElementById("nav-settings")?.classList.toggle("hidden", !canOpenSettings);
-  document.getElementById("nav-admin-section")?.classList.toggle("hidden", !canManageUsers && !canViewAudit && !canOpenSettings);
+  // «الإعدادات» is open to every user: it always holds «الدعم وحول النظام», and shows
+  // the administrative tabs (users, storage, backups, updates) only with the permission.
   document.getElementById("login-screen").classList.add("hidden");
   document.getElementById("password-change-screen").classList.add("hidden");
   document.getElementById("app-shell").classList.remove("hidden");

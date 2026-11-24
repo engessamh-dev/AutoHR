@@ -464,8 +464,8 @@
 .nav-section.hidden{display:none}
 
 /* ── Settings & About screens ──────────────────────────────────────────── */
-.settings-screen{max-width:56rem}
-.settings-tabs{display:flex;gap:4px;border-bottom:1px solid var(--ui-line)}
+.settings-screen{max-width:72rem}
+.settings-tabs{display:flex;flex-wrap:wrap;gap:4px;border-bottom:1px solid var(--ui-line)}
 .settings-tab{padding:9px 16px;font-size:14px;color:var(--ui-text-muted);background:transparent;border:0;border-bottom:2px solid transparent;margin-bottom:-1px;cursor:pointer;white-space:nowrap}
 .settings-tab:hover{color:var(--ui-text-strong)}
 .settings-tab[aria-selected="true"]{color:var(--ui-accent);border-bottom-color:var(--ui-accent);font-weight:600}
@@ -476,7 +476,30 @@
 .settings-logo{width:96px;height:96px;border-radius:12px;object-fit:contain;background:#fff;border:1px solid var(--ui-line-strong)}
 /* Fixed company logo: always shown whole (never cropped) on a white tile, since the artwork has a white background. */
 .company-logo-tile{object-fit:contain;background:#fff;border-radius:8px}
+/* ── «الحفظ والنسخ الاحتياطي»: one tab, one card per topic ── */
+.settings-stack{display:grid;gap:16px}
+.settings-stack.hidden{display:none}
+.settings-block{display:grid;gap:14px}
+.settings-block-head{display:grid;gap:4px}
+.settings-block-title{margin:0;font-size:15px;font-weight:700;color:var(--ui-text-strong)}
+.settings-block-help{margin:0;font-size:12px;line-height:1.8;color:var(--ui-text-muted)}
+.settings-block-foot{display:flex;justify-content:flex-start;gap:10px;flex-wrap:wrap}
+.settings-status-line{margin:0;font-size:14px;color:var(--ui-text-strong)}
+.settings-block .settings-company{margin:0}
+.about-card.settings-block-like .settings-block-help{margin-top:2px}
+.backup-schedules{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px}
+@media (max-width:760px){.backup-schedules{grid-template-columns:1fr}}
+.backup-schedule{display:grid;grid-template-columns:auto 1fr;align-items:center;gap:4px 10px;padding:12px 14px;border:1px solid var(--ui-line);border-radius:10px;background:color-mix(in srgb, var(--ui-accent) 5%, transparent);cursor:pointer;transition:border-color .15s,background .15s}
+.backup-schedule:hover{border-color:var(--ui-line-strong)}
+.backup-schedule:has(input:checked){border-color:var(--ui-accent);background:var(--ui-accent-soft)}
+.backup-schedule input{width:16px;height:16px;accent-color:var(--ui-accent)}
+.backup-schedule-name{font-size:14px;font-weight:600;color:var(--ui-text-strong)}
+.backup-schedule-last{grid-column:2;font-size:12px;color:var(--ui-text-muted)}
+.backup-password-row{display:grid;gap:6px;max-width:34rem}
 .settings-path-row{display:flex;align-items:center;justify-content:space-between;gap:16px;padding:12px 0}
+.settings-path-actions{display:grid;grid-template-columns:repeat(2,9.5rem);gap:8px;flex:none}
+.settings-path-actions > button{justify-content:center;text-align:center}
+.support-contact-buttons > button{min-width:9.5rem;justify-content:center;text-align:center}
 .settings-path-row + .settings-path-row{border-top:1px solid var(--ui-line)}
 .settings-path-label{font-size:13px;font-weight:600;color:var(--ui-text)}
 .settings-path-value{font-size:13px;color:var(--ui-text-muted);overflow-wrap:anywhere;text-align:start;margin-top:2px}
@@ -486,6 +509,38 @@
 .about-facts > div{display:contents}
 .about-facts dt{color:var(--ui-text-muted)}
 .about-facts dd{color:var(--ui-text-strong);margin:0}
+
+/* ── Program check and support («الفحص والدعم») ─────────────────────────── */
+.support-grid{display:grid;grid-template-columns:1fr;gap:16px}
+.support-side{display:grid;gap:16px}
+.support-summary.hidden,.support-actions.hidden{display:none}
+.support-card h2,.support-card-status{color:var(--ui-text-strong)}
+.support-card-head{display:flex;align-items:flex-start;justify-content:space-between;gap:16px}
+.support-card-head .btn-primary{flex:none}
+.support-summary{display:flex;align-items:center;gap:10px;margin-top:16px;padding:10px 12px;border-radius:8px;border:1px solid var(--ui-line);background:var(--ui-sunken);font-size:13px;color:var(--ui-text-strong)}
+.support-summary-ok{border-color:var(--ui-ok-line);background:var(--ui-ok-bg)}
+.support-summary-warn{border-color:var(--ui-warn-line);background:var(--ui-warn-bg)}
+.support-summary-fail{border-color:var(--ui-danger-line);background:var(--ui-danger-bg)}
+.support-check-list{display:grid;gap:8px}
+.support-check-list:empty,.support-check-list.hidden{display:none}
+.support-summary-row{display:flex;align-items:center;gap:10px}
+.support-summary-row.hidden{display:none}
+.support-summary-row .support-summary{flex:1;margin-top:0}
+.support-summary-row #btn-toggle-results{flex:none}
+.support-summary-row #btn-toggle-results.hidden{display:none}
+.support-check-item{border:1px solid var(--ui-line);border-radius:8px;padding:10px 12px;background:color-mix(in srgb, var(--ui-accent) 6%, transparent)}
+.support-check-head{display:flex;align-items:center;justify-content:space-between;gap:12px;font-size:14px;color:var(--ui-text-strong)}
+.support-check-details{margin:6px 0 0;padding:0;list-style:none;font-size:12px;line-height:1.8;color:var(--ui-text-muted);word-break:break-word}
+.support-check-details li{white-space:pre-wrap}
+.support-actions{display:flex;align-items:center;gap:12px;flex-wrap:wrap}
+.support-actions p{flex:1;min-width:14rem;margin:0}
+.support-contact-row{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-top:12px}
+.support-contact-table{display:grid;grid-template-columns:max-content max-content 1fr;gap:12px 24px;align-items:center}
+.support-contact-table > div{display:contents}
+.support-contact-label{font-size:13px;color:var(--ui-text-muted)}
+.support-contact-value{font-size:14px;color:var(--ui-text-strong);user-select:text}
+.support-contact-buttons{display:flex;gap:8px;flex-wrap:wrap;justify-content:flex-start}
+@media (max-width:900px){.support-contact-table{grid-template-columns:auto 1fr}.support-contact-buttons{grid-column:1 / -1;justify-content:flex-start}}
 
 
 /* ── Filter chips (document alerts) ────────────────────────────────────── */
@@ -711,3 +766,22 @@ html[data-ui-scale] #app-shell { height: calc(100vh / var(--ui-scale)); }
 .emp-zone-remove{display:inline-flex;align-items:center;justify-content:center;width:18px;height:18px;border:0;border-radius:999px;background:transparent;color:var(--ui-text-faint);font-size:14px;line-height:1;cursor:pointer}
 .emp-zone-remove:hover,.emp-zone-remove:focus-visible{background:var(--ui-accent-hover);color:var(--ui-text-strong);outline:none}
 .emp-zone-input{flex:1;min-width:110px;border:0;background:transparent;color:inherit;font-size:13px;outline:none;padding:4px 0}
+.settings-stack .about-card{max-width:none}
+.about-card h2{color:var(--ui-text-strong)}
+
+/* ── Inner list inside a settings tab: side menu, one card at a time ── */
+.settings-subnav-layout{display:grid;grid-template-columns:13rem minmax(0,1fr);gap:20px;align-items:start}
+.settings-subnav-layout.hidden{display:none}
+.settings-subnav-body{display:grid;gap:16px;min-width:0}
+.settings-subnav-body .support-grid,.settings-subnav-body .support-side{display:contents}
+.sub-hidden{display:none !important}
+.settings-subnav{position:sticky;top:0;display:grid;gap:4px;padding:8px;border:1px solid var(--ui-line);border-radius:12px;background:var(--card-bg, var(--ui-surface))}
+.settings-subnav-item{display:block;width:100%;text-align:start;padding:9px 12px;border:0;border-radius:8px;background:transparent;color:var(--ui-text);font-size:14px;cursor:pointer;border-inline-start:3px solid transparent}
+.settings-subnav-item:hover{background:var(--ui-accent-hover)}
+.settings-subnav-item[aria-current="true"]{background:var(--ui-accent-soft);color:var(--ui-text-strong);font-weight:600;border-inline-start-color:var(--ui-accent)}
+.settings-subnav-item.is-danger{color:var(--ui-danger)}
+.settings-subnav-item.is-danger[aria-current="true"]{border-inline-start-color:var(--ui-danger);background:var(--ui-danger-bg)}
+@media (max-width:900px){.settings-subnav-layout{grid-template-columns:1fr}.settings-subnav{position:static;grid-auto-flow:column;overflow-x:auto}}
+
+/* A save button with nothing to save stays dim until a field changes. */
+.btn-primary:disabled{opacity:.45;filter:saturate(.35);box-shadow:none;background:var(--ui-accent-soft);color:var(--ui-text-muted);border-color:var(--ui-line)}
