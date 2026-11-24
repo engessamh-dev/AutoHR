@@ -216,9 +216,12 @@ async function runShutdownAutomaticBackups({ showProgress = true } = {}) {
         percent: 100,
         message: "تعذر إكمال النسخ التلقائي.",
       });
+      // Errors from Rust arrive as plain strings. Show an Arabic reason when there is one;
+      // technical (English) details are in the error log («فحص البرنامج»).
+      const detail = typeof err === "string" ? err : err?.message;
       await notifyWindows(
         "فشل النسخ التلقائي",
-        err?.message ?? "تعذر إنشاء النسخة الاحتياطية التلقائية.",
+        /[\u0600-\u06FF]/.test(detail ?? "") ? detail : "تعذر إنشاء النسخة الاحتياطية التلقائية. التفاصيل في «فحص البرنامج».",
       );
     } finally {
       if (unlisten) unlisten();
