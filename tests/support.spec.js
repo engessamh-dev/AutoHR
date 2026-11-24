@@ -123,6 +123,20 @@ test("settings has one «الدعم وحول النظام» tab for every user, 
   await expect(page.locator("#btn-open-settings")).toHaveCount(0);
 });
 
+test("opening settings again starts on the first tab and the first inner item", async ({ page }) => {
+  const open = () => page.evaluate(async () => {
+    const { renderSettings } = await import("/src/screens/settings.js");
+    await renderSettings(document.querySelector("#root"), { username: "admin", permissions: ["settings.manage", "backups.manage"] }, {});
+  });
+  await open();
+  await page.locator("[data-settings-tab]").filter({ hasText: "الحفظ والنسخ الاحتياطي" }).click();
+  await page.locator('[data-settings-panel="storage"]').getByRole("button", { name: "نسخة يدوية" }).click();
+  await open();
+  await expect(page.locator('[data-settings-tab][aria-selected="true"]')).toHaveText("الجهة والشعار");
+  await page.locator("[data-settings-tab]").filter({ hasText: "الحفظ والنسخ الاحتياطي" }).click();
+  await expect(page.locator('[data-settings-panel="storage"] [aria-current="true"]')).toHaveText("مواقع الحفظ");
+});
+
 test("users without settings and backup rights do not see the updates section", async ({ page }) => {
   await page.evaluate(async () => {
     const { renderSettings } = await import("/src/screens/settings.js");

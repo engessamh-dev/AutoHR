@@ -236,6 +236,12 @@ export async function installUpdateFlow({ confirmed = false } = {}) {
 }
 
 export async function renderSettings(container, user, ctx) {
+  // Opening «الإعدادات» always starts on the first tab and the first item of its inner list.
+  // Only a redraw from inside this screen (keepPosition) stays where the user was.
+  if (!ctx?.keepPosition) {
+    activeSettingsTab = null;
+    Object.keys(activeSubsection).forEach(key => delete activeSubsection[key]);
+  }
   const canSettings = can(user, "settings.manage");
   const canBackups = can(user, "backups.manage");
   const canUsers = can(user, "users.manage");
@@ -516,7 +522,7 @@ export async function renderSettings(container, user, ctx) {
     try {
       await api.changeBackupFolder(selected);
       showToast("تم تغيير مجلد النسخ الاحتياطية");
-      renderSettings(container, user, ctx);
+      renderSettings(container, user, { ...ctx, tab: undefined, keepPosition: true });
     } catch (err) {
       showToast(err?.message ?? String(err), "error");
     }
