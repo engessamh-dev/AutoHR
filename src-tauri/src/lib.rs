@@ -1025,10 +1025,26 @@ fn updater_configured(app: &AppHandle) -> bool {
         .is_some_and(is_real_pubkey)
 }
 
+/// A short Arabic explanation of an updater error, by its cause.
+fn update_error_message(error: &tauri_plugin_updater::Error) -> &'static str {
+    use tauri_plugin_updater::Error as E;
+    match error {
+        // The request never got an answer: no network, DNS, or the server is unreachable.
+        E::Reqwest(e) if e.is_connect() || e.is_timeout() || e.is_request() =>
+            "لا يوجد اتصال بالإنترنت، أو تعذر الوصول إلى خادم التحديثات. أعد المحاولة لاحقًا.",
+        // The server answered, but there is no usable release file for this computer.
+        E::ReleaseNotFound | E::Serialization(_) | E::Semver(_)
+        | E::TargetNotFound(_) | E::TargetsNotFound(_) => "لا يوجد تحديث متاح حاليًا.",
+        E::Minisign(_) | E::SignedVersionMismatch { .. } | E::MissingSignedVersion =>
+            "توقيع التحديث غير صحيح، لذلك لم يُثبَّت ولم يتغير شيء. تواصل مع المطوّر.",
+        _ => "تعذر التحقق من التحديثات. أعد المحاولة لاحقًا.",
+    }
+}
+
 fn update_error(error: tauri_plugin_updater::Error) -> AppError {
     // The technical detail goes to the error log (فحص البرنامج), not to the user.
     errlog::record_backend("update", &error.to_string());
-    AppError::Validation("تعذر التحقق من التحديثات. تأكد من الاتصال بالشبكة ثم أعد المحاولة.".into())
+    AppError::Validation(update_error_message(&error).into())
 }
 
 #[tauri::command]
@@ -1129,7 +1145,14 @@ async fn cmd_install_update(window: Window, state: State<'_, DbState>, sess: Sta
         || {
             let _ = window.emit("update-progress", BackupProgress { percent: 100, message: "جاري تثبيت التحديث...".into() });
         },
-    ).await.map_err(|error| AppError::Validation(format!("فشل تنزيل التحديث أو التحقق من توقيعه، ولم يتغير شيء. ({error})")))?;
+    ).await.map_err(|error| {
+        errlog::record_backend("update", &error.to_string());
+        let reason = match error {
+            tauri_plugin_updater::Error::Minisign(_) => update_error_message(&error),
+            _ => "فشل تنزيل التحديث أو تثبيته، ولم يتغير شيء. أعد المحاولة لاحقًا.",
+        };
+        AppError::Validation(reason.into())
+    })?;
     app.restart();
 }
 
@@ -1307,6 +1330,21 @@ pub fn run() {
 #[cfg(test)]
 mod report_export_tests {
     use super::*;
+
+    #[test]
+    fn update_errors_explain_their_cause() {
+        use tauri_plugin_updater::Error as E;
+        assert_eq!(update_error_message(&E::ReleaseNotFound), "لا يوجد تحديث متاح حاليًا.");
+        assert_eq!(update_error_message(&E::TargetNotFound("windows-x86_64".into())), "لا يوجد تحديث متاح حاليًا.");
+        let bad_json = serde_json::from_str::<serde_json::Value>("{").unwrap_err();
+        assert_eq!(update_error_message(&E::Serialization(bad_json)), "لا يوجد تحديث متاح حاليًا.");
+        assert!(update_error_message(&E::MissingSignedVersion).contains("توقيع"));
+        assert!(update_error_message(&E::Network("500".into())).starts_with("تعذر التحقق"));
+        // No English detail reaches the user.
+        for error in [E::ReleaseNotFound, E::MissingSignedVersion, E::EmptyEndpoints] {
+            assert!(!update_error_message(&error).chars().any(|c| c.is_ascii_alphabetic()));
+        }
+    }
 
     #[test]
     fn shipped_config_has_a_real_updater_public_key() {
