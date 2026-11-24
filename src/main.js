@@ -376,7 +376,29 @@ async function enterApp(user) {
   } catch (_) { /* non-fatal */ }
   await navigateTo("dashboard");
   notifyDocumentAlerts();
+  await checkDataIntegrity(user);
   offerAvailableUpdate(user);
+}
+
+// «كشف التعديل من خارج البرنامج»: after a System Admin signs in, ask once to approve data that was
+// moved or restored from another computer, and warn when something was changed outside the program.
+let integrityChecked = false;
+async function checkDataIntegrity(user) {
+  if (integrityChecked || !can(user, "users.assign_system_admin")) return;
+  integrityChecked = true;
+  try {
+    const status = await api.getIntegrityStatus();
+    if (status.state === "unapproved") {
+      const ok = await confirmAction("هذه البيانات منقولة من جهاز آخر (أو مستعادة)، هل تعتمدها؟\n\nبعد الاعتماد يكشف البرنامج أي تعديل عليها من خارجه. إذا لم تنقل البيانات أنت، فاختر «إلغاء» وافحص البرنامج من «الفحص والدعم».");
+      if (ok) {
+        await api.approveIntegrity();
+        showToast("تم اعتماد البيانات على هذا الجهاز.");
+      }
+    } else if (status.tampered) {
+      const accounts = status.tampered_users?.length ? ` الحسابات المعنية: ${status.tampered_users.join("، ")}.` : "";
+      showToast(`اكتُشف تعديل على البيانات من خارج البرنامج.${accounts} راجع «الإعدادات ← الفحص والدعم».`, "error");
+    }
+  } catch { /* the health check reports the details */ }
 }
 
 // «التحديث التلقائي»: once per run, after an administrator signs in, check quietly for a
@@ -542,7 +564,9 @@ async function doLogin(username, password) {
     await enterApp(user);
   } catch (err) {
     const message = typeof err === "string" ? err : String(err?.message ?? err ?? "");
-    if (message.startsWith("تم إيقاف تسجيل الدخول")) {
+    if (message.startsWith("تم تعديل بيانات هذا الحساب")) {
+      showLoginMessage(message, "error");
+    } else if (message.startsWith("تم إيقاف تسجيل الدخول")) {
       startLoginLockout(lockoutMinutes(message));
     } else if (message === "You are not authorized to perform this action") {
       showLoginMessage(t("loginError"), "error", "password");
@@ -638,7 +662,7 @@ document.addEventListener("DOMContentLoaded", async () => {
   loginPassword.addEventListener("keyup", syncCapsLock);
 
   document.getElementById("btn-forgot-password").addEventListener("click", () => {
-    showLoginMessage("تواصل مع مدير النظام لإعادة تعيين كلمة المرور", "info");
+    showLoginMessage("تواصل مع مسؤول النظام لإعادة تعيين كلمة المرور", "info");
   });
 
   document.querySelectorAll("#login-username, #login-password").forEach(input => {

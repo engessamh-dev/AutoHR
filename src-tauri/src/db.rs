@@ -782,6 +782,8 @@ pub fn open_at(path: &Path, allow_create: bool) -> Result<Connection, OpenError>
     }
     conn.pragma_update(None, "journal_mode", "WAL")?;
     conn.pragma_update(None, "foreign_keys", "ON")?;
+    // Rows already changed outside the program stay flagged when an upgrade re-seals the data.
+    let flagged = if existed && version < SCHEMA_VERSION { crate::integrity::flagged_rows(&conn) } else { Default::default() };
     if version < SCHEMA_VERSION {
         if existed {
             let snapshot = pre_upgrade_snapshot(&conn, version).map_err(OpenError::Snapshot)?;
@@ -803,6 +805,10 @@ pub fn open_at(path: &Path, allow_create: bool) -> Result<Connection, OpenError>
         let password = bcrypt::hash("password", bcrypt::DEFAULT_COST).map_err(|_| rusqlite::Error::InvalidQuery)?;
         conn.execute("INSERT INTO users(username,password,role,must_change_password) VALUES('sysadmin',?1,'system_admin',1)", [password])?;
     }
+    if existed && version < SCHEMA_VERSION {
+        crate::integrity::reseal_after_upgrade(&conn, &flagged);
+    }
+    crate::integrity::attach(&conn, !existed);
     Ok(conn)
 }
 
@@ -824,6 +830,7 @@ pub fn open_existing() -> Result<Connection, OpenError> {
     if version != SCHEMA_VERSION {
         return Err(OpenError::NewerSchema { found: version, supported: SCHEMA_VERSION });
     }
+    crate::integrity::attach(&conn, false);
     Ok(conn)
 }
 

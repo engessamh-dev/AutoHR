@@ -1,5 +1,5 @@
 // lib.rs — GCANS v2.0
-mod db; mod names; mod services; mod files; mod scanner; mod paths; mod storage; mod ai_detect; mod secure; mod ocr; mod ocr_parse; mod health; mod errlog;
+mod db; mod names; mod services; mod files; mod scanner; mod paths; mod storage; mod ai_detect; mod secure; mod ocr; mod ocr_parse; mod health; mod errlog; mod integrity;
 mod scanner_commands;
 use scanner_commands::*;
 #[cfg(test)] mod scanner_tests;
@@ -91,20 +91,26 @@ fn activate_database(app: &AppHandle, conn: &Connection) {
     restrict_managed_folders();
 }
 
-/// Limits the data and backup folders to this Windows user, Administrators and SYSTEM, once per
-/// folder (a marker file records it). Runs in the background and never blocks or fails startup.
+/// Limits the data and backup folders to this Windows user, Administrators and SYSTEM. Checked on
+/// every start (not only once), so access opened again later is closed again; the outcome is kept
+/// for «الفحص والدعم». Runs in the background and never blocks or fails startup. Then seals the
+/// attachments that have no seal yet (the first start after the update, or files from a restore).
 fn restrict_managed_folders() {
-    if !cfg!(target_os = "windows") { return; }
-    const MARKER: &str = ".acl-v1";
     let roots = [paths::data_root(), paths::backup_root()];
     std::thread::spawn(move || {
-        for root in roots {
-            if !root.is_dir() || root.join(MARKER).exists() { continue; }
-            match secure::restrict_folder(&root) {
-                Ok(()) => { std::fs::write(root.join(MARKER), b"restricted to the current user, Administrators and SYSTEM\n").ok(); }
-                Err(error) => eprintln!("Could not restrict {}: {error}", root.display()),
+        if cfg!(target_os = "windows") {
+            for root in roots {
+                if !root.is_dir() { continue; }
+                let result = match secure::folder_access(&root) {
+                    Ok(secure::FolderAccess::Open(_)) => secure::restrict_folder(&root),
+                    Ok(_) => Ok(()),
+                    Err(error) => Err(error),
+                };
+                if let Err(error) = &result { errlog::record_backend("file", &format!("restrict folder: {error}")); }
+                health::remember_restrict_result(&root, result);
             }
         }
+        if let Ok(conn) = db::open_existing() { integrity::seal_new_files(&conn); }
     });
 }
 
@@ -1161,6 +1167,27 @@ fn cmd_save_health_report(app: AppHandle, state: State<DbState>, sess: State<Ses
     Ok(destination_path)
 }
 
+/// «كشف التعديل من خارج البرنامج» for the System Admin right after sign-in: whether the data still
+/// needs approval on this computer, and which accounts were changed outside the program.
+#[tauri::command]
+fn cmd_get_integrity_status(state: State<DbState>, sess: State<SessionState>) -> Result<integrity::Status, AppError> {
+    let conn = state.conn()?;
+    authorize(&conn, &sess, "users.assign_system_admin")?;
+    Ok(integrity::status(&conn))
+}
+
+/// The System Admin accepts the data as it is now (after a move, or after deliberate outside
+/// changes). Seals everything with this computer's key and records it in the audit log.
+#[tauri::command]
+fn cmd_approve_integrity(state: State<DbState>, sess: State<SessionState>) -> Result<integrity::Status, AppError> {
+    let conn = state.conn()?;
+    // Checked by role only: approving is how a System Admin repairs flagged accounts, and an
+    // account changed outside the program has no permissions at all (assert_permission).
+    let user = authorize(&conn, &sess, "users.assign_system_admin")?;
+    integrity::approve(&conn, &user, "approved by System Admin")?;
+    Ok(integrity::status(&conn))
+}
+
 #[tauri::command]
 fn cmd_get_support_contact() -> health::SupportContact {
     health::support_contact()
@@ -1264,7 +1291,7 @@ pub fn run() {
             cmd_get_startup_status, cmd_check_setup_folders, cmd_complete_setup, cmd_retry_data_folder,
             cmd_get_storage_status, cmd_change_backup_folder, cmd_export_backup_to, cmd_move_data_folder,
             cmd_check_for_update, cmd_install_update,
-            cmd_run_health_check, cmd_save_health_report, cmd_get_support_contact, cmd_open_support_link, cmd_log_client_error, cmd_get_auto_update, cmd_set_auto_update,
+            cmd_run_health_check, cmd_save_health_report, cmd_get_integrity_status, cmd_approve_integrity, cmd_get_support_contact, cmd_open_support_link, cmd_log_client_error, cmd_get_auto_update, cmd_set_auto_update,
             cmd_get_auto_backup_settings, cmd_set_auto_backup_settings,
             cmd_run_due_auto_backups, cmd_exit_app,
             cmd_get_document_types, cmd_set_document_types,

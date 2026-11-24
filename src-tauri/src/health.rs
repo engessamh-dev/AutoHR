@@ -17,6 +17,9 @@ pub struct HealthItem {
     /// "ok", "warn", "fail" or "info".
     pub status: String,
     pub details: Vec<String>,
+    /// A fix the screen may offer next to the item: "approve_integrity" (System Admin only).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub action: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -31,7 +34,7 @@ pub struct HealthReport {
 }
 
 fn item(key: &str, title: &str, status: &str, details: Vec<String>) -> HealthItem {
-    HealthItem { key: key.into(), title: title.into(), status: status.into(), details }
+    HealthItem { key: key.into(), title: title.into(), status: status.into(), details, action: None }
 }
 
 /// Replaces the Windows profile folder and account name in a path so the report does not
@@ -171,6 +174,55 @@ fn check_folders(conn: &Connection) -> HealthItem {
     item("folders", "المجلدات", status, details)
 }
 
+// ── Folder permissions ─────────────────────────────────────────────────────
+
+static RESTRICT_RESULTS: std::sync::Mutex<Vec<(std::path::PathBuf, Result<(), String>)>> = std::sync::Mutex::new(Vec::new());
+
+/// The outcome of the start-up attempt to restrict a managed folder (lib.rs).
+pub fn remember_restrict_result(root: &Path, result: Result<(), String>) {
+    let mut results = RESTRICT_RESULTS.lock().unwrap_or_else(|e| e.into_inner());
+    results.retain(|(path, _)| path != root);
+    results.push((root.to_path_buf(), result));
+}
+
+fn check_folder_access() -> HealthItem {
+    let title = "صلاحيات مجلدات البيانات";
+    let mut status = "ok";
+    let mut details = Vec::new();
+    for (label, root) in [("مجلد البيانات", crate::paths::data_root()), ("مجلد النسخ الاحتياطية", crate::paths::backup_root())] {
+        let failure = RESTRICT_RESULTS.lock().unwrap_or_else(|e| e.into_inner())
+            .iter().find(|(path, _)| *path == root).and_then(|(_, r)| r.clone().err());
+        let line = match crate::secure::folder_access(&root) {
+            Ok(crate::secure::FolderAccess::NotApplicable) => {
+                return item("access", title, "info", vec!["صلاحيات المجلدات تُدار على ويندوز فقط".into()]);
+            }
+            Ok(crate::secure::FolderAccess::Restricted) => format!("{label}: محصور بحساب ويندوز الحالي والمدير والنظام"),
+            Ok(crate::secure::FolderAccess::Open(n)) => {
+                status = "warn";
+                let mut text = format!("{label}: يستطيع {n} من الحسابات أو المجموعات الأخرى على الجهاز فتحه");
+                if failure.is_some() { text.push_str(" (تعذر تقييده تلقائيًا، وقد يكون على قرص شبكة لا يدعم ذلك)"); }
+                text
+            }
+            Err(_) => {
+                if status == "ok" { status = "warn"; }
+                format!("{label}: تعذر قراءة صلاحياته")
+            }
+        };
+        details.push(line);
+    }
+    if status != "ok" {
+        details.push("أي شخص يستطيع فتح المجلد يستطيع نسخ البيانات أو تعديلها بأدوات خارجية. أعد تشغيل البرنامج بحساب مالك المجلد ليُعاد تقييده.".into());
+    }
+    item("access", title, status, details)
+}
+
+fn check_integrity(conn: &Connection) -> HealthItem {
+    let report = crate::integrity::report(conn, true);
+    let mut entry = item("integrity", "كشف التعديل من خارج البرنامج", report.status, report.details);
+    if report.can_approve { entry.action = Some("approve_integrity".into()); }
+    entry
+}
+
 fn file_area(relative: &str) -> &'static str {
     let normalized = relative.replace('\\', "/");
     if normalized.starts_with("Files/Employees/") { "ملفات الموظفين" }
@@ -296,6 +348,7 @@ fn failure_label(action: &str, reason: Option<&str>) -> String {
         ("LOGIN", Some("Invalid password")) => "محاولات دخول بكلمة مرور خاطئة".into(),
         ("LOGIN", Some("Unknown username")) => "محاولات دخول باسم مستخدم غير موجود".into(),
         ("LOGIN", Some("Account temporarily locked")) => "محاولات دخول أثناء قفل الحساب مؤقتًا".into(),
+        ("LOGIN", Some("Account modified outside the program")) => "محاولات دخول بحساب عُدّل من خارج البرنامج".into(),
         ("LOGIN", _) => "محاولات دخول فاشلة".into(),
         ("ACCESS_DENIED", _) => "محاولات فتح صفحة أو تنفيذ عملية بدون صلاحية".into(),
         ("CREATE_AUTO_BACKUP", _) => "نسخ احتياطية تلقائية لم تكتمل".into(),
@@ -420,7 +473,7 @@ pub fn run(conn: &Connection, app_version: &str, updater_configured: bool, error
 }
 
 /// Number of steps reported to `progress` (the screen shows the same steps in the same order).
-pub const STEPS: usize = 7;
+pub const STEPS: usize = 9;
 
 /// Same as `run`, calling `progress(step, STEPS)` before each step starts (step counts from 0).
 pub fn run_with_progress(
@@ -434,10 +487,12 @@ pub fn run_with_progress(
     progress(0, STEPS); items.push(check_app(conn, app_version, updater_configured));
     progress(1, STEPS); items.push(check_database(conn));
     progress(2, STEPS); items.push(check_folders(conn));
-    progress(3, STEPS); items.push(check_files(conn));
-    progress(4, STEPS); items.push(check_backups(conn));
-    progress(5, STEPS); items.push(check_recent_failures(conn));
-    progress(6, STEPS); items.push(check_technical_errors(errors));
+    progress(3, STEPS); items.push(check_folder_access());
+    progress(4, STEPS); items.push(check_files(conn));
+    progress(5, STEPS); items.push(check_integrity(conn));
+    progress(6, STEPS); items.push(check_backups(conn));
+    progress(7, STEPS); items.push(check_recent_failures(conn));
+    progress(8, STEPS); items.push(check_technical_errors(errors));
     progress(STEPS, STEPS);
     let overall = if items.iter().any(|i| i.status == "fail") {
         "fail"
