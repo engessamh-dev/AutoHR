@@ -2434,15 +2434,26 @@ fn automatic_backup_is_current(conn: &Connection, date_key: &str, path_key: &str
     dated_automatic_backup_exists(conn, category, marker)
 }
 
+/// Logged actions that do not change employees, documents, attachments, users or company data.
+/// An automatic backup is taken only when something else happened since the last one.
+const NON_DATA_ACTIONS: &[&str] = &[
+    "LOGIN", "LOGOUT", "VIEW_DOCUMENT", "DOWNLOAD_DOCUMENT", "PRINT_DOCUMENT",
+    "CREATE_BACKUP", "CREATE_AUTO_BACKUP", "EXPORT_BACKUP",
+    // Reading a card's text fills the form only; saving the form is logged separately.
+    "DOCUMENT_TEXT_READ",
+    "SAVE_HEALTH_REPORT", "ACCESS_DENIED", "INSTALL_UPDATE", "UPDATE_AUTO_UPDATE_SETTING",
+    "CHANGE_BACKUP_FOLDER", "MOVE_DATA_FOLDER", "APPROVE_DATA_INTEGRITY",
+];
+
 fn latest_data_change_activity_id(conn: &Connection) -> AppResult<Option<i64>> {
+    let excluded = NON_DATA_ACTIONS.iter().map(|a| format!("'{a}'")).collect::<Vec<_>>().join(",");
     conn.query_row(
-        "SELECT MAX(id) FROM activity_log
+        &format!("SELECT MAX(id) FROM activity_log
          WHERE result='Success'
-           AND action NOT IN (
-             'LOGIN','LOGOUT','VIEW_DOCUMENT','DOWNLOAD_DOCUMENT','PRINT_DOCUMENT',
-             'CREATE_BACKUP','CREATE_AUTO_BACKUP'
-           )
-           AND (target_type IS NOT NULL OR action='SCAN_DOCUMENT')",
+           AND action NOT IN ({excluded})
+           -- Changing the automatic-backup settings is not a change to the data either.
+           AND NOT (action='CHANGE_SETTING' AND target_name='automatic_backups')
+           AND (target_type IS NOT NULL OR action='SCAN_DOCUMENT')"),
         [],
         |row| row.get(0),
     ).map_err(Into::into)
@@ -3029,10 +3040,12 @@ mod phase3_security_tests {
         assert_eq!(auto_backup_password(&conn).unwrap(), "strong-password");
         let first_path = get_setting(&conn, "auto_backup_last_daily_path").unwrap().unwrap();
         verify_written_backup(Path::new(&first_path), "strong-password").unwrap();
-        // Login/logout and reading documents must not cause another backup.
-        for action in ["LOGIN", "LOGOUT", "VIEW_DOCUMENT"] {
+        // Login/logout, reading documents, card text, health reports and settings that are not
+        // data must not cause another backup.
+        for action in NON_DATA_ACTIONS {
             log_activity(&conn, "testadmin", action, Some("employee"), Some(1), None, None);
         }
+        log_activity(&conn, "testadmin", "CHANGE_SETTING", Some("settings"), None, Some("automatic_backups"), None);
         assert!(run_due_automatic_backups_with_progress(&conn, |_| {}).unwrap().is_empty());
         std::thread::sleep(std::time::Duration::from_millis(1100));
         conn.execute("UPDATE employees SET full_name='After change' WHERE id=1", []).unwrap();
