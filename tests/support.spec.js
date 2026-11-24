@@ -179,3 +179,16 @@ test("«المستخدمين والصلاحيات» is a settings tab only for u
   await expect(page.getByText("إدارة المستخدمين")).toBeVisible();
   await expect(page.getByText("synthetic-viewer")).toBeVisible();
 });
+
+test("only a System Admin is offered to approve the data next to the tamper check", async ({ page }) => {
+  await page.evaluate(() => {
+    window.healthReport = { ...window.healthReport, overall: "fail", items: [
+      { key: "integrity", title: "كشف التعديل من خارج البرنامج", status: "fail", action: "approve_integrity",
+        details: ["سجلات عُدّلت من خارج البرنامج: المستخدمون: 1"] },
+    ] };
+  });
+  await page.getByRole("button", { name: "بدء الفحص" }).click();
+  await expect(page.locator(".support-check-item")).toHaveCount(1);
+  // The harness user has no users.assign_system_admin permission.
+  await expect(page.getByRole("button", { name: "اعتماد البيانات الحالية" })).toHaveCount(0);
+});

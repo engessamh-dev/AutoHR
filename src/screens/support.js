@@ -3,7 +3,7 @@
  * update check (administrators) and «اتصل بنا» (WhatsApp and email). Visible to every user.
  */
 import { api }       from "../api.js";
-import { showToast, escHtml } from "../utils.js";
+import { showToast, escHtml, confirmAction } from "../utils.js";
 import { save }      from "@tauri-apps/plugin-dialog";
 import { listen }    from "@tauri-apps/api/event";
 import { can }       from "../permissions.js";
@@ -21,7 +21,9 @@ const CHECK_STEPS = [
   "معلومات البرنامج",
   "قاعدة البيانات",
   "مجلدات البيانات والنسخ",
+  "صلاحيات المجلدات",
   "الملفات المرفقة",
+  "كشف التعديل من خارج البرنامج",
   "النسخ الاحتياطية",
   "العمليات الفاشلة",
   "الأخطاء التقنية",
@@ -55,7 +57,13 @@ function errorLine(line) {
   return `<li class="support-error-line"><span class="support-error-time" dir="ltr">${escHtml(head)}</span>${fields.join("")}</li>`;
 }
 
-function renderItems(report) {
+// «اعتماد البيانات» is offered to the System Admin next to the tamper-detection item.
+function itemAction(item, canApprove) {
+  if (item.action !== "approve_integrity" || !canApprove) return "";
+  return `<div class="support-check-action"><button type="button" class="btn-secondary text-sm" data-action="approve_integrity">اعتماد البيانات الحالية</button></div>`;
+}
+
+function renderItems(report, canApprove = false) {
   return report.items.map(item => `
     <div class="support-check-item">
       <div class="support-check-head">
@@ -63,6 +71,7 @@ function renderItems(report) {
         ${statusBadge(item.status)}
       </div>
       <ul class="support-check-details">${item.details.map(line => item.key === "errors" ? errorLine(line) : `<li dir="auto">${escHtml(line)}</li>`).join("")}</ul>
+      ${itemAction(item, canApprove)}
     </div>`).join("");
 }
 
@@ -198,7 +207,7 @@ export async function renderSupport(container, user, ctx) {
       await wait(250);
       summary.className = `support-summary support-summary-${report.overall}`;
       summary.innerHTML = `${statusBadge(report.overall)} <span>${escHtml(OVERALL_TEXT[report.overall] ?? "")}</span>`;
-      results.innerHTML = renderItems(report);
+      results.innerHTML = renderItems(report, can(user, "users.assign_system_admin"));
       setResultsOpen(true);
       container.querySelector("#check-summary-row").classList.remove("hidden");
       toggle.classList.remove("hidden");
@@ -210,6 +219,19 @@ export async function renderSupport(container, user, ctx) {
       progress.classList.add("hidden");
       runButton.disabled = false;
       runButton.textContent = "إعادة الفحص";
+    }
+  });
+
+  results.addEventListener("click", async event => {
+    if (!event.target.closest('[data-action="approve_integrity"]')) return;
+    const ok = await confirmAction("سيُعتمد وضع البيانات الحالي كما هو، وتُعدّ أي تعديلات سابقة من خارج البرنامج مقبولة. يُسجَّل هذا الاعتماد باسمك في سجل النظام. هل تريد المتابعة؟");
+    if (!ok) return;
+    try {
+      await api.approveIntegrity();
+      showToast("تم اعتماد البيانات. أعد الفحص للتأكد.");
+      runButton.click();
+    } catch (err) {
+      showToast(err?.message ?? String(err), "error");
     }
   });
 

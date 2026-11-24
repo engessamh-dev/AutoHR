@@ -132,6 +132,53 @@ pub fn restrict_folder(dir: &std::path::Path) -> Result<(), String> {
     }
 }
 
+/// Who can open a managed folder, as far as the health check needs to know.
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[allow(dead_code)] // each platform builds only some variants
+pub enum FolderAccess {
+    /// Only this Windows user, Administrators and SYSTEM.
+    Restricted,
+    /// Other accounts (for example «Users» or «Everyone») also have access; the count of such entries.
+    Open(usize),
+    /// Not a Windows build: folder permissions are not managed.
+    NotApplicable,
+}
+
+/// Reads the folder's access list. Accounts other than the current user, Administrators, SYSTEM
+/// and CREATOR OWNER count as open access.
+pub fn folder_access(dir: &std::path::Path) -> Result<FolderAccess, String> {
+    #[cfg(target_os = "windows")]
+    {
+        use std::os::windows::process::CommandExt;
+        let sid = current_user_sid()?;
+        // The path is passed in an environment variable so it never needs quoting in the script.
+        let script = "$ErrorActionPreference='Stop';$acl=Get-Acl -LiteralPath $env:CNSARCH_ACL_DIR;\
+            foreach($r in $acl.Access){ if($r.AccessControlType -ne 'Allow'){continue}; \
+            try{$r.IdentityReference.Translate([System.Security.Principal.SecurityIdentifier]).Value}catch{$r.IdentityReference.Value} }";
+        let output = std::process::Command::new("powershell.exe")
+            .creation_flags(0x0800_0000)
+            .env("CNSARCH_ACL_DIR", dir)
+            .args(["-NoProfile", "-NonInteractive", "-Command", script])
+            .output()
+            .map_err(|error| error.to_string())?;
+        if !output.status.success() {
+            return Err(String::from_utf8_lossy(&output.stderr).trim().chars().take(200).collect());
+        }
+        let allowed = [sid.as_str(), "S-1-5-32-544", "S-1-5-18", "S-1-3-0"];
+        let open = String::from_utf8_lossy(&output.stdout)
+            .lines()
+            .map(str::trim)
+            .filter(|line| !line.is_empty() && !allowed.contains(&line))
+            .count();
+        Ok(if open == 0 { FolderAccess::Restricted } else { FolderAccess::Open(open) })
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        let _ = dir;
+        Ok(FolderAccess::NotApplicable)
+    }
+}
+
 #[cfg(target_os = "windows")]
 fn current_user_sid() -> Result<String, String> {
     use std::os::windows::process::CommandExt;

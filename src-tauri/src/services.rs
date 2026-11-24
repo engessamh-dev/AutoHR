@@ -395,13 +395,13 @@ fn valid_role(role: &str) -> bool {
     matches!(role, "system_admin" | "archive_admin" | "archive_officer" | "viewer")
 }
 
-pub fn user_role(conn: &Connection, username: &str) -> AppResult<String> {
-    conn.query_row("SELECT role FROM users WHERE username=?1", params![username], |r| r.get(0))
-        .map_err(|_| AppError::Unauthorized)
-}
-
 pub fn assert_permission(conn: &Connection, username: &str, permission: &str) -> AppResult<()> {
-    let role = user_role(conn, username)?;
+    let (id, role): (i64, String) = conn
+        .query_row("SELECT id,role FROM users WHERE username=?1", params![username], |r| Ok((r.get(0)?, r.get(1)?)))
+        .map_err(|_| AppError::Unauthorized)?;
+    // An account changed outside the program (for example its role raised with a database tool)
+    // keeps no permissions until a System Admin deals with it.
+    if !crate::integrity::user_trusted(conn, id) { return Err(AppError::Unauthorized); }
     if role_permissions(&role).contains(&permission) { Ok(()) } else { Err(AppError::Unauthorized) }
 }
 
@@ -710,6 +710,10 @@ pub fn login(conn: &Connection, username: &str, password: &str) -> AppResult<Use
         record_login_failure(conn, username);
         log_audit(conn, Some(username), "LOGIN", Some("session"), None, None, "Failure", Some("Invalid password"));
         return Err(AppError::Unauthorized);
+    }
+    if !crate::integrity::user_trusted(conn, row.0) {
+        log_audit(conn, Some(username), "LOGIN", Some("session"), None, None, "Failure", Some("Account modified outside the program"));
+        return Err(AppError::Validation(crate::integrity::TAMPERED_ACCOUNT_MESSAGE.into()));
     }
     clear_login_failures(conn, username);
     if !row.2.starts_with("$2") {
@@ -2842,15 +2846,23 @@ where
         return Err(AppError::Other(error.to_string()));
     }
     progress(backup_progress(86, "جاري استعادة قاعدة البيانات..."));
+    // The seal triggers belong to the database being replaced; they are put back afterwards.
+    crate::integrity::detach(conn);
     if let Err(error) = conn.restore(rusqlite::MAIN_DB, staging.path().join("database.db"), None::<fn(rusqlite::backup::Progress)>).map_err(AppError::from)
         .and_then(|_| crate::db::upgrade_restored(conn).map_err(AppError::from))
         .and_then(|_| crate::scanner::ensure_metadata_columns(conn).map_err(AppError::from)) {
         std::fs::remove_dir_all(&current_data).ok();
         if rollback_data.exists() { std::fs::rename(&rollback_data, &current_data).ok(); }
         conn.restore(rusqlite::MAIN_DB, &rollback_database, None::<fn(rusqlite::backup::Progress)>).ok();
+        crate::integrity::attach(conn, false);
         std::fs::remove_file(&rollback_database).ok();
         std::fs::remove_file(&restore_marker).ok();
         return Err(error);
+    }
+    // A backup made on another computer, or before seals existed, is accepted by the System Admin
+    // who restores it; a backup sealed on this computer keeps its own seals and is checked as is.
+    if crate::integrity::attach(conn, false) == crate::integrity::State::Unapproved {
+        crate::integrity::approve(conn, user, "restore")?;
     }
     progress(backup_progress(94, "جاري إعادة ربط سجل التدقيق..."));
     for row in audit {

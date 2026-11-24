@@ -111,6 +111,8 @@ export const api = {
   // Program check and support (every signed-in user)
   runHealthCheck: () => invoke("cmd_run_health_check"),
   saveHealthReport: (destinationPath) => invoke("cmd_save_health_report", { destinationPath }),
+  getIntegrityStatus: () => invoke("cmd_get_integrity_status"),
+  approveIntegrity: () => invoke("cmd_approve_integrity"),
   // Writes a technical error (failed command or script exception) to the local error log.
   logClientError: (operation, screen, message, stack) => invoke("cmd_log_client_error", { operation, screen, message, stack }),
   getSupportContact: () => invoke("cmd_get_support_contact"),

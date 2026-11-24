@@ -125,15 +125,17 @@ pub fn copy_validated_upload(conn: &Connection, source_path: &str, destination_d
     if let Err(error) = conn.execute(
         "INSERT OR REPLACE INTO document_metadata(stored_path,original_name,mime_type,size_bytes) VALUES(?1,?2,?3,?4)",
         params![rel, upload.original_name, upload.mime_type, upload.size as i64],
-    ) {
+    ).map_err(AppError::from).and_then(|_| crate::integrity::seal_file(conn, &rel, &destination)) {
         std::fs::remove_file(destination).ok();
-        return Err(error.into());
+        conn.execute("DELETE FROM document_metadata WHERE stored_path=?1", params![rel]).ok();
+        return Err(error);
     }
     if let Some((original, owner, meta)) = scanned_original {
         let original_rel = original_rel.expect("scanned uploads register their original path");
         let original_dest = storage_path(conn).join(&original_rel);
         let result = (|| -> AppResult<()> {
             copy_new_file(&original, &original_dest)?;
+            crate::integrity::seal_file(conn, &original_rel, &original_dest)?;
             conn.execute("UPDATE document_metadata SET original_name=?1, original_path=?2 WHERE stored_path=?3", params![meta.original_name, original_rel, rel])?;
             crate::scanner::audit_processing(conn, &owner, &rel)?;
             Ok(())
