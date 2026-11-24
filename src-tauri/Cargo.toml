@@ -1,6 +1,6 @@
 [package]
 name    = "autohr"
-version = "1.0.4"
+version = "1.0.5"
 edition = "2021"
 
 [package.metadata.bundle]
@@ -26,7 +26,7 @@ tauri-build = { version = "2", features = [] }
 [dependencies]
 tauri               = { version = "2", features = ["protocol-asset"] }
 tauri-plugin-dialog = "2"
-rusqlite            = { version = "0.31", features = ["bundled", "backup"] }
+rusqlite            = { version = "0.43", features = ["bundled", "backup", "functions"] }
 serde               = { version = "1", features = ["derive"] }
 serde_json          = "1"
 sha2                = "0.10"
@@ -39,8 +39,16 @@ rand                = "0.8"
 aes-gcm             = "0.10"
 argon2              = "0.5"
 tempfile            = "3"
-zip                 = { version = "2", default-features = false, features = ["deflate"] }
+zip                 = { version = "9", default-features = false, features = ["deflate"] }
 tauri-plugin-notification = "2"
 image = { version = "0.25.10", default-features = false, features = ["jpeg", "png", "webp"] }
 imageproc = { version = "0.27.0", default-features = false }
+# Pure-Rust ONNX inference for the bundled on-device document detector (no DLL, no network).
+tract-onnx = "0.23"
 tauri-plugin-updater = "2"
+# Pure-Rust QR decoder: the electronic ration card carries its number in a QR code (ocr.rs).
+rqrr = { version = "0.11.0", default-features = false }
+
+[target.'cfg(windows)'.dependencies]
+# DPAPI protection for the stored automatic-backup password (secure.rs).
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Security_Cryptography"] }

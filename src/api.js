@@ -1,7 +1,8 @@
 /**
  * api.js — Tauri invoke bridge v2.0
  */
-import { invoke } from "@tauri-apps/api/core";
+// invoke from error-log.js is Tauri's invoke that also writes technical failures to the local error log.
+import { invoke } from "./error-log.js";
 import { uploadWithScanner } from "./attachments/scanner.js";
 
 export const api = {
@@ -14,13 +15,14 @@ export const api = {
   getCompanyConfig:    ()           => invoke("cmd_get_company_config"),
   getPublicCompanyConfig: ()        => invoke("cmd_get_public_company_config"),
   updateCompanyConfig: (data)       => invoke("cmd_update_company_config", { data }),
-  uploadCompanyLogo:   (path)       => uploadWithScanner("cmd_upload_company_logo", { sourcePath: path }),
 
   // Employees
   listEmployees:    ()         => invoke("cmd_list_employees"),
   getEmployee:      (id)       => invoke("cmd_get_employee",    { id }),
   createEmployee:   (data)     => invoke("cmd_create_employee", { data }),
   updateEmployee:   (id, data) => invoke("cmd_update_employee", { id, data }),
+  listNameReview:   () => invoke("cmd_list_name_review"),
+  saveNameReview:   (employeeId, owner, index, field, parts) => invoke("cmd_save_name_review", { employeeId, owner, index, field, parts }),
   deleteEmployee:   (id)       => invoke("cmd_delete_employee", { id }),
   nextEmployeeNumber: ()       => invoke("cmd_next_employee_number"),
   uploadAttachment: (empId, path) => uploadWithScanner("cmd_upload_attachment", { employeeId: empId, sourcePath: path }),
@@ -31,6 +33,8 @@ export const api = {
   uploadNationalCardAttachment: (empId, side, path) => uploadWithScanner("cmd_upload_national_card_attachment", { employeeId: empId, side, sourcePath: path }),
   deleteNationalCardAttachment: (empId, side) => invoke("cmd_delete_national_card_attachment", { employeeId: empId, side }),
   uploadFamilyNationalCardAttachment: (empId, memberIndex, side, path) => uploadWithScanner("cmd_upload_family_national_card_attachment", { employeeId: empId, memberIndex, side, sourcePath: path }),
+  uploadVehicleAnnualAttachment: (empId, vehicleIndex, side, path) => uploadWithScanner("cmd_upload_vehicle_annual_attachment", { employeeId: empId, vehicleIndex, side, sourcePath: path }),
+  deleteVehicleAnnualAttachment: (empId, vehicleIndex, side) => invoke("cmd_delete_vehicle_annual_attachment", { employeeId: empId, vehicleIndex, side }),
   deleteFamilyNationalCardAttachment: (empId, memberIndex, side) => invoke("cmd_delete_family_national_card_attachment", { employeeId: empId, memberIndex, side }),
   uploadSpouseNationalCardAttachment: (empId, spouseIndex, side, path) => uploadWithScanner("cmd_upload_spouse_national_card_attachment", { employeeId: empId, spouseIndex, side, sourcePath: path }),
   deleteSpouseNationalCardAttachment: (empId, spouseIndex, side) => invoke("cmd_delete_spouse_national_card_attachment", { employeeId: empId, spouseIndex, side }),
@@ -42,6 +46,8 @@ export const api = {
   deleteMinistryBadgeAttachment: (empId, side) => invoke("cmd_delete_ministry_badge_attachment", { employeeId: empId, side }),
   uploadPassportAttachment: (empId, path) => uploadWithScanner("cmd_upload_passport_attachment", { employeeId: empId, sourcePath: path }),
   deletePassportAttachment: (empId, rel) => invoke("cmd_delete_passport_attachment", { employeeId: empId, relativePath: rel }),
+  // Reads the fields of a stored national card or passport image on this device (nothing is saved).
+  readDocumentFields: (rel) => invoke("cmd_read_document_fields", { relativePath: rel }),
   uploadRationCardAttachment: (empId, path) => uploadWithScanner("cmd_upload_ration_card_attachment", { employeeId: empId, sourcePath: path }),
   deleteRationCardAttachment: (empId, rel) => invoke("cmd_delete_ration_card_attachment", { employeeId: empId, relativePath: rel }),
 
@@ -99,6 +105,18 @@ export const api = {
   // Application updates (administrators only; checked in Rust)
   checkForUpdate: () => invoke("cmd_check_for_update"),
   installUpdate: (password) => invoke("cmd_install_update", { password }),
+  getAutoUpdate: () => invoke("cmd_get_auto_update"),
+  setAutoUpdate: (enabled) => invoke("cmd_set_auto_update", { enabled }),
+
+  // Program check and support (every signed-in user)
+  runHealthCheck: () => invoke("cmd_run_health_check"),
+  saveHealthReport: (destinationPath) => invoke("cmd_save_health_report", { destinationPath }),
+  getIntegrityStatus: () => invoke("cmd_get_integrity_status"),
+  approveIntegrity: () => invoke("cmd_approve_integrity"),
+  // Writes a technical error (failed command or script exception) to the local error log.
+  logClientError: (operation, screen, message, stack) => invoke("cmd_log_client_error", { operation, screen, message, stack }),
+  getSupportContact: () => invoke("cmd_get_support_contact"),
+  openSupportLink: (channel, topic) => invoke("cmd_open_support_link", { channel, topic }),
   getAutoBackupSettings: () => invoke("cmd_get_auto_backup_settings"),
   setAutoBackupSettings: (data) => invoke("cmd_set_auto_backup_settings", { data }),
   runDueAutoBackups: () => invoke("cmd_run_due_auto_backups"),
@@ -115,6 +133,7 @@ export const api = {
   downloadDocument: (relativePath, destinationPath) => invoke("cmd_download_document", { relativePath, destinationPath }),
   getDocumentDownloadName: (relativePath) => invoke("cmd_get_document_download_name", { relativePath }),
   getDocumentPreviewPath: (relativePath) => invoke("cmd_get_document_preview_path", { relativePath }),
-  readDocument: (relativePath) => invoke("cmd_read_document", { relativePath }),
+  // The backend sends raw bytes (an ArrayBuffer), not a JSON array of numbers.
+  readDocument: async (relativePath) => new Uint8Array(await invoke("cmd_read_document", { relativePath })),
   printDocument: (relativePath) => invoke("cmd_print_document", { relativePath }),
 };

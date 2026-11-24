@@ -5,27 +5,37 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>CNSArch</title>
   <link rel="stylesheet" href="/src/styles/main.css" />
+  <link rel="stylesheet" href="/src/styles/login.css" />
 </head>
 <body class="overflow-hidden">
 
-  <div id="login-screen" class="login-background">
-    <main class="login-artboard" aria-label="نظام الأرشفة">
-      <form id="login-form" class="login-hotspots">
-        <input id="login-username" class="login-hotspot login-hotspot-username" type="text" placeholder="اسم المستخدم" dir="rtl" autocomplete="username" aria-label="اسم المستخدم" />
-        <input id="login-password" class="login-hotspot login-hotspot-password" type="password" placeholder="كلمة المرور" dir="rtl" autocomplete="current-password" aria-label="كلمة المرور" />
-        <button id="btn-toggle-password" class="login-hotspot login-hotspot-eye" type="button" aria-label="إظهار كلمة المرور" aria-pressed="false"></button>
-        <p id="login-error" class="login-message hidden" role="alert" aria-live="assertive"></p>
-        <button type="submit" class="login-hotspot login-hotspot-submit" aria-label="تسجيل الدخول"></button>
+  <div id="login-screen" class="login-screen">
+    <!-- The design (logo, title, frames, icons, button, footer) is the background
+         picture; only the parts that change or react are real elements, placed
+         on the picture's own coordinates (see login.css). -->
+    <main class="login-stage" aria-label="نظام الأرشفة الإلكتروني وإدارة معلومات الموظفين">
+      <h1 class="sr-only">نظام الأرشفة الإلكتروني وإدارة معلومات الموظفين</h1>
+      <div class="login-card-top" aria-hidden="true"></div>
+      <div class="login-card-ext" aria-hidden="true"></div>
+      <div class="login-card-cap" aria-hidden="true"></div>
+      <form id="login-form" novalidate autocomplete="off">
+        <label class="login-box login-box-username">
+          <input id="login-username" name="cnsarch-login-user" type="text" placeholder="اسم المستخدم" dir="ltr" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false" aria-label="اسم المستخدم" role="combobox" aria-autocomplete="list" aria-controls="login-suggestions" aria-expanded="false" />
+        </label>
+        <label class="login-box login-box-password">
+          <input id="login-password" name="cnsarch-login-secret" type="password" placeholder="كلمة المرور" dir="ltr" autocomplete="off" aria-label="كلمة المرور" />
+        </label>
+        <button id="btn-toggle-password" class="login-hit login-hit-eye" type="button" aria-label="إظهار كلمة المرور" aria-pressed="false"></button>
+        <button type="submit" class="login-hit login-hit-submit" aria-label="تسجيل الدخول"></button>
       </form>
-      <button id="btn-forgot-password" type="button" class="login-hotspot login-hotspot-forgot" aria-label="نسيت كلمة المرور؟"></button>
-      <div class="login-title-overlay" aria-hidden="true">نظام الأرشفة الإلكتروني</div>
-      <div class="login-subtitle-overlay" aria-hidden="true">
-        <span class="login-subtitle-ar">نظام أرشفة وثائق صادر ووارد قسم اتصالات الطيران</span>
-        <span class="login-subtitle-en">General Company for Airports and Air Navigation</span>
-      </div>
+      <button id="btn-forgot-password" type="button" class="login-hit login-hit-forgot" aria-label="نسيت كلمة المرور؟"></button>
+      <ul id="login-suggestions" class="login-suggestions hidden" role="listbox" aria-label="أسماء مستخدمين سابقة"></ul>
       <span id="login-unit-name" class="login-unit-name">وحدة الأتمتة</span>
-      <span id="login-app-version" class="login-version" data-app-version dir="rtl"></span>
+      <p id="login-error" class="login-message hidden" role="alert" aria-live="assertive"></p>
     </main>
+    <footer class="login-footer">
+      <span id="login-app-version" class="login-version" data-app-version dir="rtl"></span>
+    </footer>
   </div>
 
   <div id="setup-screen" class="hidden min-h-screen flex items-center justify-center" dir="rtl">
@@ -85,6 +95,9 @@
             <h2 id="page-title" class="text-lg font-semibold truncate" data-i18n="nav_dashboard">لوحة التحكم العامة</h2>
             <div id="header-branding" class="text-xs text-gray-400 mt-0.5 truncate"></div>
           </div>
+          <div class="theme-switch">
+            <button type="button" id="btn-theme" class="sidebar-toggle" title="المظهر" aria-label="المظهر"></button>
+          </div>
         </div>
       </header>
       <div id="screen-container" class="flex-1 overflow-y-auto p-6" aria-live="polite"></div>
@@ -93,13 +106,10 @@
     <aside id="app-sidebar" class="app-sidebar shrink-0 bg-autohr-sidebar border-e border-autohr-border flex flex-col">
       <div class="sidebar-brand-wrap border-b border-autohr-border">
         <div id="sidebar-brand" class="sidebar-brand">
-          <img id="sidebar-logo" class="w-9 h-9 rounded object-cover hidden shrink-0" alt="شعار الشركة" />
-          <div id="sidebar-logo-fallback" class="w-9 h-9 rounded bg-autohr-green/20 flex items-center justify-center shrink-0">
-            <span class="text-xs font-bold text-autohr-green">CNS</span>
-          </div>
+          <img id="sidebar-logo" src="/src/assets/branding/company-logo-128.png" class="company-logo-tile sidebar-logo shrink-0" alt="شعار الشركة" />
           <div class="sidebar-brand-text min-w-0 flex-1">
-            <p id="sidebar-company" class="sidebar-company-name font-bold text-autohr-green text-sm">الشركة العامة لخدمات الملاحة الجوية</p>
-            <p id="sidebar-dept" class="sidebar-company-subtitle text-[11px] text-gray-500"></p>
+            <p id="sidebar-company" class="sidebar-company-name font-bold text-autohr-green">الشركة العامة لخدمات الملاحة الجوية</p>
+            <p id="sidebar-dept" class="sidebar-company-subtitle"></p>
           </div>
         </div>
       </div>
@@ -109,13 +119,11 @@
         <button type="button" class="nav-item" data-screen="employees" title="الموظفون"><svg class="nav-icon" viewBox="0 0 24 24" aria-hidden="true"><circle cx="9" cy="8" r="3.5"/><path d="M2.5 20c.6-3.6 3.2-5.5 6.5-5.5s5.9 1.9 6.5 5.5"/><path d="M16 4.6a3.5 3.5 0 0 1 0 6.8"/><path d="M18 14.8c2 .6 3.2 2.4 3.5 5.2"/></svg><span class="nav-label">الموظفون</span></button>
         <button type="button" class="nav-item" data-screen="documents" title="أرشيف الوثائق"><svg class="nav-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M3 6.5A1.5 1.5 0 0 1 4.5 5H9l2 2.5h8.5A1.5 1.5 0 0 1 21 9v9.5a1.5 1.5 0 0 1-1.5 1.5h-15A1.5 1.5 0 0 1 3 18.5z"/></svg><span class="nav-label">أرشيف الوثائق</span></button>
         <button type="button" class="nav-item" data-screen="reports" title="التقارير"><svg class="nav-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 20V4"/><path d="M4 20h16"/><path d="M8 16v-4"/><path d="M12 16V8"/><path d="M16 16v-6"/></svg><span class="nav-label">التقارير</span></button>
-        <div id="nav-admin-section" class="nav-section hidden" role="presentation">
+        <div id="nav-admin-section" class="nav-section" role="presentation">
           <span class="nav-section-label">الإدارة</span>
         </div>
-        <button type="button" class="nav-item hidden" data-screen="users" id="nav-users" title="المستخدمين والصلاحيات"><svg class="nav-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3 4.5 6v5.5c0 4.6 3.1 8.2 7.5 9.5 4.4-1.3 7.5-4.9 7.5-9.5V6z"/><circle cx="12" cy="10.5" r="2.3"/><path d="M8.5 16.5c.7-1.6 2-2.4 3.5-2.4s2.8.8 3.5 2.4"/></svg><span class="nav-label">المستخدمين والصلاحيات</span></button>
-        <button type="button" class="nav-item hidden" data-screen="settings" id="nav-settings" title="الإعدادات"><svg class="nav-icon" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z"/></svg><span class="nav-label">الإعدادات</span></button>
+        <button type="button" class="nav-item" data-screen="settings" id="nav-settings" title="الإعدادات"><svg class="nav-icon" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z"/></svg><span class="nav-label">الإعدادات</span></button>
         <button type="button" class="nav-item hidden" data-screen="audit" id="nav-audit" title="سجل النظام"><svg class="nav-icon" viewBox="0 0 24 24" aria-hidden="true"><rect x="5" y="4" width="14" height="17" rx="1.5"/><path d="M9 4V2.8h6V4"/><path d="M8.5 10h7M8.5 13.5h7M8.5 17h4"/></svg><span class="nav-label">سجل النظام</span></button>
-        <button type="button" class="nav-item" data-screen="about" title="حول النظام"><svg class="nav-icon" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M12 11v6"/><path d="M12 7.5v.01"/></svg><span class="nav-label">حول النظام</span></button>
       </nav>
 
       <div class="sidebar-footer border-t border-autohr-border">
@@ -124,6 +132,14 @@
           <div class="sidebar-user-text min-w-0">
             <p id="current-user" class="sidebar-user-name" dir="ltr">sysadmin</p>
             <p id="current-user-role" class="sidebar-user-role"></p>
+          </div>
+        </div>
+        <div class="ui-scale-picker">
+          <span id="ui-scale-label">حجم الواجهة</span>
+          <div class="ui-scale-options" role="group" aria-labelledby="ui-scale-label">
+            <button type="button" data-ui-scale-option="90" aria-pressed="false" title="أصغر">90%</button>
+            <button type="button" data-ui-scale-option="100" aria-pressed="true" title="عادي">100%</button>
+            <button type="button" data-ui-scale-option="110" aria-pressed="false" title="أكبر">110%</button>
           </div>
         </div>
         <button id="btn-logout-side" class="sidebar-logout btn-secondary" title="تسجيل الخروج"><svg class="nav-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M14 4h4.5A1.5 1.5 0 0 1 20 5.5v13a1.5 1.5 0 0 1-1.5 1.5H14"/><path d="M10 8l-4 4 4 4"/><path d="M6 12h10"/></svg><span class="nav-label" data-i18n="logout">تسجيل الخروج</span></button>

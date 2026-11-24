@@ -1,5 +1,5 @@
 import { api } from "../api.js";
-import { escHtml, formatDate } from "../utils.js";
+import { escHtml, formatDate, arCount, AR_NOUNS } from "../utils.js";
 
 const DAY_MS = 86400000;
 
@@ -49,9 +49,13 @@ export function buildDocumentAlerts(employees, today = new Date()) {
 }
 
 function remainingLabel(alert) {
-  if (alert.expired) return "منتهي";
+  if (alert.expired) {
+    const ago = -alert.days;
+    return ago === 1 ? "انتهى أمس" : `منتهٍ منذ ${arCount(ago, { ...AR_NOUNS.day, two: "يومين" })}`;
+  }
   if (alert.days === 0) return "ينتهي اليوم";
-  return `${alert.days} يوم`;
+  if (alert.days === 1) return "ينتهي غداً";
+  return `باقٍ ${arCount(alert.days, "day")}`;
 }
 
 function alertBadge(alert) {
@@ -89,7 +93,8 @@ export async function renderDocumentAlerts(container, user, ctx) {
     container.innerHTML = `
       <div class="space-y-4">
         <div class="flex items-center justify-between gap-3 flex-wrap">
-          <p class="text-sm text-gray-400">المستمسكات المنتهية أو التي قاربت على النفاذ للموظفين النشطين. اضغط على أي صف لفتح ملف الموظف.</p>
+          <button type="button" id="alerts-back" class="btn-secondary text-sm px-3 py-1.5">→ الرجوع إلى الرئيسية</button>
+          <p class="text-sm text-gray-400 flex-1 min-w-[240px]">المستمسكات المنتهية أو التي قاربت على النفاذ للموظفين النشطين. اضغط على أي صف لفتح ملف الموظف.</p>
           <div class="filter-chips" role="group" aria-label="تصفية التنبيهات">
             ${ALERT_FILTERS.map(item => `<button type="button" class="filter-chip" data-alert-filter="${item.id}"
               aria-pressed="${item.id === filter.id}">${item.label}<span class="filter-chip-count">${alerts.filter(item.match).length}</span></button>`).join("")}
@@ -113,6 +118,7 @@ export async function renderDocumentAlerts(container, user, ctx) {
         </div>
       </div>`;
 
+    container.querySelector("#alerts-back")?.addEventListener("click", () => ctx.navigateTo("dashboard"));
     container.querySelectorAll("[data-alert-filter]").forEach(button => button.addEventListener("click", () => {
       activeAlertFilter = button.dataset.alertFilter;
       render();

@@ -230,6 +230,12 @@ pub fn full_corners(w: u32, h: u32) -> [[f32; 2]; 4] {
         [0., (h - 1) as f32],
     ]
 }
+pub(crate) fn order_corners(points: Vec<[f32; 2]>) -> [[f32; 2]; 4] {
+    order(points)
+}
+pub(crate) fn refine_quad(c: [[f32; 2]; 4], points: &[imageproc::point::Point<i32>]) -> [[f32; 2]; 4] {
+    refine_edges(c, points)
+}
 fn order(mut points: Vec<[f32; 2]>) -> [[f32; 2]; 4] {
     let cx = points.iter().map(|p| p[0]).sum::<f32>() / 4.;
     let cy = points.iter().map(|p| p[1]).sum::<f32>() / 4.;
@@ -682,11 +688,109 @@ pub fn detect_debug(image: &DynamicImage) -> ([[f32; 2]; 4], f32, DetectionDebug
     (corners, confidence, debug)
 }
 
+/// ISO/IEC 7810 ID-1 card ratio (85.60 × 53.98 mm): national cards, badges and residence cards.
+pub const CARD_ASPECT: f32 = 85.60 / 53.98;
+
+/// Optional image clean-up chosen in the attachment editor. Every field defaults to "no change".
+#[derive(Debug, Clone, Copy, Default, Deserialize, Serialize, PartialEq)]
+#[serde(default)]
+pub struct Adjustments {
+    pub auto_levels: bool,
+    /// -60..=60, added to every channel.
+    pub brightness: i8,
+    /// -50..=50, percent contrast change.
+    pub contrast: i8,
+    /// 0..=3 unsharp-mask strength.
+    pub sharpness: u8,
+    pub grayscale: bool,
+    /// Force the ID-1 card aspect ratio for the corrected output.
+    pub card_aspect: bool,
+}
+
+impl Adjustments {
+    pub fn validate(&self) -> AppResult<()> {
+        if !(-60..=60).contains(&self.brightness) || !(-50..=50).contains(&self.contrast) || self.sharpness > 3 {
+            return Err(error("Invalid image adjustments"));
+        }
+        Ok(())
+    }
+}
+
+/// Stretch the luminance range between the 1st and 99th percentiles to the full 0..255 range.
+fn auto_levels(image: &mut RgbImage) {
+    let mut histogram = [0u64; 256];
+    for pixel in image.pixels() {
+        let [r, g, b] = pixel.0;
+        let luma = (0.2126 * f32::from(r) + 0.7152 * f32::from(g) + 0.0722 * f32::from(b)).round() as usize;
+        histogram[luma.min(255)] += 1;
+    }
+    let total: u64 = histogram.iter().sum();
+    if total == 0 {
+        return;
+    }
+    let percentile = |fraction: f64| {
+        let target = (total as f64 * fraction) as u64;
+        let mut seen = 0;
+        for (value, count) in histogram.iter().enumerate() {
+            seen += count;
+            if seen > target {
+                return value as f32;
+            }
+        }
+        255.
+    };
+    let (low, high) = (percentile(0.01), percentile(0.99));
+    if high - low < 16. {
+        return;
+    }
+    let scale = 255. / (high - low);
+    for pixel in image.pixels_mut() {
+        for channel in pixel.0.iter_mut() {
+            *channel = ((f32::from(*channel) - low) * scale).round().clamp(0., 255.) as u8;
+        }
+    }
+}
+
+pub fn apply_adjustments(image: DynamicImage, adjustments: &Adjustments) -> DynamicImage {
+    let mut result = image;
+    if adjustments.auto_levels {
+        let mut rgb = result.to_rgb8();
+        auto_levels(&mut rgb);
+        result = DynamicImage::ImageRgb8(rgb);
+    }
+    if adjustments.brightness != 0 {
+        result = result.brighten(i32::from(adjustments.brightness));
+    }
+    if adjustments.contrast != 0 {
+        result = result.adjust_contrast(f32::from(adjustments.contrast));
+    }
+    if adjustments.sharpness > 0 {
+        let sigma = [0., 0.8, 1.2, 1.8][usize::from(adjustments.sharpness)];
+        result = result.unsharpen(sigma, 2);
+    }
+    if adjustments.grayscale {
+        result = DynamicImage::ImageRgb8(DynamicImage::ImageLuma8(result.to_luma8()).to_rgb8());
+    }
+    result
+}
+
+/// Only the tests call this directly.
+#[cfg(test)]
 pub fn transform(
     image: &DynamicImage,
     c: [[f32; 2]; 4],
     rotation: u16,
     enhancement: u8,
+) -> AppResult<DynamicImage> {
+    transform_with(image, c, rotation, enhancement, false)
+}
+
+pub fn transform_with(
+    image: &DynamicImage,
+    c: [[f32; 2]; 4],
+    rotation: u16,
+    enhancement: u8,
+    card_aspect: bool,
 ) -> AppResult<DynamicImage> {
     validate_corners(&c, image.width(), image.height())?;
     if ![0, 90, 180, 270].contains(&rotation) || enhancement > 2 {
@@ -694,8 +798,16 @@ pub fn transform(
     }
     let distance =
         |a: [f32; 2], b: [f32; 2]| ((a[0] - b[0]).powi(2) + (a[1] - b[1]).powi(2)).sqrt();
-    let w = distance(c[0], c[1]).max(distance(c[3], c[2])).round() as u32 + 1;
-    let h = distance(c[0], c[3]).max(distance(c[1], c[2])).round() as u32 + 1;
+    let mut w = distance(c[0], c[1]).max(distance(c[3], c[2])).round() as u32 + 1;
+    let mut h = distance(c[0], c[3]).max(distance(c[1], c[2])).round() as u32 + 1;
+    if card_aspect {
+        // Keep the longer measured side and derive the other from the card ratio.
+        if w >= h {
+            h = (w as f32 / CARD_ASPECT).round() as u32;
+        } else {
+            w = (h as f32 / CARD_ASPECT).round() as u32;
+        }
+    }
     if w < 16 || h < 16 || w > 16000 || h > 16000 || u64::from(w) * u64::from(h) > 40_000_000 {
         return Err(error("Output too large"));
     }
@@ -781,8 +893,30 @@ pub fn prepare(
     );
     std::fs::copy(source, &original).map_err(error)?;
     let image = load_image(&original)?;
-    let (corners, confidence, debug) = if settings.auto_detect {
+    let ai = crate::ai_detect::detect(&image);
+    let (corners, confidence, debug) = if let Some((corners, confidence)) = ai.filter(|(_, c)| *c >= settings.confidence_threshold) {
+        (
+            corners,
+            confidence,
+            DetectionDebug {
+                original_dimensions: [image.width(), image.height()],
+                ai_status: "Bundled on-device model (U2-Netp)",
+                ..Default::default()
+            },
+        )
+    } else if settings.auto_detect {
         detect_debug(&image)
+    } else if let Some((corners, confidence)) = ai {
+        // Low-confidence model output is still a better manual starting point than the full frame.
+        (
+            corners,
+            confidence,
+            DetectionDebug {
+                original_dimensions: [image.width(), image.height()],
+                ai_status: "Bundled on-device model (low confidence)",
+                ..Default::default()
+            },
+        )
     } else {
         (
             full_corners(image.width(), image.height()),
@@ -802,7 +936,7 @@ pub fn prepare(
         corners,
         confidence,
         reliable: confidence >= settings.confidence_threshold,
-        automatic_detection_available: cfg!(debug_assertions),
+        automatic_detection_available: cfg!(debug_assertions) || crate::ai_detect::available(),
         debug,
         preview: jpeg(&thumbnail(&image, 1400), 90)?,
         settings: settings.clone(),
@@ -828,13 +962,16 @@ pub fn render(
     token: &str,
     corners: [[f32; 2]; 4],
     rotation: u16,
+    adjustments: Adjustments,
 ) -> AppResult<Vec<u8>> {
+    adjustments.validate()?;
     let mut sessions = sessions().lock().unwrap();
     let s = sessions.get_mut(token).ok_or(AppError::NotFound)?;
     if s.owner != owner {
         return Err(AppError::Unauthorized);
     }
-    let result = transform(&s.image, corners, rotation, s.settings.enhancement)?;
+    let result = transform_with(&s.image, corners, rotation, s.settings.enhancement, adjustments.card_aspect)?;
+    let result = apply_adjustments(result, &adjustments);
     let bytes = jpeg(&result, s.settings.quality)?;
     if bytes.len() > crate::files::MAX_DOCUMENT_SIZE as usize {
         return Err(error("Output exceeds attachment limit"));
@@ -1002,6 +1139,7 @@ pub fn associated_path(
         SELECT 1 FROM outgoing_doc_attachments WHERE file_path=?1 UNION ALL
         SELECT 1 FROM employee_family_members WHERE national_card_front_path=?1 OR national_card_back_path=?1 UNION ALL
         SELECT 1 FROM employee_spouses WHERE national_card_front_path=?1 OR national_card_back_path=?1 UNION ALL
+        SELECT 1 FROM employee_vehicles WHERE annual_front_path=?1 OR annual_back_path=?1 UNION ALL
         SELECT 1 FROM employees WHERE photo_path=?1 OR civil_id_front_path=?1 OR civil_id_back_path=?1 OR residence_card_front_path=?1 OR residence_card_back_path=?1 OR airport_badge_front_path=?1 OR airport_badge_back_path=?1 OR ministry_badge_front_path=?1 OR ministry_badge_back_path=?1 UNION ALL
         SELECT 1 FROM company_config WHERE logo_path=?1)",[relative],|r|r.get(0))?;
     if !linked {
@@ -1152,12 +1290,21 @@ pub fn redetect(owner: &str, token: &str) -> AppResult<Detection> {
     if s.owner != owner {
         return Err(AppError::Unauthorized);
     }
-    if !cfg!(debug_assertions) {
-        return Err(error(
-            "Automatic detection is disabled in Production; use manual corners",
-        ));
-    }
-    let (corners, confidence, debug) = detect_debug(&s.image);
+    let (corners, confidence, debug) = match crate::ai_detect::detect(&s.image) {
+        Some((corners, confidence)) => (
+            corners,
+            confidence,
+            DetectionDebug {
+                original_dimensions: [s.image.width(), s.image.height()],
+                ai_status: "Bundled on-device model (U2-Netp)",
+                ..Default::default()
+            },
+        ),
+        None if cfg!(debug_assertions) => detect_debug(&s.image),
+        None => {
+            return Err(error("Automatic detection could not find the document; use manual corners"))
+        }
+    };
     Ok(Detection {
         corners,
         confidence,
@@ -1284,7 +1431,7 @@ pub fn production_self_test() -> AppResult<()> {
                 }
                 [[100., 65.], [520., 105.], [490., 425.], [70., 390.]]
             };
-            render("scanner-self-test", &input.token, corners, 90)?;
+            render("scanner-self-test", &input.token, corners, 90, Adjustments { auto_levels: true, sharpness: 1, ..Default::default() })?;
             let processed = load_image(Path::new(&stage("scanner-self-test", &input.token)?))?;
             if !(300..=350).contains(&processed.width())
                 || !(400..=450).contains(&processed.height())

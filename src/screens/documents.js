@@ -2,15 +2,35 @@
  * documents.js — General + per-employee document archive
  */
 import { isScannable, reprocessAttachment } from "../attachments/scanner.js";
+import { zoomToolbarHtml, mountZoomViewer } from "../attachments/zoom-viewer.js";
 import { api }       from "../api.js";
-import { showToast, escHtml, confirmAction, confirmSaveChanges } from "../utils.js";
+import { showToast, escHtml, confirmAction, confirmSaveChanges, arCount, AR_NOUNS } from "../utils.js";
+
+const FILE_GEN = { ...AR_NOUNS.file, two: "ملفين" };
+const DOC_GEN = { ...AR_NOUNS.document, two: "وثيقتين" };
 import { open, save } from "@tauri-apps/plugin-dialog";
 import { can }       from "../permissions.js";
-import * as pdfjsLib from "pdfjs-dist";
 import pdfWorkerUrl from "pdfjs-dist/build/pdf.worker.min.mjs?url";
 
-pdfjsLib.GlobalWorkerOptions.workerSrc = pdfWorkerUrl;
+// pdf.js is about 460 KB, so it is loaded only when a PDF is first printed, not at startup.
+let pdfjsPromise = null;
+function loadPdfjs() {
+  pdfjsPromise ??= import("pdfjs-dist").then(pdfjsLib => {
+    pdfjsLib.GlobalWorkerOptions.workerSrc = pdfWorkerUrl;
+    return pdfjsLib;
+  }).catch(error => {
+    pdfjsPromise = null;
+    throw error;
+  });
+  return pdfjsPromise;
+}
 const DOCUMENT_EXTENSIONS = ["jpg", "jpeg", "png", "webp", "pdf", "doc", "docx", "xls", "xlsx", "ppt", "pptx"];
+
+/** Today's date as yyyy-mm-dd in local time (the default issue date of a new document). */
+function todayIso() {
+  const now = new Date();
+  return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-${String(now.getDate()).padStart(2, "0")}`;
+}
 
 export async function renderDocuments(container, user, ctx) {
   let [generalDocs, outgoingDocs, employees, documentTypes] = await Promise.all([
@@ -96,7 +116,10 @@ export async function renderDocuments(container, user, ctx) {
     if (asset.extension !== "pdf") {
       return [{ title: asset.title, html: `<img src="${escHtml(asset.assetUrl)}" alt="${escHtml(asset.title)}">` }];
     }
-    const bytes = await (await fetch(asset.assetUrl)).arrayBuffer();
+    const [pdfjsLib, bytes] = await Promise.all([
+      loadPdfjs(),
+      fetch(asset.assetUrl).then(response => response.arrayBuffer()),
+    ]);
     const loadingTask = pdfjsLib.getDocument({ data: bytes });
     const pdf = await loadingTask.promise;
     const pages = [];
@@ -173,12 +196,14 @@ export async function renderDocuments(container, user, ctx) {
     const previewPaths = paths.length ? paths : [path];
     let currentIndex = Math.max(0, previewPaths.indexOf(path));
     let asset = await loadDocumentAsset(previewPaths[currentIndex]);
+    let zoomer = null;
     const overlay = document.createElement("div");
     overlay.setAttribute("dir", "rtl");
     overlay.style.cssText = "position:fixed;inset:0;z-index:11000;background:rgba(0,0,0,.76);display:flex;flex-direction:column";
     overlay.innerHTML = `
-      <div style="height:64px;background:#1f1f1f;border-bottom:1px solid #333;display:flex;align-items:center;gap:10px;padding:10px 18px">
-        <strong id="document-preview-title" style="font-size:15px;margin-left:auto;color:#f3f4f6">${escHtml(asset.title)}</strong>
+      <div style="height:64px;background:var(--ui-surface);border-bottom:1px solid var(--ui-line);display:flex;align-items:center;gap:10px;padding:10px 18px">
+        <strong id="document-preview-title" style="font-size:15px;margin-left:auto;color:var(--ui-text-strong)">${escHtml(asset.title)}</strong>
+        <span id="document-preview-tools"></span>
         ${previewPaths.length > 1 ? `
           <span id="document-preview-counter" class="badge badge-gray" dir="ltr"></span>
           <button type="button" id="document-preview-prev" class="btn-secondary" title="المرفق السابق" style="min-width:42px">↑</button>
@@ -199,14 +224,24 @@ export async function renderDocuments(container, user, ctx) {
       if (prev) prev.disabled = currentIndex === 0;
       if (next) next.disabled = currentIndex === previewPaths.length - 1;
       const isImage = ["jpg", "jpeg", "png", "webp"].includes(asset.extension);
-      overlay.querySelector("#document-preview-body").innerHTML = asset.extension === "pdf"
+      zoomer?.destroy();
+      zoomer = null;
+      const tools = overlay.querySelector("#document-preview-tools");
+      tools.innerHTML = isImage ? zoomToolbarHtml() : "";
+      const previewBody = overlay.querySelector("#document-preview-body");
+      previewBody.style.padding = isImage ? "0" : "18px";
+      previewBody.innerHTML = asset.extension === "pdf"
         ? `<iframe src="${escHtml(asset.assetUrl)}" title="معاينة الوثيقة" style="display:block;width:100%;height:100%;border:0;background:#fff"></iframe>`
-        : isImage ? `<div style="width:100%;height:100%;overflow:auto;text-align:center;background:#d1d5db;padding:18px">
-            <img src="${escHtml(asset.assetUrl)}" alt="${escHtml(asset.title)}" style="max-width:100%;height:auto;max-height:100%;object-fit:contain;background:#fff;box-shadow:0 3px 18px rgba(0,0,0,.25)">
+        : isImage ? `<div class="document-preview-stage" style="width:100%;height:100%;background:#d1d5db">
+            <img src="${escHtml(asset.assetUrl)}" alt="${escHtml(asset.title)}">
           </div>`
         : `<div style="display:grid;place-items:center;width:100%;height:100%;background:#d1d5db;color:#374151;text-align:center;padding:24px">
             <div><p style="font-size:18px;font-weight:700;margin-bottom:8px">لا تتوفر معاينة داخلية لهذا النوع من الملفات</p><p>يمكنك تحميل الملف وفتحه ببرنامج Office المناسب.</p></div>
           </div>`;
+      if (isImage) {
+        const stage = previewBody.querySelector(".document-preview-stage");
+        zoomer = mountZoomViewer({ stage, img: stage.querySelector("img"), toolbar: tools });
+      }
     }
 
     async function navigatePreview(direction) {
@@ -226,6 +261,7 @@ export async function renderDocuments(container, user, ctx) {
 
     const close = () => {
       document.removeEventListener("keydown", onKeyDown);
+      zoomer?.destroy();
       URL.revokeObjectURL(asset.assetUrl);
       overlay.remove();
     };
@@ -233,6 +269,9 @@ export async function renderDocuments(container, user, ctx) {
       if (event.key === "Escape") close();
       if (event.key === "ArrowUp") navigatePreview(-1);
       if (event.key === "ArrowDown") navigatePreview(1);
+      if (event.key === "ArrowLeft") navigatePreview(1);
+      if (event.key === "ArrowRight") navigatePreview(-1);
+      if (zoomer?.handleKey(event)) event.preventDefault();
     };
     overlay.querySelector("#document-preview-close").addEventListener("click", close);
     overlay.querySelector("#document-preview-prev")?.addEventListener("click", () => navigatePreview(-1));
@@ -290,9 +329,9 @@ export async function renderDocuments(container, user, ctx) {
     overlay.setAttribute("dir", "rtl");
     overlay.style.cssText = "position:fixed;inset:0;z-index:11000;background:rgba(0,0,0,.76);display:flex;flex-direction:column";
     overlay.innerHTML = `
-      <div style="height:64px;background:#1f1f1f;border-bottom:1px solid #333;display:flex;align-items:center;gap:10px;padding:10px 18px">
-        <strong style="font-size:15px;margin-left:auto;color:#f3f4f6">استعراض كل مرفقات: ${escHtml(title)}</strong>
-        <span class="badge badge-gray">${assets.length} ملف</span>
+      <div style="height:64px;background:var(--ui-surface);border-bottom:1px solid var(--ui-line);display:flex;align-items:center;gap:10px;padding:10px 18px">
+        <strong style="font-size:15px;margin-left:auto;color:var(--ui-text-strong)">استعراض كل مرفقات: ${escHtml(title)}</strong>
+        <span class="badge badge-gray">${arCount(assets.length, "file")}</span>
         ${can(user, "documents.print") ? `<button type="button" id="all-documents-print" class="btn-primary">طباعة الكل</button>` : ""}
         <button type="button" id="all-documents-close" class="btn-secondary">إغلاق</button>
       </div>
@@ -372,11 +411,11 @@ export async function renderDocuments(container, user, ctx) {
   function html() {
     return `<div class="space-y-4">
       <!-- Tabs -->
-      <div style="display:flex;gap:8px;border-bottom:1px solid #2d2d2d;padding-bottom:0">
+      <div style="display:flex;gap:8px;border-bottom:1px solid var(--ui-line);padding-bottom:0">
         ${[["general","📂 الوارد"],["outgoing","📤 الصادر"]].map(([id, label]) => `
           <button class="doc-tab" data-tab="${id}" style="padding:8px 16px;border:none;cursor:pointer;
-            font-size:13px;border-bottom:2px solid ${activeTab===id?"#24a9ff":"transparent"};
-            background:transparent;color:${activeTab===id?"#24a9ff":"#9ca3af"};
+            font-size:13px;border-bottom:2px solid ${activeTab===id?"var(--ui-accent)":"transparent"};
+            background:transparent;color:${activeTab===id?"var(--ui-accent)":"var(--ui-text-muted)"};
             font-weight:${activeTab===id?"700":"400"}">${label}</button>`).join("")}
       </div>
 
@@ -421,22 +460,22 @@ export async function renderDocuments(container, user, ctx) {
           ${generalFiltersOpen ? `
           <div class="grid grid-cols-1 md:grid-cols-3 gap-3">
             <div>
-              <p style="font-size:11px;color:#6b7280;margin-bottom:4px">الجهة المصدرة للوثيقة</p>
+              <label for="general-issuer-filter" style="display:block;font-size:11px;color:var(--ui-text-faint);margin-bottom:4px">الجهة المصدرة للوثيقة</label>
               <input id="general-issuer-filter" class="input-field"
                 placeholder="فلترة حسب الجهة..." value="${escHtml(generalIssuerFilter)}" />
             </div>
             <div>
-              <p style="font-size:11px;color:#6b7280;margin-bottom:4px">إلى</p>
+              <label for="general-recipient-filter" style="display:block;font-size:11px;color:var(--ui-text-faint);margin-bottom:4px">إلى</label>
               <input id="general-recipient-filter" class="input-field"
                 placeholder="فلترة حسب الجهة المستلمة..." value="${escHtml(generalRecipientFilter)}" />
             </div>
             <div>
-              <p style="font-size:11px;color:#6b7280;margin-bottom:4px">الموضوع</p>
+              <label for="general-subject-filter" style="display:block;font-size:11px;color:var(--ui-text-faint);margin-bottom:4px">الموضوع</label>
               <input id="general-subject-filter" class="input-field"
                 placeholder="فلترة حسب الموضوع..." value="${escHtml(generalSubjectFilter)}" />
             </div>
             <div>
-              <p style="font-size:11px;color:#6b7280;margin-bottom:4px">حالة المرفق</p>
+              <label for="general-file-filter" style="display:block;font-size:11px;color:var(--ui-text-faint);margin-bottom:4px">حالة المرفق</label>
               <select id="general-file-filter" class="input-field">
                 <option value="all" ${generalFileFilter === "all" ? "selected" : ""}>الكل</option>
                 <option value="with" ${generalFileFilter === "with" ? "selected" : ""}>لديه مرفق</option>
@@ -444,25 +483,25 @@ export async function renderDocuments(container, user, ctx) {
               </select>
             </div>
             <div>
-              <p style="font-size:11px;color:#6b7280;margin-bottom:4px">من تاريخ إصدار</p>
+              <label for="general-date-from" style="display:block;font-size:11px;color:var(--ui-text-faint);margin-bottom:4px">من تاريخ إصدار</label>
               <input id="general-date-from" class="input-field" type="date" value="${escHtml(generalDateFrom)}" />
             </div>
             <div>
-              <p style="font-size:11px;color:#6b7280;margin-bottom:4px">إلى تاريخ إصدار</p>
+              <label for="general-date-to" style="display:block;font-size:11px;color:var(--ui-text-faint);margin-bottom:4px">إلى تاريخ إصدار</label>
               <input id="general-date-to" class="input-field" type="date" value="${escHtml(generalDateTo)}" />
             </div>
             <div>
-              <p style="font-size:11px;color:#6b7280;margin-bottom:4px">العدد</p>
+              <label for="general-count-filter" style="display:block;font-size:11px;color:var(--ui-text-faint);margin-bottom:4px">العدد</label>
               <input id="general-count-filter" class="input-field"
                 placeholder="فلترة حسب العدد..." value="${escHtml(generalCountFilter)}" />
             </div>
             <div>
-              <p style="font-size:11px;color:#6b7280;margin-bottom:4px">الهامش</p>
+              <label for="general-margin-filter" style="display:block;font-size:11px;color:var(--ui-text-faint);margin-bottom:4px">الهامش</label>
               <input id="general-margin-filter" class="input-field"
                 placeholder="فلترة حسب الهامش..." value="${escHtml(generalMarginFilter)}" />
             </div>
             <div>
-              <p style="font-size:11px;color:#6b7280;margin-bottom:4px">مذكرة داخلية</p>
+              <label for="general-memo-filter" style="display:block;font-size:11px;color:var(--ui-text-faint);margin-bottom:4px">مذكرة داخلية</label>
               <select id="general-memo-filter" class="input-field">
                 <option value="all" ${generalMemoFilter === "all" ? "selected" : ""}>الكل</option>
                 <option value="yes" ${generalMemoFilter === "yes" ? "selected" : ""}>نعم</option>
@@ -470,13 +509,13 @@ export async function renderDocuments(container, user, ctx) {
               </select>
             </div>
             <div>
-              <p style="font-size:11px;color:#6b7280;margin-bottom:4px">الموظفون المرتبطون</p>
+              <label for="general-employee-filter" style="display:block;font-size:11px;color:var(--ui-text-faint);margin-bottom:4px">الموظفون المرتبطون</label>
               <input id="general-employee-filter" class="input-field"
                 placeholder="فلترة باسم الموظف..." value="${escHtml(generalEmployeeFilter)}" />
             </div>
           </div>
           <div>
-            <p style="font-size:11px;color:#6b7280;margin-bottom:4px">البحث في نبذة عامة عن الوثيقة</p>
+            <label for="general-notes-search" style="display:block;font-size:11px;color:var(--ui-text-faint);margin-bottom:4px">البحث في نبذة عامة عن الوثيقة</label>
             <input id="general-notes-search" class="input-field"
               placeholder="اكتب جزءا من نبذة الوثيقة..." value="${escHtml(generalNotesSearch)}" />
           </div>
@@ -502,13 +541,20 @@ export async function renderDocuments(container, user, ctx) {
             </tr></thead>
             <tbody>
               ${archiveDocs.length === 0
-                ? `<tr><td colspan="9" class="table-cell text-center text-gray-500 py-8">لا توجد وثائق</td></tr>`
+                ? `<tr><td colspan="9" class="table-cell"><div class="doc-empty">
+                    <span class="doc-empty-icon"><svg aria-hidden="true" viewBox="0 0 24 24"><path d="M3 6.5A1.5 1.5 0 0 1 4.5 5H9l2 2.5h8.5A1.5 1.5 0 0 1 21 9v9.5a1.5 1.5 0 0 1-1.5 1.5h-15A1.5 1.5 0 0 1 3 18.5z"/><path d="M12 11v6M9 14h6"/></svg></span>
+                    <p class="doc-empty-title">لا توجد وثائق في ${escHtml(archiveName())} بعد</p>
+                    ${can(user, "documents.manage")
+                      ? `<p class="doc-empty-text">ابدأ بإضافة أول وثيقة، ويمكنك إرفاق ملفاتها أو مسحها ضوئيًا.</p>
+                         <button type="button" id="btn-add-first-doc" class="btn-primary px-5 py-2">+ إضافة أول وثيقة</button>`
+                      : `<p class="doc-empty-text">ستظهر الوثائق هنا عند إضافتها.</p>`}
+                  </div></td></tr>`
                 : filteredDocs.length === 0
                   ? `<tr><td colspan="9" class="table-cell text-center text-gray-500 py-8">لا توجد نتائج مطابقة</td></tr>`
                   : filteredDocs.map(d => `
                   <tr class="table-row general-doc-row" data-id="${d.id}" title="اضغط لتعديل الوثيقة">
                     <td class="table-cell font-medium text-gray-100">${escHtml(d.title || "—")}</td>
-                    <td class="table-cell" dir="ltr">${escHtml(d.doc_number ?? "—")}</td>
+                    <td class="table-cell">${escHtml(d.doc_number || "—")}</td>
                     <td class="table-cell" dir="ltr">${formatIncomingDate(d.issue_date)}</td>
                     <td class="table-cell">${escHtml(d.issuer ?? "—")}</td>
                     <td class="table-cell">${escHtml(d.doc_count ?? "—")}</td>
@@ -536,7 +582,6 @@ export async function renderDocuments(container, user, ctx) {
         </div>
       </div>`;
     if (!can(user, "documents.manage")) el.querySelectorAll("#btn-add-doc,#btn-save-doc").forEach(node => node.remove());
-    if (!can(user, "documents.delete")) 
     el.querySelector("#btn-toggle-general-filters")?.addEventListener("click", () => {
       generalFiltersOpen = !generalFiltersOpen;
       renderGeneral();
@@ -634,6 +679,7 @@ export async function renderDocuments(container, user, ctx) {
     });
 
     el.querySelector("#btn-add-doc")?.addEventListener("click", () => showDocForm());
+    el.querySelector("#btn-add-first-doc")?.addEventListener("click", () => showDocForm());
 
     el.querySelectorAll(".general-doc-row").forEach(row => {
       row.addEventListener("click", event => {
@@ -886,11 +932,11 @@ export async function renderDocuments(container, user, ctx) {
             label: "حذف كل المرفقات…",
             danger: true,
             run: async () => {
-              if (!(await confirmAction(`تأكيد حذف جميع مرفقات الوثيقة (${attachments.length} ملف)؟ لا يمكن التراجع عن هذا الإجراء.`))) return;
+              if (!(await confirmAction(`تأكيد حذف جميع مرفقات الوثيقة (${arCount(attachments.length, "file")})؟ لا يمكن التراجع عن هذا الإجراء.`))) return;
               try {
                 for (const path of attachments) await deleteCurrentDocAttachment(docId, path);
                 await refreshCurrentDocs();
-                showToast(`تم حذف جميع مرفقات الوثيقة (${attachments.length} ملف)`);
+                showToast(`تم حذف جميع مرفقات الوثيقة (${arCount(attachments.length, "file")})`);
                 renderManager();
               } catch (error) {
                 await refreshCurrentDocs();
@@ -913,13 +959,13 @@ export async function renderDocuments(container, user, ctx) {
           if (!selected) return;
           const files = Array.isArray(selected) ? selected : [selected];
           if (files.length > remaining) {
-            showToast(`يمكن إضافة ${remaining} ملف فقط لهذه الوثيقة`, "warn");
+            showToast(`يمكن إضافة ${arCount(remaining, FILE_GEN)} فقط لهذه الوثيقة`, "warn");
             return;
           }
-          if (!(await confirmAction(`تأكيد رفع ${files.length} ملف للوثيقة؟`))) return;
+          if (!(await confirmAction(`تأكيد رفع ${arCount(files.length, FILE_GEN)} للوثيقة؟`))) return;
           for (const file of files) await uploadCurrentDocFile(docId, file);
           await refreshCurrentDocs();
-          showToast(`تم رفع ${files.length} ملف`);
+          showToast(`تم رفع ${arCount(files.length, FILE_GEN)}`);
           renderManager();
         } catch (err) { showToast(err?.message ?? "خطأ", "error"); }
       });
@@ -939,119 +985,130 @@ export async function renderDocuments(container, user, ctx) {
     const hasEmployeeLinks = selectedEmployeeIds.size > 0;
     el.innerHTML = `
       <div id="doc-form-stage" style="min-height:calc(100vh - 190px);padding:20px 0 20px 56px">
-        <div id="doc-form-card" class="card max-w-2xl space-y-4">
+        <div id="doc-form-card" class="card doc-form-card space-y-4">
           <p class="section-title">${isEdit ? "تعديل وثيقة" : "إضافة وثيقة جديدة"}</p>
-          <div>
-            <p style="font-size:11px;color:#6b7280;margin-bottom:4px">الجهة المصدرة للوثيقة</p>
-            <input id="d-title" class="input-field" placeholder="الجهة المصدرة للوثيقة" value="${escHtml(doc?.title ?? "")}" />
-          </div>
-          <div class="grid grid-cols-2 gap-3">
+          <div class="doc-form-grid">
             <div>
-              <p style="font-size:11px;color:#6b7280;margin-bottom:4px">إلى</p>
-              <input id="d-number" class="input-field" value="${escHtml(doc?.doc_number ?? "")}" />
+              <label for="d-title" style="display:block;font-size:11px;color:var(--ui-text-faint);margin-bottom:4px">الجهة المصدرة للوثيقة</label>
+              <input id="d-title" class="input-field" placeholder="الجهة المصدرة للوثيقة" value="${escHtml(doc?.title ?? "")}" />
             </div>
             <div>
-              <p style="font-size:11px;color:#6b7280;margin-bottom:4px">الموضوع</p>
+              <label for="d-issuer" style="display:block;font-size:11px;color:var(--ui-text-faint);margin-bottom:4px">الموضوع</label>
               <div style="display:grid;grid-template-columns:1fr auto auto;gap:8px;align-items:center">
                 <div style="position:relative;min-width:0">
                   <input id="d-issuer" class="input-field" value="${escHtml(doc?.issuer ?? "")}" autocomplete="off" />
-                  <div id="d-subject-menu" class="hidden" style="position:absolute;z-index:50;top:calc(100% + 6px);left:0;right:0;max-height:220px;overflow:auto;background:#1f1f1f;border:1px solid #2d5f8a;border-radius:8px;box-shadow:0 12px 28px rgba(0,0,0,.35)">
-                    ${documentTypes.map(type => `<button type="button" class="d-subject-option" data-value="${escHtml(type)}" style="display:block;width:100%;text-align:right;padding:10px 12px;border:0;border-bottom:1px solid #2d2d2d;background:transparent;color:#f3f4f6;cursor:pointer">${escHtml(type)}</button>`).join("")}
+                  <div id="d-subject-menu" class="hidden" style="position:absolute;z-index:50;top:calc(100% + 6px);left:0;right:0;max-height:220px;overflow:auto;background:var(--ui-surface);border:1px solid var(--ui-line-strong);border-radius:8px;box-shadow:0 12px 28px rgba(0,0,0,.35)">
+                    ${documentTypes.map(type => `<button type="button" class="d-subject-option" data-value="${escHtml(type)}" style="display:block;width:100%;text-align:right;padding:10px 12px;border:0;border-bottom:1px solid var(--ui-line);background:transparent;color:var(--ui-text-strong);cursor:pointer">${escHtml(type)}</button>`).join("")}
                   </div>
                 </div>
                 <datalist id="d-subject-options">
                   ${documentTypes.map(type => `<option value="${escHtml(type)}"></option>`).join("")}
                 </datalist>
-                <button type="button" id="d-add-subject" class="btn-secondary px-3" title="إضافة الموضوع للقائمة">+</button>
-                <button type="button" id="d-delete-subject" class="btn-danger px-3" title="حذف الموضوع من القائمة">-</button>
+                <button type="button" id="d-add-subject" class="btn-secondary px-3" style="align-self:stretch" title="إضافة الموضوع المكتوب إلى قائمة المواضيع" aria-label="إضافة الموضوع المكتوب إلى قائمة المواضيع">+</button>
+                <button type="button" id="d-delete-subject" class="btn-secondary px-3" style="align-self:stretch;display:grid;place-items:center" title="حذف الموضوع المكتوب من قائمة المواضيع" aria-label="حذف الموضوع المكتوب من قائمة المواضيع">
+                  <svg aria-hidden="true" viewBox="0 0 24 24" style="width:16px;height:16px;fill:none;stroke:var(--ui-danger);stroke-width:1.8;stroke-linecap:round;stroke-linejoin:round"><path d="M4 7h16M10 11v6M14 11v6M6 7l1 13h10l1-13M9 7V4h6v3"/></svg>
+                </button>
               </div>
             </div>
             <div>
-              <p style="font-size:11px;color:#6b7280;margin-bottom:4px">تاريخ الإصدار</p>
-              <input id="d-date" class="input-field" type="date" value="${escHtml(doc?.issue_date ?? "")}" />
+              <label for="d-number" style="display:block;font-size:11px;color:var(--ui-text-faint);margin-bottom:4px">إلى</label>
+              <input id="d-number" class="input-field" value="${escHtml(doc?.doc_number ?? "")}" />
+            </div>
+            <div class="doc-form-pair">
+              <div>
+                <label for="d-date" style="display:block;font-size:11px;color:var(--ui-text-faint);margin-bottom:4px">تاريخ الإصدار</label>
+                <input id="d-date" class="input-field" type="date" value="${escHtml(doc?.issue_date ?? (isEdit ? "" : todayIso()))}" />
+              </div>
+              <div>
+                <label for="d-count" style="display:block;font-size:11px;color:var(--ui-text-faint);margin-bottom:4px">العدد</label>
+                <input id="d-count" class="input-field" value="${escHtml(doc?.doc_count ?? "")}" />
+              </div>
             </div>
             <div>
-              <p style="font-size:11px;color:#6b7280;margin-bottom:4px">العدد</p>
-              <input id="d-count" class="input-field" value="${escHtml(doc?.doc_count ?? "")}" />
+              <label for="d-notes" style="display:block;font-size:11px;color:var(--ui-text-faint);margin-bottom:4px">نبذة عامة عن الوثيقة</label>
+              <textarea id="d-notes" class="input-field" style="height:70px;resize:none">${escHtml(doc?.notes ?? "")}</textarea>
+            </div>
+            <div>
+              <label for="d-margin" style="display:block;font-size:11px;color:var(--ui-text-faint);margin-bottom:4px">الهامش</label>
+              <textarea id="d-margin" class="input-field" style="height:70px;resize:none">${escHtml(doc?.margin ?? "")}</textarea>
             </div>
           </div>
-          <div>
-            <p style="font-size:11px;color:#6b7280;margin-bottom:4px">نبذه عامة عن الوثيقة</p>
-            <textarea id="d-notes" class="input-field" style="height:70px;resize:none">${escHtml(doc?.notes ?? "")}</textarea>
-          </div>
-          <div>
-            <p style="font-size:11px;color:#6b7280;margin-bottom:4px">الهامش</p>
-            <textarea id="d-margin" class="input-field" style="height:70px;resize:none">${escHtml(doc?.margin ?? "")}</textarea>
-          </div>
-          <label style="display:flex;align-items:center;gap:8px;cursor:pointer;font-size:13px;color:#d1d5db">
-            <input id="d-internal-memo" type="checkbox" ${doc?.is_internal_memo ? "checked" : ""}
-              style="width:16px;height:16px;accent-color:#24a9ff" />
-            مذكرة داخلية
-          </label>
-          <div style="border-top:1px solid #2d2d2d;padding-top:12px">
-            <label style="display:flex;align-items:center;gap:8px;cursor:pointer;font-size:13px;color:#d1d5db">
-              <input id="d-has-employees" type="checkbox" ${hasEmployeeLinks ? "checked" : ""}
-                style="width:16px;height:16px;accent-color:#24a9ff" />
-              هل لهذه الوثيقة ارتباط بموظفي الشعبة/الوحدة؟
-            </label>
+          <div style="border-top:1px solid var(--ui-line);padding-top:12px">
+            <div style="display:flex;flex-wrap:wrap;gap:10px 28px">
+              <label style="display:flex;align-items:center;gap:8px;cursor:pointer;font-size:13px;color:var(--ui-text)">
+                <input id="d-internal-memo" type="checkbox" ${doc?.is_internal_memo ? "checked" : ""}
+                  style="width:16px;height:16px;accent-color:var(--ui-accent)" />
+                مذكرة داخلية
+              </label>
+              <label style="display:flex;align-items:center;gap:8px;cursor:pointer;font-size:13px;color:var(--ui-text)">
+                <input id="d-has-employees" type="checkbox" ${hasEmployeeLinks ? "checked" : ""}
+                  style="width:16px;height:16px;accent-color:var(--ui-accent)" />
+                هل لهذه الوثيقة ارتباط بموظفي الشعبة/الوحدة؟
+              </label>
+            </div>
             <div id="d-employee-linking" class="space-y-3" style="display:${hasEmployeeLinks ? "block" : "none"};margin-top:12px">
               <input id="d-employee-search" class="input-field" placeholder="بحث باسم الموظف أو رقمه الوظيفي..." />
               <div class="flex items-center justify-between">
-                <p style="font-size:11px;color:#6b7280">يمكن تحديد موظف واحد أو أكثر</p>
-                <span id="d-selected-count" class="badge badge-gray">${selectedEmployeeIds.size} محدد</span>
+                <p style="font-size:11px;color:var(--ui-text-faint)">يمكن تحديد موظف واحد أو أكثر</p>
+                <span id="d-selected-count" class="badge badge-gray">المحدد: ${selectedEmployeeIds.size}</span>
               </div>
-              <div id="d-employee-list" style="max-height:240px;overflow:auto;border:1px solid #2d2d2d;border-radius:8px">
+              <div id="d-employee-list" style="max-height:240px;overflow:auto;border:1px solid var(--ui-line);border-radius:8px">
                 ${employees.map(employee => `
                   <label class="doc-employee-option" data-search="${escHtml(`${employee.full_name} ${employee.employee_number ?? ""}`.toLowerCase())}"
-                    style="display:flex;align-items:center;gap:9px;padding:9px 11px;border-bottom:1px solid #252525;cursor:pointer">
+                    style="display:flex;align-items:center;gap:9px;padding:9px 11px;border-bottom:1px solid var(--ui-line);cursor:pointer">
                     <input class="d-employee-checkbox" type="checkbox" value="${employee.id}"
                       ${selectedEmployeeIds.has(employee.id) ? "checked" : ""}
-                      style="width:15px;height:15px;accent-color:#24a9ff" />
-                    <span style="font-size:12px;color:#d1d5db">${escHtml(employee.full_name)}</span>
-                    <span style="font-size:11px;color:#6b7280" dir="ltr">${escHtml(employee.employee_number ?? "")}</span>
-                  </label>`).join("") || `<p style="padding:12px;color:#6b7280;font-size:12px">لا يوجد موظفون</p>`}
+                      style="width:15px;height:15px;accent-color:var(--ui-accent)" />
+                    <span style="font-size:12px;color:var(--ui-text)">${escHtml(employee.full_name)}</span>
+                    <span style="font-size:11px;color:var(--ui-text-faint)" dir="ltr">${escHtml(employee.employee_number ?? "")}</span>
+                  </label>`).join("") || `<p style="padding:12px;color:var(--ui-text-faint);font-size:12px">لا يوجد موظفون</p>`}
               </div>
             </div>
           </div>
-          <div style="border-top:1px solid #2d2d2d;padding-top:12px;display:flex;align-items:center;justify-content:space-between;gap:12px">
-            <div>
-              <p style="font-size:12px;font-weight:700;color:#d1d5db">مرفقات الوثيقة</p>
-              <p style="font-size:11px;color:#6b7280;margin-top:3px">${isEdit ? "اضغط على الأيقونة لإدارة الملفات المرفقة" : "اختر المرفقات وسيتم رفعها بعد حفظ الوثيقة"}</p>
+          <div style="border-top:1px solid var(--ui-line);padding-top:12px">
+            <div style="display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap">
+              <div>
+                <p style="font-size:12px;font-weight:700;color:var(--ui-text)">مرفقات الوثيقة</p>
+                <p style="font-size:11px;color:var(--ui-text-faint);margin-top:3px">${isEdit ? "اضغط على الأيقونة لإدارة الملفات المرفقة" : "أضف المرفقات الآن، وتُحفظ مع الوثيقة عند الضغط على «حفظ»"}</p>
+              </div>
+              <div style="display:flex;align-items:center;gap:8px">
+                <button type="button" id="d-manage-attachments" class="btn-secondary doc-att-button"
+                  title="${isEdit ? "عرض المرفقات وإدارتها" : "اختيار ملفات من الحاسوب، وتُحفظ مع الوثيقة"}">
+                  <svg aria-hidden="true" class="doc-att-icon" viewBox="0 0 24 24"><path d="m20.5 11.5-8.2 8.2a5 5 0 0 1-7.1-7.1l8.5-8.5a3.3 3.3 0 0 1 4.7 4.7l-8.4 8.4a1.7 1.7 0 0 1-2.4-2.4l7.7-7.7"/></svg>
+                  <span>المرفقات</span>
+                  <span class="badge ${isEdit && generalDocAttachments(doc).length ? "badge-green" : "badge-gray"} doc-att-count"><span dir="ltr">${isEdit ? generalDocAttachments(doc).length : 0}</span></span>
+                </button>
+                <button type="button" id="d-scan-attachment" class="btn-secondary doc-att-button" title="مسح وثيقة ضوئياً وإضافتها إلى المرفقات">
+                  <svg aria-hidden="true" class="doc-att-icon" viewBox="0 0 24 24">
+                    <path d="M5 10V7a1.5 1.5 0 0 1 1.5-1.5h11A1.5 1.5 0 0 1 19 7v3"/>
+                    <rect x="3" y="10" width="18" height="9" rx="2"/>
+                    <path d="M3 14h18"/>
+                    <path d="M6.5 16.5h6M17 16.5h.01"/>
+                  </svg>
+                  <span>ماسح ضوئي</span>
+                </button>
+              </div>
             </div>
-            <div style="display:flex;align-items:center;gap:8px">
-              <button type="button" id="d-scan-attachment" class="btn-secondary" title="مسح وثيقة ضوئياً">
-                <svg aria-hidden="true" viewBox="0 0 24 24" style="width:17px;height:17px;fill:none;stroke:currentColor;stroke-width:1.8">
-                  <path d="M7 3h10v5H7zM5 14h14v7H5zM4 8h16a2 2 0 0 1 2 2v6h-3M5 16H2v-6a2 2 0 0 1 2-2"/>
-                  <path d="M8 17h8M8 19h8M18 11h.01"/>
-                </svg>
-                <span>ماسح ضوئي</span>
-              </button>
-              <button type="button" id="d-manage-attachments" title="إدارة مرفقات الوثيقة"
-                style="border:none;background:transparent;cursor:pointer;padding:2px">
-                <span class="badge ${isEdit && generalDocAttachments(doc).length ? "badge-green" : "badge-gray"}"
-                  style="gap:6px;font-size:12px;padding:5px 11px">
-                  <span>📎</span>
-                  <span dir="ltr">${isEdit ? generalDocAttachments(doc).length : 0}</span>
-                </span>
-              </button>
-            </div>
+            ${isEdit ? "" : `<ul id="d-pending-list" class="doc-pending-list" hidden></ul>`}
           </div>
-          <div id="d-scan-progress" style="display:none;align-items:center;gap:14px;padding:12px 14px;border:1px solid #245477;border-radius:10px;background:rgba(5,35,62,.75)">
-            <div id="d-scan-progress-bar" style="width:62px;height:62px;flex:none;display:grid;place-items:center;border-radius:50%;background:conic-gradient(#22c55e 0%,#0b2235 0);transition:background .35s ease">
-              <div style="width:46px;height:46px;display:grid;place-items:center;border-radius:50%;background:#071827;box-shadow:inset 0 0 8px rgba(0,0,0,.35)">
-                <span id="d-scan-progress-percent" dir="ltr" style="font-size:11px;font-weight:700;color:#7dd3fc">0%</span>
+          <div id="d-scan-progress" style="display:none;align-items:center;gap:14px;padding:12px 14px;border:1px solid var(--ui-line-strong);border-radius:10px;background:var(--ui-info-bg)">
+            <div id="d-scan-progress-bar" style="width:62px;height:62px;flex:none;display:grid;place-items:center;border-radius:50%;background:conic-gradient(#22c55e 0%,var(--ui-sunken) 0);transition:background .35s ease">
+              <div style="width:46px;height:46px;display:grid;place-items:center;border-radius:50%;background:var(--ui-sunken);box-shadow:inset 0 0 8px rgba(0,0,0,.35)">
+                <span id="d-scan-progress-percent" dir="ltr" style="font-size:11px;font-weight:700;color:var(--ui-info)">0%</span>
               </div>
             </div>
             <div>
-              <p style="font-size:12px;font-weight:700;color:#dbeafe;margin-bottom:3px">المسح الضوئي</p>
-              <span id="d-scan-progress-label" style="font-size:11px;color:#93c5fd">جاري بدء المسح الضوئي...</span>
+              <p style="font-size:12px;font-weight:700;color:var(--ui-text-strong);margin-bottom:3px">المسح الضوئي</p>
+              <span id="d-scan-progress-label" style="font-size:11px;color:var(--ui-info)">جاري بدء المسح الضوئي...</span>
             </div>
           </div>
-          <div class="flex gap-3">
+          <div class="flex gap-3 items-center">
             <button id="btn-save-doc" class="btn-primary flex-1">حفظ</button>
-            ${isEdit && can(user, "documents.delete") ? `<button id="btn-delete-doc" class="btn-danger px-4">حذف الوثيقة</button>` : ""}
             <button id="btn-cancel-doc" class="btn-secondary">إلغاء</button>
           </div>
+          ${isEdit && can(user, "documents.delete") ? `<div style="border-top:1px solid var(--ui-line);padding-top:12px;display:flex;justify-content:flex-end">
+            <button id="btn-delete-doc" class="btn-danger px-4">حذف الوثيقة نهائياً</button>
+          </div>` : ""}
         </div>
       </div>`;
     if (!can(user, "documents.upload")) el.querySelector("#btn-upload-emp-doc")?.remove();
@@ -1076,7 +1133,7 @@ export async function renderDocuments(container, user, ctx) {
       const menu = el.querySelector("#d-subject-menu");
       if (!menu) return;
       menu.innerHTML = documentTypes.map(type =>
-        `<button type="button" class="d-subject-option" data-value="${escHtml(type)}" style="display:block;width:100%;text-align:right;padding:10px 12px;border:0;border-bottom:1px solid #2d2d2d;background:transparent;color:#f3f4f6;cursor:pointer">${escHtml(type)}</button>`
+        `<button type="button" class="d-subject-option" data-value="${escHtml(type)}" style="display:block;width:100%;text-align:right;padding:10px 12px;border:0;border-bottom:1px solid var(--ui-line);background:transparent;color:var(--ui-text-strong);cursor:pointer">${escHtml(type)}</button>`
       ).join("");
       bindSubjectOptions();
     };
@@ -1201,7 +1258,7 @@ export async function renderDocuments(container, user, ctx) {
     const employeeLinking = el.querySelector("#d-employee-linking");
     const updateSelectedCount = () => {
       const count = el.querySelectorAll(".d-employee-checkbox:checked").length;
-      el.querySelector("#d-selected-count").textContent = `${count} محدد`;
+      el.querySelector("#d-selected-count").textContent = `المحدد: ${count}`;
     };
     hasEmployeesCheckbox.addEventListener("change", () => {
       employeeLinking.style.display = hasEmployeesCheckbox.checked ? "block" : "none";
@@ -1218,24 +1275,53 @@ export async function renderDocuments(container, user, ctx) {
         option.style.display = !needle || option.dataset.search.includes(needle) ? "flex" : "none";
       });
     });
-    el.querySelector("#d-manage-attachments")?.addEventListener("click", async () => {
-      if (isEdit) {
-        openAttachmentManager(doc.id, false);
-        return;
+    const pendingName = path => String(path).split(/[\\/]/).pop();
+    const renderPendingAttachments = () => {
+      const badge = el.querySelector("#d-manage-attachments .badge");
+      if (badge) {
+        badge.classList.toggle("badge-green", pendingAttachments.length > 0);
+        badge.classList.toggle("badge-gray", pendingAttachments.length === 0);
+        badge.querySelector("[dir='ltr']").textContent = String(pendingAttachments.length);
       }
+      const list = el.querySelector("#d-pending-list");
+      if (!list) return;
+      list.hidden = pendingAttachments.length === 0;
+      list.innerHTML = pendingAttachments.map((path, index) => {
+        const name = pendingName(path);
+        const extension = name.includes(".") ? name.split(".").pop().toUpperCase() : "ملف";
+        return `<li class="doc-pending-item" title="${escHtml(path)}">
+          <span class="doc-pending-ext">${escHtml(extension)}</span>
+          <span class="doc-pending-name">${escHtml(name)}</span>
+          <button type="button" class="doc-pending-remove" data-index="${index}" aria-label="إزالة ${escHtml(name)}" title="إزالة">✕</button>
+        </li>`;
+      }).join("");
+      list.querySelectorAll(".doc-pending-remove").forEach(button => button.addEventListener("click", () => {
+        pendingAttachments.splice(Number(button.dataset.index), 1);
+        formDirty = true;
+        renderPendingAttachments();
+      }));
+    };
+    const addPendingAttachments = files => {
+      const before = pendingAttachments.length;
+      pendingAttachments = [...new Set([...pendingAttachments, ...files])].slice(0, 20);
+      if (pendingAttachments.length < before + files.length) showToast("الحد الأقصى 20 مرفقًا للوثيقة", "warn");
+      formDirty = true;
+      renderPendingAttachments();
+    };
+    const pickPendingAttachments = async () => {
       const selected = await open({
         multiple: true,
         filters: [{ name: "ملفات الوثائق", extensions: DOCUMENT_EXTENSIONS }],
       });
       if (!selected) return;
-      const files = Array.isArray(selected) ? selected : [selected];
-      pendingAttachments = [...new Set([...pendingAttachments, ...files])].slice(0, 20);
-      formDirty = true;
-      const badge = el.querySelector("#d-manage-attachments .badge");
-      badge.classList.toggle("badge-green", pendingAttachments.length > 0);
-      badge.classList.toggle("badge-gray", pendingAttachments.length === 0);
-      badge.querySelector("[dir='ltr']").textContent = String(pendingAttachments.length);
-      showToast(`تم اختيار ${pendingAttachments.length} مرفق وسيتم رفعها بعد الحفظ`);
+      addPendingAttachments(Array.isArray(selected) ? selected : [selected]);
+    };
+    el.querySelector("#d-manage-attachments")?.addEventListener("click", async () => {
+      if (isEdit) {
+        openAttachmentManager(doc.id, false);
+        return;
+      }
+      await pickPendingAttachments();
     });
     el.querySelector("#d-scan-attachment")?.addEventListener("click", async () => {
       const attachmentCount = isEdit ? generalDocAttachments(doc).length : pendingAttachments.length;
@@ -1262,7 +1348,7 @@ export async function renderDocuments(container, user, ctx) {
         percent = value;
         progress.style.display = "flex";
         const progressColor = progress.dataset.error === "true" ? "#dc2626" : "#22c55e";
-        progressBar.style.background = `conic-gradient(${progressColor} ${value}%,#0b2235 ${value}%)`;
+        progressBar.style.background = `conic-gradient(${progressColor} ${value}%,var(--ui-sunken) ${value}%)`;
         progressPercent.textContent = `${value}%`;
         progressLabel.textContent = label;
       };
@@ -1274,7 +1360,7 @@ export async function renderDocuments(container, user, ctx) {
       }, 700);
       try {
         const scannedPath = await api.scanDocument(deviceId);
-        updateProgress(94, "جاري حفظ الوثيقة تلقائياً...");
+        updateProgress(94, isEdit ? "جاري حفظ الوثيقة تلقائياً..." : "جاري تجهيز الصورة...");
         if (isEdit) {
           await updateCurrentDoc(doc.id, collectDocData());
           await uploadCurrentDocFile(doc.id, scannedPath);
@@ -1287,20 +1373,15 @@ export async function renderDocuments(container, user, ctx) {
           showDocForm(currentDocs().find(item => item.id === doc.id));
           return;
         }
-        const created = await createCurrentDoc(collectDocData());
-        const filesToUpload = [...new Set([...pendingAttachments, scannedPath])].slice(0, 20);
-        for (const file of filesToUpload) await uploadCurrentDocFile(created.id, file);
-        pendingAttachments = [];
-        await refreshCurrentDocs();
-        activeDocFormGuard = null;
+        addPendingAttachments([scannedPath]);
         clearInterval(progressTimer);
-        updateProgress(100, "اكتمل المسح والحفظ بنجاح");
-        showToast("تم مسح الوثيقة وإنشاؤها وحفظها تلقائياً");
-        await new Promise(resolve => setTimeout(resolve, 650));
-        showDocForm(currentDocs().find(item => item.id === created.id));
+        updateProgress(100, "اكتمل المسح، وسيُحفظ مع الوثيقة");
+        showToast("أُضيفت الصورة الممسوحة إلى المرفقات، وتُحفظ مع الوثيقة");
+        await new Promise(resolve => setTimeout(resolve, 900));
+        progress.style.display = "none";
       } catch (error) {
         clearInterval(progressTimer);
-        progress.style.borderColor = "#7f1d1d";
+        progress.style.borderColor = "var(--ui-danger-line)";
         progress.dataset.error = "true";
         updateProgress(100, "تعذر إكمال عملية المسح");
         showToast(error?.message ?? String(error || "تعذر استخدام الماسح الضوئي"), "error");
@@ -1334,7 +1415,7 @@ export async function renderDocuments(container, user, ctx) {
           <p class="section-title">رفع وثيقة لموظف موجود</p>
           <div class="grid grid-cols-1 md:grid-cols-[1fr_auto] gap-3 items-end">
             <div>
-              <p style="font-size:11px;color:#6b7280;margin-bottom:4px">الموظف</p>
+              <label for="emp-doc-employee" style="display:block;font-size:11px;color:var(--ui-text-faint);margin-bottom:4px">الموظف</label>
               <select id="emp-doc-employee" class="input-field">
                 <option value="">— اختر موظفاً —</option>
                 ${employees.map(e => `
@@ -1350,14 +1431,14 @@ export async function renderDocuments(container, user, ctx) {
         <div class="card overflow-auto">
           <div class="flex items-center justify-between gap-3 mb-4">
             <p class="section-title mb-0">الوثائق المرفوعة للموظفين</p>
-            <span class="badge badge-gray">${withDocs.reduce((sum, e) => sum + parseAttachments(e).length, 0)} وثيقة</span>
+            <span class="badge badge-gray">${arCount(withDocs.reduce((sum, e) => sum + parseAttachments(e).length, 0), "document")}</span>
           </div>
           ${withDocs.length === 0
             ? `<p class="text-center text-gray-500 py-8">لا توجد وثائق موظفين مرفوعة</p>`
             : withDocs.map(e => {
                 const paths = parseAttachments(e);
-                return `<div style="border:1px solid #2d2d2d;border-radius:8px;margin-bottom:12px;overflow:hidden">
-                  <div style="display:flex;justify-content:space-between;gap:12px;align-items:center;padding:10px 12px;background:#181818">
+                return `<div style="border:1px solid var(--ui-line);border-radius:8px;margin-bottom:12px;overflow:hidden">
+                  <div style="display:flex;justify-content:space-between;gap:12px;align-items:center;padding:10px 12px;background:var(--ui-surface-2)">
                     <div>
                       <p class="font-medium text-gray-100">${escHtml(e.full_name)}</p>
                       <p class="text-xs text-gray-500" dir="ltr">${escHtml(e.employee_number ?? "—")}</p>
@@ -1399,12 +1480,12 @@ export async function renderDocuments(container, user, ctx) {
         });
         if (!selected) return;
         const files = Array.isArray(selected) ? selected : [selected];
-        if (!(await confirmAction(`تأكيد رفع ${files.length} وثيقة للموظف؟`))) return;
+        if (!(await confirmAction(`تأكيد رفع ${arCount(files.length, DOC_GEN)} للموظف؟`))) return;
         for (const file of files) {
           await api.uploadDocumentAttachment(empId, file);
         }
         employees = await api.listEmployees();
-        showToast(`تم رفع ${files.length} وثيقة`);
+        showToast(`تم رفع ${arCount(files.length, DOC_GEN)}`);
         renderEmployeeDocs();
       } catch (err) { showToast(err?.message ?? String(err || "خطأ في الرفع"), "error"); }
     });
@@ -1437,8 +1518,8 @@ export async function renderDocuments(container, user, ctx) {
       activeTab = btn.dataset.tab;
       container.querySelectorAll(".doc-tab").forEach(b => {
         const a = b.dataset.tab === activeTab;
-        b.style.borderBottomColor = a ? "#24a9ff" : "transparent";
-        b.style.color = a ? "#24a9ff" : "#9ca3af";
+        b.style.borderBottomColor = a ? "var(--ui-accent)" : "transparent";
+        b.style.color = a ? "var(--ui-accent)" : "var(--ui-text-muted)";
         b.style.fontWeight = a ? "700" : "400";
       });
       renderGeneral();

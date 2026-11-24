@@ -25,9 +25,9 @@ export async function renderDashboard(container, user, ctx) {
       .map(d => `
         <tr class="table-row dashboard-doc-row" data-archive-tab="${archiveTab}" data-doc-id="${d.id}" title="اضغط لتعديل الوثيقة">
           <td class="table-cell font-medium text-gray-100">${escHtml(d.title || "—")}</td>
-          <td class="table-cell">${escHtml(d.issuer || "—")}</td>
-          <td class="table-cell" dir="ltr">${escHtml(d.doc_number || "—")}</td>
+          <td class="table-cell">${escHtml(d.doc_number || "—")}</td>
           <td class="table-cell">${formatDate(d.issue_date)}</td>
+          <td class="table-cell">${escHtml(d.issuer || "—")}</td>
           <td class="table-cell">
             <button type="button" class="dashboard-doc-attachments"
               data-archive-tab="${archiveTab}" data-doc-id="${d.id}"
@@ -67,9 +67,9 @@ export async function renderDashboard(container, user, ctx) {
         <table class="w-full">
           <thead><tr>
             <th class="table-header">الجهة المصدرة</th>
-            <th class="table-header">الموضوع</th>
             <th class="table-header">إلى</th>
             <th class="table-header">تاريخ الإصدار</th>
+            <th class="table-header">الموضوع</th>
             <th class="table-header">المرفقات</th>
           </tr></thead>
           <tbody>${recentDocsRows(incomingDocs, "لا توجد وثائق واردة", "general")}</tbody>
@@ -84,9 +84,9 @@ export async function renderDashboard(container, user, ctx) {
         <table class="w-full">
           <thead><tr>
             <th class="table-header">الجهة المصدرة</th>
-            <th class="table-header">الموضوع</th>
             <th class="table-header">إلى</th>
             <th class="table-header">تاريخ الإصدار</th>
+            <th class="table-header">الموضوع</th>
             <th class="table-header">المرفقات</th>
           </tr></thead>
           <tbody>${recentDocsRows(outgoingDocs, "لا توجد وثائق صادرة", "outgoing")}</tbody>

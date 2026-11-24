@@ -2,6 +2,7 @@
  * utils.js — Shared utilities
  */
 import { convertFileSrc } from "@tauri-apps/api/core";
+import { COMPANY_LOGO } from "./branding.js";
 
 // ── Toast ──────────────────────────────────────────────────────────────────
 let _toastTimer = null;
@@ -40,9 +41,9 @@ export function confirmAction(message = "هل أنت متأكد من تنفيذ 
     dialog.setAttribute("role", "alertdialog");
     dialog.setAttribute("aria-modal", "true");
     dialog.style.cssText = `
-      width:min(420px,100%);background:#1f1f1f;border:1px solid #2d2d2d;
+      width:min(420px,100%);background:var(--ui-surface);border:1px solid var(--ui-line);
       border-radius:8px;box-shadow:0 18px 60px rgba(0,0,0,.45);
-      padding:18px;color:#f3f4f6;
+      padding:18px;color:var(--ui-text-strong);
     `;
 
     const title = document.createElement("p");
@@ -51,7 +52,7 @@ export function confirmAction(message = "هل أنت متأكد من تنفيذ 
 
     const body = document.createElement("p");
     body.textContent = message;
-    body.style.cssText = "font-size:14px;line-height:1.8;color:#d1d5db;margin:0 0 18px";
+    body.style.cssText = "font-size:14px;line-height:1.8;color:var(--ui-text);margin:0 0 18px;white-space:pre-line";
 
     const actions = document.createElement("div");
     actions.style.cssText = "display:flex;gap:10px;justify-content:flex-start";
@@ -113,9 +114,9 @@ export function confirmSaveChanges(message = "توجد تغييرات غير م�
     dialog.setAttribute("role", "alertdialog");
     dialog.setAttribute("aria-modal", "true");
     dialog.style.cssText = `
-      width:min(460px,100%);background:#1f1f1f;border:1px solid #2d2d2d;
+      width:min(460px,100%);background:var(--ui-surface);border:1px solid var(--ui-line);
       border-radius:8px;box-shadow:0 18px 60px rgba(0,0,0,.45);
-      padding:18px;color:#f3f4f6;
+      padding:18px;color:var(--ui-text-strong);
     `;
 
     const title = document.createElement("p");
@@ -124,7 +125,7 @@ export function confirmSaveChanges(message = "توجد تغييرات غير م�
 
     const body = document.createElement("p");
     body.textContent = message;
-    body.style.cssText = "font-size:14px;line-height:1.8;color:#d1d5db;margin:0 0 18px";
+    body.style.cssText = "font-size:14px;line-height:1.8;color:var(--ui-text);margin:0 0 18px;white-space:pre-line";
 
     const actions = document.createElement("div");
     actions.style.cssText = "display:flex;gap:10px;justify-content:flex-start;flex-wrap:wrap";
@@ -183,17 +184,14 @@ export function applyBranding(config) {
   const hdr  = document.getElementById("header-branding");
   const loginUnit = document.getElementById("login-unit-name");
 
-  // Sidebar shows a short name (a Latin acronym such as "GCAAN" when one is configured);
-  // the full company name stays in the tooltip, the page header and the About screen.
-  const companyName = config.company_name || "CNSArch";
-  const fields = [config.company_name, config.department_name, config.division_name].map(v => String(v ?? "").trim());
-  const acronym = fields.map(v => v.match(/\b[A-Z][A-Z0-9&.-]{1,9}\b/)?.[0]).find(Boolean) || "";
-  const shortName = acronym || companyName;
+  // Sidebar shows the full company name (wrapping to two lines when needed) and, under it,
+  // the section and unit names, so the header reads the same as Settings → الجهة والشعار.
+  const companyName = String(config.company_name ?? "").trim() || "CNSArch";
   const subtitle = [config.department_name, config.division_name]
     .map(v => String(v ?? "").trim())
-    .filter(v => v && v !== acronym)
+    .filter(Boolean)
     .join(" · ");
-  if (co)   co.textContent   = shortName;
+  if (co)   co.textContent   = companyName;
   if (dept) dept.textContent = subtitle;
   const brand = document.getElementById("sidebar-brand");
   if (brand) brand.title = [companyName, config.department_name, config.division_name].filter(Boolean).join("\n");
@@ -201,18 +199,19 @@ export function applyBranding(config) {
   if (loginUnit) {
     // Login screen: show the configured unit name, or a muted hint telling the admin where to set it.
     const unitName = String(config.division_name ?? "").trim();
-    loginUnit.textContent = unitName || "أضف اسم الشعبة/الوحدة في الإعدادات لتظهر هنا";
+    loginUnit.textContent = unitName || "لم يُحدَّد اسم الوحدة";
+    loginUnit.title = unitName ? "" : "يضبطه مدير النظام من الإعدادات ← الجهة والشعار";
     loginUnit.classList.toggle("is-hint", !unitName);
   }
 
-  if (config.logo_full_path && logo && fb) {
-    logo.src = convertFileSrc(config.logo_full_path);
+  // The company logo is fixed and bundled with the app; any logo_path stored by an
+  // older release is ignored.
+  if (logo) {
+    logo.src = COMPANY_LOGO.small;
+    logo.alt = COMPANY_LOGO.alt;
     logo.classList.remove("hidden");
-    fb.classList.add("hidden");
-  } else if (logo && fb) {
-    logo.classList.add("hidden");
-    fb.classList.remove("hidden");
   }
+  if (fb) fb.classList.add("hidden");
 }
 
 // ── Date helpers ───────────────────────────────────────────────────────────
@@ -241,4 +240,31 @@ export function escHtml(str) {
 export function debounce(fn, ms = 300) {
   let t;
   return (...args) => { clearTimeout(t); t = setTimeout(() => fn(...args), ms); };
+}
+
+// ── Arabic number agreement ────────────────────────────────────────────────
+// 1 → «ملف واحد»، 2 → «ملفان»، 3–10 → «3 ملفات»، 11–99 → «11 ملفاً»، 100 → «100 ملف»
+export const AR_NOUNS = {
+  file:       { sing: "ملف",     one: "ملف واحد",     two: "ملفان",     few: "ملفات",     many: "ملفاً" },
+  attachment: { sing: "مرفق",    one: "مرفق واحد",    two: "مرفقان",    few: "مرفقات",    many: "مرفقاً" },
+  document:   { sing: "وثيقة",   one: "وثيقة واحدة",  two: "وثيقتان",   few: "وثائق",     many: "وثيقةً" },
+  day:        { sing: "يوم",     one: "يوم واحد",     two: "يومان",     few: "أيام",      many: "يوماً" },
+  user:       { sing: "مستخدم",  one: "مستخدم واحد",  two: "مستخدمان",  few: "مستخدمين",  many: "مستخدماً" },
+  employee:   { sing: "موظف",    one: "موظف واحد",    two: "موظفان",    few: "موظفين",    many: "موظفاً" },
+};
+
+/**
+ * Formats a count with the correctly agreeing Arabic noun.
+ * `forms` is an AR_NOUNS entry (or a key of it); pass `{ ...AR_NOUNS.file, two: "ملفين" }`
+ * where the sentence needs the genitive/accusative dual.
+ */
+export function arCount(count, forms) {
+  const f = typeof forms === "string" ? AR_NOUNS[forms] : forms;
+  const n = Math.abs(Math.trunc(Number(count) || 0));
+  if (n === 1) return f.one;
+  if (n === 2) return f.two;
+  const r = n % 100;
+  if (r >= 3 && r <= 10) return `${n} ${f.few}`;
+  if (r >= 11) return `${n} ${f.many}`;
+  return `${n} ${f.sing}`;
 }

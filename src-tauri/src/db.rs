@@ -166,12 +166,15 @@ pub fn db_path() -> PathBuf {
 /// Schema version stored in `PRAGMA user_version` after a successful upgrade.
 ///
 /// * 0 — any database created before versioning existed (v1.0.0 to v1.0.3).
-/// * 1 — the schema produced by `migrate()` as of this release.
+/// * 1 — the schema produced by `migrate()` (Phase B, before the name split).
+/// * 2 — person names split into parts (`name_parts`, `name_split_originals`; see `names.rs`).
+/// * 3 — airport badge access zones; car registration (السنوية) images per vehicle.
+/// * 4 — vehicle governorate, plate category, chassis number and model year.
 ///
 /// To change the schema later: bump this constant and add an `if from < N { ... }` step in
 /// `upgrade()`. Every upgrade of an existing database runs only after a verified
 /// pre-upgrade snapshot exists, and the snapshot is restored automatically if a step fails.
-pub const SCHEMA_VERSION: i64 = 1;
+pub const SCHEMA_VERSION: i64 = 4;
 
 #[derive(Debug)]
 pub enum OpenError {
@@ -234,7 +237,7 @@ pub fn pre_upgrade_snapshot(conn: &Connection, from: i64) -> Result<PathBuf, Str
             if destination.exists() {
                 return Err(format!("{} already exists", destination.display()));
             }
-            conn.backup(rusqlite::DatabaseName::Main, &destination, None).map_err(|e| e.to_string())?;
+            conn.backup(rusqlite::MAIN_DB, &destination, None::<fn(rusqlite::backup::Progress)>).map_err(|e| e.to_string())?;
             // Keep the snapshot a single self-contained file (no -wal / -shm beside it).
             Connection::open(&destination)
                 .and_then(|copy| copy.pragma_update(None, "journal_mode", "DELETE"))
@@ -263,7 +266,18 @@ fn upgrade(conn: &Connection, from: i64) -> SqlResult<()> {
         conn.execute_batch(include_str!("../../database/schema.sql"))?;
         migrate(conn)?;
     }
-    // Future steps go here, for example: if from < 2 { ... }
+    if from < 2 {
+        crate::names::upgrade_to_v2(conn)?;
+    }
+    if from < 3 {
+        upgrade_to_v3(conn)?;
+    }
+    if from < 4 {
+        for column in ["governorate", "plate_category", "chassis_no", "model_year"] {
+            add_column_if_missing(conn, "employee_vehicles", column, "TEXT")?;
+        }
+    }
+    // Future steps go here, for example: if from < 5 { ... }
     #[cfg(test)]
     if FAIL_UPGRADE.with(|flag| flag.get()) {
         return Err(rusqlite::Error::InvalidQuery);
@@ -275,6 +289,28 @@ fn upgrade(conn: &Connection, from: i64) -> SqlResult<()> {
         ));
     }
     conn.pragma_update(None, "user_version", SCHEMA_VERSION)?;
+    Ok(())
+}
+
+fn add_column_if_missing(conn: &Connection, table: &str, column: &str, definition: &str) -> SqlResult<()> {
+    let exists = conn
+        .prepare(&format!("PRAGMA table_info({table})"))?
+        .query_map([], |r| r.get::<_, String>(1))?
+        .collect::<SqlResult<Vec<_>>>()?
+        .iter()
+        .any(|c| c == column);
+    if !exists {
+        conn.execute(&format!("ALTER TABLE {table} ADD COLUMN {column} {definition}"), [])?;
+    }
+    Ok(())
+}
+
+/// v3: columns added after v2 shipped. `migrate()` only runs for version 0, so columns for
+/// databases that are already versioned must be added here.
+fn upgrade_to_v3(conn: &Connection) -> SqlResult<()> {
+    add_column_if_missing(conn, "employees", "airport_badge_zones", "TEXT")?;
+    add_column_if_missing(conn, "employee_vehicles", "annual_front_path", "TEXT")?;
+    add_column_if_missing(conn, "employee_vehicles", "annual_back_path", "TEXT")?;
     Ok(())
 }
 
@@ -290,6 +326,10 @@ pub fn upgrade_restored(conn: &Connection) -> Result<(), OpenError> {
     }
     Ok(())
 }
+
+/// Builds the current schema on an empty connection (tests only).
+#[cfg(test)]
+pub(crate) fn migrate_for_tests(conn: &Connection) { upgrade(conn, 0).unwrap(); }
 
 fn migrate(conn: &Connection) -> SqlResult<()> {
     conn.execute("DELETE FROM app_settings WHERE key='biometric_username'", []).ok();
@@ -402,6 +442,7 @@ fn migrate(conn: &Connection) -> SqlResult<()> {
         ("airport_badge_no",         "TEXT"),
         ("airport_badge_issue_date", "TEXT"),
         ("airport_badge_expiry",     "TEXT"),
+        ("airport_badge_zones",      "TEXT"),
         ("airport_badge_front_path", "TEXT"),
         ("airport_badge_back_path",  "TEXT"),
         ("ministry_badge_no",        "TEXT"),
@@ -527,6 +568,12 @@ fn migrate(conn: &Connection) -> SqlResult<()> {
           annual_no TEXT,
           issue_date TEXT,
           expiry_date TEXT,
+          annual_front_path TEXT,
+          annual_back_path TEXT,
+          governorate TEXT,
+          plate_category TEXT,
+          chassis_no TEXT,
+          model_year TEXT,
           created_at TEXT DEFAULT (datetime('now')),
           updated_at TEXT DEFAULT (datetime('now'))
         );
@@ -711,7 +758,8 @@ fn migrate(conn: &Connection) -> SqlResult<()> {
 #[cfg(test)]
 pub(crate) fn initialize_test(conn: &Connection) -> SqlResult<()> {
     conn.execute_batch(include_str!("../../database/schema.sql"))?;
-    migrate(conn)
+    migrate(conn)?;
+    crate::names::upgrade_to_v2(conn)
 }
 
 /// Opens (and if needed upgrades) the database in the configured data folder.
@@ -734,12 +782,14 @@ pub fn open_at(path: &Path, allow_create: bool) -> Result<Connection, OpenError>
     }
     conn.pragma_update(None, "journal_mode", "WAL")?;
     conn.pragma_update(None, "foreign_keys", "ON")?;
+    // Rows already changed outside the program stay flagged when an upgrade re-seals the data.
+    let flagged = if existed && version < SCHEMA_VERSION { crate::integrity::flagged_rows(&conn) } else { Default::default() };
     if version < SCHEMA_VERSION {
         if existed {
             let snapshot = pre_upgrade_snapshot(&conn, version).map_err(OpenError::Snapshot)?;
             if let Err(error) = upgrade(&conn, version) {
                 let restored = conn
-                    .restore(rusqlite::DatabaseName::Main, &snapshot, None::<fn(rusqlite::backup::Progress)>)
+                    .restore(rusqlite::MAIN_DB, &snapshot, None::<fn(rusqlite::backup::Progress)>)
                     .is_ok();
                 return Err(OpenError::UpgradeFailed { from: version, error: error.to_string(), snapshot, restored });
             }
@@ -747,11 +797,18 @@ pub fn open_at(path: &Path, allow_create: bool) -> Result<Connection, OpenError>
             upgrade(&conn, version)?;
         }
     }
+    // Accounts still on the unsalted SHA-256 hash of early releases must choose a new
+    // password at their next sign-in (which also stores it with bcrypt).
+    conn.execute("UPDATE users SET must_change_password=1 WHERE password NOT LIKE '$2%' AND must_change_password=0", [])?;
     let user_count: i64 = conn.query_row("SELECT COUNT(*) FROM users", [], |r| r.get(0))?;
     if user_count == 0 {
         let password = bcrypt::hash("password", bcrypt::DEFAULT_COST).map_err(|_| rusqlite::Error::InvalidQuery)?;
         conn.execute("INSERT INTO users(username,password,role,must_change_password) VALUES('sysadmin',?1,'system_admin',1)", [password])?;
     }
+    if existed && version < SCHEMA_VERSION {
+        crate::integrity::reseal_after_upgrade(&conn, &flagged);
+    }
+    crate::integrity::attach(&conn, !existed);
     Ok(conn)
 }
 
@@ -773,7 +830,31 @@ pub fn open_existing() -> Result<Connection, OpenError> {
     if version != SCHEMA_VERSION {
         return Err(OpenError::NewerSchema { found: version, supported: SCHEMA_VERSION });
     }
+    crate::integrity::attach(&conn, false);
     Ok(conn)
+}
+
+#[cfg(test)]
+mod v3_tests {
+    use super::*;
+
+    /// A database from the previous release (schema v2) gains the v3 columns on open.
+    #[test]
+    fn v2_database_gains_zone_and_registration_columns() {
+        let conn = Connection::open_in_memory().unwrap();
+        migrate_for_tests(&conn);
+        conn.execute_batch("ALTER TABLE employees DROP COLUMN airport_badge_zones;
+            ALTER TABLE employee_vehicles DROP COLUMN annual_front_path;
+            ALTER TABLE employee_vehicles DROP COLUMN annual_back_path;
+            ALTER TABLE employee_vehicles DROP COLUMN chassis_no;
+            PRAGMA user_version = 2;").unwrap();
+        upgrade_restored(&conn).unwrap();
+        assert_eq!(schema_version(&conn).unwrap(), SCHEMA_VERSION);
+        conn.prepare("SELECT airport_badge_zones FROM employees").unwrap();
+        conn.prepare("SELECT annual_front_path, annual_back_path, governorate, plate_category, chassis_no, model_year FROM employee_vehicles").unwrap();
+        // Running the step again changes nothing.
+        upgrade_to_v3(&conn).unwrap();
+    }
 }
 
 #[cfg(test)]
@@ -836,7 +917,7 @@ mod upgrade_tests {
         let conn = Connection::open(path).unwrap();
         conn.execute_batch(schema).unwrap();
         let role = if schema.contains("'system_admin'") { "system_admin" } else { "master" };
-        conn.execute("INSERT INTO users(username,password,role) VALUES('old_admin','x',?1)", [role]).unwrap();
+        conn.execute("INSERT INTO users(username,password,role) VALUES('old_admin','$2b$12$fixturehash',?1)", [role]).unwrap();
         conn.execute("INSERT INTO employees(employee_number,full_name) VALUES('E-001','موظف تجريبي')", []).unwrap();
         assert_eq!(schema_version(&conn).unwrap(), 0);
     }
@@ -848,8 +929,13 @@ mod upgrade_tests {
     fn upgrade_keeps_data(schema: &str) {
         let env = env();
         old_database(&env.db, schema);
+        Connection::open(&env.db).unwrap().execute(
+            "INSERT INTO users(username,password,role) VALUES('legacy_user',?1,(SELECT role FROM users WHERE username='old_admin'))", [&"a".repeat(64)],
+        ).unwrap();
         let conn = open_at(&env.db, false).unwrap();
         assert_eq!(schema_version(&conn).unwrap(), SCHEMA_VERSION);
+        let legacy: i64 = conn.query_row("SELECT must_change_password FROM users WHERE username='legacy_user'", [], |r| r.get(0)).unwrap();
+        assert_eq!(legacy, 1, "unsalted legacy hashes must pick a new password");
         let name: String = conn.query_row("SELECT full_name FROM employees WHERE employee_number='E-001'", [], |r| r.get(0)).unwrap();
         assert_eq!(name, "موظف تجريبي");
         let flag: i64 = conn.query_row("SELECT must_change_password FROM users WHERE username='old_admin'", [], |r| r.get(0)).unwrap();
@@ -908,6 +994,137 @@ mod upgrade_tests {
         assert!(matches!(open_at(&env.db, false), Err(OpenError::NewerSchema { .. })));
         let conn = Connection::open(&env.db).unwrap();
         assert_eq!(schema_version(&conn).unwrap(), SCHEMA_VERSION + 5);
+    }
+
+    fn parts(conn: &Connection, sql: &str) -> serde_json::Value {
+        let text: String = conn.query_row(sql, [], |r| r.get(0)).unwrap();
+        serde_json::from_str(&text).unwrap()
+    }
+
+    fn count(conn: &Connection, sql: &str) -> i64 {
+        conn.query_row(sql, [], |r| r.get(0)).unwrap()
+    }
+
+    /// The path of the real data: a database written by v1.0.3 (no user_version), upgraded
+    /// through the Phase B step (0 -> 1) and the name split (1 -> 2) in one go.
+    #[test]
+    fn database_from_1_0_3_gets_split_names_and_keeps_every_original() {
+        let env = env();
+        old_database(&env.db, include_str!("test_fixtures/schema_v1_0_3_42e8a5e.sql"));
+        {
+            let conn = Connection::open(&env.db).unwrap();
+            conn.execute_batch(
+                "UPDATE employees SET full_name='أحمد علي حسين كاظم الجبوري', mother_name='زينب محمد جاسم الموسوي',
+                     residence_head_name='علي حسين كاظم', passport_name='AHMED ALI HUSSEIN ALJABOURI' WHERE employee_number='E-001';
+                 INSERT INTO employee_spouses(employee_id,sort_order,name,mother_name) VALUES(1,0,'فاطمة عبد الله نور الدين علي الربيعي','سعاد كريم');
+                 INSERT INTO employee_family_members(employee_id,sort_order,name) VALUES(1,0,'حسن أحمد علي حسين');",
+            ).unwrap();
+        }
+        let conn = open_at(&env.db, false).unwrap();
+        assert_eq!(schema_version(&conn).unwrap(), SCHEMA_VERSION);
+        // The combined names are untouched.
+        let (full, mother, head, passport): (String, String, String, String) = conn.query_row(
+            "SELECT full_name,mother_name,residence_head_name,passport_name FROM employees WHERE id=1", [],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+        ).unwrap();
+        assert_eq!((full.as_str(), mother.as_str(), head.as_str(), passport.as_str()),
+            ("أحمد علي حسين كاظم الجبوري", "زينب محمد جاسم الموسوي", "علي حسين كاظم", "AHMED ALI HUSSEIN ALJABOURI"));
+        let employee = parts(&conn, "SELECT name_parts FROM employees WHERE id=1");
+        assert_eq!(employee["full_name"]["surname"], "كاظم الجبوري");
+        assert_eq!(employee["full_name"]["review"], true);
+        assert_eq!(employee["mother_name"]["surname"], "الموسوي");
+        assert_eq!(employee["residence_head_name"]["review"], true);
+        assert_eq!(employee["passport_name"]["surname"], "ALJABOURI");
+        let spouse = parts(&conn, "SELECT name_parts FROM employee_spouses WHERE employee_id=1");
+        assert_eq!(spouse["name"]["father"], "عبد الله");
+        assert_eq!(spouse["name"]["grandfather"], "نور الدين");
+        assert_eq!(spouse["mother_name"]["review"], true);
+        let family = parts(&conn, "SELECT name_parts FROM employee_family_members WHERE employee_id=1");
+        assert_eq!(family["name"]["surname"], "حسين");
+        assert_eq!(family["name"]["review"], true);
+        // Every original text is archived word for word.
+        assert_eq!(count(&conn, "SELECT COUNT(*) FROM name_split_originals"), 7);
+        assert_eq!(count(&conn, "SELECT COUNT(*) FROM name_split_originals WHERE field='full_name' AND original_text='أحمد علي حسين كاظم الجبوري'"), 1);
+        // Unsure splits wait for review: the five-part names, head of household, spouse's mother, family member.
+        let review = crate::names::list_review(&conn).unwrap();
+        assert_eq!(review.len(), 5);
+        assert_eq!(review[0].original_text.as_deref(), Some("أحمد علي حسين كاظم الجبوري"));
+        // One verified snapshot of the v1.0.3 database.
+        let taken = snapshots(&env.backups);
+        assert_eq!(taken.len(), 1);
+        let snap = Connection::open_with_flags(&taken[0], rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY).unwrap();
+        assert_eq!(schema_version(&snap).unwrap(), 0);
+        assert_eq!(count(&snap, "SELECT COUNT(*) FROM employee_spouses"), 1);
+        drop(conn);
+        // Opening again changes nothing.
+        let conn = open_at(&env.db, false).unwrap();
+        assert_eq!(count(&conn, "SELECT COUNT(*) FROM name_split_originals"), 7);
+        assert_eq!(parts(&conn, "SELECT name_parts FROM employees WHERE id=1"), employee);
+        assert_eq!(snapshots(&env.backups).len(), 1);
+    }
+
+    /// Spouses and family members that the oldest releases kept in JSON columns are moved
+    /// to their tables by step 1 and then split by step 2.
+    #[test]
+    fn names_kept_in_old_json_columns_are_split_too() {
+        let env = env();
+        old_database(&env.db, include_str!("test_fixtures/schema_initial_cca9a40.sql"));
+        {
+            let conn = Connection::open(&env.db).unwrap();
+            conn.execute(
+                "UPDATE employees SET spouse_name='مريم علي حسن الساعدي', family_members=?1 WHERE id=1",
+                [r#"[{"name":"علي أحمد حسين كاظم الجبوري"}]"#],
+            ).unwrap();
+        }
+        let conn = open_at(&env.db, false).unwrap();
+        assert_eq!(schema_version(&conn).unwrap(), SCHEMA_VERSION);
+        let spouse = parts(&conn, "SELECT name_parts FROM employee_spouses WHERE employee_id=1");
+        assert_eq!(spouse["name"]["surname"], "الساعدي");
+        let family = parts(&conn, "SELECT name_parts FROM employee_family_members WHERE employee_id=1");
+        assert_eq!(family["name"]["surname"], "كاظم الجبوري");
+        let name: String = conn.query_row("SELECT full_name FROM employees WHERE id=1", [], |r| r.get(0)).unwrap();
+        assert_eq!(name, "موظف تجريبي");
+    }
+
+    /// A database already on version 1 (this release before the name split) gets step 2 only.
+    #[test]
+    fn database_on_version_1_is_upgraded_to_2() {
+        let env = env();
+        {
+            let conn = Connection::open(&env.db).unwrap();
+            conn.execute_batch(include_str!("../../database/schema.sql")).unwrap();
+            migrate(&conn).unwrap();
+            conn.pragma_update(None, "user_version", 1).unwrap();
+            conn.execute("INSERT INTO users(username,password,role) VALUES('old_admin','$2b$12$fixturehash','system_admin')", []).unwrap();
+            conn.execute("INSERT INTO employees(full_name) VALUES('سارة محمد علي حسن العبيدي')", []).unwrap();
+        }
+        let conn = open_at(&env.db, false).unwrap();
+        assert_eq!(schema_version(&conn).unwrap(), SCHEMA_VERSION);
+        assert_eq!(parts(&conn, "SELECT name_parts FROM employees")["full_name"]["first"], "سارة");
+        let taken = snapshots(&env.backups);
+        assert_eq!(taken.len(), 1);
+        assert!(taken[0].to_string_lossy().contains(&format!("database_v1_to_v{SCHEMA_VERSION}_")));
+    }
+
+    #[test]
+    fn failed_name_split_restores_the_version_1_database() {
+        let env = env();
+        {
+            let conn = Connection::open(&env.db).unwrap();
+            conn.execute_batch(include_str!("../../database/schema.sql")).unwrap();
+            migrate(&conn).unwrap();
+            conn.pragma_update(None, "user_version", 1).unwrap();
+            conn.execute("INSERT INTO employees(full_name) VALUES('سارة محمد علي حسن العبيدي')", []).unwrap();
+        }
+        FAIL_UPGRADE.with(|flag| flag.set(true));
+        let result = open_at(&env.db, false);
+        FAIL_UPGRADE.with(|flag| flag.set(false));
+        assert!(matches!(result, Err(OpenError::UpgradeFailed { from: 1, restored: true, .. })));
+        let conn = Connection::open(&env.db).unwrap();
+        assert_eq!(schema_version(&conn).unwrap(), 1);
+        assert!(!conn.prepare("PRAGMA table_info(employees)").unwrap()
+            .query_map([], |r| r.get::<_, String>(1)).unwrap().any(|c| c.unwrap() == "name_parts"));
+        assert_eq!(count(&conn, "SELECT COUNT(*) FROM sqlite_master WHERE name='name_split_originals'"), 0);
     }
 
     #[test]

@@ -2,7 +2,6 @@ import { test, expect } from "@playwright/test";
 import { readFileSync } from "node:fs";
 import { build } from "esbuild";
 const targets = [
-  ["uploadCompanyLogo", ["synthetic.png"], "cmd_upload_company_logo"],
   ["uploadEmployeePhoto", [1, "synthetic.png"], "cmd_upload_employee_photo"],
   ["uploadAttachment", [1, "synthetic.png"], "cmd_upload_attachment"],
   ["uploadNationalCardAttachment", [1, "front", "synthetic.png"], "cmd_upload_national_card_attachment"],
@@ -21,6 +20,21 @@ async function run(page, method = "uploadAttachment", args = [1, "synthetic.png"
   await page.evaluate(({ method, args }) => window.runUpload(method, args), { method, args });
   await page.getByRole("button", { name: "تحديد حدود المرفق وتدويره", exact: true }).click();
   await expect(page.getByRole("button", { name: "تطبيق القص / إعادة المعالجة" })).toBeVisible();
+}
+// Employee panel actions live in collapsible sections, collapsed rows, ⋯ menus or the header photo menu.
+async function reveal(page, selector) {
+  const target = page.locator(selector).first();
+  const where = await target.evaluate(el => ({
+    section: el.closest(".emp-sec:not(.open)")?.id || null,
+    row: el.closest(".emp-row.collapsed")?.dataset.rowKey || null,
+    tileMenu: Boolean(el.closest(".emp-tile-menu")),
+    avatar: Boolean(el.closest(".emp-avatar-menu")),
+  }));
+  if (where.section) await page.locator(`#${where.section} > .emp-sec-head`).click();
+  if (where.row) await page.locator(`.emp-row[data-row-key="${where.row}"] .emp-row-title`).click();
+  if (where.tileMenu) await target.locator("xpath=ancestor::div[contains(concat(' ',normalize-space(@class),' '),' emp-tile ')][1]").locator(".emp-tile-more").click();
+  if (where.avatar) await page.locator("#emp-avatar-btn").click();
+  return target;
 }
 async function save(page) {
   await page.getByRole("button", { name: "تطبيق القص / إعادة المعالجة" }).click();
@@ -123,7 +137,7 @@ for (const [selector,command] of [
   await page.evaluate(()=>window.renderActual("employees"));
   await page.locator('.table-row[data-id="1"]').click();
   await page.locator(`.tab-btn[data-tab="${command.includes("family")||command.includes("spouse")?"family":"documents"}"]`).click();
-  await page.locator(selector).first().click();
+  await (await reveal(page, selector)).click();
   await page.getByRole("button",{name:"تأكيد",exact:true}).click();
   await page.getByRole("button",{name:"تحديد حدود المرفق وتدويره",exact:true}).click();
   await expect(page.locator("[data-process]")).toBeVisible();
@@ -153,17 +167,18 @@ for(const [method, command] of [["uploadDocumentAttachment","cmd_upload_attachme
   expect(await page.evaluate(()=>window.calls)).toEqual([{command,args:command === "cmd_upload_attachment" ? {employeeId:1,sourcePath:"synthetic.png"} : {docId:1,sourcePath:"synthetic.png"}}]);
   await expect(page.locator(".smart-scanner-overlay")).toHaveCount(0);
 });
-test("settings screen removes attachment processing settings and preserves logo upload",async({page})=>{
+test("settings screen removes attachment processing settings and shows the fixed company logo",async({page})=>{
   await page.evaluate(()=>window.renderActual("settings"));
   await expect(page.locator("#scanner-settings")).toHaveCount(0);
   for (const selector of ["[data-confidence]","[data-auto]","[data-quality]","[data-enhancement]"]) await expect(page.locator(selector)).toHaveCount(0);
-  await page.locator("#btn-upload-logo").click();await page.getByRole("button",{name:"\u062a\u0623\u0643\u064a\u062f",exact:true}).click();
-  await page.locator('[data-choice="scan"]').click();await expect(page.locator("[data-process]")).toBeVisible();
-  await expect(page.locator("[data-detect]")).toHaveCount(0);await page.locator("[data-cancel]").click();
+  // The company logo is bundled and fixed: no upload button, and the image is the built-in asset.
+  await expect(page.locator("#btn-upload-logo")).toHaveCount(0);
+  await expect(page.locator("#logo-preview")).toHaveAttribute("src",/company-logo-256/);
+  expect(await page.evaluate(()=>window.calls.filter(c=>c.command==="cmd_upload_company_logo").length)).toBe(0);
 });
 test("existing employee document opens the same editor and preserves its association",async({page})=>{
   await page.evaluate(()=>window.renderActual("employees"));await page.locator('.table-row[data-id="1"]').click();await page.locator('.tab-btn[data-tab="documents"]').click();
-  await page.locator('[data-scanner-for="Files/Employees/1/Documents/NationalCard/card.jpg"] button').filter({hasText:"إعادة معالجة"}).click();
+  await (await reveal(page, '[data-scanner-for="Files/Employees/1/Documents/NationalCard/card.jpg"] button')).click();
   await page.locator("[data-process]").click();
   await page.waitForFunction(()=>window.calls.some(c=>c.command==="cmd_scanner_save_existing"));
   expect((await page.evaluate(()=>window.calls.find(c=>c.command==="cmd_scanner_save_existing"))).args.relativePath).toBe("Files/Employees/1/Documents/NationalCard/card.jpg");
@@ -260,7 +275,7 @@ test("actual image backend result fits shared scanner preview", async ({page}) =
 
 // Compile only a component in memory with its Production feature flag. No app/release build.
 async function productionModule(page, entry, key) {
-  const result=await build({entryPoints:[entry],bundle:true,write:false,format:"esm",platform:"browser",define:{"import.meta.env.DEV":"false","import.meta.env.VITE_APP_VERSION":JSON.stringify("1.0.1")}});
+  const result=await build({entryPoints:[entry],bundle:true,write:false,format:"esm",platform:"browser",loader:{".png":"dataurl"},define:{"import.meta.env.DEV":"false","import.meta.env.VITE_APP_VERSION":JSON.stringify("1.0.1")}});
   await page.evaluate(async ({code,key})=>{
     const url=URL.createObjectURL(new Blob([code],{type:"text/javascript"}));
     try { window[key]=await import(url); } finally { URL.revokeObjectURL(url); }
@@ -269,6 +284,7 @@ async function productionModule(page, entry, key) {
 
 test("Production manual editor ignores detected corners and only crops after approval", async ({page})=>{
   await productionModule(page,"src/attachments/scanner.js","productionScanner");
+  await page.evaluate(()=>{ window.prepareOverrides = { automatic_detection_available: false }; });
   await page.evaluate(()=>{
     window.productionScanner.uploadWithScanner("cmd_upload_general_doc_file",{docId:1,sourcePath:"synthetic.png"}).then(v=>window.result=v).catch(e=>window.failure=String(e));
   });
@@ -355,13 +371,12 @@ test("personal photo reprocesses and delete clears the visible photo", async ({ 
   await page.evaluate(()=>window.renderActual("employees"));
   await page.locator('.table-row[data-id="1"]').click();
   await page.locator('.tab-btn[data-tab="documents"]').click();
-  const photo = page.locator('[data-scanner-for="Files/Employees/1/Photo/photo.jpg"] button');
-  await photo.click();
+  await (await reveal(page, '[data-scanner-for="Files/Employees/1/Photo/photo.jpg"] button')).click();
   await expect(page.locator("[data-result]")).toBeVisible();
   await page.locator("[data-process]").click();
   await page.waitForFunction(()=>window.calls.some(c=>c.command==="cmd_scanner_save_existing"));
   expect(await page.evaluate(()=>window.calls.find(c=>c.command==="cmd_scanner_prepare").args.relativePath)).toBe("Files/Employees/1/Photo/photo.jpg");
-  await page.locator("#btn-delete-photo").click();
+  await (await reveal(page, "#btn-delete-photo")).click();
   await page.getByRole("button",{name:"\u062a\u0623\u0643\u064a\u062f",exact:true}).click();
   await expect(page.locator("#btn-delete-photo")).toHaveCount(0);
   await expect(page.locator('img[data-scan-path="Files/Employees/1/Photo/photo.jpg"]')).toHaveCount(0);
@@ -380,4 +395,54 @@ test("all employee image attachment types open reprocessing", async ({ page }) =
     await page.locator("[data-cancel]").click();
     await expect(page.locator(".smart-scanner-overlay")).toHaveCount(0);
   }
+});
+test("editor enhancement controls, left rotation and card ratio reach the render call", async ({ page }) => {
+  await run(page);
+  await page.locator("[data-rotate-left]").click();
+  await page.locator("[data-auto-enhance]").click();
+  await expect(page.locator("[data-auto-enhance]")).toHaveAttribute("aria-pressed", "true");
+  await page.locator('[data-adjust="contrast"]').fill("20");
+  await page.locator("[data-grayscale]").check();
+  await expect(page.locator("[data-card-aspect]")).not.toBeChecked();
+  await page.locator("[data-card-aspect]").check();
+  await expect(page.locator("[data-resolution]")).toBeVisible();
+  await expect(page.locator("[data-result]")).toBeVisible();
+  await save(page);
+  const render = await page.evaluate(() => window.calls.filter(c => c.command === "cmd_scanner_render").at(-1).args);
+  expect(render.rotation).toBe(270);
+  expect(render.adjustments).toEqual({ auto_levels: true, brightness: 0, contrast: 20, sharpness: 1, grayscale: true, card_aspect: true });
+});
+test("card uploads default to the fixed card ratio and reset restores it", async ({ page }) => {
+  await run(page, "uploadNationalCardAttachment", [1, "front", "synthetic.png"]);
+  await expect(page.locator("[data-card-aspect]")).toBeChecked();
+  await page.locator("[data-adjust-reset]").click();
+  await expect(page.locator("[data-card-aspect]")).toBeChecked();
+  await expect(page.locator("[data-auto-enhance]")).toHaveAttribute("aria-pressed", "false");
+});
+test("dragging a corner shows the magnifier and releasing hides it", async ({ page }) => {
+  await run(page);
+  const corner = page.locator('[data-corner="0"]');
+  const box = await corner.boundingBox();
+  await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
+  await page.mouse.down();
+  await page.mouse.move(box.x + 30, box.y + 30, { steps: 3 });
+  await expect(page.locator(".smart-scanner-loupe")).toBeVisible();
+  await page.mouse.up();
+  await expect(page.locator(".smart-scanner-loupe")).toBeHidden();
+});
+
+test("Production uses the on-device model's corners without development diagnostics", async ({ page }) => {
+  await productionModule(page, "src/attachments/scanner.js", "productionScanner");
+  await page.evaluate(() => {
+    window.prepareOverrides = { automatic_detection_available: true };
+    window.productionScanner.uploadWithScanner("cmd_upload_general_doc_file", { docId: 1, sourcePath: "synthetic.png" }).then(v => window.result = v).catch(e => window.failure = String(e));
+  });
+  await page.locator('[data-choice="scan"]').click();
+  await expect(page.locator("[data-original]")).toBeVisible();
+  await expect(page.locator("[data-debug]")).toHaveCount(0);
+  expect(await page.locator("[data-selected]").getAttribute("points")).toBe("100,70 540,70 540,410 100,410");
+  await expect(page.locator("[data-status]")).toContainText("ثقة الكشف");
+  await page.locator("[data-process]").click();
+  await page.waitForFunction(() => window.result !== null);
+  expect((await page.evaluate(() => window.calls.filter(c => c.command === "cmd_scanner_render").at(-1).args.corners))).toEqual([[100, 70], [540, 70], [540, 410], [100, 410]]);
 });

@@ -1,5 +1,7 @@
 import { api } from "../api.js";
 import { escHtml, formatDate, showToast } from "../utils.js";
+import { COMPANY_LOGO } from "../branding.js";
+import { save } from "@tauri-apps/plugin-dialog";
 
 const STORAGE_KEY = "autohr.reportBuilder.v1";
 
@@ -94,6 +96,7 @@ const fieldGroups = [
       ["airport_badge_no", "رقم باج المطار"],
       ["airport_badge_issue_date", "تاريخ إصدار باج المطار", "date"],
       ["airport_badge_expiry", "تاريخ نفاذ باج المطار", "date"],
+      ["airport_badge_zones", "صلاحيات باج المطار"],
       ["has_airport_front", "مرفق وجه باج المطار"],
       ["has_airport_back", "مرفق خلف باج المطار"],
       ["ministry_badge_no", "رقم هوية وزارة النقل"],
@@ -233,7 +236,6 @@ function buildExcelPayload(rows, fields) {
 
 
 async function downloadExcel(rows, fields) {
-  const { save } = await import("@tauri-apps/plugin-dialog");
   const destination = await save({
     title: "حفظ تقرير الموظفين Excel",
     defaultPath: `employees-report-${new Date().toISOString().slice(0, 10)}.xlsx`,
@@ -260,13 +262,21 @@ function printReport(rows, fields) {
       table{width:100%;border-collapse:collapse;font-size:10px}
       th,td{border:1px solid #d1d5db;padding:5px;vertical-align:top}
       th{background:#f3f4f6}
+      .report-head{display:flex;align-items:center;gap:12px;margin:0 0 10px}
+      .report-head img{width:30mm;height:auto}
+      .report-head h1{margin:0}
       @page{size:A4 landscape;margin:8mm}
-    </style></head><body><h1>تقرير الموظفين</h1>${table}</body></html>`);
+    </style></head><body><header class="report-head"><img src="${escHtml(new URL(COMPANY_LOGO.print, location.href).href)}" alt="${escHtml(COMPANY_LOGO.alt)}" /><h1>تقرير الموظفين</h1></header>${table}</body></html>`);
   doc.close();
-  setTimeout(() => {
+  // Print only after the company logo has loaded, so it is never missing from the page.
+  const logo = doc.querySelector(".report-head img");
+  const logoReady = !logo || logo.complete
+    ? Promise.resolve()
+    : new Promise(resolve => { logo.onload = logo.onerror = resolve; });
+  Promise.all([logoReady, new Promise(resolve => setTimeout(resolve, 400))]).then(() => {
     frame.contentWindow.focus();
     frame.contentWindow.print();
-  }, 400);
+  });
   setTimeout(() => frame.remove(), 60000);
 }
 
@@ -294,17 +304,18 @@ export async function renderReports(container) {
 
       <div class="grid grid-cols-1 xl:grid-cols-[330px_1fr] gap-4 min-h-0 flex-1">
         <aside class="card p-4 overflow-auto">
-          <div class="flex items-center gap-2 mb-3">
-            <button type="button" id="report-select-all" class="btn-secondary text-xs px-2 py-1">تحديد الكل</button>
-            <button type="button" id="report-clear" class="btn-secondary text-xs px-2 py-1">مسح</button>
+          <p class="section-title mb-2">أعمدة التقرير</p>
+          <div class="flex items-center gap-2 mb-3 flex-wrap">
+            <button type="button" id="report-select-all" class="btn-secondary text-xs px-2 py-1">تحديد كل الأعمدة</button>
+            <button type="button" id="report-clear" class="btn-secondary text-xs px-2 py-1">إلغاء تحديد الأعمدة</button>
           </div>
           ${fieldGroups.map(group => `
-            <section style="border-top:1px solid #2d2d2d;padding-top:10px;margin-top:10px">
-              <p style="font-size:12px;font-weight:700;color:#24a9ff;margin-bottom:8px">${escHtml(group.title)}</p>
+            <section style="border-top:1px solid var(--ui-line);padding-top:10px;margin-top:10px">
+              <p style="font-size:12px;font-weight:700;color:var(--ui-accent);margin-bottom:8px">${escHtml(group.title)}</p>
               <div class="space-y-2">
                 ${group.fields.map(([key, label]) => `
-                  <label style="display:flex;align-items:center;gap:8px;font-size:12px;color:#d1d5db;cursor:pointer">
-                    <input type="checkbox" class="report-field" value="${key}" ${selected.has(key) ? "checked" : ""} style="width:15px;height:15px;accent-color:#24a9ff" />
+                  <label style="display:flex;align-items:center;gap:8px;font-size:12px;color:var(--ui-text);cursor:pointer">
+                    <input type="checkbox" class="report-field" value="${key}" ${selected.has(key) ? "checked" : ""} style="width:15px;height:15px;accent-color:var(--ui-accent)" />
                     <span>${escHtml(label)}</span>
                   </label>`).join("")}
               </div>
@@ -312,7 +323,7 @@ export async function renderReports(container) {
         </aside>
 
         <main class="card overflow-auto">
-          <div id="report-summary" style="padding:12px 14px;border-bottom:1px solid #2d2d2d;font-size:13px;color:#9ca3af"></div>
+          <div id="report-summary" style="padding:12px 14px;border-bottom:1px solid var(--ui-line);font-size:13px;color:var(--ui-text-muted)"></div>
           <div id="report-table"></div>
         </main>
       </div>
@@ -323,15 +334,15 @@ export async function renderReports(container) {
     const employeeIds = [...chosenEmployeeIds];
     const rows = employees.filter(employee => chosenEmployeeIds.has(Number(employee.id)));
     const fields = columns.map(key => fieldDefs.find(field => field.key === key)).filter(Boolean);
-    container.querySelector("#report-summary").textContent = `الموظفون المحددون: ${rows.length} / ${employees.length}`;
+    container.querySelector("#report-summary").textContent = `الموظفون المحددون للتقرير: ${rows.length} / ${employees.length}`;
     container.querySelector("#report-table").innerHTML = fields.length
       ? `<table class="w-full">
           <thead><tr>
-            <th class="table-header" style="width:54px;text-align:center"><input id="report-employees-all" type="checkbox" ${rows.length === employees.length ? "checked" : ""} style="width:16px;height:16px;accent-color:#24a9ff" title="تحديد جميع الموظفين" /></th>
+            <th class="table-header" style="width:54px;text-align:center"><input id="report-employees-all" type="checkbox" ${rows.length === employees.length ? "checked" : ""} style="width:16px;height:16px;accent-color:var(--ui-accent)" title="تحديد جميع الموظفين" /></th>
             ${fields.map(field => `<th class="table-header">${escHtml(field.label)}</th>`).join("")}
           </tr></thead>
           <tbody>${employees.length ? employees.map(employee => `<tr class="table-row">
-            <td class="table-cell" style="text-align:center"><input type="checkbox" class="report-employee" value="${employee.id}" ${chosenEmployeeIds.has(Number(employee.id)) ? "checked" : ""} style="width:16px;height:16px;accent-color:#24a9ff" aria-label="تحديد ${escHtml(employee.full_name)}" /></td>
+            <td class="table-cell" style="text-align:center"><input type="checkbox" class="report-employee" value="${employee.id}" ${chosenEmployeeIds.has(Number(employee.id)) ? "checked" : ""} style="width:16px;height:16px;accent-color:var(--ui-accent)" aria-label="تحديد ${escHtml(employee.full_name)}" /></td>
             ${fields.map(field => `<td class="table-cell">${escHtml(formatReportValue(employee, field))}</td>`).join("")}
           </tr>`).join("") : `<tr><td colspan="${fields.length + 1}" class="table-cell text-center text-gray-500">لا توجد نتائج</td></tr>`}</tbody>
         </table>`
@@ -371,10 +382,17 @@ export async function renderReports(container) {
   container.querySelector("#report-save").addEventListener("click", () => {
     const state = render();
     saveConfig(state.columns, state.filters);
+    showToast("تم حفظ إعداد التقرير، وسيُستخدم عند فتح التقارير لاحقاً");
   });
+
+  const readyToOutput = state => {
+    if (!state.fields.length) { showToast("اختر عموداً واحداً على الأقل من «أعمدة التقرير»", "warn"); return false; }
+    if (!state.rows.length) { showToast("حدد موظفاً واحداً على الأقل من الجدول", "warn"); return false; }
+    return true;
+  };
   container.querySelector("#report-excel").addEventListener("click", async () => {
     const state = render();
-    if (!state.fields.length) return;
+    if (!readyToOutput(state)) return;
     try {
       await downloadExcel(state.rows, state.fields);
     } catch (error) {
@@ -383,7 +401,7 @@ export async function renderReports(container) {
   });
   container.querySelector("#report-print").addEventListener("click", () => {
     const state = render();
-    if (state.fields.length) printReport(state.rows, state.fields);
+    if (readyToOutput(state)) printReport(state.rows, state.fields);
   });
 
   render();

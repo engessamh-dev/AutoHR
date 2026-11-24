@@ -1,7 +1,8 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "CNSArch",
-  "version": "1.0.4",
+  "mainBinaryName": "CNSArch",
+  "version": "1.0.5",
   "identifier": "com.autohr.app",
   "build": {
     "frontendDist": "../dist",
@@ -18,6 +19,7 @@
         "minWidth": 900,
         "minHeight": 600,
         "resizable": true,
+        "maximized": true,
         "fullscreen": false
       }
     ],
@@ -51,7 +53,7 @@
     "updater": {
       "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDlDMUZEOTE3REQ4N0Y2MkQKUldRdDlvZmRGOWtmbkV2WkJIRCtsU2Y1QzZQNlF5Rml6RUZBRFBTWEducUFWSWd6OFU1NXFtRloK",
       "endpoints": [
-        "https://github.com/engessamh-dev/AutoHR/releases/latest/download/latest.json"
+        "https://github.com/engessamh-dev/CNSArch-releases/releases/latest/download/latest.json"
       ],
       "windows": {
         "installMode": "passive"

@@ -90,6 +90,7 @@ CREATE TABLE IF NOT EXISTS employees (
   airport_badge_no          TEXT,
   airport_badge_issue_date  TEXT,
   airport_badge_expiry      TEXT,
+  airport_badge_zones       TEXT,
   airport_badge_front_path  TEXT,
   airport_badge_back_path   TEXT,
   ministry_badge_no         TEXT,
@@ -182,6 +183,12 @@ CREATE TABLE IF NOT EXISTS employee_vehicles (
   annual_no   TEXT,
   issue_date  TEXT,
   expiry_date TEXT,
+  annual_front_path TEXT,
+  annual_back_path  TEXT,
+  governorate       TEXT,
+  plate_category    TEXT,
+  chassis_no        TEXT,
+  model_year        TEXT,
   created_at  TEXT DEFAULT (datetime('now')),
   updated_at  TEXT DEFAULT (datetime('now'))
 );

@@ -188,7 +188,7 @@ fn list_files(root: &Path) -> AppResult<Vec<PathBuf>> {
 fn copy_and_verify(conn: &Connection, old_root: &Path, new_root: &Path, progress: &mut dyn FnMut(BackupProgress)) -> AppResult<()> {
     let new_db = new_root.join(DATABASE_FILE);
     progress(backup_progress(40, "جاري نسخ قاعدة البيانات إلى الموقع الجديد..."));
-    conn.backup(rusqlite::DatabaseName::Main, &new_db, None)?;
+    conn.backup(rusqlite::MAIN_DB, &new_db, None::<fn(rusqlite::backup::Progress)>)?;
 
     let old_data = old_root.join("Data");
     let new_data = new_root.join("Data");

@@ -24,7 +24,7 @@ fn office_upload_type(source: &Path, extension: &str) -> Option<(&'static str, &
                 _ => return None,
             };
             let valid = archive.by_name("[Content_Types].xml").is_ok()
-                && (0..archive.len()).any(|index| archive.by_index(index).is_ok_and(|entry| entry.name().starts_with(required_dir)));
+                && (0..archive.len()).any(|index| archive.by_index(index).is_ok_and(|entry| entry.name().is_ok_and(|name| name.starts_with(required_dir))));
             if !valid { return None; }
             Some(match extension {
                 "docx" => ("docx", "application/vnd.openxmlformats-officedocument.wordprocessingml.document"),
@@ -125,15 +125,17 @@ pub fn copy_validated_upload(conn: &Connection, source_path: &str, destination_d
     if let Err(error) = conn.execute(
         "INSERT OR REPLACE INTO document_metadata(stored_path,original_name,mime_type,size_bytes) VALUES(?1,?2,?3,?4)",
         params![rel, upload.original_name, upload.mime_type, upload.size as i64],
-    ) {
+    ).map_err(AppError::from).and_then(|_| crate::integrity::seal_file(conn, &rel, &destination)) {
         std::fs::remove_file(destination).ok();
-        return Err(error.into());
+        conn.execute("DELETE FROM document_metadata WHERE stored_path=?1", params![rel]).ok();
+        return Err(error);
     }
     if let Some((original, owner, meta)) = scanned_original {
         let original_rel = original_rel.expect("scanned uploads register their original path");
         let original_dest = storage_path(conn).join(&original_rel);
         let result = (|| -> AppResult<()> {
             copy_new_file(&original, &original_dest)?;
+            crate::integrity::seal_file(conn, &original_rel, &original_dest)?;
             conn.execute("UPDATE document_metadata SET original_name=?1, original_path=?2 WHERE stored_path=?3", params![meta.original_name, original_rel, rel])?;
             crate::scanner::audit_processing(conn, &owner, &rel)?;
             Ok(())
@@ -345,6 +347,76 @@ pub fn delete_family_national_card_attachment(
     if updated == 0 {
         return Err(AppError::NotFound);
     }
+    if let Some(relative_path) = existing {
+        let path = safe_relative_path(&relative_path)?;
+        crate::scanner::cleanup_metadata_file(conn, &path.to_string_lossy());
+    }
+    Ok(())
+}
+
+fn vehicle_annual_column(side: &str) -> AppResult<&'static str> {
+    match side {
+        "front" => Ok("annual_front_path"),
+        "back" => Ok("annual_back_path"),
+        _ => Err(AppError::Validation("Invalid vehicle registration side".into())),
+    }
+}
+
+fn stored_vehicle_annual_path(conn: &Connection, employee_id: i64, vehicle_index: usize, column: &str) -> AppResult<Option<String>> {
+    use rusqlite::OptionalExtension;
+    conn.query_row(
+        &format!("SELECT {column} FROM employee_vehicles WHERE employee_id=?1 AND sort_order=?2"),
+        params![employee_id, vehicle_index as i64],
+        |r| r.get::<_, Option<String>>(0),
+    ).optional()?.ok_or(AppError::NotFound)
+}
+
+/// Car registration (السنوية) image of one saved vehicle.
+pub fn upload_vehicle_annual_attachment(
+    conn: &Connection,
+    employee_id: i64,
+    vehicle_index: usize,
+    side: &str,
+    source_path: &str,
+) -> AppResult<String> {
+    ensure_storage_layout(conn)?;
+    let column = vehicle_annual_column(side)?;
+    let previous = stored_vehicle_annual_path(conn, employee_id, vehicle_index, column)?;
+    let dest_dir = storage_path(conn)
+        .join("Files").join("Employees").join(employee_id.to_string())
+        .join("Vehicles").join((vehicle_index + 1).to_string()).join("Annual");
+    let rel = copy_validated_upload(conn, source_path, &dest_dir,
+        &format!("Files/Employees/{}/Vehicles/{}/Annual", employee_id, vehicle_index + 1),
+        true, false, MAX_DOCUMENT_SIZE)?;
+    let updated = conn.execute(
+        &format!("UPDATE employee_vehicles SET {column}=?1, updated_at=datetime('now') WHERE employee_id=?2 AND sort_order=?3"),
+        params![rel, employee_id, vehicle_index as i64],
+    )?;
+    if updated == 0 {
+        return Err(AppError::NotFound);
+    }
+    if let Some(old) = previous {
+        if old != rel {
+            if let Ok(path) = safe_relative_path(&old) {
+                crate::scanner::remove_replaced(conn, source_path, path);
+            }
+        }
+    }
+    Ok(rel)
+}
+
+pub fn delete_vehicle_annual_attachment(
+    conn: &Connection,
+    employee_id: i64,
+    vehicle_index: usize,
+    side: &str,
+) -> AppResult<()> {
+    let column = vehicle_annual_column(side)?;
+    let existing = stored_vehicle_annual_path(conn, employee_id, vehicle_index, column)?;
+    conn.execute(
+        &format!("UPDATE employee_vehicles SET {column}=NULL, updated_at=datetime('now') WHERE employee_id=?1 AND sort_order=?2"),
+        params![employee_id, vehicle_index as i64],
+    )?;
     if let Some(relative_path) = existing {
         let path = safe_relative_path(&relative_path)?;
         crate::scanner::cleanup_metadata_file(conn, &path.to_string_lossy());

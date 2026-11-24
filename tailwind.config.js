@@ -5,13 +5,13 @@ export default {
     extend: {
       colors: {
         autohr: {
-          bg: "#020c1b",
-          sidebar: "#061a32",
-          card: "#08213d",
-          border: "#244e73",
-          green: "#24a9ff",
-          amber: "#d97706",
-          red: "#f87171",
+          bg: "var(--autohr-bg)",
+          sidebar: "var(--autohr-sidebar)",
+          card: "var(--autohr-card)",
+          border: "var(--autohr-border)",
+          green: "var(--autohr-green)",
+          amber: "var(--autohr-amber)",
+          red: "var(--autohr-red)",
         },
       },
     },

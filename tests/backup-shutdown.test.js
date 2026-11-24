@@ -7,7 +7,7 @@ const source = readFileSync(new URL("../src/main.js", import.meta.url), "utf8");
 const runner = source.slice(source.indexOf("async function runShutdownAutomaticBackups({"), source.indexOf("async function notifyDocumentAlerts()"));
 const logout = source.slice(source.indexOf("async function doLogout()"), source.indexOf("// ── Bootstrap"));
 const closeStart = source.indexOf("  getCurrentWindow().onCloseRequested(");
-const close = source.slice(closeStart, source.indexOf("\n  // Login form", closeStart));
+const close = source.slice(closeStart, source.indexOf("\n  // First run", closeStart));
 
 function harness({ fail = false } = {}) {
   const calls = [];
@@ -33,6 +33,8 @@ function harness({ fail = false } = {}) {
     window: {},
     getCurrentWindow: () => ({ onCloseRequested(fn) { context.closeHandler = fn; } }),
     confirmAction: async () => true,
+    clearLoginMessage: () => {},
+    applyUiScale: () => {},
     listen: async () => () => {},
     requestAnimationFrame: fn => fn(),
     setTimeout: fn => { fn(); },

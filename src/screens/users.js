@@ -1,5 +1,5 @@
 import { api } from "../api.js";
-import { showToast, escHtml, confirmAction } from "../utils.js";
+import { showToast, escHtml, confirmAction, arCount } from "../utils.js";
 import { can, roleLabels } from "../permissions.js";
 
 const MAX_USERS = 10;
@@ -35,7 +35,8 @@ export async function renderUsers(container, user) {
             <p class="section-title mb-0">${escHtml(title)}</p>
             <p class="text-xs text-gray-500 mt-1">أدخل البيانات المطلوبة ثم اضغط ${escHtml(submitLabel)}</p>
           </div>
-          <button type="button" class="btn-secondary modal-close">إغلاق</button>
+          <button type="button" class="modal-close" aria-label="إغلاق" title="إغلاق (Esc)"
+            style="border:0;background:transparent;color:var(--ui-text-muted);font-size:22px;line-height:1;cursor:pointer;padding:4px 8px;border-radius:6px">×</button>
         </div>
         ${body}
         <div class="flex gap-3 pt-2">
@@ -74,21 +75,21 @@ export async function renderUsers(container, user) {
       submitLabel: "إضافة المستخدم",
       body: `
         <div>
-          <p class="text-xs text-gray-500 mb-1">اسم المستخدم</p>
+          <label for="new-username" class="block text-xs text-gray-500 mb-1">اسم المستخدم</label>
           <input id="new-username" class="input-field" autocomplete="off" placeholder="مثال: archive.user" />
         </div>
         <div class="grid grid-cols-1 md:grid-cols-2 gap-3">
           <div>
-            <p class="text-xs text-gray-500 mb-1">كلمة المرور المؤقتة</p>
-            <input id="new-password" class="input-field" type="password" autocomplete="new-password" placeholder="8 أحرف على الأقل" />
+            <label for="new-user-password" class="block text-xs text-gray-500 mb-1">كلمة المرور المؤقتة</label>
+            <input id="new-user-password" class="input-field" type="password" autocomplete="new-password" placeholder="8 أحرف على الأقل" />
           </div>
           <div>
-            <p class="text-xs text-gray-500 mb-1">تأكيد كلمة المرور</p>
-            <input id="new-password-confirm" class="input-field" type="password" autocomplete="new-password" />
+            <label for="new-user-password-confirm" class="block text-xs text-gray-500 mb-1">تأكيد كلمة المرور</label>
+            <input id="new-user-password-confirm" class="input-field" type="password" autocomplete="new-password" />
           </div>
         </div>
         <div>
-          <p class="text-xs text-gray-500 mb-1">الدور</p>
+          <label for="new-role" class="block text-xs text-gray-500 mb-1">الدور</label>
           <select id="new-role" class="input-field">
             ${assignableRoles.map(role => `<option value="${role}">${escHtml(roleLabels[role])}</option>`).join("")}
           </select>
@@ -96,8 +97,8 @@ export async function renderUsers(container, user) {
         `,
       onSubmit: async modal => {
         const username = modal.querySelector("#new-username").value.trim();
-        const password = modal.querySelector("#new-password").value;
-        const confirm = modal.querySelector("#new-password-confirm").value;
+        const password = modal.querySelector("#new-user-password").value;
+        const confirm = modal.querySelector("#new-user-password-confirm").value;
         if (!username) throw new Error("اسم المستخدم مطلوب");
         if (password.length < 8) throw new Error("كلمة المرور يجب أن تكون 8 أحرف على الأقل");
         if (password !== confirm) throw new Error("كلمتا المرور غير متطابقتين");
@@ -122,11 +123,11 @@ export async function renderUsers(container, user) {
           سيُطلب من المستخدم تغيير كلمة المرور المؤقتة عند تسجيل الدخول التالي.
         </div>
         <div>
-          <p class="text-xs text-gray-500 mb-1">كلمة المرور المؤقتة الجديدة</p>
+          <label for="reset-password" class="block text-xs text-gray-500 mb-1">كلمة المرور المؤقتة الجديدة</label>
           <input id="reset-password" class="input-field" type="password" autocomplete="new-password" placeholder="8 أحرف على الأقل" />
         </div>
         <div>
-          <p class="text-xs text-gray-500 mb-1">تأكيد كلمة المرور</p>
+          <label for="reset-password-confirm" class="block text-xs text-gray-500 mb-1">تأكيد كلمة المرور</label>
           <input id="reset-password-confirm" class="input-field" type="password" autocomplete="new-password" />
         </div>`,
       onSubmit: async modal => {
@@ -147,7 +148,7 @@ export async function renderUsers(container, user) {
       submitLabel: "حفظ الدور",
       body: `
         <div>
-          <p class="text-xs text-gray-500 mb-1">الدور الجديد</p>
+          <label for="edit-role" class="block text-xs text-gray-500 mb-1">الدور الجديد</label>
           <select id="edit-role" class="input-field">
             ${assignableRoles.map(role => `<option value="${role}" ${role === item.role ? "selected" : ""}>${escHtml(roleLabels[role])}</option>`).join("")}
           </select>
@@ -168,10 +169,15 @@ export async function renderUsers(container, user) {
         <div class="card space-y-4">
           <div class="flex items-start justify-between gap-4 flex-wrap">
             <div>
-              <p class="section-title mb-0">إدارة المستخدمين</p>
-              <p class="text-xs text-gray-500 mt-1">إضافة المستخدمين وإدارة أدوارهم وكلمات المرور</p>
+              <p class="settings-block-title">إدارة المستخدمين</p>
+              <p class="settings-block-help">إضافة المستخدمين وإدارة أدوارهم وكلمات المرور</p>
             </div>
-            ${users.length < MAX_USERS ? `<button id="btn-add-user" class="btn-primary">+ إضافة مستخدم</button>` : ""}
+            ${users.length < MAX_USERS
+              ? `<button id="btn-add-user" class="btn-primary">+ إضافة مستخدم</button>`
+              : `<div class="flex flex-col items-end gap-1">
+                  <button type="button" class="btn-primary" disabled aria-disabled="true" style="opacity:.5;cursor:not-allowed">+ إضافة مستخدم</button>
+                  <span class="text-xs text-gray-500">وصلت إلى الحد الأقصى (${MAX_USERS} مستخدمين). احذف مستخدماً لإضافة آخر.</span>
+                </div>`}
           </div>
           <div class="grid grid-cols-1 md:grid-cols-[1fr_230px_auto] gap-3 items-center">
             <input id="user-search" class="input-field" placeholder="بحث باسم المستخدم..." value="${escHtml(search)}" />
@@ -179,7 +185,7 @@ export async function renderUsers(container, user) {
               <option value="">كل الأدوار</option>
               ${roles.map(role => `<option value="${role}" ${roleFilter === role ? "selected" : ""}>${escHtml(roleLabels[role])}</option>`).join("")}
             </select>
-            <span class="badge badge-gray">${visible.length} / ${users.length} مستخدم</span>
+            <span class="badge badge-gray">${visible.length === users.length ? arCount(users.length, "user") : `${visible.length} من ${arCount(users.length, "user")}`}</span>
           </div>
         </div>
 
@@ -195,11 +201,11 @@ export async function renderUsers(container, user) {
                 <tr class="table-row">
                   <td class="table-cell">
                     <div class="flex items-center gap-3">
-                      <span style="display:grid;place-items:center;width:34px;height:34px;border-radius:50%;background:#08284a;color:#7dd3fc;font-weight:800">
+                      <span style="display:grid;place-items:center;width:34px;height:34px;border-radius:50%;background:var(--ui-accent-soft);color:var(--ui-info);font-weight:800">
                         ${escHtml(item.username.slice(0, 1).toUpperCase())}
                       </span>
                       <div>
-                        <p class="font-medium text-gray-100" dir="ltr">${escHtml(item.username)}</p>
+                        <p class="font-medium text-gray-100"><span dir="ltr">${escHtml(item.username)}</span>${item.id === user.id ? ` <span class="text-xs text-autohr-green">(أنت)</span>` : ""}</p>
                         ${item.username === "sysadmin" ? `<p class="text-xs text-gray-500">مستخدم النظام الأساسي</p>` : ""}
                         ${item.must_change_password ? `<span class="badge badge-amber mt-1">بانتظار تغيير كلمة المرور</span>` : ""}
                       </div>
@@ -211,9 +217,11 @@ export async function renderUsers(container, user) {
                       ${item.username !== "sysadmin" || canAssignSystemAdmin
                         ? `<button class="btn-secondary text-xs edit-role" data-id="${item.id}">تعديل الدور</button>` : ""}
                       <button class="btn-secondary text-xs reset-password" data-id="${item.id}">إعادة تعيين كلمة المرور</button>
-                      ${item.username !== "sysadmin"
-                        ? `<button class="btn-danger text-xs delete-user" data-id="${item.id}">حذف</button>`
-                        : `<span class="text-xs text-gray-500 self-center">لا يمكن حذف مستخدم النظام</span>`}
+                      ${item.username === "sysadmin"
+                        ? `<span class="text-xs text-gray-500 self-center">لا يمكن حذف مستخدم النظام</span>`
+                        : item.id === user.id
+                          ? `<span class="text-xs text-gray-500 self-center">لا يمكنك حذف حسابك</span>`
+                          : `<button class="btn-danger text-xs delete-user" data-id="${item.id}">حذف</button>`}
                     </div>
                   </td>
                 </tr>`).join("") : `<tr><td colspan="3" class="table-cell text-center text-gray-500 py-10">لا توجد نتائج مطابقة</td></tr>`}

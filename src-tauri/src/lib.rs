@@ -1,5 +1,5 @@
 // lib.rs — GCANS v2.0
-mod db; mod services; mod files; mod scanner; mod paths; mod storage;
+mod db; mod names; mod services; mod files; mod scanner; mod paths; mod storage; mod ai_detect; mod secure; mod ocr; mod ocr_parse; mod health; mod errlog; mod integrity;
 mod scanner_commands;
 use scanner_commands::*;
 #[cfg(test)] mod scanner_tests;
@@ -8,6 +8,7 @@ use tauri::{AppHandle, Emitter, Manager, State, Window};
 use std::io::Write;
 use std::sync::Mutex;
 use rusqlite::Connection;
+#[cfg(target_os = "windows")]
 use rand::RngCore;
 
 /// The open database, or `None` while first-run setup is pending or the data folder is
@@ -87,6 +88,30 @@ fn activate_database(app: &AppHandle, conn: &Connection) {
     scanner::recover_pending_files(conn).ok();
     ensure_backup_layout(conn).ok();
     app.asset_protocol_scope().allow_directory(storage_path(conn), true).ok();
+    restrict_managed_folders();
+}
+
+/// Limits the data and backup folders to this Windows user, Administrators and SYSTEM. Checked on
+/// every start (not only once), so access opened again later is closed again; the outcome is kept
+/// for «الفحص والدعم». Runs in the background and never blocks or fails startup. Then seals the
+/// attachments that have no seal yet (the first start after the update, or files from a restore).
+fn restrict_managed_folders() {
+    let roots = [paths::data_root(), paths::backup_root()];
+    std::thread::spawn(move || {
+        if cfg!(target_os = "windows") {
+            for root in roots {
+                if !root.is_dir() { continue; }
+                let result = match secure::folder_access(&root) {
+                    Ok(secure::FolderAccess::Open(_)) => secure::restrict_folder(&root),
+                    Ok(_) => Ok(()),
+                    Err(error) => Err(error),
+                };
+                if let Err(error) = &result { errlog::record_backend("file", &format!("restrict folder: {error}")); }
+                health::remember_restrict_result(&root, result);
+            }
+        }
+        if let Ok(conn) = db::open_existing() { integrity::seal_new_files(&conn); }
+    });
 }
 
 #[derive(Clone)]
@@ -279,7 +304,7 @@ fn cmd_scan_document(state: State<DbState>, sess: State<SessionState>, device_id
 
     #[cfg(not(target_os = "windows"))]
     {
-        let _ = user;
+        let _ = (user, device_id);
         return Err(AppError::Validation("Document scanning is supported on Windows only".into()));
     }
 
@@ -340,6 +365,11 @@ fn cmd_scan_document(state: State<DbState>, sess: State<SessionState>, device_id
 #[tauri::command] fn cmd_login(state: State<DbState>, sess: State<SessionState>, username: String, password: String) -> Result<User, AppError> {
     let conn = state.conn()?;
     let user = login(&conn, &username, &password)?;
+    if user.permissions.iter().any(|p| p == "documents.upload") {
+        // Load and optimise the document-detection model in the background, so the first scan
+        // does not wait for it. Only users who can upload documents ever need it.
+        std::thread::spawn(|| { ai_detect::available(); });
+    }
     *sess.0.lock().unwrap() = Some(Session {
         username,
         must_change_password: user.must_change_password,
@@ -373,10 +403,6 @@ fn cmd_scan_document(state: State<DbState>, sess: State<SessionState>, device_id
     let user = session_user(&sess)?;
     update_company_config(&*state.conn()?, &user, &data)
 }
-#[tauri::command] fn cmd_upload_company_logo(state: State<DbState>, sess: State<SessionState>, source_path: String) -> Result<CompanyConfig, AppError> {
-    let user = session_user(&sess)?;
-    upload_company_logo(&*state.conn()?, &user, &source_path)
-}
 #[tauri::command] fn cmd_next_employee_number(state: State<DbState>, sess: State<SessionState>) -> Result<String, AppError> {
     let conn = state.conn()?;
     authorize(&conn, &sess, "employees.create")?;
@@ -401,6 +427,16 @@ fn cmd_scan_document(state: State<DbState>, sess: State<SessionState>, device_id
     let conn = state.conn()?;
     let user = authorize(&conn, &sess, "employees.edit")?;
     update_employee(&conn, id, &data, &user)
+}
+#[tauri::command] fn cmd_list_name_review(state: State<DbState>, sess: State<SessionState>) -> Result<Vec<names::ReviewItem>, AppError> {
+    let conn = state.conn()?;
+    let user = authorize(&conn, &sess, "employees.edit")?;
+    list_name_review(&conn, &user)
+}
+#[tauri::command] fn cmd_save_name_review(state: State<DbState>, sess: State<SessionState>, employee_id: i64, owner: String, index: i64, field: String, parts: serde_json::Value) -> Result<String, AppError> {
+    let conn = state.conn()?;
+    let user = authorize(&conn, &sess, "employees.edit")?;
+    save_name_review(&conn, employee_id, &owner, index, &field, &parts, &user)
 }
 #[tauri::command] fn cmd_delete_employee(state: State<DbState>, sess: State<SessionState>, id: i64) -> Result<(), AppError> {
     let conn = state.conn()?;
@@ -454,6 +490,20 @@ fn cmd_scan_document(state: State<DbState>, sess: State<SessionState>, device_id
     let user = authorize(&conn, &sess, "documents.delete")?;
     files::delete_family_national_card_attachment(&conn, employee_id, member_index, &side)?;
     log_activity(&conn, &user, "DELETE_FAMILY_NATIONAL_CARD_ATTACHMENT", Some("employee"), Some(employee_id), None, Some(&format!("{}:{}", member_index, side)));
+    Ok(())
+}
+#[tauri::command] fn cmd_upload_vehicle_annual_attachment(state: State<DbState>, sess: State<SessionState>, employee_id: i64, vehicle_index: usize, side: String, source_path: String) -> Result<String, AppError> {
+    let conn = state.conn()?;
+    let user = authorize(&conn, &sess, "documents.upload")?;
+    let rel = files::upload_vehicle_annual_attachment(&conn, employee_id, vehicle_index, &side, &source_path)?;
+    log_activity(&conn, &user, "UPLOAD_VEHICLE_ANNUAL_ATTACHMENT", Some("employee"), Some(employee_id), Some(&rel), Some(&format!("{}:{}", vehicle_index, side)));
+    Ok(rel)
+}
+#[tauri::command] fn cmd_delete_vehicle_annual_attachment(state: State<DbState>, sess: State<SessionState>, employee_id: i64, vehicle_index: usize, side: String) -> Result<(), AppError> {
+    let conn = state.conn()?;
+    let user = authorize(&conn, &sess, "documents.delete")?;
+    files::delete_vehicle_annual_attachment(&conn, employee_id, vehicle_index, &side)?;
+    log_activity(&conn, &user, "DELETE_VEHICLE_ANNUAL_ATTACHMENT", Some("employee"), Some(employee_id), None, Some(&format!("{}:{}", vehicle_index, side)));
     Ok(())
 }
 #[tauri::command] fn cmd_upload_spouse_national_card_attachment(state: State<DbState>, sess: State<SessionState>, employee_id: i64, spouse_index: usize, side: String, source_path: String) -> Result<String, AppError> {
@@ -836,7 +886,10 @@ async fn cmd_move_data_folder(window: Window, state: State<'_, DbState>, sess: S
     set_auto_backup_settings(&conn, &user, &data)
 }
 #[tauri::command]
-async fn cmd_run_due_auto_backups(window: Window) -> Result<Vec<String>, AppError> {
+async fn cmd_run_due_auto_backups(window: Window, sess: State<'_, SessionState>) -> Result<Vec<String>, AppError> {
+    // Only a signed-in session can trigger backups. Without one nothing could have changed
+    // since the last run, so there is nothing due and the call quietly does nothing.
+    if session_identity(&sess).is_err() { return Ok(Vec::new()); }
     let progress_window = window.clone();
     tauri::async_runtime::spawn_blocking(move || {
         // Never migrates or creates anything: it only runs against an already open,
@@ -891,7 +944,7 @@ async fn cmd_create_backup(window: Window, state: State<'_, DbState>, sess: Stat
 async fn cmd_restore_backup(window: Window, state: State<'_, DbState>, sess: State<'_, SessionState>, source_path: String, password: String) -> Result<(), AppError> {
     let user = {
         let conn = state.conn()?;
-        authorize(&conn, &sess, "backups.manage")?
+        authorize(&conn, &sess, "backups.restore")?
     };
     let app = window.app_handle().clone();
     let progress_window = window.clone();
@@ -923,9 +976,11 @@ async fn cmd_restore_backup(window: Window, state: State<'_, DbState>, sess: Sta
     let conn = state.conn()?; let user = authorize(&conn, &sess, "documents.view")?;
     document_preview_path(&conn, &user, &relative_path)
 }
-#[tauri::command] fn cmd_read_document(state: State<DbState>, sess: State<SessionState>, relative_path: String) -> Result<Vec<u8>, AppError> {
+#[tauri::command] fn cmd_read_document(state: State<DbState>, sess: State<SessionState>, relative_path: String) -> Result<tauri::ipc::Response, AppError> {
     let conn = state.conn()?; let user = authorize(&conn, &sess, "documents.view")?;
-    read_document(&conn, &user, &relative_path)
+    // Raw bytes reach the frontend as an ArrayBuffer; a Vec<u8> would be sent as a JSON
+    // array of numbers, several times larger and slow to parse for big PDFs.
+    read_document(&conn, &user, &relative_path).map(tauri::ipc::Response::new)
 }
 #[tauri::command] fn cmd_print_document(state: State<DbState>, sess: State<SessionState>, relative_path: String) -> Result<(), AppError> {
     let conn = state.conn()?; let user = authorize(&conn, &sess, "documents.print")?;
@@ -970,8 +1025,26 @@ fn updater_configured(app: &AppHandle) -> bool {
         .is_some_and(is_real_pubkey)
 }
 
+/// A short Arabic explanation of an updater error, by its cause.
+fn update_error_message(error: &tauri_plugin_updater::Error) -> &'static str {
+    use tauri_plugin_updater::Error as E;
+    match error {
+        // The request never got an answer: no network, DNS, or the server is unreachable.
+        E::Reqwest(e) if e.is_connect() || e.is_timeout() || e.is_request() =>
+            "لا يوجد اتصال بالإنترنت، أو تعذر الوصول إلى خادم التحديثات. أعد المحاولة لاحقًا.",
+        // The server answered, but there is no usable release file for this computer.
+        E::ReleaseNotFound | E::Serialization(_) | E::Semver(_)
+        | E::TargetNotFound(_) | E::TargetsNotFound(_) => "لا يوجد تحديث متاح حاليًا.",
+        E::Minisign(_) | E::SignedVersionMismatch { .. } | E::MissingSignedVersion =>
+            "توقيع التحديث غير صحيح، لذلك لم يُثبَّت ولم يتغير شيء. تواصل مع المطوّر.",
+        _ => "تعذر التحقق من التحديثات. أعد المحاولة لاحقًا.",
+    }
+}
+
 fn update_error(error: tauri_plugin_updater::Error) -> AppError {
-    AppError::Validation(format!("تعذر التحقق من التحديثات. تأكد من الاتصال بالشبكة ثم أعد المحاولة. ({error})"))
+    // The technical detail goes to the error log (فحص البرنامج), not to the user.
+    errlog::record_backend("update", &error.to_string());
+    AppError::Validation(update_error_message(&error).into())
 }
 
 #[tauri::command]
@@ -1001,6 +1074,22 @@ async fn cmd_check_for_update(app: AppHandle, state: State<'_, DbState>, sess: S
         info.date = update.date.map(|d| d.to_string()).unwrap_or_default();
     }
     Ok(info)
+}
+
+#[tauri::command]
+fn cmd_get_auto_update(state: State<DbState>, sess: State<SessionState>) -> Result<bool, AppError> {
+    let conn = state.conn()?;
+    let user = authorize(&conn, &sess, "settings.manage")?;
+    assert_permission(&conn, &user, "backups.manage")?;
+    get_auto_update(&conn)
+}
+
+#[tauri::command]
+fn cmd_set_auto_update(state: State<DbState>, sess: State<SessionState>, enabled: bool) -> Result<bool, AppError> {
+    let conn = state.conn()?;
+    let user = authorize(&conn, &sess, "settings.manage")?;
+    assert_permission(&conn, &user, "backups.manage")?;
+    set_auto_update(&conn, &user, enabled)
 }
 
 /// Takes a verified encrypted backup (Backups/PreUpdate), then downloads, verifies the
@@ -1056,15 +1145,112 @@ async fn cmd_install_update(window: Window, state: State<'_, DbState>, sess: Sta
         || {
             let _ = window.emit("update-progress", BackupProgress { percent: 100, message: "جاري تثبيت التحديث...".into() });
         },
-    ).await.map_err(|error| AppError::Validation(format!("فشل تنزيل التحديث أو التحقق من توقيعه، ولم يتغير شيء. ({error})")))?;
+    ).await.map_err(|error| {
+        errlog::record_backend("update", &error.to_string());
+        let reason = match error {
+            tauri_plugin_updater::Error::Minisign(_) => update_error_message(&error),
+            _ => "فشل تنزيل التحديث أو تثبيته، ولم يتغير شيء. أعد المحاولة لاحقًا.",
+        };
+        AppError::Validation(reason.into())
+    })?;
     app.restart();
+}
+
+// ── Program check and support («الفحص والدعم») ──────────────────────────────
+// Available to every signed-in user. The report holds no personal data (see health.rs).
+
+#[tauri::command]
+async fn cmd_run_health_check(app: AppHandle, window: Window, state: State<'_, DbState>, sess: State<'_, SessionState>) -> Result<health::HealthReport, AppError> {
+    // Signed in and a database is open; the check itself runs on its own read connection off
+    // the main thread so the screen can show its progress bar while it works.
+    { let _conn = state.conn()?; session_user(&sess)?; }
+    let version = app.package_info().version.to_string();
+    let updater = updater_configured(&app);
+    tauri::async_runtime::spawn_blocking(move || {
+        let conn = db::open_existing().map_err(AppError::from)?;
+        Ok(health::run_with_progress(&conn, &version, updater, &errlog::recent(300), |step, total| {
+            let _ = window.emit("health-check-progress", serde_json::json!({ "step": step, "total": total }));
+        }))
+    })
+    .await
+    .map_err(|error| AppError::Other(error.to_string()))?
+}
+
+/// Runs the check again in Rust and writes its text to the .txt file the user chose,
+/// so the frontend cannot put anything else into the diagnostic file.
+#[tauri::command]
+fn cmd_save_health_report(app: AppHandle, state: State<DbState>, sess: State<SessionState>, destination_path: String) -> Result<String, AppError> {
+    let conn = state.conn()?;
+    let user = session_user(&sess)?;
+    let destination = std::path::PathBuf::from(&destination_path);
+    if !destination.is_absolute() || !destination.extension().is_some_and(|ext| ext.eq_ignore_ascii_case("txt")) {
+        return Err(AppError::Validation("اختر مكانًا لحفظ ملف نصي (.txt)".into()));
+    }
+    let report = health::run(&conn, &app.package_info().version.to_string(), updater_configured(&app), &errlog::recent(300));
+    health::save(&report, &destination).map_err(|e| AppError::Other(e.to_string()))?;
+    log_activity(&conn, &user, "SAVE_HEALTH_REPORT", Some("app"), None, Some(report.overall.as_str()), None);
+    Ok(destination_path)
+}
+
+/// «كشف التعديل من خارج البرنامج» for the System Admin right after sign-in: whether the data still
+/// needs approval on this computer, and which accounts were changed outside the program.
+#[tauri::command]
+fn cmd_get_integrity_status(state: State<DbState>, sess: State<SessionState>) -> Result<integrity::Status, AppError> {
+    let conn = state.conn()?;
+    authorize(&conn, &sess, "users.assign_system_admin")?;
+    Ok(integrity::status(&conn))
+}
+
+/// The System Admin accepts the data as it is now (after a move, or after deliberate outside
+/// changes). Seals everything with this computer's key and records it in the audit log.
+#[tauri::command]
+fn cmd_approve_integrity(state: State<DbState>, sess: State<SessionState>) -> Result<integrity::Status, AppError> {
+    let conn = state.conn()?;
+    // Checked by role only: approving is how a System Admin repairs flagged accounts, and an
+    // account changed outside the program has no permissions at all (assert_permission).
+    let user = authorize(&conn, &sess, "users.assign_system_admin")?;
+    integrity::approve(&conn, &user, "approved by System Admin")?;
+    Ok(integrity::status(&conn))
+}
+
+#[tauri::command]
+fn cmd_get_support_contact() -> health::SupportContact {
+    health::support_contact()
+}
+
+/// Opens WhatsApp or the mail program with a fixed support address. Only the URLs built
+/// in health::support_url can be opened; nothing comes from the frontend but two keywords.
+#[tauri::command]
+fn cmd_open_support_link(app: AppHandle, channel: String, topic: String) -> Result<(), AppError> {
+    let url = health::support_url(&channel, &topic, &app.package_info().version.to_string())
+        .ok_or_else(|| AppError::Validation("Unknown support link".into()))?;
+    #[cfg(not(target_os = "windows"))]
+    { let _ = url; return Err(AppError::Validation("Opening links is supported on Windows only".into())); }
+    #[cfg(target_os = "windows")]
+    {
+        std::process::Command::new("rundll32.exe")
+            .args(["url.dll,FileProtocolHandler", url.as_str()])
+            .spawn()
+            .map_err(|error| AppError::Other(error.to_string()))?;
+        Ok(())
+    }
 }
 
 pub fn scanner_self_test() -> Result<(), String> {
     scanner::production_self_test().map_err(|error| error.to_string())
 }
 
+/// The screen reports a failed command or an unexpected script error. Everything is cleaned of
+/// personal data in Rust (errlog.rs) before it is written; nothing here needs a session, so
+/// errors on the sign-in screen are kept too.
+#[tauri::command]
+fn cmd_log_client_error(operation: String, screen: String, message: String, stack: Option<String>) {
+    errlog::record_client(&operation, &screen, &message, stack.as_deref().unwrap_or(""));
+}
+
 pub fn run() {
+    errlog::init(app_data_path().join("Logs"), env!("CARGO_PKG_VERSION"));
+    errlog::install_panic_hook();
     let (conn, status) = match paths::resolve_startup() {
         Ok(paths::StartupState::Ready(found)) => {
             paths::set_current(Some(found));
@@ -1080,6 +1266,9 @@ pub fn run() {
         Ok(paths::StartupState::NeedsSetup) => (None, startup_status("needs_setup", String::new())),
         Err(error) => (None, startup_status("open_failed", error.to_string())),
     };
+    if status.state == "open_failed" || status.state == "data_missing" {
+        errlog::record("database", &format!("startup_{}", status.state), &status.message);
+    }
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_notification::init())
@@ -1096,14 +1285,16 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             cmd_login, cmd_change_password, cmd_logout,
-            cmd_get_company_config, cmd_get_public_company_config, cmd_update_company_config, cmd_upload_company_logo,
+            cmd_get_company_config, cmd_get_public_company_config, cmd_update_company_config,
             cmd_next_employee_number,
             cmd_list_employees, cmd_get_employee,
             cmd_create_employee, cmd_update_employee, cmd_delete_employee,
+            cmd_list_name_review, cmd_save_name_review,
             cmd_upload_employee_photo, cmd_delete_employee_photo,
             cmd_upload_national_card_attachment, cmd_delete_national_card_attachment,
             cmd_upload_family_national_card_attachment, cmd_delete_family_national_card_attachment,
             cmd_upload_spouse_national_card_attachment, cmd_delete_spouse_national_card_attachment,
+            cmd_upload_vehicle_annual_attachment, cmd_delete_vehicle_annual_attachment,
             cmd_upload_residence_card_attachment, cmd_delete_residence_card_attachment,
             cmd_upload_airport_badge_attachment, cmd_delete_airport_badge_attachment,
             cmd_upload_ministry_badge_attachment, cmd_delete_ministry_badge_attachment,
@@ -1112,7 +1303,7 @@ pub fn run() {
             cmd_upload_attachment, cmd_delete_attachment,
             cmd_scanner_settings, cmd_set_scanner_settings, cmd_scanner_prepare, cmd_scanner_render,
             cmd_scanner_release, cmd_scanner_save_existing, cmd_scanner_upload, cmd_scanner_detect, cmd_scanner_versions,
-            cmd_get_document_download_name,
+            cmd_get_document_download_name, cmd_read_document_fields,
             cmd_list_grade_history, cmd_add_grade_history, cmd_delete_grade_history,
             cmd_list_general_docs, cmd_create_general_doc, cmd_update_general_doc, cmd_delete_general_doc,
             cmd_upload_general_doc_file, cmd_delete_general_doc_attachment, cmd_move_general_doc_attachment,
@@ -1125,6 +1316,7 @@ pub fn run() {
             cmd_get_startup_status, cmd_check_setup_folders, cmd_complete_setup, cmd_retry_data_folder,
             cmd_get_storage_status, cmd_change_backup_folder, cmd_export_backup_to, cmd_move_data_folder,
             cmd_check_for_update, cmd_install_update,
+            cmd_run_health_check, cmd_save_health_report, cmd_get_integrity_status, cmd_approve_integrity, cmd_get_support_contact, cmd_open_support_link, cmd_log_client_error, cmd_get_auto_update, cmd_set_auto_update,
             cmd_get_auto_backup_settings, cmd_set_auto_backup_settings,
             cmd_run_due_auto_backups, cmd_exit_app,
             cmd_get_document_types, cmd_set_document_types,
@@ -1140,6 +1332,21 @@ mod report_export_tests {
     use super::*;
 
     #[test]
+    fn update_errors_explain_their_cause() {
+        use tauri_plugin_updater::Error as E;
+        assert_eq!(update_error_message(&E::ReleaseNotFound), "لا يوجد تحديث متاح حاليًا.");
+        assert_eq!(update_error_message(&E::TargetNotFound("windows-x86_64".into())), "لا يوجد تحديث متاح حاليًا.");
+        let bad_json = serde_json::from_str::<serde_json::Value>("{").unwrap_err();
+        assert_eq!(update_error_message(&E::Serialization(bad_json)), "لا يوجد تحديث متاح حاليًا.");
+        assert!(update_error_message(&E::MissingSignedVersion).contains("توقيع"));
+        assert!(update_error_message(&E::Network("500".into())).starts_with("تعذر التحقق"));
+        // No English detail reaches the user.
+        for error in [E::ReleaseNotFound, E::MissingSignedVersion, E::EmptyEndpoints] {
+            assert!(!update_error_message(&error).chars().any(|c| c.is_ascii_alphabetic()));
+        }
+    }
+
+    #[test]
     fn shipped_config_has_a_real_updater_public_key() {
         let config: serde_json::Value = serde_json::from_str(include_str!("../tauri.conf.json")).unwrap();
         let updater = &config["plugins"]["updater"];
@@ -1149,7 +1356,8 @@ mod report_export_tests {
         assert!(is_real_pubkey("dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk="));
         // Endpoints must be HTTPS: the plugin refuses plain HTTP unless explicitly allowed.
         for endpoint in updater["endpoints"].as_array().unwrap() {
-            assert!(endpoint.as_str().unwrap().starts_with("https://"));
+            // Releases live in the public releases-only repository, not the source repository.
+            assert!(endpoint.as_str().unwrap().starts_with("https://github.com/engessamh-dev/CNSArch-releases/releases/"));
         }
     }
     use std::io::Read;

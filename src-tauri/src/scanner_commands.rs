@@ -49,7 +49,6 @@ pub(crate) async fn cmd_scanner_prepare(
         } else {
             let permission = match kind.as_str() {
                 "cmd_upload_employee_photo" => "employees.edit",
-                "cmd_upload_company_logo" => "settings.manage",
                 _ => "documents.upload",
             };
             assert_permission(&conn, &owner, permission)?;
@@ -98,11 +97,14 @@ pub(crate) async fn cmd_scanner_render(
     token: String,
     corners: [[f32; 2]; 4],
     rotation: u16,
-) -> Result<Vec<u8>, AppError> {
+    adjustments: Option<scanner::Adjustments>,
+) -> Result<tauri::ipc::Response, AppError> {
     let owner = session_user(&sess)?;
-    tauri::async_runtime::spawn_blocking(move || scanner::render(&owner, &token, corners, rotation))
+    let adjustments = adjustments.unwrap_or_default();
+    tauri::async_runtime::spawn_blocking(move || scanner::render(&owner, &token, corners, rotation, adjustments))
         .await
         .map_err(|e| AppError::Other(e.to_string()))?
+        .map(tauri::ipc::Response::new)
 }
 #[tauri::command]
 pub(crate) fn cmd_scanner_release(
@@ -130,6 +132,7 @@ pub(crate) struct ScanUploadContext {
     pub side: Option<String>,
     pub member_index: Option<usize>,
     pub spouse_index: Option<usize>,
+    pub vehicle_index: Option<usize>,
 }
 #[tauri::command]
 pub(crate) fn cmd_scanner_upload(
@@ -163,7 +166,6 @@ fn scanner_upload_inner(
 ) -> Result<serde_json::Value, AppError> {
     let permission = match command {
         "cmd_upload_employee_photo" => "employees.edit",
-        "cmd_upload_company_logo" => "settings.manage",
         _ => "documents.upload",
     };
     assert_permission(conn, owner, permission)?;
@@ -180,10 +182,6 @@ fn scanner_upload_inner(
     let missing = || AppError::Validation("Missing upload context".into());
     let result = (|| -> Result<serde_json::Value, AppError> {
         let rel = match command {
-            "cmd_upload_company_logo" => {
-                return serde_json::to_value(upload_company_logo(&tx, owner, &source)?)
-                    .map_err(|e| AppError::Other(e.to_string()))
-            }
             "cmd_upload_employee_photo" => {
                 upload_employee_photo(&tx, context.employee_id.ok_or_else(missing)?, &source)?
             }
@@ -232,6 +230,13 @@ fn scanner_upload_inner(
                     &source,
                 )?
             }
+            "cmd_upload_vehicle_annual_attachment" => files::upload_vehicle_annual_attachment(
+                &tx,
+                context.employee_id.ok_or_else(missing)?,
+                context.vehicle_index.ok_or_else(missing)?,
+                context.side.as_deref().ok_or_else(missing)?,
+                &source,
+            )?,
             "cmd_upload_passport_attachment" => files::upload_passport_attachment(
                 &tx,
                 context.employee_id.ok_or_else(missing)?,
@@ -297,4 +302,29 @@ fn scanner_upload_inner(
     }
     scanner::finish_upload(conn, token);
     result
+}
+/// Reads the fields of a stored national card or passport image on this device. The image and the
+/// text never leave the computer, and nothing is written: the user reviews the values in the form.
+#[tauri::command]
+pub(crate) async fn cmd_read_document_fields(
+    state: State<'_, DbState>,
+    sess: State<'_, SessionState>,
+    relative_path: String,
+) -> Result<ocr_parse::ReadResult, AppError> {
+    let path = {
+        let conn = state.conn()?;
+        let owner = authorize(&conn, &sess, "employees.edit")?;
+        scanner::associated_path(&conn, &owner, &relative_path, false)?;
+        let path = scanner::effective_path(&conn, &relative_path)?;
+        log_audit(&conn, Some(&owner), "DOCUMENT_TEXT_READ", Some("document"), None, Some(&relative_path), "Success", None);
+        path
+    };
+    tauri::async_runtime::spawn_blocking(move || {
+        let image = scanner::load_image(&path)
+            .map_err(|_| AppError::Validation("قراءة البيانات تعمل على الصور فقط (JPEG أو PNG أو WebP)".into()))?;
+        let lines = ocr::read_lines(&image).ok_or_else(|| AppError::Other("text reader unavailable".into()))?;
+        Ok(ocr_parse::parse_with_codes(&lines, &ocr::read_qr_codes(&image)))
+    })
+    .await
+    .map_err(|e| AppError::Other(e.to_string()))?
 }

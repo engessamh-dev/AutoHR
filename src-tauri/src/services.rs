@@ -28,8 +28,14 @@ impl serde::Serialize for AppError {
             Self::Unauthorized => "You are not authorized to perform this action",
             Self::NotFound => "The requested item was not found",
             Self::Validation(message) => message,
-            Self::Db(_) => "The database operation could not be completed",
-            Self::Other(_) => "The operation could not be completed",
+            Self::Db(error) => {
+                crate::errlog::record_backend("database", &error.to_string());
+                crate::errlog::GENERIC_DB_MESSAGE
+            }
+            Self::Other(detail) => {
+                crate::errlog::record_backend("app", detail);
+                crate::errlog::GENERIC_OTHER_MESSAGE
+            }
         };
         s.serialize_str(message)
     }
@@ -119,6 +125,8 @@ pub struct Employee {
     pub airport_badge_no: Option<String>,
     pub airport_badge_issue_date: Option<String>,
     pub airport_badge_expiry: Option<String>,
+    /// Access zones printed on the airport badge, comma-separated (e.g. "S1,T,VIP").
+    pub airport_badge_zones: Option<String>,
     pub airport_badge_front_path: Option<String>,
     pub airport_badge_back_path: Option<String>,
     pub airport_badge_front_full_path: Option<String>,
@@ -148,12 +156,14 @@ pub struct Employee {
     pub family_members: Option<String>,
     pub attachment_paths: Option<String>,
     pub notes: Option<String>,
+    /// Name parts per field (see names.rs).
+    pub name_parts: Option<serde_json::Value>,
     pub is_active: i64,
     pub created_at: Option<String>,
     pub updated_at: Option<String>,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct EmployeeData {
     pub employee_number: Option<String>,
     pub full_name: String,
@@ -207,6 +217,8 @@ pub struct EmployeeData {
     pub airport_badge_no: Option<String>,
     pub airport_badge_issue_date: Option<String>,
     pub airport_badge_expiry: Option<String>,
+    /// Access zones printed on the airport badge, comma-separated (e.g. "S1,T,VIP").
+    pub airport_badge_zones: Option<String>,
     pub ministry_badge_no: Option<String>,
     pub ministry_badge_issue_date: Option<String>,
     pub ministry_badge_expiry: Option<String>,
@@ -228,6 +240,9 @@ pub struct EmployeeData {
     pub family_members: Option<String>,
     pub notes: Option<String>,
     pub is_active: Option<i64>,
+    /// JSON object of name parts sent by the form; the combined names are rebuilt from it.
+    #[serde(default)]
+    pub name_parts: Option<serde_json::Value>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -358,7 +373,7 @@ pub fn role_permissions(role: &str) -> &'static [&'static str] {
         "system_admin" => &[
             "dashboard.view", "employees.view", "employees.create", "employees.edit", "employees.delete",
             "documents.view", "documents.manage", "documents.upload", "documents.download", "documents.delete", "documents.print",
-            "users.manage", "users.assign_system_admin", "audit.view", "settings.manage", "backups.manage",
+            "users.manage", "users.assign_system_admin", "audit.view", "settings.manage", "backups.manage", "backups.restore",
         ],
         "archive_admin" => &[
             "dashboard.view", "employees.view", "employees.create", "employees.edit", "employees.delete",
@@ -380,13 +395,13 @@ fn valid_role(role: &str) -> bool {
     matches!(role, "system_admin" | "archive_admin" | "archive_officer" | "viewer")
 }
 
-pub fn user_role(conn: &Connection, username: &str) -> AppResult<String> {
-    conn.query_row("SELECT role FROM users WHERE username=?1", params![username], |r| r.get(0))
-        .map_err(|_| AppError::Unauthorized)
-}
-
 pub fn assert_permission(conn: &Connection, username: &str, permission: &str) -> AppResult<()> {
-    let role = user_role(conn, username)?;
+    let (id, role): (i64, String) = conn
+        .query_row("SELECT id,role FROM users WHERE username=?1", params![username], |r| Ok((r.get(0)?, r.get(1)?)))
+        .map_err(|_| AppError::Unauthorized)?;
+    // An account changed outside the program (for example its role raised with a database tool)
+    // keeps no permissions until a System Admin deals with it.
+    if !crate::integrity::user_trusted(conn, id) { return Err(AppError::Unauthorized); }
     if role_permissions(&role).contains(&permission) { Ok(()) } else { Err(AppError::Unauthorized) }
 }
 
@@ -595,40 +610,62 @@ fn normalize_document_types(types: &[String]) -> Vec<String> {
 const LOGIN_MAX_FAILURES: u32 = 5;
 const LOGIN_LOCKOUT: std::time::Duration = std::time::Duration::from_secs(5 * 60);
 
-/// Failed sign-in attempts per username, kept in memory for the running process.
-static LOGIN_FAILURES: std::sync::Mutex<Option<std::collections::HashMap<String, (u32, std::time::Instant)>>> =
-    std::sync::Mutex::new(None);
+/// Failed sign-in attempts per username, kept in the database so that restarting the
+/// application does not reset a lockout.
+fn login_failures_table(conn: &Connection) {
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS login_failures (username_key TEXT PRIMARY KEY, failures INTEGER NOT NULL, last_failure INTEGER NOT NULL)",
+        [],
+    ).ok();
+}
+
+fn now_secs() -> i64 {
+    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs() as i64).unwrap_or(0)
+}
 
 fn login_key(username: &str) -> String {
     username.trim().to_lowercase()
 }
 
-fn login_locked_remaining(username: &str) -> Option<std::time::Duration> {
-    let mut guard = LOGIN_FAILURES.lock().unwrap_or_else(|e| e.into_inner());
-    let map = guard.get_or_insert_with(Default::default);
+fn login_locked_remaining(conn: &Connection, username: &str) -> Option<std::time::Duration> {
+    login_failures_table(conn);
     let key = login_key(username);
-    let (count, last) = *map.get(&key)?;
-    if count < LOGIN_MAX_FAILURES { return None; }
-    let elapsed = last.elapsed();
+    let (count, last): (i64, i64) = conn.query_row(
+        "SELECT failures,last_failure FROM login_failures WHERE username_key=?1", params![key], |r| Ok((r.get(0)?, r.get(1)?)),
+    ).ok()?;
+    if count < LOGIN_MAX_FAILURES as i64 { return None; }
+    // A clock moved backwards counts as "just now" rather than unlocking early.
+    let elapsed = std::time::Duration::from_secs(now_secs().saturating_sub(last).max(0) as u64);
     if elapsed >= LOGIN_LOCKOUT {
-        map.remove(&key);
+        clear_login_failures(conn, username);
         return None;
     }
     Some(LOGIN_LOCKOUT - elapsed)
 }
 
-fn record_login_failure(username: &str) {
-    let mut guard = LOGIN_FAILURES.lock().unwrap_or_else(|e| e.into_inner());
-    let entry = guard.get_or_insert_with(Default::default)
-        .entry(login_key(username))
-        .or_insert((0, std::time::Instant::now()));
-    entry.0 = entry.0.saturating_add(1);
-    entry.1 = std::time::Instant::now();
+fn record_login_failure(conn: &Connection, username: &str) {
+    login_failures_table(conn);
+    conn.execute(
+        "INSERT INTO login_failures(username_key,failures,last_failure) VALUES(?1,1,?2)
+         ON CONFLICT(username_key) DO UPDATE SET failures=failures+1, last_failure=excluded.last_failure",
+        params![login_key(username), now_secs()],
+    ).ok();
 }
 
-fn clear_login_failures(username: &str) {
-    let mut guard = LOGIN_FAILURES.lock().unwrap_or_else(|e| e.into_inner());
-    if let Some(map) = guard.as_mut() { map.remove(&login_key(username)); }
+fn clear_login_failures(conn: &Connection, username: &str) {
+    login_failures_table(conn);
+    conn.execute("DELETE FROM login_failures WHERE username_key=?1", params![login_key(username)]).ok();
+}
+
+/// A bcrypt hash of a random value, checked when the username does not exist so that the
+/// response time does not reveal which usernames are valid.
+fn dummy_password_hash() -> &'static str {
+    static HASH: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    HASH.get_or_init(|| {
+        let mut random = [0u8; 16];
+        OsRng.fill_bytes(&mut random);
+        hash_password(&hex::encode(random)).unwrap_or_default()
+    })
 }
 
 /// Arabic count agreement for minutes: 1 دقيقة واحدة, 2 دقيقتين, 3-10 دقائق, 11+ دقيقة.
@@ -645,7 +682,7 @@ pub fn login(conn: &Connection, username: &str, password: &str) -> AppResult<Use
     if username.trim().is_empty() || username.len() > 64 || password.is_empty() || password.len() > 256 {
         return Err(AppError::Validation("Enter a valid username and password".into()));
     }
-    if let Some(remaining) = login_locked_remaining(username) {
+    if let Some(remaining) = login_locked_remaining(conn, username) {
         log_audit(conn, Some(username), "LOGIN", Some("session"), None, None, "Failure", Some("Account temporarily locked"));
         let minutes = remaining.as_secs().div_ceil(60).max(1);
         return Err(AppError::Validation(format!(
@@ -663,17 +700,22 @@ pub fn login(conn: &Connection, username: &str, password: &str) -> AppResult<Use
     ) {
         Ok(row) => row,
         Err(_) => {
-            record_login_failure(username);
+            let _ = verify_password(password, dummy_password_hash());
+            record_login_failure(conn, username);
             log_audit(conn, Some(username), "LOGIN", Some("session"), None, None, "Failure", Some("Unknown username"));
             return Err(AppError::Unauthorized);
         }
     };
     if !verify_password(password, &row.2)? {
-        record_login_failure(username);
+        record_login_failure(conn, username);
         log_audit(conn, Some(username), "LOGIN", Some("session"), None, None, "Failure", Some("Invalid password"));
         return Err(AppError::Unauthorized);
     }
-    clear_login_failures(username);
+    if !crate::integrity::user_trusted(conn, row.0) {
+        log_audit(conn, Some(username), "LOGIN", Some("session"), None, None, "Failure", Some("Account modified outside the program"));
+        return Err(AppError::Validation(crate::integrity::TAMPERED_ACCOUNT_MESSAGE.into()));
+    }
+    clear_login_failures(conn, username);
     if !row.2.starts_with("$2") {
         conn.execute("UPDATE users SET password=?1 WHERE id=?2", params![hash_password(password)?, row.0])?;
     }
@@ -735,23 +777,9 @@ pub fn update_company_config(conn: &Connection, user: &str, data: &CompanyConfig
     get_company_config(conn)
 }
 
-pub fn upload_company_logo(conn: &Connection, user: &str, source_path: &str) -> AppResult<CompanyConfig> {
-    assert_permission(conn, user, "settings.manage")?;
-    ensure_storage_layout(conn)?;
-    let previous: Option<String> = conn.query_row(
-        "SELECT logo_path FROM company_config WHERE id=1", [], |r| r.get(0)
-    )?;
-    let dir = storage_path(conn).join("Branding");
-    let rel = crate::files::copy_validated_upload(conn, source_path, &dir, "Branding", false, true, crate::files::MAX_IMAGE_SIZE)?;
-    conn.execute("UPDATE company_config SET logo_path=?1 WHERE id=1", params![rel])?;
-    if let Some(previous) = previous {
-        if let Ok(path) = crate::files::safe_relative_path(&previous) {
-            crate::scanner::remove_replaced(conn, source_path, path);
-        }
-    }
-    log_activity(conn, user, "UPLOAD_COMPANY_LOGO", Some("company_config"), Some(1), None, None);
-    get_company_config(conn)
-}
+// The company logo is a fixed asset bundled with the frontend (src/assets/branding).
+// There is deliberately no command to replace it; `logo_path` is kept only for
+// backward compatibility with databases created by earlier releases.
 
 // ── Employee number ────────────────────────────────────────────────────────
 pub fn next_employee_number(conn: &Connection) -> AppResult<String> {
@@ -785,7 +813,7 @@ const EMP_COLS: &str = "id,employee_number,photo_path,full_name,mother_name,fath
   airport_badge_issue_date,airport_badge_front_path,airport_badge_back_path,
   ministry_badge_issue_date,ministry_badge_front_path,ministry_badge_back_path,
   vehicle_color,vehicle_manufacture_year,vehicle_type,vehicle_annual_issue_date,vehicle_annual_expiry_date,vehicles,spouses,
-  appointment_date,father_birthdate,mother_birthdate";
+  appointment_date,father_birthdate,mother_birthdate,name_parts,airport_badge_zones";
 
 fn map_emp(r: &rusqlite::Row) -> rusqlite::Result<Employee> {
     Ok(Employee {
@@ -838,6 +866,8 @@ fn map_emp(r: &rusqlite::Row) -> rusqlite::Result<Employee> {
         appointment_date:r.get(85)?,
         father_birthdate:r.get(86)?,
         mother_birthdate:r.get(87)?,
+        name_parts:r.get::<_, Option<String>>(88)?.and_then(|value| serde_json::from_str(&value).ok()),
+        airport_badge_zones:r.get(89)?,
         residence_card_front_full_path:None,
         residence_card_back_full_path:None,
         airport_badge_front_full_path:None,
@@ -880,7 +910,7 @@ where
 
 fn load_employee_spouses(conn: &Connection, employee_id: i64) -> AppResult<Vec<serde_json::Value>> {
     repeating_array(conn,
-        "SELECT civil_id,name,mother_name,gender,birthplace,birthdate,issue_date,expiry_date,issuer,blood_type,marriage_date,national_card_front_path,national_card_back_path
+        "SELECT civil_id,name,mother_name,gender,birthplace,birthdate,issue_date,expiry_date,issuer,blood_type,marriage_date,national_card_front_path,national_card_back_path,name_parts
          FROM employee_spouses WHERE employee_id=?1 ORDER BY sort_order,id",
         employee_id,
         |row| {
@@ -898,6 +928,7 @@ fn load_employee_spouses(conn: &Connection, employee_id: i64) -> AppResult<Vec<s
                 "issuer": optional_json_value(row_text(row, 8)?),
                 "blood_type": optional_json_value(row_text(row, 9)?),
                 "marriage_date": optional_json_value(row_text(row, 10)?),
+                "name_parts": serde_json::Value::Object(crate::names::parts_object(row_text(row, 13)?.as_deref())),
                 "national_card_front_path": optional_json_value(front.clone()),
                 "national_card_back_path": optional_json_value(back.clone()),
                 "national_card_front_full_path": optional_json_value(attachment_full_path(conn, &front)),
@@ -908,7 +939,7 @@ fn load_employee_spouses(conn: &Connection, employee_id: i64) -> AppResult<Vec<s
 
 fn load_employee_family_members(conn: &Connection, employee_id: i64) -> AppResult<Vec<serde_json::Value>> {
     repeating_array(conn,
-        "SELECT civil_id,name,gender,birthplace,birthdate,issue_date,expiry_date,issuer,blood_type,national_card_front_path,national_card_back_path
+        "SELECT civil_id,name,gender,birthplace,birthdate,issue_date,expiry_date,issuer,blood_type,national_card_front_path,national_card_back_path,name_parts
          FROM employee_family_members WHERE employee_id=?1 ORDER BY sort_order,id",
         employee_id,
         |row| {
@@ -924,6 +955,7 @@ fn load_employee_family_members(conn: &Connection, employee_id: i64) -> AppResul
                 "expiry_date": optional_json_value(row_text(row, 6)?),
                 "issuer": optional_json_value(row_text(row, 7)?),
                 "blood_type": optional_json_value(row_text(row, 8)?),
+                "name_parts": serde_json::Value::Object(crate::names::parts_object(row_text(row, 11)?.as_deref())),
                 "national_card_front_path": optional_json_value(front.clone()),
                 "national_card_back_path": optional_json_value(back.clone()),
                 "national_card_front_full_path": optional_json_value(attachment_full_path(conn, &front)),
@@ -934,17 +966,29 @@ fn load_employee_family_members(conn: &Connection, employee_id: i64) -> AppResul
 
 fn load_employee_vehicles(conn: &Connection, employee_id: i64) -> AppResult<Vec<serde_json::Value>> {
     repeating_array(conn,
-        "SELECT plate,brand,type,color,annual_no,issue_date,expiry_date FROM employee_vehicles WHERE employee_id=?1 ORDER BY sort_order,id",
+        "SELECT plate,brand,type,color,annual_no,issue_date,expiry_date,annual_front_path,annual_back_path,governorate,plate_category,chassis_no,model_year FROM employee_vehicles WHERE employee_id=?1 ORDER BY sort_order,id",
         employee_id,
-        |row| Ok(serde_json::json!({
-            "plate": optional_json_value(row_text(row, 0)?),
-            "brand": optional_json_value(row_text(row, 1)?),
-            "type": optional_json_value(row_text(row, 2)?),
-            "color": optional_json_value(row_text(row, 3)?),
-            "annual_no": optional_json_value(row_text(row, 4)?),
-            "issue_date": optional_json_value(row_text(row, 5)?),
-            "expiry_date": optional_json_value(row_text(row, 6)?),
-        })))
+        |row| {
+            let front = row_text(row, 7)?;
+            let back = row_text(row, 8)?;
+            Ok(serde_json::json!({
+                "plate": optional_json_value(row_text(row, 0)?),
+                "brand": optional_json_value(row_text(row, 1)?),
+                "type": optional_json_value(row_text(row, 2)?),
+                "color": optional_json_value(row_text(row, 3)?),
+                "annual_no": optional_json_value(row_text(row, 4)?),
+                "issue_date": optional_json_value(row_text(row, 5)?),
+                "expiry_date": optional_json_value(row_text(row, 6)?),
+                "annual_front_path": optional_json_value(front.clone()),
+                "annual_back_path": optional_json_value(back.clone()),
+                "governorate": optional_json_value(row_text(row, 9)?),
+                "plate_category": optional_json_value(row_text(row, 10)?),
+                "chassis_no": optional_json_value(row_text(row, 11)?),
+                "model_year": optional_json_value(row_text(row, 12)?),
+                "annual_front_full_path": optional_json_value(attachment_full_path(conn, &front)),
+                "annual_back_full_path": optional_json_value(attachment_full_path(conn, &back)),
+            }))
+        })
 }
 
 fn load_employee_attachment_paths(conn: &Connection, employee_id: i64, kind: &str) -> AppResult<Vec<String>> {
@@ -1059,39 +1103,76 @@ fn value_string(value: &serde_json::Value, key: &str) -> Option<String> {
         .map(str::to_owned)
 }
 
+/// Stored name parts of the spouse / family rows of one employee, by position.
+fn stored_row_parts(conn: &Connection, table: &str, employee_id: i64) -> AppResult<Vec<serde_json::Map<String, serde_json::Value>>> {
+    let mut stmt = conn.prepare(&format!("SELECT name_parts FROM {table} WHERE employee_id=?1 ORDER BY sort_order,id"))?;
+    let rows = stmt.query_map(params![employee_id], |r| r.get::<_, Option<String>>(0))?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    Ok(rows.iter().map(|value| crate::names::parts_object(value.as_deref())).collect())
+}
+
+/// Resolves the split names of one spouse / family JSON record. Returns the combined
+/// names (in `fields` order) and the `name_parts` JSON to store.
+fn resolve_row_names(record: &serde_json::Value, stored: Option<&serde_json::Map<String, serde_json::Value>>, fields: &[&str]) -> (Vec<Option<String>>, Option<String>) {
+    let sent = crate::names::parts_from_value(record.get("name_parts"));
+    let mut parts = serde_json::Map::new();
+    let mut names = Vec::new();
+    for field in fields {
+        let (text, value) = crate::names::resolve_arabic(sent.get(*field), stored.and_then(|s| s.get(*field)), value_string(record, field).as_deref());
+        if let Some(value) = value { parts.insert(field.to_string(), value); }
+        names.push(text);
+    }
+    (names, (!parts.is_empty()).then(|| serde_json::Value::Object(parts).to_string()))
+}
+
 fn replace_employee_spouses(conn: &Connection, employee_id: i64, spouses_json: &str) -> AppResult<()> {
+    let stored = stored_row_parts(conn, "employee_spouses", employee_id)?;
     conn.execute("DELETE FROM employee_spouses WHERE employee_id=?1", params![employee_id])?;
     let spouses: Vec<serde_json::Value> = serde_json::from_str(spouses_json).unwrap_or_default();
     for (index, spouse) in spouses.iter().enumerate() {
+        let (names, name_parts) = resolve_row_names(spouse, stored.get(index), &crate::names::SPOUSE_ARABIC);
         conn.execute(
-            "INSERT INTO employee_spouses(employee_id,sort_order,civil_id,name,mother_name,gender,birthplace,birthdate,issue_date,expiry_date,issuer,blood_type,marriage_date,national_card_front_path,national_card_back_path)
-             VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15)",
+            "INSERT INTO employee_spouses(employee_id,sort_order,civil_id,name,mother_name,gender,birthplace,birthdate,issue_date,expiry_date,issuer,blood_type,marriage_date,national_card_front_path,national_card_back_path,name_parts)
+             VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16)",
             params![
                 employee_id, index as i64,
-                value_string(spouse, "civil_id"), value_string(spouse, "name"), value_string(spouse, "mother_name"),
+                value_string(spouse, "civil_id"), names[0], names[1],
                 value_string(spouse, "gender"), value_string(spouse, "birthplace"), value_string(spouse, "birthdate"),
                 value_string(spouse, "issue_date"), value_string(spouse, "expiry_date"), value_string(spouse, "issuer"),
                 value_string(spouse, "blood_type"), value_string(spouse, "marriage_date"),
                 value_string(spouse, "national_card_front_path"), value_string(spouse, "national_card_back_path"),
+                name_parts,
             ],
+        )?;
+    }
+    // The legacy single-spouse columns mirror the first spouse (reports read them).
+    if !spouses.is_empty() {
+        conn.execute(
+            "UPDATE employees SET spouse_name=(SELECT name FROM employee_spouses WHERE employee_id=?1 AND sort_order=0),
+                                  spouse_mother_name=(SELECT mother_name FROM employee_spouses WHERE employee_id=?1 AND sort_order=0)
+             WHERE id=?1",
+            params![employee_id],
         )?;
     }
     Ok(())
 }
 
 fn replace_employee_family_members(conn: &Connection, employee_id: i64, family_json: &str) -> AppResult<()> {
+    let stored = stored_row_parts(conn, "employee_family_members", employee_id)?;
     conn.execute("DELETE FROM employee_family_members WHERE employee_id=?1", params![employee_id])?;
     let members: Vec<serde_json::Value> = serde_json::from_str(family_json).unwrap_or_default();
     for (index, member) in members.iter().enumerate() {
+        let (names, name_parts) = resolve_row_names(member, stored.get(index), &crate::names::FAMILY_ARABIC);
         conn.execute(
-            "INSERT INTO employee_family_members(employee_id,sort_order,civil_id,name,gender,birthplace,birthdate,issue_date,expiry_date,issuer,blood_type,national_card_front_path,national_card_back_path)
-             VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13)",
+            "INSERT INTO employee_family_members(employee_id,sort_order,civil_id,name,gender,birthplace,birthdate,issue_date,expiry_date,issuer,blood_type,national_card_front_path,national_card_back_path,name_parts)
+             VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14)",
             params![
                 employee_id, index as i64,
-                value_string(member, "civil_id"), value_string(member, "name"), value_string(member, "gender"),
+                value_string(member, "civil_id"), names[0], value_string(member, "gender"),
                 value_string(member, "birthplace"), value_string(member, "birthdate"), value_string(member, "issue_date"),
                 value_string(member, "expiry_date"), value_string(member, "issuer"), value_string(member, "blood_type"),
                 value_string(member, "national_card_front_path"), value_string(member, "national_card_back_path"),
+                name_parts,
             ],
         )?;
     }
@@ -1099,17 +1180,31 @@ fn replace_employee_family_members(conn: &Connection, employee_id: i64, family_j
 }
 
 fn replace_employee_vehicles(conn: &Connection, employee_id: i64, vehicles_json: &str) -> AppResult<()> {
+    // Registration images are uploaded by their own command. A saved row may only keep a path
+    // this employee's vehicles already had (rows can move when one is removed); anything else
+    // the form sends is dropped.
+    let stored: Vec<String> = {
+        let mut stmt = conn.prepare(
+            "SELECT annual_front_path FROM employee_vehicles WHERE employee_id=?1 AND annual_front_path IS NOT NULL
+             UNION SELECT annual_back_path FROM employee_vehicles WHERE employee_id=?1 AND annual_back_path IS NOT NULL")?;
+        let paths = stmt.query_map(params![employee_id], |r| r.get::<_, String>(0))?.collect::<rusqlite::Result<Vec<_>>>()?;
+        paths
+    };
+    let kept = |vehicle: &serde_json::Value, key: &str| value_string(vehicle, key).filter(|path| stored.contains(path));
     conn.execute("DELETE FROM employee_vehicles WHERE employee_id=?1", params![employee_id])?;
     let vehicles: Vec<serde_json::Value> = serde_json::from_str(vehicles_json).unwrap_or_default();
     for (index, vehicle) in vehicles.iter().enumerate() {
         conn.execute(
-            "INSERT INTO employee_vehicles(employee_id,sort_order,plate,brand,type,color,annual_no,issue_date,expiry_date)
-             VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9)",
+            "INSERT INTO employee_vehicles(employee_id,sort_order,plate,brand,type,color,annual_no,issue_date,expiry_date,annual_front_path,annual_back_path,governorate,plate_category,chassis_no,model_year)
+             VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15)",
             params![
                 employee_id, index as i64,
                 value_string(vehicle, "plate"), value_string(vehicle, "brand"), value_string(vehicle, "type"),
                 value_string(vehicle, "color"), value_string(vehicle, "annual_no"),
                 value_string(vehicle, "issue_date"), value_string(vehicle, "expiry_date"),
+                kept(vehicle, "annual_front_path"), kept(vehicle, "annual_back_path"),
+                value_string(vehicle, "governorate"), value_string(vehicle, "plate_category"),
+                value_string(vehicle, "chassis_no"), value_string(vehicle, "model_year"),
             ],
         )?;
     }
@@ -1139,8 +1234,35 @@ pub fn get_employee(conn: &Connection, id: i64) -> AppResult<Employee> {
     Ok(employee)
 }
 
+/// Rebuilds the employee's combined names from their parts (see names.rs) and returns the
+/// data to save plus the `name_parts` JSON to store beside it.
+fn resolve_employee_names(conn: &Connection, id: Option<i64>, d: &EmployeeData) -> AppResult<(EmployeeData, String)> {
+    let stored = match id {
+        Some(id) => conn.query_row("SELECT name_parts FROM employees WHERE id=?1", params![id], |r| r.get::<_, Option<String>>(0))
+            .map_err(|_| AppError::NotFound)?,
+        None => None,
+    };
+    let stored = crate::names::parts_object(stored.as_deref());
+    let sent = crate::names::parts_from_value(d.name_parts.as_ref());
+    let mut data = d.clone();
+    let mut parts = serde_json::Map::new();
+    let mut apply = |field: &str, text: Option<String>, passport: bool| -> Option<String> {
+        let resolve = if passport { crate::names::resolve_passport } else { crate::names::resolve_arabic };
+        let (combined, value) = resolve(sent.get(field), stored.get(field), text.as_deref());
+        if let Some(value) = value { parts.insert(field.to_string(), value); }
+        combined
+    };
+    data.full_name = apply("full_name", Some(d.full_name.clone()), false).unwrap_or_default();
+    data.mother_name = apply("mother_name", d.mother_name.clone(), false);
+    data.residence_head_name = apply("residence_head_name", d.residence_head_name.clone(), false);
+    data.passport_name = apply("passport_name", d.passport_name.clone(), true);
+    Ok((data, serde_json::Value::Object(parts).to_string()))
+}
+
 pub fn create_employee(conn: &Connection, d: &EmployeeData, username: &str) -> AppResult<Employee> {
     assert_permission(conn, username, "employees.create")?;
+    let (d, name_parts) = resolve_employee_names(conn, None, d)?;
+    let d = &d;
     validate_employee_data(d)?;
     conn.execute("INSERT INTO employees(employee_number,full_name,mother_name,father_birthplace,mother_birthplace,
       gender,birthdate,birthplace,marital_status,blood_type,workplace,job_title,job_grade,
@@ -1158,11 +1280,11 @@ pub fn create_employee(conn: &Connection, d: &EmployeeData, username: &str) -> A
       residence_card_issue_date,residence_head_name,residence_form_no,
       airport_badge_issue_date,ministry_badge_issue_date,vehicle_color,vehicle_manufacture_year,vehicle_type,
       vehicle_annual_issue_date,vehicle_annual_expiry_date,vehicles,spouses,appointment_date,
-      father_birthdate,mother_birthdate)
+      father_birthdate,mother_birthdate,airport_badge_zones)
     VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,
            ?21,?22,?23,?24,?25,?26,?27,?28,?29,?30,?31,?32,?33,?34,?35,?36,?37,?38,
            ?39,?40,?41,?42,?43,?44,?45,?46,?47,?48,?49,?50,?51,?52,?53,?54,?55,?56,?57,?58,
-           ?59,?60,?61,?62,?63,?64,?65,?66,?67,?68,?69,?70,?71,?72,?73)",
+           ?59,?60,?61,?62,?63,?64,?65,?66,?67,?68,?69,?70,?71,?72,?73,?74)",
     params![d.employee_number,d.full_name.trim(),d.mother_name,d.father_birthplace,d.mother_birthplace,
       d.gender,d.birthdate,d.birthplace,d.marital_status,d.blood_type,
       d.workplace,d.job_title,d.job_grade,d.hire_date,d.contract_type,d.department,d.division,d.phone,d.email,
@@ -1179,8 +1301,9 @@ pub fn create_employee(conn: &Connection, d: &EmployeeData, username: &str) -> A
       d.residence_card_issue_date,d.residence_head_name,d.residence_form_no,
       d.airport_badge_issue_date,d.ministry_badge_issue_date,d.vehicle_color,d.vehicle_manufacture_year,d.vehicle_type,
       d.vehicle_annual_issue_date,d.vehicle_annual_expiry_date,d.vehicles.as_deref().unwrap_or("[]"),
-      d.spouses.as_deref().unwrap_or("[]"),d.appointment_date,d.father_birthdate,d.mother_birthdate])?;
+      d.spouses.as_deref().unwrap_or("[]"),d.appointment_date,d.father_birthdate,d.mother_birthdate,d.airport_badge_zones])?;
     let id = conn.last_insert_rowid();
+    conn.execute("UPDATE employees SET name_parts=?1 WHERE id=?2", params![name_parts, id])?;
     replace_employee_repeating_data(conn, id, d)?;
     log_activity(conn, username, "CREATE_EMPLOYEE", Some("employee"), Some(id), Some(d.full_name.trim()), None);
     get_employee(conn, id)
@@ -1188,6 +1311,8 @@ pub fn create_employee(conn: &Connection, d: &EmployeeData, username: &str) -> A
 
 pub fn update_employee(conn: &Connection, id: i64, d: &EmployeeData, username: &str) -> AppResult<Employee> {
     assert_permission(conn, username, "employees.edit")?;
+    let (d, name_parts) = resolve_employee_names(conn, Some(id), d)?;
+    let d = &d;
     validate_employee_data(d)?;
     conn.execute("UPDATE employees SET employee_number=?1,full_name=?2,mother_name=?3,father_birthplace=?4,
       mother_birthplace=?5,gender=?6,birthdate=?7,birthplace=?8,marital_status=?9,blood_type=?10,
@@ -1207,7 +1332,7 @@ pub fn update_employee(conn: &Connection, id: i64, d: &EmployeeData, username: &
       vehicle_color=?64,vehicle_manufacture_year=?65,vehicle_type=?66,
       vehicle_annual_issue_date=?67,vehicle_annual_expiry_date=?68,
       vehicles=?69,spouses=?70,appointment_date=?71,father_birthdate=?72,mother_birthdate=?73,
-      updated_at=datetime('now') WHERE id=?74",
+      airport_badge_zones=?74,updated_at=datetime('now') WHERE id=?75",
     params![d.employee_number,d.full_name.trim(),d.mother_name,d.father_birthplace,d.mother_birthplace,
       d.gender,d.birthdate,d.birthplace,d.marital_status,d.blood_type,
       d.workplace,d.job_title,d.job_grade,d.hire_date,d.contract_type,d.department,d.division,d.phone,d.email,
@@ -1224,10 +1349,25 @@ pub fn update_employee(conn: &Connection, id: i64, d: &EmployeeData, username: &
       d.residence_card_issue_date,d.residence_head_name,d.residence_form_no,
       d.airport_badge_issue_date,d.ministry_badge_issue_date,d.vehicle_color,d.vehicle_manufacture_year,d.vehicle_type,
       d.vehicle_annual_issue_date,d.vehicle_annual_expiry_date,d.vehicles.as_deref().unwrap_or("[]"),
-      d.spouses.as_deref().unwrap_or("[]"),d.appointment_date,d.father_birthdate,d.mother_birthdate,id])?;
+      d.spouses.as_deref().unwrap_or("[]"),d.appointment_date,d.father_birthdate,d.mother_birthdate,d.airport_badge_zones,id])?;
+    conn.execute("UPDATE employees SET name_parts=?1 WHERE id=?2", params![name_parts, id])?;
     replace_employee_repeating_data(conn, id, d)?;
     log_activity(conn, username, "UPDATE_EMPLOYEE", Some("employee"), Some(id), Some(d.full_name.trim()), None);
     get_employee(conn, id)
+}
+
+/// Names whose automatic split is unsure, for the "مراجعة الأسماء" screen.
+pub fn list_name_review(conn: &Connection, username: &str) -> AppResult<Vec<crate::names::ReviewItem>> {
+    assert_permission(conn, username, "employees.edit")?;
+    Ok(crate::names::list_review(conn)?)
+}
+
+/// Saves the corrected parts of one reviewed name and clears its review flag.
+pub fn save_name_review(conn: &Connection, employee_id: i64, owner: &str, index: i64, field: &str, parts: &serde_json::Value, username: &str) -> AppResult<String> {
+    assert_permission(conn, username, "employees.edit")?;
+    let combined = crate::names::save_review(conn, employee_id, owner, index, field, parts).map_err(AppError::Validation)?;
+    log_activity(conn, username, "REVIEW_NAME", Some("employee"), Some(employee_id), Some(&format!("{owner}/{field}: {combined}")), None);
+    Ok(combined)
 }
 
 pub fn delete_employee(conn: &Connection, id: i64, username: &str) -> AppResult<()> {
@@ -1874,6 +2014,8 @@ mod auth_tests {
         ).unwrap();
         assert!(assert_permission(&conn, "archiveadmin", "users.manage").is_ok());
         assert!(assert_permission(&conn, "archiveadmin", "users.assign_system_admin").is_err());
+        // A restore replaces the users table, so it would let an Archive Admin promote themselves.
+        assert!(assert_permission(&conn, "archiveadmin", "backups.restore").is_err());
     }
 
     #[test]
@@ -1904,7 +2046,7 @@ mod auth_tests {
         }
         // Even the correct password is refused while locked.
         assert!(matches!(login(&conn, "LockMe", "correct-password"), Err(AppError::Validation(_))));
-        clear_login_failures("lockme");
+        clear_login_failures(&conn, "lockme");
         assert!(login(&conn, "lockme", "correct-password").is_ok());
     }
 
@@ -1956,6 +2098,23 @@ fn get_setting(conn: &Connection, key: &str) -> AppResult<Option<String>> {
         .map_err(Into::into)
 }
 
+/// The automatic-backup password, unwrapped from DPAPI. A plain-text value left by an older
+/// release is re-saved protected the first time it is read.
+fn auto_backup_password(conn: &Connection) -> AppResult<String> {
+    let Some(stored) = get_setting(conn, "auto_backup_password")?.filter(|value| !value.is_empty()) else {
+        return Ok(String::new());
+    };
+    let secret = crate::secure::unprotect_secret(&stored)?;
+    if secret.legacy && !secret.value.is_empty() {
+        set_setting(conn, "auto_backup_password", &crate::secure::protect_secret(&secret.value)?)?;
+    }
+    Ok(secret.value)
+}
+
+fn set_auto_backup_password(conn: &Connection, password: &str) -> AppResult<()> {
+    set_setting(conn, "auto_backup_password", &crate::secure::protect_secret(password)?)
+}
+
 fn set_setting(conn: &Connection, key: &str, value: &str) -> AppResult<()> {
     conn.execute(
         "INSERT INTO app_settings(key,value) VALUES(?1,?2)
@@ -1963,6 +2122,20 @@ fn set_setting(conn: &Connection, key: &str, value: &str) -> AppResult<()> {
         params![key, value],
     )?;
     Ok(())
+}
+
+/// «التحديث التلقائي»: when on (the default), the program checks for a signed update after an
+/// administrator signs in and offers to install it through the usual safe flow (encrypted,
+/// verified backup first; only installers signed by the developer).
+pub fn get_auto_update(conn: &Connection) -> AppResult<bool> {
+    Ok(!matches!(get_setting(conn, "auto_update_check")?.as_deref(), Some("0") | Some("false")))
+}
+
+pub fn set_auto_update(conn: &Connection, username: &str, enabled: bool) -> AppResult<bool> {
+    set_setting(conn, "auto_update_check", if enabled { "1" } else { "0" })?;
+    log_activity(conn, username, "UPDATE_AUTO_UPDATE_SETTING", Some("settings"), None, None,
+        Some(if enabled { "enabled" } else { "disabled" }));
+    Ok(enabled)
 }
 
 fn setting_bool(conn: &Connection, key: &str) -> AppResult<bool> {
@@ -1988,13 +2161,15 @@ pub fn get_auto_backup_settings(conn: &Connection, user: &str) -> AppResult<Auto
 pub fn set_auto_backup_settings(conn: &Connection, user: &str, data: &AutoBackupSettingsData) -> AppResult<AutoBackupSettings> {
     assert_permission(conn, user, "backups.manage")?;
     let existing_password = get_setting(conn, "auto_backup_password")?.unwrap_or_default();
+    // Moves a legacy plain-text password to DPAPI even when only the toggles change.
+    if !existing_password.is_empty() { auto_backup_password(conn).ok(); }
     let password = data.password.as_deref().unwrap_or("").trim();
     if (data.daily_enabled || data.weekly_enabled || data.monthly_enabled) && password.is_empty() && existing_password.is_empty() {
         return Err(AppError::Validation("Enter an automatic backup password before enabling automatic backups".into()));
     }
     if !password.is_empty() {
         validate_new_password(password)?;
-        set_setting(conn, "auto_backup_password", password)?;
+        set_auto_backup_password(conn, password)?;
     }
     set_setting(conn, "auto_backup_daily_enabled", if data.daily_enabled { "1" } else { "0" })?;
     set_setting(conn, "auto_backup_weekly_enabled", if data.weekly_enabled { "1" } else { "0" })?;
@@ -2134,7 +2309,7 @@ pub(crate) fn create_backup_archive(
     std::fs::create_dir_all(&work_dir).map_err(|e| AppError::Other(e.to_string()))?;
     let db_snapshot = tempfile::NamedTempFile::new_in(&work_dir).map_err(|e| AppError::Other(e.to_string()))?;
     progress(backup_progress(8, "جاري نسخ قاعدة البيانات..."));
-    conn.backup(rusqlite::DatabaseName::Main, db_snapshot.path(), None)?;
+    conn.backup(rusqlite::MAIN_DB, db_snapshot.path(), None::<fn(rusqlite::backup::Progress)>)?;
     let archive = tempfile::NamedTempFile::new_in(&work_dir).map_err(|e| AppError::Other(e.to_string()))?;
     let mut zip = zip::ZipWriter::new(archive.reopen().map_err(|e| AppError::Other(e.to_string()))?);
     let options = zip::write::SimpleFileOptions::default()
@@ -2335,7 +2510,7 @@ pub fn run_due_automatic_backups_with_progress<F>(conn: &Connection, mut progres
 where
     F: FnMut(BackupProgress),
 {
-    let password = get_setting(conn, "auto_backup_password")?.unwrap_or_default();
+    let password = auto_backup_password(conn)?;
     if password.is_empty() {
         return Ok(Vec::new());
     }
@@ -2470,6 +2645,18 @@ fn validate_backup_references(database_path: &Path, staging: &Path) -> AppResult
         let mut stmt = conn.prepare("SELECT stored_path FROM document_metadata WHERE parent_path IS NOT NULL")?;
         references.extend(stmt.query_map([], |r| r.get::<_, String>(0))?.collect::<rusqlite::Result<Vec<_>>>()?);
     }
+    // Registration images per vehicle exist from schema v3 on.
+    let vehicle_columns: Vec<String> = {
+        let mut stmt = conn.prepare("PRAGMA table_info(employee_vehicles)")?;
+        let columns = stmt.query_map([], |r| r.get::<_, String>(1))?.collect::<rusqlite::Result<_>>()?;
+        columns
+    };
+    for column in ["annual_front_path", "annual_back_path"] {
+        if vehicle_columns.iter().any(|name| name == column) {
+            let mut stmt = conn.prepare(&format!("SELECT {column} FROM employee_vehicles WHERE {column} IS NOT NULL"))?;
+            references.extend(stmt.query_map([], |r| r.get::<_, String>(0))?.collect::<rusqlite::Result<Vec<_>>>()?);
+        }
+    }
     for query in [
         "SELECT logo_path FROM company_config WHERE logo_path IS NOT NULL",
         "SELECT photo_path FROM employees WHERE photo_path IS NOT NULL",
@@ -2575,7 +2762,7 @@ fn extract_and_validate_backup(plaintext: &[u8], staging: &Path) -> AppResult<Ba
 fn trial_restore_database(source: &Path) -> AppResult<()> {
     let trial = tempfile::tempdir().map_err(|e| AppError::Other(e.to_string()))?;
     let mut conn = Connection::open(trial.path().join("trial.db"))?;
-    conn.restore(rusqlite::DatabaseName::Main, source, None::<fn(rusqlite::backup::Progress)>)?;
+    conn.restore(rusqlite::MAIN_DB, source, None::<fn(rusqlite::backup::Progress)>)?;
     // Reject backups made by a newer AutoHR, and prove an older one upgrades cleanly.
     crate::db::upgrade_restored(&conn)?;
     crate::scanner::ensure_metadata_columns(&conn)?;
@@ -2601,7 +2788,8 @@ pub fn restore_backup_with_progress<F>(conn: &mut Connection, user: &str, source
 where
     F: FnMut(BackupProgress),
 {
-    assert_permission(conn, user, "backups.manage")?;
+    // A restore replaces the users table too, so it is limited to System Admins.
+    assert_permission(conn, user, "backups.restore")?;
     progress(backup_progress(2, "جاري تجهيز عملية الاستعادة..."));
     let source = Path::new(source_path);
     if source.extension().and_then(|e| e.to_str()).is_none_or(|e| !e.eq_ignore_ascii_case("autohrbak")) {
@@ -2644,7 +2832,7 @@ where
     std::fs::remove_dir_all(&rollback_data).ok();
     std::fs::remove_file(&rollback_database).ok();
     progress(backup_progress(70, "جاري حفظ نسخة تراجع من قاعدة البيانات الحالية..."));
-    conn.backup(rusqlite::DatabaseName::Main, &rollback_database, None)?;
+    conn.backup(rusqlite::MAIN_DB, &rollback_database, None::<fn(rusqlite::backup::Progress)>)?;
     std::fs::write(&restore_marker, b"AutoHR restore in progress").map_err(|e| AppError::Other(e.to_string()))?;
     let staged_data = staging.path().join("Data");
     progress(backup_progress(76, "جاري استبدال المرفقات والملفات..."));
@@ -2658,15 +2846,23 @@ where
         return Err(AppError::Other(error.to_string()));
     }
     progress(backup_progress(86, "جاري استعادة قاعدة البيانات..."));
-    if let Err(error) = conn.restore(rusqlite::DatabaseName::Main, staging.path().join("database.db"), None::<fn(rusqlite::backup::Progress)>).map_err(AppError::from)
+    // The seal triggers belong to the database being replaced; they are put back afterwards.
+    crate::integrity::detach(conn);
+    if let Err(error) = conn.restore(rusqlite::MAIN_DB, staging.path().join("database.db"), None::<fn(rusqlite::backup::Progress)>).map_err(AppError::from)
         .and_then(|_| crate::db::upgrade_restored(conn).map_err(AppError::from))
         .and_then(|_| crate::scanner::ensure_metadata_columns(conn).map_err(AppError::from)) {
         std::fs::remove_dir_all(&current_data).ok();
         if rollback_data.exists() { std::fs::rename(&rollback_data, &current_data).ok(); }
-        conn.restore(rusqlite::DatabaseName::Main, &rollback_database, None::<fn(rusqlite::backup::Progress)>).ok();
+        conn.restore(rusqlite::MAIN_DB, &rollback_database, None::<fn(rusqlite::backup::Progress)>).ok();
+        crate::integrity::attach(conn, false);
         std::fs::remove_file(&rollback_database).ok();
         std::fs::remove_file(&restore_marker).ok();
         return Err(error);
+    }
+    // A backup made on another computer, or before seals existed, is accepted by the System Admin
+    // who restores it; a backup sealed on this computer keeps its own seals and is checked as is.
+    if crate::integrity::attach(conn, false) == crate::integrity::State::Unapproved {
+        crate::integrity::approve(conn, user, "restore")?;
     }
     progress(backup_progress(94, "جاري إعادة ربط سجل التدقيق..."));
     for row in audit {
@@ -2743,6 +2939,15 @@ pub fn download_document(conn: &Connection, user: &str, relative_path: &str, des
     if destination.file_name().is_none() || !destination.parent().is_some_and(Path::is_dir) {
         return Err(AppError::Validation("Invalid download destination".into()));
     }
+    // The copy may only produce a file of the same type, so a download can never be used to
+    // write or overwrite an executable, script or DLL elsewhere on the computer.
+    let extension_of = |path: &Path| path.extension().and_then(|e| e.to_str()).map(|e| match e.to_ascii_lowercase().as_str() {
+        "jpeg" => "jpg".to_string(),
+        other => other.to_string(),
+    });
+    if extension_of(&source).is_none() || extension_of(&source) != extension_of(destination) {
+        return Err(AppError::Validation("The download must keep the document's file type".into()));
+    }
     std::fs::copy(&source, destination).map_err(|e| AppError::Other(e.to_string()))?;
     log_activity(conn, user, "DOWNLOAD_DOCUMENT", Some("document"), None, name.to_str(), Some(&destination.to_string_lossy()));
     Ok(destination.to_string_lossy().into_owned())
@@ -2779,6 +2984,27 @@ pub fn set_document_types(conn: &Connection, user: &str, types: &[String]) -> Ap
 mod phase3_security_tests {
     use super::*;
 
+    // Opt-in timing check: `cargo test -p autohr --lib list_employees_timing -- --ignored --nocapture`.
+    #[test]
+    #[ignore]
+    fn list_employees_timing() {
+        let conn = Connection::open_in_memory().unwrap();
+        crate::db::migrate_for_tests(&conn);
+        for count in [75_i64, 1000] {
+            conn.execute("DELETE FROM employees", []).unwrap();
+            for id in 1..=count {
+                conn.execute("INSERT INTO employees(id,full_name,employee_number,photo_path) VALUES(?1,?2,?3,?4)",
+                    params![id, format!("موظف {id}"), format!("E-{id}"), format!("Files/Employees/{id}/p.jpg")]).unwrap();
+                for order in 0..2 { conn.execute("INSERT INTO employee_spouses(employee_id,name,sort_order) VALUES(?1,'x',?2)", params![id, order]).unwrap(); }
+                for order in 0..3 { conn.execute("INSERT INTO employee_attachments(employee_id,kind,file_path,sort_order) VALUES(?1,'general',?2,?3)", params![id, format!("Files/Employees/{id}/a{order}.pdf"), order]).unwrap(); }
+            }
+            list_employees(&conn).unwrap();
+            let started = std::time::Instant::now();
+            let employees = list_employees(&conn).unwrap();
+            println!("list_employees: {} employees in {:?}", employees.len(), started.elapsed());
+        }
+    }
+
     #[test]
     fn daily_backup_after_employee_change_is_verified_and_not_repeated() {
         let dir = tempfile::tempdir().unwrap();
@@ -2798,6 +3024,9 @@ mod phase3_security_tests {
         conn.execute("INSERT INTO employees(id,full_name) VALUES(1,'Before change')", []).unwrap();
         log_activity(&conn, "testadmin", "CREATE_EMPLOYEE", Some("employee"), Some(1), None, None);
         assert_eq!(run_due_automatic_backups_with_progress(&conn, |_| {}).unwrap(), vec!["يومي"]);
+        // A plain-text password from an older release is re-saved protected once read.
+        assert_ne!(get_setting(&conn, "auto_backup_password").unwrap().unwrap(), "strong-password");
+        assert_eq!(auto_backup_password(&conn).unwrap(), "strong-password");
         let first_path = get_setting(&conn, "auto_backup_last_daily_path").unwrap().unwrap();
         verify_written_backup(Path::new(&first_path), "strong-password").unwrap();
         // Login/logout and reading documents must not cause another backup.
@@ -2966,7 +3195,9 @@ mod phase3_security_tests {
         assert!(officer.contains(&"documents.upload") && !officer.contains(&"documents.delete"));
         let admin = role_permissions("archive_admin");
         assert!(admin.contains(&"backups.manage") && !admin.contains(&"users.assign_system_admin"));
+        assert!(!admin.contains(&"backups.restore"), "only a System Admin may restore a backup");
         assert!(role_permissions("system_admin").contains(&"users.assign_system_admin"));
+        assert!(role_permissions("system_admin").contains(&"backups.restore"));
     }
 
     #[test]
