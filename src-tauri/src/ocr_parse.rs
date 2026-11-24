@@ -1155,8 +1155,11 @@ fn vehicle_plate(text: &str) -> Option<Plate> {
         let token = &tokens[pos];
         let split = token.find(|c: char| c.is_ascii_uppercase()).unwrap_or(0);
         let (glued, number) = token.split_at(split);
+        // The code is printed before the letter, but the reader may glue it on, or put it
+        // after the number when it reorders the line.
+        let short_digits = |t: &&String| (1..=2).contains(&t.len()) && t.chars().all(|c| c.is_ascii_digit());
         let code = if !glued.is_empty() { Some(glued.to_owned()) } else {
-            tokens[..pos].iter().rev().find(|t| t.chars().all(|c| c.is_ascii_digit())).cloned()
+            tokens[..pos].iter().rev().find(short_digits).or_else(|| tokens[pos + 1..].iter().find(short_digits)).cloned()
         };
         let from_code = code.as_deref().and_then(|c| GOVERNORATE_CODES.iter().find(|(k, _)| *k == c)).map(|(_, name)| name.to_string());
         let number = match &code { Some(c) => format!("{c} {number}"), None => number.to_owned() };
@@ -1194,6 +1197,7 @@ fn parse_vehicle_registration(lines: &[Line], result: &mut ReadResult) {
     // Front.
     let mut dates: Vec<(String, f32)> = Vec::new();
     let mut governorate_from_code: Option<String> = None;
+    let mut plate_line: Option<&Line> = None;
     for line in lines {
         if let Some((number, verified)) = vehicle_licence_line(&line.text) {
             if verified {
@@ -1213,7 +1217,22 @@ fn parse_vehicle_registration(lines: &[Line], result: &mut ReadResult) {
         }
         // The owner's address (C.1.3) also has a governorate and numbers.
         if line.text.chars().any(is_arabic_letter) && result.get("plate").is_none() && !line.text.to_uppercase().contains("C.1") {
-            if let Some(plate) = vehicle_plate(&line.text) {
+            if let Some(mut plate) = vehicle_plate(&line.text) {
+                // The code may be detected as a line of its own beside the plate.
+                let latin = plate.number.chars().next().is_some_and(|c| c.is_ascii_uppercase());
+                if latin && plate.governorate.is_none() {
+                    let code = lines.iter()
+                        .filter(|l| !std::ptr::eq(*l, line))
+                        .filter(|l| (l.center_y() - line.center_y()).abs() < line.height().max(l.height()) * 0.7)
+                        .map(|l| ascii_digits(&l.text).trim().trim_end_matches('.').to_owned())
+                        .find(|t| t.len() == 2 && t.chars().all(|c| c.is_ascii_digit()));
+                    if let Some(code) = code {
+                        plate.governorate = GOVERNORATE_CODES.iter().find(|(k, _)| *k == code).map(|(_, name)| name.to_string());
+                        plate.governorate_from_code = plate.governorate.is_some();
+                        plate.number = format!("{code} {}", plate.number);
+                    }
+                }
+                plate_line = Some(line);
                 // Plate digits and letters are easily misread: always reviewed.
                 result.set("plate", plate.number, line.confidence.min(0.7), "text");
                 if let Some(governorate) = plate.governorate {
@@ -1240,11 +1259,15 @@ fn parse_vehicle_registration(lines: &[Line], result: &mut ReadResult) {
         }
     }
     if result.get("plate").is_some() && result.get("governorate").is_none() {
-        let address = lines.iter().find_map(|l| {
-            if !l.text.to_uppercase().contains("C.1.3") { return None; }
+        // The address line, labelled C.1.3; its label is often detected apart from it, so
+        // otherwise any other line naming a governorate (the card's titles name none).
+        let governorate_in = |l: &Line| {
             let text = normalize(&l.text);
             GOVERNORATE_NAMES.iter().find(|g| text.contains(&normalize(g))).map(|g| (g.to_string(), l.confidence))
-        });
+        };
+        let others = || lines.iter().filter(|l| !plate_line.is_some_and(|p| std::ptr::eq(p, *l)));
+        let address = others().filter(|l| l.text.to_uppercase().contains("C.1.3")).find_map(governorate_in)
+            .or_else(|| others().find_map(governorate_in));
         if let Some((name, confidence)) = address {
             // Where the owner lives need not be where the car is registered: reviewed.
             result.set("governorate", name, confidence.min(0.5), "text");
@@ -1652,6 +1675,22 @@ mod tests {
         let rl = parse(&lost);
         assert_eq!(v(&rl, "governorate"), "كربلاء");
         assert!(rl.get("governorate").unwrap().confidence < 0.85);
+        // The address apart from its C.1.3 label.
+        let mut apart = front.clone();
+        apart[1] = at("خصوصي A34567", 300., 100.);
+        apart.push(at("C.1.3.", 200., 200.));
+        apart.push(at("كربلاء المركز 3", 300., 200.));
+        assert_eq!(v(&parse(&apart), "governorate"), "كربلاء");
+        // The code after the number (reordered), or detected as a line of its own.
+        let mut after = front.clone();
+        after[1] = at("خصوصي A34567 12", 300., 100.);
+        let r2 = parse(&after);
+        assert_eq!((v(&r2, "plate"), v(&r2, "governorate")), ("12 A34567".into(), "نينوى".into()));
+        let mut own = front.clone();
+        own[1] = at("خصوصي A34567", 300., 100.);
+        own.push(at("12", 240., 102.));
+        let r3 = parse(&own);
+        assert_eq!((v(&r3, "plate"), v(&r3, "governorate")), ("12 A34567".into(), "نينوى".into()));
         // The plate code wins over the address (the owner may live elsewhere).
         let mut both = front.clone();
         both.push(at("كربلاء المركز 3 C.1.3.", 300., 200.));
