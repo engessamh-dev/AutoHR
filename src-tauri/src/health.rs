@@ -287,25 +287,44 @@ fn check_backups(conn: &Connection) -> HealthItem {
     item("backups", "النسخ الاحتياطية", status, details)
 }
 
-/// Failed actions from the audit log in the last 30 days, as counts per action only:
-/// no usernames, targets or details leave the database.
-fn check_recent_failures(conn: &Connection) -> HealthItem {
-    let rows: Vec<(String, i64)> = conn
-        .prepare(
-            "SELECT action, COUNT(*) FROM activity_log
-             WHERE result='Failure' AND created_at >= datetime('now','-30 days')
-             GROUP BY action ORDER BY COUNT(*) DESC LIMIT 12",
-        )
-        .and_then(|mut stmt| stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?.collect())
-        .unwrap_or_default();
-    if rows.is_empty() {
-        return item("failures", "الأخطاء خلال 30 يومًا", "ok", vec!["لا توجد عمليات فاشلة مسجلة".into()]);
+/// Plain-Arabic wording for a failed action in the audit log. `reason` is the fixed English
+/// reason the backend writes for failed logins (never user input).
+fn failure_label(action: &str, reason: Option<&str>) -> String {
+    match (action, reason) {
+        ("LOGIN", Some("Invalid password")) => "محاولات دخول بكلمة مرور خاطئة".into(),
+        ("LOGIN", Some("Unknown username")) => "محاولات دخول باسم مستخدم غير موجود".into(),
+        ("LOGIN", Some("Account temporarily locked")) => "محاولات دخول أثناء قفل الحساب مؤقتًا".into(),
+        ("LOGIN", _) => "محاولات دخول فاشلة".into(),
+        ("ACCESS_DENIED", _) => "محاولات فتح صفحة أو تنفيذ عملية بدون صلاحية".into(),
+        ("CREATE_AUTO_BACKUP", _) => "نسخ احتياطية تلقائية لم تكتمل".into(),
+        ("CREATE_BACKUP", _) => "نسخ احتياطية يدوية لم تكتمل".into(),
+        ("RESTORE_BACKUP", _) => "عمليات استعادة لم تكتمل".into(),
+        (other, _) => format!("عمليات أخرى لم تكتمل ({})", other.chars().filter(|c| c.is_ascii_alphanumeric() || *c == '_').collect::<String>()),
     }
-    let details = rows
-        .into_iter()
-        .map(|(action, n)| format!("{}: {n}", action.chars().filter(|c| c.is_ascii_alphanumeric() || *c == '_').collect::<String>()))
+}
+
+/// Failed actions from the audit log in the last 30 days, as counts per kind only:
+/// no usernames, targets or details leave the database (the login reason is a fixed code).
+fn check_recent_failures(conn: &Connection) -> HealthItem {
+    let rows: Vec<(String, Option<String>, i64)> = conn
+        .prepare(
+            "SELECT action, CASE WHEN action='LOGIN' THEN details END AS reason, COUNT(*) FROM activity_log
+             WHERE result='Failure' AND created_at >= datetime('now','-30 days')
+             GROUP BY action, reason ORDER BY COUNT(*) DESC LIMIT 12",
+        )
+        .and_then(|mut stmt| stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?.collect())
+        .unwrap_or_default();
+    let title = "العمليات الفاشلة خلال آخر 30 يومًا";
+    if rows.is_empty() {
+        return item("failures", title, "ok", vec!["لا توجد عمليات فاشلة مسجلة".into()]);
+    }
+    let backup_failed = rows.iter().any(|(action, _, _)| action.ends_with("BACKUP"));
+    let mut details: Vec<String> = rows
+        .iter()
+        .map(|(action, reason, n)| format!("{}: {n}", failure_label(action, reason.as_deref())))
         .collect();
-    item("failures", "الأخطاء خلال 30 يومًا", "info", details)
+    details.push("محاولات الدخول الخاطئة القليلة أمر طبيعي (خطأ في الكتابة). التفاصيل في «سجل النظام».".into());
+    item("failures", title, if backup_failed { "warn" } else { "info" }, details)
 }
 
 fn status_label(status: &str) -> &'static str {
@@ -438,7 +457,7 @@ mod tests {
         for secret in ["موظف سري", "secret_user", "target-secret", "detail-secret"] {
             assert!(!report.text.contains(secret), "report leaked {secret}");
         }
-        assert!(report.text.contains("LOGIN: 1"));
+        assert!(report.text.contains("محاولات دخول فاشلة: 1"), "{}", report.text);
         assert!(report.items.iter().any(|i| i.key == "database" && i.status != "fail"));
     }
 
