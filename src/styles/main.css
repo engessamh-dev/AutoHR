@@ -464,7 +464,7 @@
 .nav-section.hidden{display:none}
 
 /* ── Settings & About screens ──────────────────────────────────────────── */
-.settings-screen{max-width:56rem}
+.settings-screen{max-width:72rem}
 .settings-tabs{display:flex;flex-wrap:wrap;gap:4px;border-bottom:1px solid var(--ui-line)}
 .settings-tab{padding:9px 16px;font-size:14px;color:var(--ui-text-muted);background:transparent;border:0;border-bottom:2px solid transparent;margin-bottom:-1px;cursor:pointer;white-space:nowrap}
 .settings-tab:hover{color:var(--ui-text-strong)}
@@ -483,7 +483,10 @@
 .settings-block-head{display:grid;gap:4px}
 .settings-block-title{margin:0;font-size:15px;font-weight:700;color:var(--ui-text-strong)}
 .settings-block-help{margin:0;font-size:12px;line-height:1.8;color:var(--ui-text-muted)}
-.settings-block-foot{display:flex;justify-content:flex-start}
+.settings-block-foot{display:flex;justify-content:flex-start;gap:10px;flex-wrap:wrap}
+.settings-status-line{margin:0;font-size:14px;color:var(--ui-text-strong)}
+.settings-block .settings-company{margin:0}
+.about-card.settings-block-like .settings-block-help{margin-top:2px}
 .backup-schedules{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px}
 @media (max-width:760px){.backup-schedules{grid-template-columns:1fr}}
 .backup-schedule{display:grid;grid-template-columns:auto 1fr;align-items:center;gap:4px 10px;padding:12px 14px;border:1px solid var(--ui-line);border-radius:10px;background:color-mix(in srgb, var(--ui-accent) 5%, transparent);cursor:pointer;transition:border-color .15s,background .15s}
@@ -494,6 +497,9 @@
 .backup-schedule-last{grid-column:2;font-size:12px;color:var(--ui-text-muted)}
 .backup-password-row{display:grid;gap:6px;max-width:34rem}
 .settings-path-row{display:flex;align-items:center;justify-content:space-between;gap:16px;padding:12px 0}
+.settings-path-actions{display:grid;grid-template-columns:repeat(2,9.5rem);gap:8px;flex:none}
+.settings-path-actions > button{justify-content:center;text-align:center}
+.support-contact-buttons > button{min-width:9.5rem;justify-content:center;text-align:center}
 .settings-path-row + .settings-path-row{border-top:1px solid var(--ui-line)}
 .settings-path-label{font-size:13px;font-weight:600;color:var(--ui-text)}
 .settings-path-value{font-size:13px;color:var(--ui-text-muted);overflow-wrap:anywhere;text-align:start;margin-top:2px}
@@ -515,9 +521,10 @@
 .support-summary-ok{border-color:var(--ui-ok-line);background:var(--ui-ok-bg)}
 .support-summary-warn{border-color:var(--ui-warn-line);background:var(--ui-warn-bg)}
 .support-summary-fail{border-color:var(--ui-danger-line);background:var(--ui-danger-bg)}
-.support-check-list{display:grid;gap:8px;margin-top:12px}
+.support-check-list{display:grid;gap:8px}
 .support-check-list:empty,.support-check-list.hidden{display:none}
-.support-summary-row{display:flex;align-items:center;gap:10px;margin-top:16px}
+.support-summary-row{display:flex;align-items:center;gap:10px}
+.support-summary-row.hidden{display:none}
 .support-summary-row .support-summary{flex:1;margin-top:0}
 .support-summary-row #btn-toggle-results{flex:none}
 .support-summary-row #btn-toggle-results.hidden{display:none}
@@ -525,14 +532,14 @@
 .support-check-head{display:flex;align-items:center;justify-content:space-between;gap:12px;font-size:14px;color:var(--ui-text-strong)}
 .support-check-details{margin:6px 0 0;padding:0;list-style:none;font-size:12px;line-height:1.8;color:var(--ui-text-muted);word-break:break-word}
 .support-check-details li{white-space:pre-wrap}
-.support-actions{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-top:14px}
+.support-actions{display:flex;align-items:center;gap:12px;flex-wrap:wrap}
 .support-actions p{flex:1;min-width:14rem;margin:0}
 .support-contact-row{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-top:12px}
-.support-contact-table{display:grid;grid-template-columns:auto auto 1fr;gap:12px 20px;align-items:center;margin-top:16px}
+.support-contact-table{display:grid;grid-template-columns:max-content max-content 1fr;gap:12px 24px;align-items:center}
 .support-contact-table > div{display:contents}
 .support-contact-label{font-size:13px;color:var(--ui-text-muted)}
 .support-contact-value{font-size:14px;color:var(--ui-text-strong);user-select:text}
-.support-contact-buttons{display:flex;gap:8px;flex-wrap:wrap;justify-content:flex-end}
+.support-contact-buttons{display:flex;gap:8px;flex-wrap:wrap;justify-content:flex-start}
 @media (max-width:900px){.support-contact-table{grid-template-columns:auto 1fr}.support-contact-buttons{grid-column:1 / -1;justify-content:flex-start}}
 
 

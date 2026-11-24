@@ -46,15 +46,15 @@ export async function renderSupport(container, user, ctx) {
 
   container.innerHTML = `
     <div class="support-grid">
-      <section class="card support-card" aria-labelledby="support-check-title">
-        <div class="support-card-head">
-          <div>
-            <h2 id="support-check-title" class="text-lg font-bold">فحص البرنامج</h2>
-            <p class="text-sm text-gray-400 mt-1">يفحص قاعدة البيانات والمجلدات والملفات المرفقة والنسخ الاحتياطية دون تغيير أي شيء.</p>
-          </div>
+      <section class="card settings-block support-card" aria-labelledby="support-check-title">
+        <div class="settings-block-head">
+          <h2 id="support-check-title" class="settings-block-title">فحص البرنامج</h2>
+          <p class="settings-block-help">يفحص قاعدة البيانات والمجلدات والملفات المرفقة والنسخ الاحتياطية دون تغيير أي شيء.</p>
+        </div>
+        <div class="settings-block-foot">
           <button type="button" id="btn-run-check" class="btn-primary">بدء الفحص</button>
         </div>
-        <div class="support-summary-row">
+        <div class="support-summary-row hidden" id="check-summary-row">
           <div id="check-summary" class="support-summary hidden" role="status"></div>
           <button type="button" id="btn-toggle-results" class="btn-secondary text-sm hidden" aria-expanded="true" aria-controls="check-results">إخفاء التفاصيل</button>
         </div>
@@ -66,9 +66,11 @@ export async function renderSupport(container, user, ctx) {
       </section>
 
       <div class="support-side">
-      <section class="card support-card" aria-labelledby="support-contact-title">
-        <h2 id="support-contact-title" class="text-lg font-bold">اتصل بنا</h2>
-        <p class="text-sm text-gray-400 mt-1">لإرسال اقتراح أو الإبلاغ عن مشكلة. عند الإبلاغ عن مشكلة، احفظ ملف التشخيص أولًا ثم أرفقه في الرسالة.</p>
+      <section class="card settings-block support-card" aria-labelledby="support-contact-title">
+        <div class="settings-block-head">
+          <h2 id="support-contact-title" class="settings-block-title">اتصل بنا</h2>
+          <p class="settings-block-help">لإرسال اقتراح أو الإبلاغ عن مشكلة. عند الإبلاغ عن مشكلة، احفظ ملف التشخيص أولًا ثم أرفقه في الرسالة.</p>
+        </div>
         ${contact ? `
         <div class="support-contact-table">
           <div>
@@ -127,6 +129,7 @@ export async function renderSupport(container, user, ctx) {
       summary.innerHTML = `${statusBadge(report.overall)} <span>${escHtml(OVERALL_TEXT[report.overall] ?? "")}</span>`;
       results.innerHTML = renderItems(report);
       setResultsOpen(true);
+      container.querySelector("#check-summary-row").classList.remove("hidden");
       toggle.classList.remove("hidden");
       actions.classList.remove("hidden");
     } catch (err) {

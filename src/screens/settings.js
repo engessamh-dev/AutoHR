@@ -200,7 +200,11 @@ export async function renderSettings(container, user, ctx) {
           aria-selected="${tab.id === activeSettingsTab}">${tab.label}</button>`).join("")}
       </div>
 
-      ${canSettings ? `<section class="card settings-panel" data-settings-panel="company">
+      ${canSettings ? `<section class="card settings-panel settings-block" data-settings-panel="company">
+        <div class="settings-block-head">
+          <p class="settings-block-title">الجهة والشعار</p>
+          <p class="settings-block-help">يظهر اسم الجهة والقسم في رأس الشاشات وفي المطبوعات والتقارير.</p>
+        </div>
         <div class="settings-company">
           <div class="settings-logo-col">
             <div id="company-logo-box">${logoMarkup()}</div>
@@ -221,8 +225,10 @@ export async function renderSettings(container, user, ctx) {
                 <input id="c-div" class="input-field" value="${escHtml(companyConfig?.division_name ?? "")}" />
               </div>
             </div>
-            <button id="btn-save-cfg" type="button" class="btn-primary px-6">حفظ</button>
           </div>
+        </div>
+        <div class="settings-block-foot">
+          <button id="btn-save-cfg" type="button" class="btn-primary">حفظ بيانات الجهة</button>
         </div>
       </section>` : ""}
 
@@ -243,9 +249,9 @@ export async function renderSettings(container, user, ctx) {
               <p class="settings-path-label">مجلد البيانات والمرفقات</p>
               <p id="storage-path-text" class="settings-path-value" dir="ltr">${escHtml(storageStatus?.data_root || "—")}</p>
             </div>
-            <div class="flex gap-2">
+            <div class="settings-path-actions">
               <button id="btn-open-storage" type="button" class="btn-secondary whitespace-nowrap">فتح المجلد</button>
-              ${canBackups ? `<button id="btn-move-storage" type="button" class="btn-secondary whitespace-nowrap">نقل مجلد البيانات…</button>` : ""}
+              ${canBackups ? `<button id="btn-move-storage" type="button" class="btn-secondary whitespace-nowrap">نقل المجلد…</button>` : ""}
             </div>
           </div>
           <div class="settings-path-row">
@@ -253,7 +259,7 @@ export async function renderSettings(container, user, ctx) {
               <p class="settings-path-label">مجلد النسخ الاحتياطية</p>
               <p id="backup-path-text" class="settings-path-value" dir="ltr">${escHtml(storageStatus?.backup_root || "—")}</p>
             </div>
-            <div class="flex gap-2">
+            <div class="settings-path-actions">
               <button id="btn-open-backup" type="button" class="btn-secondary whitespace-nowrap">فتح المجلد</button>
               <button id="btn-change-backup" type="button" class="btn-secondary whitespace-nowrap">تغيير المجلد…</button>
             </div>
@@ -320,13 +326,15 @@ export async function renderSettings(container, user, ctx) {
       </div>` : ""}` : ""}
       </section>` : ""}
 
-      ${canSettings && canBackups ? `<section class="card settings-panel space-y-3" data-settings-panel="updates">
-        <p class="section-title">تحديث البرنامج</p>
-        <p class="text-xs text-gray-400 leading-6">يتحقق البرنامج من وجود إصدار جديد موقّع. قبل التثبيت تُنشأ نسخة احتياطية مشفرة ويُتحقق منها، ولا يُثبَّت أي ملف لا يحمل توقيع المطوّر.</p>
-        <p id="update-status" class="text-sm text-gray-300">الإصدار الحالي: —</p>
+      ${canSettings && canBackups ? `<section class="card settings-panel settings-block" data-settings-panel="updates">
+        <div class="settings-block-head">
+          <p class="settings-block-title">تحديث البرنامج</p>
+          <p class="settings-block-help">يتحقق البرنامج من وجود إصدار جديد موقّع. قبل التثبيت تُنشأ نسخة احتياطية مشفرة ويُتحقق منها، ولا يُثبَّت أي ملف لا يحمل توقيع المطوّر.</p>
+        </div>
+        <p id="update-status" class="settings-status-line">الإصدار الحالي: <span dir="ltr">${escHtml(APP_VERSION)}</span></p>
         <div id="update-notes" class="hidden text-xs text-gray-400 whitespace-pre-line border border-autohr-border rounded-lg p-3"></div>
-        <div class="flex gap-3">
-          <button id="btn-check-update" type="button" class="btn-secondary">التحقق من التحديثات</button>
+        <div class="settings-block-foot">
+          <button id="btn-check-update" type="button" class="btn-primary">التحقق من التحديثات</button>
           <button id="btn-install-update" type="button" class="btn-primary hidden">تثبيت التحديث</button>
         </div>
       </section>` : ""}

@@ -14,12 +14,12 @@ export async function renderAbout(container, user, ctx) {
   const canOpenSettings = !ctx?.embedded && (can(user, "settings.manage") || can(user, "backups.manage"));
 
   container.innerHTML = `
-    <div class="card about-card">
+    <div class="card about-card settings-block-like">
       <img src="${escHtml(COMPANY_LOGO.medium)}" alt="${escHtml(COMPANY_LOGO.alt)}" class="about-logo company-logo-tile" />
       <div class="min-w-0">
-        <h2 class="text-xl font-bold">CNSArch</h2>
-        <p class="text-sm text-gray-300">نظام الأرشفة الإلكتروني وإدارة معلومات الموظفين</p>
-        ${companyLine ? `<p class="text-sm text-gray-400 mt-1">${escHtml(companyLine)}</p>` : ""}
+        <h2 class="settings-block-title">CNSArch</h2>
+        <p class="settings-block-help">نظام الأرشفة الإلكتروني وإدارة معلومات الموظفين</p>
+        ${companyLine ? `<p class="settings-block-help">${escHtml(companyLine)}</p>` : ""}
         <dl class="about-facts">
           <div><dt>الإصدار</dt><dd><span dir="ltr">${escHtml(APP_VERSION)}</span></dd></div>
           <div><dt>المطوّر</dt><dd dir="ltr">Eng. Essam Hassan</dd></div>
