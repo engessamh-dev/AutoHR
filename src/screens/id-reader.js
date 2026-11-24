@@ -30,8 +30,8 @@ function rowHtml(row, index) {
   return `<tr class="${low ? "is-low" : ""} ${conflict ? "is-conflict" : ""}">
     <td><input type="checkbox" class="id-reader-pick" data-index="${index}" ${checked} aria-label="اعتماد ${escHtml(row.label)}" /></td>
     <th scope="row">${escHtml(row.label)} ${badge}</th>
-    <td class="id-reader-current" dir="${row.ltr ? "ltr" : "rtl"}">${row.current ? escHtml(row.current) : `<span class="id-reader-empty">فارغ</span>`}</td>
-    <td><input class="input-field id-reader-value" data-index="${index}" type="${row.date ? "date" : "text"}" dir="${row.ltr ? "ltr" : "rtl"}" value="${escHtml(row.value)}" /></td>
+    <td class="id-reader-current" dir="${row.dir ?? (row.ltr ? "ltr" : "rtl")}">${row.current ? escHtml(row.current) : `<span class="id-reader-empty">فارغ</span>`}</td>
+    <td><input class="input-field id-reader-value" data-index="${index}" type="${row.date ? "date" : "text"}" dir="${row.dir ?? (row.ltr ? "ltr" : "rtl")}" value="${escHtml(row.value)}" /></td>
   </tr>`;
 }
 

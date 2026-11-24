@@ -812,7 +812,8 @@ function personSummary({ name, gender, birthdate }) {
 }
 
 function vehicleSummary({ brand, type, color, plate }) {
-  return [[brand, type, color].filter(Boolean).join(" ") || "مركبة بدون بيانات", plate].filter(Boolean).join(" · ");
+  // Isolate the plate so "11 Z12345" keeps its order inside the Arabic summary.
+  return [[brand, type, color].filter(Boolean).join(" ") || "مركبة بدون بيانات", plate && `\u2068${plate}\u2069`].filter(Boolean).join(" · ");
 }
 
 function rowSummaryFromInputs(row) {
@@ -2192,7 +2193,7 @@ function vehicleRowHtml(vehicle = {}, index = Date.now()) {
       extra: `${annual}${existing ? `<span class="emp-pill ${attached === 2 ? "ok" : "none"}">المرفقات ${attached}/2</span>` : ""}`,
       removeClass: "btn-remove-vehicle",
     })}
-    ${vehicleInput("رقم اللوحة", "vehicle-plate", vehicle.plate)}
+    ${vehicleInput("رقم اللوحة", "vehicle-plate", vehicle.plate, "auto")}
     ${vehicleInput("المحافظة", "vehicle-governorate", vehicle.governorate)}
     ${vehicleInput("نوع اللوحة", "vehicle-plate-category", vehicle.plate_category)}
     ${vehicleInput("العلامة التجارية للمركبة", "vehicle-brand", vehicle.brand)}
@@ -2277,7 +2278,7 @@ function vehicleInput(label, className, value = "", ltr = false, date = false) {
   return `<div>
     <p style="font-size:10px;color:var(--ui-text-faint);margin-bottom:3px">${label}</p>
     <input class="input-field ${className}" type="${date ? "date" : "text"}"
-      dir="${ltr ? "ltr" : "rtl"}" value="${date ? (value ?? "") : escHtml(value ?? "")}" />
+      dir="${ltr === "auto" ? "auto" : ltr ? "ltr" : "rtl"}" value="${date ? (value ?? "") : escHtml(value ?? "")}" />
   </div>`;
 }
 
@@ -2348,7 +2349,8 @@ function ocrRows(result, target) {
     if (field) rows.push({ id, label, value: field.value, confidence: field.confidence, source: field.source, current: current ?? "", ...opts });
   };
   if (kind === "vehicle") {
-    add("field:plate", "رقم اللوحة", "plate", record?.plate);
+    // "11 Z12345" reads left to right, "12345 هـ" right to left: let the text decide.
+    add("field:plate", "رقم اللوحة", "plate", record?.plate, { dir: "auto" });
     add("field:governorate", "المحافظة", "governorate", record?.governorate);
     add("field:plate_category", "نوع اللوحة", "plate_category", record?.plate_category);
     add("field:annual_no", "رقم السنوية", "annual_no", record?.annual_no, { ltr: true });
