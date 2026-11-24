@@ -53,18 +53,51 @@ test("update check reports the latest version or leads to settings", async ({ pa
 });
 
 test("settings has one «الدعم وحول النظام» tab for every user, and one tab for storage and backups", async ({ page }) => {
-  await page.evaluate(() => window.renderActual("settings"));
+  await page.evaluate(async () => {
+    const { renderSettings } = await import("/src/screens/settings.js");
+    await renderSettings(document.querySelector("#root"), { username: "admin", permissions: ["settings.manage", "backups.manage"] }, {});
+  });
   const tabs = page.locator("[data-settings-tab]");
   await expect(tabs.filter({ hasText: "الحفظ والنسخ الاحتياطي" })).toHaveCount(1);
   await tabs.filter({ hasText: "الحفظ والنسخ الاحتياطي" }).click();
-  await expect(page.locator('[data-settings-panel="storage"] .settings-block-title').first()).toHaveText("مواقع الحفظ");
+  // Storage and backups is an inner list showing one section at a time.
+  const storage = page.locator('[data-settings-panel="storage"]');
+  await expect(storage.locator(".settings-subnav-item")).toHaveText(["مواقع الحفظ", "النسخ التلقائي", "نسخة يدوية"]);
+  await expect(storage.locator('[data-sub="locations"]')).toBeVisible();
+  await storage.getByRole("button", { name: "نسخة يدوية" }).click();
+  await expect(storage.locator('[data-sub="manual"]')).toBeVisible();
+  await expect(storage.locator('[data-sub="locations"]')).toBeHidden();
   const support = tabs.filter({ hasText: "الدعم وحول النظام" });
   await expect(support).toHaveCount(1);
   await expect(tabs.filter({ hasText: /^حول النظام$/ })).toHaveCount(0);
   await support.click();
+  const panel = page.locator('[data-settings-panel="support"]');
+  await expect(panel.locator(".settings-subnav-item")).toHaveText(["حول النظام", "فحص البرنامج", "اتصل بنا"]);
   await expect(page.locator(".about-card")).toBeVisible();
+  await panel.getByRole("button", { name: "فحص البرنامج" }).click();
   await expect(page.getByRole("button", { name: "بدء الفحص" })).toBeVisible();
+  await expect(page.locator(".about-card")).toBeHidden();
   // The «التحديثات» tab already covers updates, and the user is already in Settings.
   await expect(page.locator("#btn-support-check-update")).toHaveCount(0);
   await expect(page.locator("#btn-open-settings")).toHaveCount(0);
+});
+
+test("save buttons stay dim until something changes", async ({ page }) => {
+  await page.evaluate(async () => {
+    const { renderSettings } = await import("/src/screens/settings.js");
+    await renderSettings(document.querySelector("#root"), { username: "admin", permissions: ["settings.manage", "backups.manage"] }, { tab: "company" });
+  });
+  const saveCompany = page.locator("#btn-save-cfg");
+  await expect(saveCompany).toBeDisabled();
+  const original = await page.locator("#c-dept").inputValue();
+  await page.locator("#c-dept").fill("قسم آخر");
+  await expect(saveCompany).toBeEnabled();
+  await page.locator("#c-dept").fill(original);
+  await expect(saveCompany).toBeDisabled();
+  await page.locator('[data-settings-tab="storage"]').click();
+  await page.getByRole("button", { name: "النسخ التلقائي" }).click();
+  const saveBackup = page.locator("#btn-save-auto-backup");
+  await expect(saveBackup).toBeDisabled();
+  await page.locator("#auto-backup-weekly").check();
+  await expect(saveBackup).toBeEnabled();
 });

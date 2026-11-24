@@ -14,7 +14,7 @@ export async function renderAbout(container, user, ctx) {
   const canOpenSettings = !ctx?.embedded && (can(user, "settings.manage") || can(user, "backups.manage"));
 
   container.innerHTML = `
-    <div class="card about-card settings-block-like">
+    <div class="card about-card settings-block-like" data-sub="about" data-sub-label="حول النظام">
       <img src="${escHtml(COMPANY_LOGO.medium)}" alt="${escHtml(COMPANY_LOGO.alt)}" class="about-logo company-logo-tile" />
       <div class="min-w-0">
         <h2 class="settings-block-title">CNSArch</h2>

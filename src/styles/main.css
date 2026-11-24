@@ -768,3 +768,20 @@ html[data-ui-scale] #app-shell { height: calc(100vh / var(--ui-scale)); }
 .emp-zone-input{flex:1;min-width:110px;border:0;background:transparent;color:inherit;font-size:13px;outline:none;padding:4px 0}
 .settings-stack .about-card{max-width:none}
 .about-card h2{color:var(--ui-text-strong)}
+
+/* ── Inner list inside a settings tab: side menu, one card at a time ── */
+.settings-subnav-layout{display:grid;grid-template-columns:13rem minmax(0,1fr);gap:20px;align-items:start}
+.settings-subnav-layout.hidden{display:none}
+.settings-subnav-body{display:grid;gap:16px;min-width:0}
+.settings-subnav-body .support-grid,.settings-subnav-body .support-side{display:contents}
+.sub-hidden{display:none !important}
+.settings-subnav{position:sticky;top:0;display:grid;gap:4px;padding:8px;border:1px solid var(--ui-line);border-radius:12px;background:var(--card-bg, var(--ui-surface))}
+.settings-subnav-item{display:block;width:100%;text-align:start;padding:9px 12px;border:0;border-radius:8px;background:transparent;color:var(--ui-text);font-size:14px;cursor:pointer;border-inline-start:3px solid transparent}
+.settings-subnav-item:hover{background:var(--ui-accent-hover)}
+.settings-subnav-item[aria-current="true"]{background:var(--ui-accent-soft);color:var(--ui-text-strong);font-weight:600;border-inline-start-color:var(--ui-accent)}
+.settings-subnav-item.is-danger{color:var(--ui-danger)}
+.settings-subnav-item.is-danger[aria-current="true"]{border-inline-start-color:var(--ui-danger);background:var(--ui-danger-bg)}
+@media (max-width:900px){.settings-subnav-layout{grid-template-columns:1fr}.settings-subnav{position:static;grid-auto-flow:column;overflow-x:auto}}
+
+/* A save button with nothing to save stays dim until a field changes. */
+.btn-primary:disabled{opacity:.45;filter:saturate(.35);box-shadow:none;background:var(--ui-accent-soft);color:var(--ui-text-muted);border-color:var(--ui-line)}

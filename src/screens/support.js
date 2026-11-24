@@ -46,7 +46,7 @@ export async function renderSupport(container, user, ctx) {
 
   container.innerHTML = `
     <div class="support-grid">
-      <section class="card settings-block support-card" aria-labelledby="support-check-title">
+      <section class="card settings-block support-card" aria-labelledby="support-check-title" data-sub="check" data-sub-label="فحص البرنامج">
         <div class="settings-block-head">
           <h2 id="support-check-title" class="settings-block-title">فحص البرنامج</h2>
           <p class="settings-block-help">يفحص قاعدة البيانات والمجلدات والملفات المرفقة والنسخ الاحتياطية دون تغيير أي شيء.</p>
@@ -66,7 +66,7 @@ export async function renderSupport(container, user, ctx) {
       </section>
 
       <div class="support-side">
-      <section class="card settings-block support-card" aria-labelledby="support-contact-title">
+      <section class="card settings-block support-card" aria-labelledby="support-contact-title" data-sub="contact" data-sub-label="اتصل بنا">
         <div class="settings-block-head">
           <h2 id="support-contact-title" class="settings-block-title">اتصل بنا</h2>
           <p class="settings-block-help">لإرسال اقتراح أو الإبلاغ عن مشكلة. عند الإبلاغ عن مشكلة، احفظ ملف التشخيص أولًا ثم أرفقه في الرسالة.</p>

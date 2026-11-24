@@ -12,6 +12,57 @@ import { renderSupport } from "./support.js";
 import { renderAbout } from "./about.js";
 
 let activeSettingsTab = null;
+// The section open in each tab's inner list, kept while the screen re-renders.
+const activeSubsection = {};
+
+/**
+ * Keeps a save button dimmed and disabled until one of its fields differs from the saved
+ * value. Returns reset(), to call after a successful save so the new values become the baseline.
+ */
+function trackUnsavedChanges(root, button, selectors) {
+  if (!button) return () => {};
+  const fields = selectors.map(selector => root.querySelector(selector)).filter(Boolean);
+  const read = () => fields.map(field => (field.type === "checkbox" ? String(field.checked) : field.value.trim()));
+  let saved = read();
+  const update = () => {
+    const now = read();
+    button.disabled = !now.some((value, index) => value !== saved[index]);
+  };
+  fields.forEach(field => {
+    field.addEventListener("input", update);
+    field.addEventListener("change", update);
+  });
+  update();
+  return () => { saved = read(); update(); };
+}
+
+/**
+ * Turns a tab's cards into an inner list: a side menu built from the cards' data-sub /
+ * data-sub-label, showing one card at a time.
+ */
+function mountSubnav(panel, key) {
+  const sections = [...panel.querySelectorAll("[data-sub]")];
+  if (sections.length < 2) return;
+  const body = document.createElement("div");
+  body.className = "settings-subnav-body";
+  while (panel.firstChild) body.append(panel.firstChild);
+  const nav = document.createElement("nav");
+  nav.className = "settings-subnav";
+  nav.innerHTML = sections.map(section => `<button type="button" class="settings-subnav-item${section.dataset.subDanger ? " is-danger" : ""}"
+    data-sub-target="${escHtml(section.dataset.sub)}">${escHtml(section.dataset.subLabel)}</button>`).join("");
+  panel.classList.add("settings-subnav-layout");
+  panel.append(nav, body);
+  const show = id => {
+    activeSubsection[key] = id;
+    sections.forEach(section => section.classList.toggle("sub-hidden", section.dataset.sub !== id));
+    nav.querySelectorAll("[data-sub-target]").forEach(item => item.setAttribute("aria-current", String(item.dataset.subTarget === id)));
+  };
+  nav.addEventListener("click", event => {
+    const item = event.target.closest("[data-sub-target]");
+    if (item) show(item.dataset.subTarget);
+  });
+  show(sections.some(section => section.dataset.sub === activeSubsection[key]) ? activeSubsection[key] : sections[0].dataset.sub);
+}
 
 function bindPasswordToggle(root, inputSelector, buttonSelector) {
   const input = root.querySelector(inputSelector);
@@ -234,7 +285,7 @@ export async function renderSettings(container, user, ctx) {
 
 
       ${canSettings || canBackups ? `<section class="settings-panel settings-stack" data-settings-panel="storage">
-      ${canSettings ? `<div class="card settings-block">
+      ${canSettings ? `<div class="card settings-block" data-sub="locations" data-sub-label="مواقع الحفظ">
         <div class="settings-block-head">
           <p class="settings-block-title">مواقع الحفظ</p>
           <p class="settings-block-help">يمكن نقل مجلد البيانات أو تغيير مجلد النسخ بأمان: يُنسخ كل شيء ويُتحقق منه أولًا، ويبقى الموقع القديم كما هو.</p>
@@ -267,7 +318,7 @@ export async function renderSettings(container, user, ctx) {
         </div>
       </div>` : ""}
 
-      ${canBackups ? `<div class="card settings-block">
+      ${canBackups ? `<div class="card settings-block" data-sub="auto" data-sub-label="النسخ التلقائي">
         <div class="settings-block-head">
           <p class="settings-block-title">النسخ التلقائي</p>
           <p class="settings-block-help">تشمل كل نسخة قاعدة البيانات وجميع المرفقات والوثائق، وتُشفَّر بكلمة المرور أدناه.</p>
@@ -304,7 +355,7 @@ export async function renderSettings(container, user, ctx) {
         </div>
       </div>
 
-      <div class="card settings-block">
+      <div class="card settings-block" data-sub="manual" data-sub-label="نسخة يدوية">
         <div class="settings-block-head">
           <p class="settings-block-title">نسخة يدوية</p>
           <p class="settings-block-help">أنشئ نسخة الآن في مجلد النسخ، أو صدّرها إلى قرص خارجي أو مجلد شبكة.</p>
@@ -315,7 +366,7 @@ export async function renderSettings(container, user, ctx) {
         </div>
       </div>
 
-      ${canRestore ? `<div class="card danger-zone settings-block">
+      ${canRestore ? `<div class="card danger-zone settings-block" data-sub="restore" data-sub-label="الاستعادة" data-sub-danger="1">
         <div class="settings-block-head">
           <p class="danger-zone-title"><span aria-hidden="true">⚠</span> استعادة نسخة احتياطية</p>
           <p class="settings-block-help">تستبدل الاستعادة كل البيانات والمرفقات الحالية بمحتوى النسخة المختارة، وتضيع أي تغييرات بعد تاريخها. يُنصح بإنشاء نسخة الآن قبل الاستعادة.</p>
@@ -354,20 +405,26 @@ export async function renderSettings(container, user, ctx) {
     if (id === "support" && !supportRendered) {
       supportRendered = true;
       const panel = container.querySelector('[data-settings-panel="support"]');
-      for (const [key, render] of [["about", renderAbout], ["support", renderSupport]]) {
+      Promise.all([["about", renderAbout], ["support", renderSupport]].map(([key, render]) => {
         const host = panel.querySelector(`[data-embedded="${key}"]`);
-        render(host, user, { ...ctx, embedded: true }).catch(err => {
+        return render(host, user, { ...ctx, embedded: true }).catch(err => {
           host.innerHTML = `<div class="card text-sm text-gray-400" dir="auto">${escHtml(err?.message ?? String(err))}</div>`;
         });
-      }
+      })).then(() => mountSubnav(panel, "support"));
     }
     container.querySelectorAll("[data-settings-tab]").forEach(tab => tab.setAttribute("aria-selected", String(tab.dataset.settingsTab === id)));
     container.querySelectorAll("[data-settings-panel]").forEach(panel => panel.classList.toggle("hidden", panel.dataset.settingsPanel !== id));
   };
   container.querySelectorAll("[data-settings-tab]").forEach(tab => tab.addEventListener("click", () => showTab(tab.dataset.settingsTab)));
+  const storagePanel = container.querySelector('[data-settings-panel="storage"]');
+  if (storagePanel) mountSubnav(storagePanel, "storage");
   showTab(activeSettingsTab);
 
   bindPasswordToggle(container, "#auto-backup-password", "#auto-backup-password-toggle");
+
+  const resetCompanyDirty = trackUnsavedChanges(container, container.querySelector("#btn-save-cfg"), ["#c-company", "#c-dept", "#c-div"]);
+  const resetAutoBackupDirty = trackUnsavedChanges(container, container.querySelector("#btn-save-auto-backup"),
+    ["#auto-backup-daily", "#auto-backup-weekly", "#auto-backup-monthly", "#auto-backup-password"]);
 
   container.querySelector("#btn-save-cfg")?.addEventListener("click", async () => {
     const data = {
@@ -379,6 +436,7 @@ export async function renderSettings(container, user, ctx) {
     try {
       companyConfig = await api.updateCompanyConfig(data);
       applyBranding(companyConfig);
+      resetCompanyDirty();
       showToast("تم حفظ بيانات الجهة");
     } catch (err) { showToast(err?.message ?? "خطأ", "error"); }
   });
@@ -548,6 +606,7 @@ export async function renderSettings(container, user, ctx) {
     try {
       autoBackup = await api.setAutoBackupSettings(data);
       container.querySelector("#auto-backup-password").value = "";
+      resetAutoBackupDirty();
       showToast("تم حفظ إعدادات النسخ التلقائي");
     } catch (err) {
       showToast(err?.message ?? "خطأ", "error");
