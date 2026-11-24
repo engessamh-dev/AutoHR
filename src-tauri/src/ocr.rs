@@ -18,6 +18,11 @@ const DICT: &str = include_str!("../models/ocr_ar_dict.txt");
 /// The detector runs on a fixed square canvas (tract cannot optimise its graph with free sizes).
 const DET_SIZE: usize = 1024;
 const REC_HEIGHT: usize = 48;
+/// Marks a thin separator between two letters (see `recognize_chars_in`); the parser reads it as
+/// a word break, or as "-" inside a place name.
+pub const SEPARATOR: &str = "\u{2010}";
+/// Space-or-tatweel probability in a gap between letters that marks a thin separator.
+const SEPARATOR_HINT: f32 = 0.12;
 /// Recogniser input widths; a line is padded to the next one. Each is optimised once, on first use.
 const REC_WIDTHS: [usize; 6] = [160, 320, 640, 960, 1280, 1920];
 
@@ -213,10 +218,19 @@ fn recognize_chars_in(crop: &RgbImage, allowed: Option<fn(&str) -> bool>) -> Opt
     let chars = charset();
     let frames = probs.shape()[1].min(width.div_ceil(8) + 1);
     let frame_px = crop.width() as f32 / frames as f32;
-    let mut out = Vec::new();
+    let mut out: Vec<(f32, String, f32)> = Vec::new();
     let mut last = 0usize;
+    // A thin separator ("-" between the parts of a place name) is not in the dictionary: it shows
+    // as blank frames where a space or a tatweel was a close second. Marked with SEPARATOR.
+    let space = chars.len() - 1;
+    let tatweel = chars.iter().position(|c| c == "ـ");
+    let mut gap_hint = 0f32;
+    let mut gap_start = 0usize;
     for t in 0..frames {
         let frame = probs.slice(tract_ndarray::s![0, t, ..]);
+        if allowed.is_none() {
+            gap_hint = gap_hint.max(frame[space] + tatweel.map_or(0., |k| frame[k]));
+        }
         let (mut best, mut p) = (0usize, f32::MIN);
         for (k, v) in frame.iter().enumerate() {
             if *v > p {
@@ -239,8 +253,17 @@ fn recognize_chars_in(crop: &RgbImage, allowed: Option<fn(&str) -> bool>) -> Opt
         }
         if best != 0 && best != last {
             if let Some(ch) = chars.get(best) {
+                let joins = |c: &str| c.chars().all(|c| ('\u{0621}'..='\u{064A}').contains(&c) && c != 'ـ');
+                if gap_hint >= SEPARATOR_HINT && t > gap_start + 1 && joins(ch) && out.last().is_some_and(|l| joins(&l.1)) {
+                    out.push(((gap_start + t) as f32 / 2. * frame_px, SEPARATOR.into(), gap_hint));
+                }
                 out.push(((t as f32 + 0.5) * frame_px, ch.clone(), p));
+                gap_hint = 0.;
+                gap_start = t;
             }
+        } else if best != 0 {
+            gap_hint = 0.;
+            gap_start = t;
         }
         last = best;
     }
@@ -280,7 +303,7 @@ fn recognize(crop: &RgbImage) -> Option<(String, f32)> {
     pieces.extend(extra);
     pieces.sort_by(|a, b| a.0.total_cmp(&b.0));
     let text: String = pieces.iter().map(|p| p.1.as_str()).collect();
-    let real: Vec<f32> = pieces.iter().filter(|p| p.1 != " ").map(|p| p.2).collect();
+    let real: Vec<f32> = pieces.iter().filter(|p| p.1 != " " && p.1 != SEPARATOR).map(|p| p.2).collect();
     let confidence = if real.is_empty() { 0. } else { real.iter().sum::<f32>() / real.len() as f32 };
     Some((text, confidence))
 }
@@ -349,6 +372,33 @@ fn orientation_score(image: &RgbImage, boxes: &[[[f32; 2]; 4]], quarter_turns: u
         .sum()
 }
 
+/// The quad between fractions `t0` and `t1` of its height (0 = top edge, 1 = bottom edge).
+fn band(c: &[[f32; 2]; 4], t0: f32, t1: f32) -> [[f32; 2]; 4] {
+    let at = |a: [f32; 2], b: [f32; 2], t: f32| [a[0] + t * (b[0] - a[0]), a[1] + t * (b[1] - a[1])];
+    [at(c[0], c[3], t0), at(c[1], c[2], t0), at(c[1], c[2], t1), at(c[0], c[3], t1)]
+}
+
+/// A box much taller than the usual line often takes in part of the next row, and its reading is
+/// poor. Reads bands of one line's height inside it and keeps the best one if it is clearly better.
+fn retry_tall_box(image: &RgbImage, b: &[[f32; 2]; 4], visual: String, confidence: f32, usual_height: f32) -> ([[f32; 2]; 4], String, f32) {
+    let height = dist(b[0], b[3]);
+    if confidence >= 0.7 || usual_height <= 0. || height < 1.4 * usual_height {
+        return (*b, visual, confidence);
+    }
+    let share = (usual_height * 1.15 / height).min(1.);
+    let mut best = (*b, visual, confidence);
+    for step in 0..=4 {
+        let t0 = (1. - share) * step as f32 / 4.;
+        let quad = band(b, t0, t0 + share);
+        if let Some((text, conf)) = recognize(&crop_line(image, &quad, REC_HEIGHT as u32)) {
+            if conf >= 0.5 && conf > best.2 + 0.15 && !text.trim().is_empty() {
+                best = (quad, text, conf);
+            }
+        }
+    }
+    best
+}
+
 /// Reads all text lines of a document photo or scan, turning it upright first.
 pub fn read_lines(image: &DynamicImage) -> Option<Vec<Line>> {
     if !available() {
@@ -370,11 +420,16 @@ pub fn read_lines(image: &DynamicImage) -> Option<Vec<Line>> {
         rgb = rotate(&rgb, turns);
         boxes = detect_boxes(&rgb);
     }
+    let mut heights: Vec<f32> = boxes.iter().map(|b| dist(b[0], b[3])).collect();
+    heights.sort_by(f32::total_cmp);
+    let usual_height = heights.get(heights.len() / 2).copied().unwrap_or(0.);
     let mut lines: Vec<Line> = boxes
         .iter()
         .filter_map(|b| {
             let crop = crop_line(&rgb, b, REC_HEIGHT as u32);
             let (visual, confidence) = recognize(&crop)?;
+            let (b, visual, confidence) = retry_tall_box(&rgb, b, visual, confidence, usual_height);
+            let b = &b;
             let mut text = logical_order(&visual);
             let mut confidence = confidence;
             // A long run of fillers read as Arabic-Indic digits ("V<V…<<<<" → "٧٢٧…٢٢٢٢"):
@@ -465,7 +520,7 @@ mod tests {
             let lines = read_lines(&image).unwrap();
             println!("== {name} ({:?})", t.elapsed());
             if std::env::var("OCR_LINES").is_ok() {
-                for l in &lines { println!("  {:.2} {}", l.confidence, l.text); }
+                for l in &lines { println!("  {:.2} {:?} {}", l.confidence, l.bbox.map(|v| v as i32), l.text); }
             }
             let codes = read_qr_codes(&image);
             println!("  qr codes: {}", codes.len());

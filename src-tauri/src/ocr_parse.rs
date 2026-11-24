@@ -46,6 +46,27 @@ impl ReadResult {
 
 /// Arabic normalisation for matching labels: hamza forms, ta marbuta, alef maqsura, Persian
 /// letters the recogniser may pick, diacritics and tatweel.
+/// The reader's mark for a thin separator between letters (`ocr::SEPARATOR`).
+const SEP: char = '\u{2010}';
+
+/// Lines with the separator mark read as a word break: for everything but the place of birth.
+/// A mark next to a lone letter (a misread slash, "ا‐نازناو") joins instead, as before the mark existed.
+fn with_breaks(lines: &[Line]) -> Vec<Line> {
+    lines.iter().map(|l| Line { text: break_at_marks(&l.text), ..l.clone() }).collect()
+}
+
+fn break_at_marks(text: &str) -> String {
+    let mut out = String::new();
+    for (i, piece) in text.split(SEP).enumerate() {
+        let lone = |w: Option<&str>| w.is_some_and(|w| w.chars().count() == 1);
+        if i > 0 && !lone(out.split_whitespace().last()) && !lone(piece.split_whitespace().next()) {
+            out.push(' ');
+        }
+        out.push_str(piece);
+    }
+    out.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
 pub fn normalize(text: &str) -> String {
     text.chars()
         .filter_map(|c| match c {
@@ -78,7 +99,7 @@ fn levenshtein(a: &str, b: &str) -> usize {
 fn is_arabic_letter(c: char) -> bool { ('\u{0621}'..='\u{064A}').contains(&c) || ('\u{0671}'..='\u{06D3}').contains(&c) }
 
 fn tokens(text: &str) -> Vec<String> {
-    text.split(|c: char| c.is_whitespace() || matches!(c, '/' | ':' | '|' | '\\' | '،' | '؛'))
+    text.split(|c: char| c.is_whitespace() || matches!(c, '/' | ':' | '|' | '\\' | '،' | '؛' | SEP))
         .filter(|t| !t.is_empty())
         .map(str::to_owned)
         .collect()
@@ -547,7 +568,9 @@ fn parse_front(lines: &[Line], result: &mut ReadResult) -> bool {
     let mut found = false;
     let mut seen_mother = false;
     let mut seen_grandfather = false;
-    for (row, _) in rows(lines) {
+    // Where each name was read: (key, centre of the line holding the value).
+    let mut name_at: Vec<(&'static str, f32)> = Vec::new();
+    for (row, group) in rows(lines) {
         let words = tokens(&row.text);
         // A label may also be glued to the Kurdish word; look at the first two words.
         let Some((label_index, label)) = words.iter().take(2).enumerate().find_map(|(i, w)| front_label(w).map(|l| (i, l))) else { continue };
@@ -564,7 +587,8 @@ fn parse_front(lines: &[Line], result: &mut ReadResult) -> bool {
                 let v = normalize(&value);
                 let gender = if v.contains("انثي") || v.contains("انث") { Some("أنثى") } else if v.contains("ذكر") || v.contains("دكر") { Some("ذكر") } else { None };
                 if let Some(g) = gender {
-                    result.set("gender", g, row.confidence, "text");
+                    let word = if g == "ذكر" { "كر" } else { "نث" };
+                    result.set("gender", g, value_confidence(&group, word, row.confidence), "text");
                     found = true;
                 }
             }
@@ -578,12 +602,16 @@ fn parse_front(lines: &[Line], result: &mut ReadResult) -> bool {
             _ => {
                 let name = name_value(&value);
                 if !name.is_empty() {
-                    result.set(key, name, row.confidence, "text");
+                    let last = name.split_whitespace().last().unwrap_or_default().to_owned();
+                    let source = group.iter().rev().find(|l| normalize(&l.text).contains(&normalize(&last)));
+                    name_at.push((key, source.map_or(row.center_y(), Line::center_y)));
+                    result.set(key, name, value_confidence(&group, &last, row.confidence), "text");
                     found = true;
                 }
             }
         }
     }
+    mother_by_position(lines, &name_at, result);
     if result.get("blood_type").is_none() {
         // The group is printed far from its label; any line may carry it.
         if let Some(line) = lines.iter().find(|l| blood_type(&l.text).is_some() && l.text.chars().count() <= 12) {
@@ -599,6 +627,36 @@ fn parse_front(lines: &[Line], result: &mut ReadResult) -> bool {
         }
     }
     found
+}
+
+/// Confidence of a value: that of the box it was read from, not of the whole row, whose label
+/// boxes (Kurdish words especially) are often read with less certainty than the value itself.
+fn value_confidence(group: &[Line], word: &str, row_confidence: f32) -> f32 {
+    let word = normalize(word);
+    if word.is_empty() {
+        return row_confidence;
+    }
+    group.iter().rev().find(|l| normalize(&l.text).contains(&word)).map_or(row_confidence, |l| l.confidence)
+}
+
+/// The mother's name when its label was not read: the row printed between the surname and the
+/// mother's father. Offered at reduced confidence, for review.
+fn mother_by_position(lines: &[Line], name_at: &[(&str, f32)], result: &mut ReadResult) {
+    if result.get("mother_first").is_some() {
+        return;
+    }
+    let at = |key: &str| name_at.iter().find(|(k, _)| *k == key).map(|(_, y)| *y);
+    let (Some(above), Some(below)) = (at("surname"), at("mother_father")) else { return };
+    let candidate = lines.iter().filter(|l| l.center_y() > above && l.center_y() < below).find_map(|l| {
+        let words: Vec<String> = merge_single_letters(&arabic_only(&l.text))
+            .into_iter()
+            .filter(|w| w.chars().count() >= 3 && !is_kurdish_word(w) && front_label(w).is_none())
+            .collect();
+        words.last().map(|w| (w.clone(), l.confidence))
+    });
+    if let Some((name, confidence)) = candidate {
+        result.set("mother_first", name, confidence.min(0.75), "text");
+    }
 }
 
 /// Labels of the back of the card (normalised, without spaces).
@@ -618,7 +676,7 @@ fn skip_letters(text: &str, count: usize) -> String {
         if seen == count {
             return text[i..].to_owned();
         }
-        if !c.is_whitespace() {
+        if !c.is_whitespace() && c != SEP {
             seen += 1;
         }
     }
@@ -626,7 +684,7 @@ fn skip_letters(text: &str, count: usize) -> String {
 }
 
 fn back_label(text: &str) -> Option<(&'static str, usize)> {
-    let compact: String = normalize(text).chars().filter(|c| !c.is_whitespace()).collect();
+    let compact: String = normalize(text).chars().filter(|c| !c.is_whitespace() && *c != SEP).collect();
     BACK_LABELS
         .iter()
         .filter_map(|(label, key)| {
@@ -661,6 +719,12 @@ fn parse_back(lines: &[Line], result: &mut ReadResult) -> bool {
                     found = true;
                 }
             }
+            "birthplace" => {
+                if let Some(value) = place_value(&rest) {
+                    result.set(key, value, row.confidence, "text");
+                    found = true;
+                }
+            }
             _ => {
                 let value = row_value(&rest, 0);
                 let mut value = value.split_whitespace().map(|w| w.chars().filter(|c| is_arabic_letter(*c) || *c == '-').collect::<String>()).filter(|w| w.chars().filter(|c| is_arabic_letter(*c)).count() >= 2).collect::<Vec<_>>().join(" ");
@@ -679,6 +743,44 @@ fn parse_back(lines: &[Line], result: &mut ReadResult) -> bool {
 }
 
 /// Removes only what `normalize` drops (diacritics, tatweel) so letter counts line up.
+/// The place of birth, printed as parts joined by "-" ("حي-قضاء-محافظة"). The reader may give
+/// the dash as a separator mark, a dash of any kind or a spaced dash; Kurdish label words go.
+fn place_value(rest: &str) -> Option<String> {
+    let text: String = rest.chars().map(|c| if c == SEP || matches!(c, '-' | '‑' | '–' | '—' | '−' | '_') { '-' } else { c }).collect();
+    let parts: Vec<String> = text
+        .split('-')
+        .map(|part| {
+            tokens(part)
+                .into_iter()
+                .filter(|w| !is_kurdish_word(w))
+                .map(|w| strip_glued_kurdish(&w).chars().filter(|c| is_arabic_letter(*c) && *c != 'ـ').collect::<String>())
+                .filter(|w| w.chars().count() >= 2)
+                .collect::<Vec<_>>()
+                .join(" ")
+        })
+        .filter(|p| !p.is_empty())
+        .collect();
+    (!parts.is_empty()).then(|| parts.join("-"))
+}
+
+/// The family number has a fixed shape (digits with a few Latin letters, e.g. "1234A5B67890123456"):
+/// found by that shape on any line when its label was misread.
+fn family_number_by_shape(lines: &[Line], result: &mut ReadResult) {
+    if result.get("family_no").is_some() {
+        return;
+    }
+    let found = lines.iter().filter(|l| !l.text.contains('<')).find_map(|l| {
+        tokens(&ascii_digits(&l.text)).into_iter().map(|w| w.to_uppercase()).find(|w| {
+            let digits = w.chars().filter(char::is_ascii_digit).count();
+            let letters = w.chars().filter(char::is_ascii_uppercase).count();
+            (14..=22).contains(&w.len()) && w.chars().all(|c| c.is_ascii_alphanumeric()) && digits >= 10 && (1..=4).contains(&letters)
+        }).map(|w| (w, l.confidence))
+    });
+    if let Some((value, confidence)) = found {
+        result.set("family_no", value, confidence * 0.9, "text");
+    }
+}
+
 fn normalize_keep_len(text: &str) -> String {
     text.chars().filter(|c| !matches!(c, 'ـ' | '\u{064B}'..='\u{065F}' | '\u{0670}')).collect()
 }
@@ -1327,7 +1429,9 @@ pub fn parse(lines: &[Line]) -> ReadResult {
 }
 
 /// `codes` are the contents of QR codes found on the image.
-pub fn parse_with_codes(lines: &[Line], codes: &[String]) -> ReadResult {
+pub fn parse_with_codes(raw_lines: &[Line], codes: &[String]) -> ReadResult {
+    let spaced = with_breaks(raw_lines);
+    let lines = spaced.as_slice();
     let mut result = ReadResult::default();
     if is_ration_card(lines) {
         parse_ration(lines, codes, &mut result);
@@ -1367,7 +1471,10 @@ pub fn parse_with_codes(lines: &[Line], codes: &[String]) -> ReadResult {
         parse_passport_text(lines, &mut result);
         result.document = "passport".into();
     } else {
-        let back = parse_back(lines, &mut result) || mrz == Some("td1");
+        let back = parse_back(raw_lines, &mut result) || mrz == Some("td1");
+        if back {
+            family_number_by_shape(lines, &mut result);
+        }
         let front = parse_front(lines, &mut result);
         result.document = match (front, back) {
             (true, true) => "national",
@@ -1745,5 +1852,85 @@ mod tests {
         assert_eq!(blood_type("AB+").as_deref(), Some("AB+"));
         assert_eq!(blood_type("+A").as_deref(), Some("A+"));
         assert_eq!(blood_type("0-").as_deref(), Some("O-"));
+    }
+
+    // Layout problems seen on real cards, reproduced with made-up values (no real person's data).
+
+    fn boxed(text: &str, confidence: f32, bbox: [f32; 4]) -> Line { Line { text: text.into(), confidence, bbox } }
+
+    #[test]
+    fn place_of_birth_keeps_its_parts_however_the_dash_was_read() {
+        let mark = SEP;
+        for (text, expected) in [
+            (format!("محل الولادة شوێنی لەدایک بوون الاعظمية{mark}رصافة{mark}بغداد"), "الاعظمية-رصافة-بغداد"),
+            ("محل الولادة شوێنی لەدایک بوون الزبير – البصرة".to_owned(), "الزبير-البصرة"),
+            ("محل الولادة شوێنی لەدایک بوون الحلة-بابل".to_owned(), "الحلة-بابل"),
+            (format!("محل الولادة شوێنی لەدایک بوون{mark}الموصل{mark}نينوى"), "الموصل-نينوى"),
+            ("محل الولادة شوێنی لەدایک بوون النجف".to_owned(), "النجف"),
+        ] {
+            let r = parse(&[line(&text, 0.)]);
+            assert_eq!(r.get("birthplace").map(|f| f.value.as_str()), Some(expected), "{text}");
+        }
+    }
+
+    #[test]
+    fn family_number_is_found_by_its_shape_when_the_label_is_misread() {
+        let (l1, l2) = td1();
+        for (text, expected) in [
+            ("الرقم ١ا لعانئلي ازمم اردى خبزانى :2003K1N13570022602", "2003K1N13570022602"),
+            ("ژمارەی خێزانی 1500B2C9876543210", "1500B2C9876543210"),
+        ] {
+            let lines = vec![line("تاريخ النفاذ رۆژی بەسەرچوون 2030/12/31", 0.), line(text, 20.), line(&l1, 200.), line(&l2, 215.)];
+            let r = parse(&lines);
+            assert_eq!(r.get("family_no").map(|f| f.value.as_str()), Some(expected), "{text}");
+            // The national number (12 digits) and the MRZ are never taken for it.
+            assert_ne!(r.get("family_no").unwrap().value, "100000000001");
+        }
+    }
+
+    #[test]
+    fn a_separator_mark_breaks_words_but_not_after_a_lone_letter() {
+        assert_eq!(break_at_marks(&format!("ناو{SEP}كريم")), "ناو كريم");
+        assert_eq!(break_at_marks(&format!("ا{SEP}نازناو")), "انازناو");
+        let r = parse(&[line(&format!("الاسم ناو{SEP}كريم"), 0.), line("الاب باوك سالم", 20.)]);
+        assert_eq!(r.get("first").unwrap().value, "كريم");
+    }
+
+    #[test]
+    fn a_clear_name_is_not_marked_unsure_because_of_its_kurdish_label() {
+        // Label, Kurdish word and value are separate boxes on one row; the Kurdish box reads poorly.
+        let lines = vec![
+            boxed("الاسم", 0.98, [200., 0., 240., 10.]),
+            boxed("ناو", 0.40, [150., 0., 190., 10.]),
+            boxed("كريم", 0.97, [60., 0., 140., 10.]),
+            boxed("اللقب", 0.98, [200., 40., 240., 50.]),
+            boxed("نازناو", 0.45, [150., 40., 190., 50.]),
+            boxed("الساعدي", 0.96, [60., 40., 140., 50.]),
+        ];
+        let r = parse(&lines);
+        assert_eq!(r.get("first").unwrap().value, "كريم");
+        assert!(r.get("first").unwrap().confidence >= 0.95);
+        assert_eq!(r.get("surname").unwrap().value, "الساعدي");
+        assert!(r.get("surname").unwrap().confidence >= 0.95);
+    }
+
+    #[test]
+    fn mother_name_is_read_by_position_when_its_label_is_not() {
+        let lines = vec![
+            line("الاسم ناو كريم", 0.),
+            line("الاب باوك سالم", 20.),
+            line("الجد باپير جواد", 40.),
+            line("اللقب نازناو الساعدي", 60.),
+            // Label and Kurdish word misread; the value is still there.
+            line("فب دايع سعاد", 80.),
+            line("الجد بابير ناصر", 100.),
+            line("الجنس رەگەز أنثى", 120.),
+        ];
+        let r = parse(&lines);
+        let mother = r.get("mother_first").unwrap();
+        assert_eq!(mother.value, "سعاد");
+        assert!(mother.confidence < 0.8, "guessed by position: offered for review");
+        assert_eq!(r.get("mother_father").unwrap().value, "ناصر");
+        assert_eq!(r.get("surname").unwrap().value, "الساعدي");
     }
 }
