@@ -1026,7 +1026,9 @@ fn updater_configured(app: &AppHandle) -> bool {
 }
 
 fn update_error(error: tauri_plugin_updater::Error) -> AppError {
-    AppError::Validation(format!("تعذر التحقق من التحديثات. تأكد من الاتصال بالشبكة ثم أعد المحاولة. ({error})"))
+    // The technical detail goes to the error log (فحص البرنامج), not to the user.
+    errlog::record_backend("update", &error.to_string());
+    AppError::Validation("تعذر التحقق من التحديثات. تأكد من الاتصال بالشبكة ثم أعد المحاولة.".into())
 }
 
 #[tauri::command]
