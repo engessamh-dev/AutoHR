@@ -20,8 +20,10 @@ import { isPermissionGranted, requestPermission, sendNotification } from "@tauri
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { initTheme, mountThemeMenu } from "./theme.js";
+import { installErrorReporting, setErrorScreen } from "./error-log.js";
 
 // Apply the saved light/dark choice before anything is shown.
+installErrorReporting();
 initTheme();
 
 // ── i18n ───────────────────────────────────────────────────────────────────
@@ -290,6 +292,7 @@ async function navigateTo(screen, options = {}) {
   }
 
   activeScreen = screen;
+  setErrorScreen(screen);
   window.autohrCanLeaveCurrentScreen = null;
   document.querySelectorAll(".nav-item").forEach(el => {
     const navScreen = screen === "documentAlerts" ? "dashboard" : screen;

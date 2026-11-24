@@ -1,7 +1,8 @@
 /**
  * api.js — Tauri invoke bridge v2.0
  */
-import { invoke } from "@tauri-apps/api/core";
+// invoke from error-log.js is Tauri's invoke that also writes technical failures to the local error log.
+import { invoke } from "./error-log.js";
 import { uploadWithScanner } from "./attachments/scanner.js";
 
 export const api = {
@@ -108,6 +109,8 @@ export const api = {
   // Program check and support (every signed-in user)
   runHealthCheck: () => invoke("cmd_run_health_check"),
   saveHealthReport: (destinationPath) => invoke("cmd_save_health_report", { destinationPath }),
+  // Writes a technical error (failed command or script exception) to the local error log.
+  logClientError: (operation, screen, message, stack) => invoke("cmd_log_client_error", { operation, screen, message, stack }),
   getSupportContact: () => invoke("cmd_get_support_contact"),
   openSupportLink: (channel, topic) => invoke("cmd_open_support_link", { channel, topic }),
   getAutoBackupSettings: () => invoke("cmd_get_auto_backup_settings"),

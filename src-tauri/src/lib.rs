@@ -1,5 +1,5 @@
 // lib.rs — GCANS v2.0
-mod db; mod names; mod services; mod files; mod scanner; mod paths; mod storage; mod ai_detect; mod secure; mod ocr; mod ocr_parse; mod health;
+mod db; mod names; mod services; mod files; mod scanner; mod paths; mod storage; mod ai_detect; mod secure; mod ocr; mod ocr_parse; mod health; mod errlog;
 mod scanner_commands;
 use scanner_commands::*;
 #[cfg(test)] mod scanner_tests;
@@ -1113,10 +1113,20 @@ async fn cmd_install_update(window: Window, state: State<'_, DbState>, sess: Sta
 // Available to every signed-in user. The report holds no personal data (see health.rs).
 
 #[tauri::command]
-fn cmd_run_health_check(app: AppHandle, state: State<DbState>, sess: State<SessionState>) -> Result<health::HealthReport, AppError> {
-    let conn = state.conn()?;
-    session_user(&sess)?;
-    Ok(health::run(&conn, &app.package_info().version.to_string(), updater_configured(&app)))
+async fn cmd_run_health_check(app: AppHandle, window: Window, state: State<'_, DbState>, sess: State<'_, SessionState>) -> Result<health::HealthReport, AppError> {
+    // Signed in and a database is open; the check itself runs on its own read connection off
+    // the main thread so the screen can show its progress bar while it works.
+    { let _conn = state.conn()?; session_user(&sess)?; }
+    let version = app.package_info().version.to_string();
+    let updater = updater_configured(&app);
+    tauri::async_runtime::spawn_blocking(move || {
+        let conn = db::open_existing().map_err(AppError::from)?;
+        Ok(health::run_with_progress(&conn, &version, updater, &errlog::recent(300), |step, total| {
+            let _ = window.emit("health-check-progress", serde_json::json!({ "step": step, "total": total }));
+        }))
+    })
+    .await
+    .map_err(|error| AppError::Other(error.to_string()))?
 }
 
 /// Runs the check again in Rust and writes its text to the .txt file the user chose,
@@ -1129,7 +1139,7 @@ fn cmd_save_health_report(app: AppHandle, state: State<DbState>, sess: State<Ses
     if !destination.is_absolute() || !destination.extension().is_some_and(|ext| ext.eq_ignore_ascii_case("txt")) {
         return Err(AppError::Validation("اختر مكانًا لحفظ ملف نصي (.txt)".into()));
     }
-    let report = health::run(&conn, &app.package_info().version.to_string(), updater_configured(&app));
+    let report = health::run(&conn, &app.package_info().version.to_string(), updater_configured(&app), &errlog::recent(300));
     health::save(&report, &destination).map_err(|e| AppError::Other(e.to_string()))?;
     log_activity(&conn, &user, "SAVE_HEALTH_REPORT", Some("app"), None, Some(report.overall.as_str()), None);
     Ok(destination_path)
@@ -1162,7 +1172,17 @@ pub fn scanner_self_test() -> Result<(), String> {
     scanner::production_self_test().map_err(|error| error.to_string())
 }
 
+/// The screen reports a failed command or an unexpected script error. Everything is cleaned of
+/// personal data in Rust (errlog.rs) before it is written; nothing here needs a session, so
+/// errors on the sign-in screen are kept too.
+#[tauri::command]
+fn cmd_log_client_error(operation: String, screen: String, message: String, stack: Option<String>) {
+    errlog::record_client(&operation, &screen, &message, stack.as_deref().unwrap_or(""));
+}
+
 pub fn run() {
+    errlog::init(app_data_path().join("Logs"), env!("CARGO_PKG_VERSION"));
+    errlog::install_panic_hook();
     let (conn, status) = match paths::resolve_startup() {
         Ok(paths::StartupState::Ready(found)) => {
             paths::set_current(Some(found));
@@ -1178,6 +1198,9 @@ pub fn run() {
         Ok(paths::StartupState::NeedsSetup) => (None, startup_status("needs_setup", String::new())),
         Err(error) => (None, startup_status("open_failed", error.to_string())),
     };
+    if status.state == "open_failed" || status.state == "data_missing" {
+        errlog::record("database", &format!("startup_{}", status.state), &status.message);
+    }
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_notification::init())
@@ -1225,7 +1248,7 @@ pub fn run() {
             cmd_get_startup_status, cmd_check_setup_folders, cmd_complete_setup, cmd_retry_data_folder,
             cmd_get_storage_status, cmd_change_backup_folder, cmd_export_backup_to, cmd_move_data_folder,
             cmd_check_for_update, cmd_install_update,
-            cmd_run_health_check, cmd_save_health_report, cmd_get_support_contact, cmd_open_support_link,
+            cmd_run_health_check, cmd_save_health_report, cmd_get_support_contact, cmd_open_support_link, cmd_log_client_error,
             cmd_get_auto_backup_settings, cmd_set_auto_backup_settings,
             cmd_run_due_auto_backups, cmd_exit_app,
             cmd_get_document_types, cmd_set_document_types,

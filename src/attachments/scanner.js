@@ -1,5 +1,5 @@
 import { createLivePreview, outputSize } from "./live-preview.js";
-import { invoke } from "@tauri-apps/api/core";
+import { invoke } from "../error-log.js";
 
 export const isScannable = path => /\.(jpe?g|png|webp)$/i.test(String(path));
 // ID-1 cards (national, residence, badges, family/spouse cards) default to the fixed card ratio.

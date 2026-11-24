@@ -5,6 +5,7 @@
 import { api }       from "../api.js";
 import { showToast, escHtml } from "../utils.js";
 import { save }      from "@tauri-apps/plugin-dialog";
+import { listen }    from "@tauri-apps/api/event";
 import { can }       from "../permissions.js";
 import { APP_VERSION } from "../version.js";
 
@@ -14,6 +15,19 @@ const STATUS = {
   fail: { label: "خلل",    badge: "badge-red" },
   info: { label: "معلومة", badge: "badge-gray" },
 };
+
+// Same steps, same order as health::run_with_progress in Rust.
+const CHECK_STEPS = [
+  "معلومات البرنامج",
+  "قاعدة البيانات",
+  "مجلدات البيانات والنسخ",
+  "الملفات المرفقة",
+  "النسخ الاحتياطية",
+  "العمليات الفاشلة",
+  "الأخطاء التقنية",
+];
+const STEP_MS = 160;
+const wait = ms => new Promise(resolve => setTimeout(resolve, ms));
 
 const OVERALL_TEXT = {
   ok:   "البرنامج يعمل بشكل سليم.",
@@ -26,6 +40,21 @@ function statusBadge(status) {
   return `<span class="badge ${s.badge}">${s.label}</span>`;
 }
 
+// Technical error lines are "time | kind | العملية: … | الخطأ: … | السياق: …". The English
+// error text is set apart left-to-right so it does not get mixed into the Arabic sentence.
+const LTR_FIELDS = ["العملية: ", "الخطأ: ", "السياق: "];
+function errorLine(line) {
+  const parts = line.split(" | ");
+  if (parts.length < 3) return `<li dir="auto">${escHtml(line)}</li>`;
+  const [head, ...rest] = parts;
+  const fields = rest.map(part => {
+    const label = LTR_FIELDS.find(l => part.startsWith(l));
+    if (!label) return `<span class="support-error-meta">${escHtml(part)}</span>`;
+    return `<span class="support-error-field"><span class="support-error-label">${escHtml(label.trim())}</span> <bdi dir="ltr" class="support-error-code">${escHtml(part.slice(label.length))}</bdi></span>`;
+  });
+  return `<li class="support-error-line"><span class="support-error-time" dir="ltr">${escHtml(head)}</span>${fields.join("")}</li>`;
+}
+
 function renderItems(report) {
   return report.items.map(item => `
     <div class="support-check-item">
@@ -33,7 +62,7 @@ function renderItems(report) {
         <span class="font-semibold">${escHtml(item.title)}</span>
         ${statusBadge(item.status)}
       </div>
-      <ul class="support-check-details">${item.details.map(line => `<li dir="auto">${escHtml(line)}</li>`).join("")}</ul>
+      <ul class="support-check-details">${item.details.map(line => item.key === "errors" ? errorLine(line) : `<li dir="auto">${escHtml(line)}</li>`).join("")}</ul>
     </div>`).join("");
 }
 
@@ -53,6 +82,13 @@ export async function renderSupport(container, user, ctx) {
         </div>
         <div class="settings-block-foot">
           <button type="button" id="btn-run-check" class="btn-primary">بدء الفحص</button>
+        </div>
+        <div id="check-progress" class="support-progress hidden" role="progressbar" aria-label="تقدم الفحص" aria-valuemin="0" aria-valuemax="${CHECK_STEPS.length}" aria-valuenow="0">
+          <div class="support-progress-head">
+            <span id="check-progress-label">جارٍ التحضير…</span>
+            <span id="check-progress-count" class="support-progress-count"></span>
+          </div>
+          <div class="support-progress-track"><div id="check-progress-bar" class="support-progress-bar"></div></div>
         </div>
         <div class="support-summary-row hidden" id="check-summary-row">
           <div id="check-summary" class="support-summary hidden" role="status"></div>
@@ -118,13 +154,48 @@ export async function renderSupport(container, user, ctx) {
   };
   toggle.addEventListener("click", () => setResultsOpen(results.classList.contains("hidden")));
 
+  const progress = container.querySelector("#check-progress");
+  const progressBar = container.querySelector("#check-progress-bar");
+  const progressLabel = container.querySelector("#check-progress-label");
+  const progressCount = container.querySelector("#check-progress-count");
+  const total = CHECK_STEPS.length;
+  // The bar moves one step at a time towards the step Rust last reported, so even a very
+  // quick check visibly passes through every step.
+  let shown = 0;
+  let target = 0;
+  const paint = () => {
+    const done = shown >= total;
+    progressBar.style.width = `${Math.round((shown / total) * 100)}%`;
+    progressLabel.textContent = done ? "اكتمل الفحص" : `جارٍ فحص: ${CHECK_STEPS[shown]}`;
+    progressCount.textContent = `${Math.min(shown + (done ? 0 : 1), total)} من ${total}`;
+    progress.setAttribute("aria-valuenow", String(shown));
+  };
+  const advanceTo = async step => {
+    target = Math.max(target, Math.min(step, total));
+    while (shown < target) {
+      await wait(STEP_MS);
+      if (shown < target) { shown += 1; paint(); }
+    }
+  };
+
   runButton.addEventListener("click", async () => {
     runButton.disabled = true;
     runButton.textContent = "جارٍ الفحص…";
     results.innerHTML = "";
     summary.classList.add("hidden");
+    container.querySelector("#check-summary-row").classList.add("hidden");
+    actions.classList.add("hidden");
+    shown = 0; target = 0;
+    paint();
+    progress.classList.remove("hidden");
+    let unlisten = null;
+    try {
+      unlisten = await listen("health-check-progress", event => { advanceTo(Number(event.payload?.step) || 0); });
+    } catch { /* no event bridge (tests): the bar still runs through the steps at the end */ }
     try {
       const report = await api.runHealthCheck();
+      await advanceTo(total);
+      await wait(250);
       summary.className = `support-summary support-summary-${report.overall}`;
       summary.innerHTML = `${statusBadge(report.overall)} <span>${escHtml(OVERALL_TEXT[report.overall] ?? "")}</span>`;
       results.innerHTML = renderItems(report);
@@ -135,6 +206,8 @@ export async function renderSupport(container, user, ctx) {
     } catch (err) {
       showToast(err?.message ?? String(err), "error");
     } finally {
+      unlisten?.();
+      progress.classList.add("hidden");
       runButton.disabled = false;
       runButton.textContent = "إعادة الفحص";
     }

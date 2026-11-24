@@ -28,8 +28,14 @@ impl serde::Serialize for AppError {
             Self::Unauthorized => "You are not authorized to perform this action",
             Self::NotFound => "The requested item was not found",
             Self::Validation(message) => message,
-            Self::Db(_) => "The database operation could not be completed",
-            Self::Other(_) => "The operation could not be completed",
+            Self::Db(error) => {
+                crate::errlog::record_backend("database", &error.to_string());
+                crate::errlog::GENERIC_DB_MESSAGE
+            }
+            Self::Other(detail) => {
+                crate::errlog::record_backend("app", detail);
+                crate::errlog::GENERIC_OTHER_MESSAGE
+            }
         };
         s.serialize_str(message)
     }

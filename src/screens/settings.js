@@ -236,12 +236,13 @@ export async function renderSettings(container, user, ctx) {
     canSettings && { id: "company", label: "الجهة والشعار" },
     canUsers && { id: "users", label: "المستخدمين والصلاحيات" },
     (canSettings || canBackups) && { id: "storage", label: "الحفظ والنسخ الاحتياطي" },
-    canSettings && canBackups && { id: "updates", label: "التحديثات" },
     { id: "support", label: "الدعم وحول النظام" },
   ].filter(Boolean);
   if (ctx?.tab) activeSettingsTab = ctx.tab;
   if (activeSettingsTab === "backup") activeSettingsTab = "storage";
   if (activeSettingsTab === "about") activeSettingsTab = "support";
+  // «التحديثات» is now a section of «الدعم وحول النظام».
+  if (activeSettingsTab === "updates") { activeSettingsTab = "support"; activeSubsection.support = "updates"; }
   if (!tabs.some(tab => tab.id === activeSettingsTab)) activeSettingsTab = tabs[0].id;
 
   const logoMarkup = () =>
@@ -380,24 +381,25 @@ export async function renderSettings(container, user, ctx) {
       </div>` : ""}` : ""}
       </section>` : ""}
 
-      ${canSettings && canBackups ? `<section class="card settings-panel settings-block" data-settings-panel="updates">
-        <div class="settings-block-head">
-          <p class="settings-block-title">تحديث البرنامج</p>
-          <p class="settings-block-help">يتحقق البرنامج من وجود إصدار جديد موقّع. قبل التثبيت تُنشأ نسخة احتياطية مشفرة ويُتحقق منها، ولا يُثبَّت أي ملف لا يحمل توقيع المطوّر.</p>
-        </div>
-        <p id="update-status" class="settings-status-line">الإصدار الحالي: <span dir="ltr">${escHtml(APP_VERSION)}</span></p>
-        <div id="update-notes" class="hidden text-xs text-gray-400 whitespace-pre-line border border-autohr-border rounded-lg p-3"></div>
-        <div class="settings-block-foot">
-          <button id="btn-check-update" type="button" class="btn-primary">التحقق من التحديثات</button>
-          <button id="btn-install-update" type="button" class="btn-primary hidden">تثبيت التحديث</button>
-        </div>
-      </section>` : ""}
+
 
 
       ${canUsers ? `<div class="settings-panel" data-settings-panel="users"></div>` : ""}
       <div class="settings-panel settings-stack" data-settings-panel="support">
         <div data-embedded="about"></div>
         <div data-embedded="support"></div>
+        ${canSettings && canBackups ? `<section class="card settings-block" data-sub="updates" data-sub-label="التحديثات">
+          <div class="settings-block-head">
+            <p class="settings-block-title">تحديث البرنامج</p>
+            <p class="settings-block-help">يتحقق البرنامج من وجود إصدار جديد موقّع. قبل التثبيت تُنشأ نسخة احتياطية مشفرة ويُتحقق منها، ولا يُثبَّت أي ملف لا يحمل توقيع المطوّر.</p>
+          </div>
+          <p id="update-status" class="settings-status-line">الإصدار الحالي: <span dir="ltr">${escHtml(APP_VERSION)}</span></p>
+          <div id="update-notes" class="hidden text-xs text-gray-400 whitespace-pre-line border border-autohr-border rounded-lg p-3"></div>
+          <div class="settings-block-foot">
+            <button id="btn-check-update" type="button" class="btn-primary">التحقق من التحديثات</button>
+            <button id="btn-install-update" type="button" class="btn-primary hidden">تثبيت التحديث</button>
+          </div>
+        </section>` : ""}
       </div>
     </div>`;
 
