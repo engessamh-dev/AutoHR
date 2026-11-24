@@ -43,6 +43,7 @@ window.__TAURI_INTERNALS__={convertFileSrc:()=>canvas.toDataURL("image/jpeg"),in
   if(command==="cmd_read_document")return bytes;
   if(command==="cmd_read_document_fields"){if(window.failRead)throw window.failRead;return window.readResults?.[args.relativePath] ?? window.readResult ?? {document:"unknown",fields:[],warnings:[]};}
   if(command==="cmd_audit_document_view")return;
+  if(command==="cmd_list_users")return [{id:1,username:"synthetic-admin",role:"system_admin"},{id:2,username:"synthetic-viewer",role:"viewer"}];
   if(command==="cmd_get_support_contact")return {whatsapp:"+964 000 000 0000",email:"support@example.invalid"};
   if(command==="cmd_run_health_check")return window.healthReport;
   if(command==="cmd_save_health_report")return args.destinationPath;

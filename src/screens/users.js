@@ -169,8 +169,8 @@ export async function renderUsers(container, user) {
         <div class="card space-y-4">
           <div class="flex items-start justify-between gap-4 flex-wrap">
             <div>
-              <p class="section-title mb-0">إدارة المستخدمين</p>
-              <p class="text-xs text-gray-500 mt-1">إضافة المستخدمين وإدارة أدوارهم وكلمات المرور</p>
+              <p class="settings-block-title">إدارة المستخدمين</p>
+              <p class="settings-block-help">إضافة المستخدمين وإدارة أدوارهم وكلمات المرور</p>
             </div>
             ${users.length < MAX_USERS
               ? `<button id="btn-add-user" class="btn-primary">+ إضافة مستخدم</button>`

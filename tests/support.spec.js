@@ -101,3 +101,16 @@ test("save buttons stay dim until something changes", async ({ page }) => {
   await page.locator("#auto-backup-weekly").check();
   await expect(saveBackup).toBeEnabled();
 });
+
+test("«المستخدمين والصلاحيات» is a settings tab only for users.manage", async ({ page }) => {
+  const render = perms => page.evaluate(async permissions => {
+    const { renderSettings } = await import("/src/screens/settings.js");
+    await renderSettings(document.querySelector("#root"), { username: "admin", permissions }, { tab: "users" });
+  }, perms);
+  await render(["settings.manage"]);
+  await expect(page.locator('[data-settings-tab="users"]')).toHaveCount(0);
+  await render(["settings.manage", "users.manage"]);
+  await expect(page.locator('[data-settings-tab="users"]')).toHaveAttribute("aria-selected", "true");
+  await expect(page.getByText("إدارة المستخدمين")).toBeVisible();
+  await expect(page.getByText("synthetic-viewer")).toBeVisible();
+});

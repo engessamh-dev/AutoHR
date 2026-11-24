@@ -10,6 +10,7 @@ import { APP_VERSION } from "../version.js";
 import { COMPANY_LOGO } from "../branding.js";
 import { renderSupport } from "./support.js";
 import { renderAbout } from "./about.js";
+import { renderUsers } from "./users.js";
 
 let activeSettingsTab = null;
 // The section open in each tab's inner list, kept while the screen re-renders.
@@ -211,6 +212,7 @@ function dismissStorageWarning(key) {
 export async function renderSettings(container, user, ctx) {
   const canSettings = can(user, "settings.manage");
   const canBackups = can(user, "backups.manage");
+  const canUsers = can(user, "users.manage");
   // Restoring replaces every table, users included, so only a System Admin may do it.
   const canRestore = can(user, "backups.restore");
   let storageStatus = null;
@@ -232,6 +234,7 @@ export async function renderSettings(container, user, ctx) {
 
   const tabs = [
     canSettings && { id: "company", label: "الجهة والشعار" },
+    canUsers && { id: "users", label: "المستخدمين والصلاحيات" },
     (canSettings || canBackups) && { id: "storage", label: "الحفظ والنسخ الاحتياطي" },
     canSettings && canBackups && { id: "updates", label: "التحديثات" },
     { id: "support", label: "الدعم وحول النظام" },
@@ -391,6 +394,7 @@ export async function renderSettings(container, user, ctx) {
       </section>` : ""}
 
 
+      ${canUsers ? `<div class="settings-panel" data-settings-panel="users"></div>` : ""}
       <div class="settings-panel settings-stack" data-settings-panel="support">
         <div data-embedded="about"></div>
         <div data-embedded="support"></div>
@@ -400,8 +404,16 @@ export async function renderSettings(container, user, ctx) {
 
   // «الدعم وحول النظام» draws the about card and the check/contact screen into one tab on first open.
   let supportRendered = false;
+  let usersRendered = false;
   const showTab = id => {
     activeSettingsTab = id;
+    if (id === "users" && !usersRendered) {
+      usersRendered = true;
+      const panel = container.querySelector('[data-settings-panel="users"]');
+      renderUsers(panel, user).catch(err => {
+        panel.innerHTML = `<div class="card text-sm text-gray-400" dir="auto">${escHtml(err?.message ?? String(err))}</div>`;
+      });
+    }
     if (id === "support" && !supportRendered) {
       supportRendered = true;
       const panel = container.querySelector('[data-settings-panel="support"]');
