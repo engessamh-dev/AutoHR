@@ -126,6 +126,9 @@ export const api = {
   logClientError: (operation, screen, message, stack) => invoke("cmd_log_client_error", { operation, screen, message, stack }),
   getSupportContact: () => invoke("cmd_get_support_contact"),
   openSupportLink: (channel, topic) => invoke("cmd_open_support_link", { channel, topic }),
+  // Expiry alert timing per document type (read: employees.view; save: settings.manage)
+  getDocumentAlertRules: () => invoke("cmd_get_document_alert_rules"),
+  setDocumentAlertRules: (rules) => invoke("cmd_set_document_alert_rules", { rules }),
   getAutoBackupSettings: () => invoke("cmd_get_auto_backup_settings"),
   setAutoBackupSettings: (data) => invoke("cmd_set_auto_backup_settings", { data }),
   runDueAutoBackups: () => invoke("cmd_run_due_auto_backups"),

@@ -4,8 +4,9 @@
 import { api }           from "./api.js";
 import { applyBranding, showToast, confirmAction, escHtml } from "./utils.js";
 import { renderDashboard }  from "./screens/dashboard.js";
-import { buildDocumentAlerts, renderDocumentAlerts } from "./screens/document-alerts.js";
+import { alertStageKey, buildDocumentAlerts, loadAlertRules, renderDocumentAlerts } from "./screens/document-alerts.js";
 import { renderEmployees }  from "./screens/employees.js";
+import { clearAddEmployeeDraft } from "./screens/add-wizard.js";
 import { renderReports }    from "./screens/reports.js";
 import { renderDocuments }  from "./screens/documents.js";
 import { renderUsers }     from "./screens/users.js";
@@ -235,23 +236,35 @@ async function runShutdownAutomaticBackups({ showProgress = true } = {}) {
   return automaticBackupPromise;
 }
 
+/**
+ * Windows notification for document alerts: shown when a document reaches one of its reminder
+ * days (set in «الإعدادات ← تنبيهات المستمسكات») or expires. Each reminder is announced once,
+ * even if the program was not opened on that exact day.
+ */
 async function notifyDocumentAlerts() {
   try {
-    const today = new Date().toISOString().slice(0, 10);
-    const storageKey = "cnsarch.documentAlertsNotificationDate";
-    if (localStorage.getItem(storageKey) === today) return;
+    const storageKey = "cnsarch.documentAlertStages";
+    const [employees, rules] = await Promise.all([api.listEmployees(), loadAlertRules()]);
+    const alerts = buildDocumentAlerts(employees, rules);
+    let announced = {};
+    try { announced = JSON.parse(localStorage.getItem(storageKey) || "{}") || {}; } catch (_) { announced = {}; }
 
-    const employees = await api.listEmployees();
-    const alerts = buildDocumentAlerts(employees);
-    if (!alerts.length) return;
+    const current = {};
+    const fresh = [];
+    alerts.forEach(alert => {
+      const { id, stage } = alertStageKey(alert);
+      current[id] = stage;
+      if (announced[id] !== stage) fresh.push(alert);
+    });
+    localStorage.setItem(storageKey, JSON.stringify(current));
+    if (!fresh.length) return;
 
-    const expired = alerts.filter(alert => alert.expired).length;
-    const expiring = alerts.length - expired;
+    const expired = fresh.filter(alert => alert.expired).length;
+    const expiring = fresh.length - expired;
     await notifyWindows(
-      "\u062a\u0646\u0628\u064a\u0647\u0627\u062a \u0627\u0644\u0645\u0633\u062a\u0645\u0633\u0643\u0627\u062a",
-      `\u0644\u062f\u064a\u0643 ${alerts.length} \u062a\u0646\u0628\u064a\u0647 \u0645\u0633\u062a\u0645\u0633\u0643\u0627\u062a: ${expired} \u0645\u0646\u062a\u0647\u064a\u0629 \u0648 ${expiring} \u0642\u0631\u064a\u0628\u0629 \u0627\u0644\u0646\u0641\u0627\u0630.`,
+      "تنبيهات المستمسكات",
+      `وصل ${fresh.length} مستمسك إلى موعد تنبيه: ${expired} منتهية و ${expiring} قريبة النفاذ. مجموع التنبيهات الحالية ${alerts.length}.`,
     );
-    localStorage.setItem(storageKey, today);
   } catch (_) { /* document alert notifications are non-fatal */ }
 }
 
@@ -596,6 +609,7 @@ async function doLogout() {
     try { await api.logout(); } catch (_) { /* non-fatal */ }
   }
   currentUser = null;
+  clearAddEmployeeDraft();
   applyUiScale(100);
   document.getElementById("app-shell").classList.add("hidden");
   document.getElementById("password-change-screen").classList.add("hidden");

@@ -41,7 +41,7 @@ window.__TAURI_INTERNALS__={convertFileSrc:()=>canvas.toDataURL("image/jpeg"),in
   if(command==="cmd_create_general_doc" || command==="cmd_create_outgoing_doc")return {id:2,...args.data};
   if(command==="cmd_get_storage_status" && window.storageStatus)return window.storageStatus;
   if(command==="cmd_read_document")return bytes;
-  if(command==="cmd_read_image_fields"){if(window.failRead)throw window.failRead;return {result:(window.imageReads??{})[args.sourcePath] ?? {document:"unknown",fields:[],warnings:[]},preview:bytes};}
+  if(command==="cmd_read_image_fields"){if(window.failRead)throw window.failRead;const hold=window.holdReads?.[args.sourcePath];if(hold)await hold;return {result:(window.imageReads??{})[args.sourcePath] ?? {document:"unknown",fields:[],warnings:[]},preview:bytes,regions:(window.imageRegions??{})[args.sourcePath] ?? {}};}
   if(command==="cmd_select_scanner_device")return "synthetic-scanner";
   if(command==="cmd_scan_document")return window.scannedPath ?? "scan.jpg";
   if(command==="cmd_read_document_fields"){if(window.failRead)throw window.failRead;return window.readResults?.[args.relativePath] ?? window.readResult ?? {document:"unknown",fields:[],warnings:[]};}

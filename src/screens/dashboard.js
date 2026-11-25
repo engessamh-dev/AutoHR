@@ -3,19 +3,20 @@
  * Stats + expiry alerts (badges) + contract renewal warnings
  */
 import { api }        from "../api.js";
-import { buildDocumentAlerts } from "./document-alerts.js";
+import { buildDocumentAlerts, loadAlertRules } from "./document-alerts.js";
 import { escHtml, formatDate } from "../utils.js";
 
 export async function renderDashboard(container, user, ctx) {
-  const [employees, incomingDocs, outgoingDocs] = await Promise.all([
+  const [employees, incomingDocs, outgoingDocs, alertRules] = await Promise.all([
     api.listEmployees(),
     api.listGeneralDocs(),
     api.listOutgoingDocs(),
+    loadAlertRules(),
   ]);
   const active    = employees.filter(e => e.is_active);
   const inactive  = employees.filter(e => !e.is_active);
 
-  const documentAlerts = buildDocumentAlerts(employees);
+  const documentAlerts = buildDocumentAlerts(employees, alertRules);
 
   function recentDocsRows(docs, emptyLabel, archiveTab) {
     return docs

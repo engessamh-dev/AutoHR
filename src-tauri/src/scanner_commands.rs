@@ -335,6 +335,8 @@ pub(crate) struct ImageReading {
     pub result: ocr_parse::ReadResult,
     /// A small JPEG of the image, upright, for the wizard to show beside the read values.
     pub preview: Vec<u8>,
+    /// Where each printed value was read, as fractions of the preview: key -> [x0, y0, x1, y1].
+    pub regions: std::collections::HashMap<String, [f32; 4]>,
 }
 
 /// Reads the fields of a document image the user just picked (or scanned) for a new employee.
@@ -358,12 +360,17 @@ pub(crate) async fn cmd_read_image_fields(
     tauri::async_runtime::spawn_blocking(move || {
         let image = scanner::load_image(std::path::Path::new(&source_path))
             .map_err(|_| AppError::Validation("قراءة البيانات تعمل على الصور فقط (JPEG أو PNG أو WebP)".into()))?;
-        let preview = scanner::jpeg(&scanner::thumbnail(&image, 900), 85)?;
-        let result = match ocr::read_lines(&image) {
-            Some(lines) => ocr_parse::parse_with_codes(&lines, &ocr::read_qr_codes(&image)),
-            None => return Err(AppError::Other("text reader unavailable".into())),
+        let Some((lines, upright)) = ocr::read_lines_upright(&image) else {
+            return Err(AppError::Other("text reader unavailable".into()));
         };
-        Ok(ImageReading { result, preview })
+        let result = ocr_parse::parse_with_codes(&lines, &ocr::read_qr_codes(&image));
+        let (w, h) = (upright.width().max(1) as f32, upright.height().max(1) as f32);
+        let regions = ocr_parse::locate(&result, &lines)
+            .into_iter()
+            .map(|(key, b)| (key, [(b[0] / w).clamp(0., 1.), (b[1] / h).clamp(0., 1.), (b[2] / w).clamp(0., 1.), (b[3] / h).clamp(0., 1.)]))
+            .collect();
+        let preview = scanner::jpeg(&scanner::thumbnail(&image::DynamicImage::ImageRgb8(upright), 900), 85)?;
+        Ok(ImageReading { result, preview, regions })
     })
     .await
     .map_err(|e| AppError::Other(e.to_string()))?

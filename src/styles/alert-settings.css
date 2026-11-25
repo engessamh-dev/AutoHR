@@ -1,0 +1,37 @@
+/* «الإعدادات ← تنبيهات المستمسكات» (src/screens/alert-settings.js). Linked from index.html, not imported
+   from the screen, so the screen module stays importable on its own in the tests. */
+.alert-settings{max-width:50rem}
+.alert-rules{display:grid;gap:10px}
+.alert-rule{display:grid;gap:10px;padding:12px 16px 10px;border:1px solid var(--ui-line-strong);border-radius:10px;background:color-mix(in srgb, var(--ui-accent) 5%, transparent)}
+.alert-rule.is-off{background:transparent;border-color:var(--ui-line);padding-bottom:12px}
+.alert-rule-line{display:flex;align-items:center;justify-content:space-between;gap:10px 16px;flex-wrap:wrap}
+.alert-rule-head{display:flex;align-items:center;gap:10px;cursor:pointer}
+.alert-rule-head input{width:16px;height:16px;accent-color:var(--ui-accent)}
+.alert-rule-name{font-size:14px;font-weight:600;color:var(--ui-text-strong)}
+.alert-rule.is-off .alert-rule-name{color:var(--ui-text-muted)}
+.alert-rule-sentence{display:inline-flex;align-items:center;gap:8px;font-size:14px;color:var(--ui-text)}
+.alert-rule-sentence .alert-first-days{width:4.75rem;padding:4px 8px;text-align:center;font-weight:700;font-size:15px}
+.alert-rule-off{font-size:13px;color:var(--ui-text-faint)}
+
+/* Timeline: first alert on the right, expiry on the left. */
+.alert-timeline{position:relative;height:34px;margin:2px 30px 0 34px}
+.alert-timeline-track{position:absolute;inset-inline:0;top:6px;height:3px;border-radius:3px;background:linear-gradient(to left, var(--ui-accent), #f59e0b 70%, var(--ui-danger))}
+.alert-timeline-point{position:absolute;top:0;display:grid;justify-items:center;gap:3px;transform:translateX(50%);white-space:nowrap}
+.alert-timeline-dot{width:13px;height:13px;border-radius:999px;background:var(--ui-surface, #0f1b2d);border:3px solid #f59e0b}
+.alert-timeline-point.is-first .alert-timeline-dot{border-color:var(--ui-accent)}
+.alert-timeline-point.is-expiry .alert-timeline-dot{background:var(--ui-danger);border-color:var(--ui-danger)}
+.alert-timeline-label{font-size:11px;color:var(--ui-text-muted)}
+.alert-timeline-point.is-first .alert-timeline-label{color:var(--ui-text-strong);font-weight:600}
+
+.alert-rule-foot{display:flex;align-items:center;gap:6px 14px;flex-wrap:wrap;font-size:12px;color:var(--ui-text-muted)}
+.alert-link{border:none;background:none;padding:0;font-size:12px;color:var(--ui-accent);cursor:pointer;text-decoration:underline;text-underline-offset:3px}
+.alert-link:hover{color:var(--ui-text-strong)}
+.alert-custom{display:flex;flex-wrap:wrap;align-items:center;gap:8px;padding-top:8px;border-top:1px dashed var(--ui-line)}
+.alert-day-chip{display:inline-flex;align-items:center;gap:4px;padding:3px 6px 3px 12px;border-radius:999px;border:1px solid var(--ui-accent);background:var(--ui-accent-soft);color:var(--ui-text-strong);font-size:13px}
+.alert-day-remove{display:inline-grid;place-items:center;width:20px;height:20px;border:none;border-radius:999px;background:transparent;color:inherit;font-size:15px;line-height:1;cursor:pointer}
+.alert-day-remove:hover:not(:disabled){background:var(--ui-accent-hover)}
+.alert-day-remove:disabled{cursor:default;opacity:.35}
+.alert-day-add{display:inline-flex;align-items:center;gap:6px}
+.alert-day-add .alert-day-input{width:7rem;padding-block:4px}
+.alert-day-add .alert-day-add-btn{padding:4px 12px;font-size:13px}
+.alert-settings-error{margin:0;font-size:13px;color:var(--ui-danger)}

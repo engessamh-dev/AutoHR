@@ -11,6 +11,7 @@ import { COMPANY_LOGO } from "../branding.js";
 import { renderSupport } from "./support.js";
 import { renderAbout } from "./about.js";
 import { renderUsers } from "./users.js";
+import { renderAlertSettings } from "./alert-settings.js";
 
 let activeSettingsTab = null;
 // The section open in each tab's inner list, kept while the screen re-renders.
@@ -273,6 +274,7 @@ export async function renderSettings(container, user, ctx) {
     canSettings && { id: "company", label: "الجهة والشعار" },
     canUsers && { id: "users", label: "المستخدمين والصلاحيات" },
     (canSettings || canBackups) && { id: "storage", label: "الحفظ والنسخ الاحتياطي" },
+    canSettings && { id: "alerts", label: "تنبيهات المستمسكات" },
     { id: "support", label: "الدعم وحول النظام" },
   ].filter(Boolean);
   if (ctx?.tab) activeSettingsTab = ctx.tab;
@@ -422,6 +424,7 @@ export async function renderSettings(container, user, ctx) {
 
 
       ${canUsers ? `<div class="settings-panel" data-settings-panel="users"></div>` : ""}
+      ${canSettings ? `<div class="settings-panel" data-settings-panel="alerts"></div>` : ""}
       <div class="settings-panel settings-stack" data-settings-panel="support">
         <div data-embedded="about"></div>
         <div data-embedded="support"></div>
@@ -449,7 +452,15 @@ export async function renderSettings(container, user, ctx) {
   // «الدعم وحول النظام» draws the about card and the check/contact screen into one tab on first open.
   let supportRendered = false;
   let usersRendered = false;
+  let alertsRendered = false;
   const showTab = id => {
+    if (id === "alerts" && !alertsRendered) {
+      alertsRendered = true;
+      const panel = container.querySelector('[data-settings-panel="alerts"]');
+      renderAlertSettings(panel).catch(err => {
+        panel.innerHTML = `<div class="card text-sm text-gray-400" dir="auto">${escHtml(err?.message ?? String(err))}</div>`;
+      });
+    }
     activeSettingsTab = id;
     if (id === "users" && !usersRendered) {
       usersRendered = true;
