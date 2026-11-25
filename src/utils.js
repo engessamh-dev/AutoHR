@@ -221,8 +221,23 @@ export function formatDate(iso) {
   const d = match
     ? new Date(Number(match[1]), Number(match[2]) - 1, Number(match[3]))
     : new Date(iso);
-  // Latin digits everywhere, like the date fields and the other numbers of the program.
-  return isNaN(d) ? iso : d.toLocaleDateString(undefined, { numberingSystem: "latn" });
+  // One format in the whole program, whatever the Windows date setting: year/month/day
+  // in Latin digits (2031/6/2), so the day and the month are never confused.
+  return isNaN(d) ? iso : `${d.getFullYear()}/${d.getMonth() + 1}/${d.getDate()}`;
+}
+
+// Backend errors arrive as plain strings; script errors as Error objects.
+// Returns the text to show the user, in Arabic for the messages the backend sends in English.
+const ENGLISH_ERRORS = {
+  "You are not authorized to perform this action": "ليست لديك صلاحية لهذا الإجراء",
+  "The requested item was not found": "العنصر المطلوب غير موجود، ربما حُذف",
+  "The database operation could not be completed": "تعذر إكمال العملية على قاعدة البيانات",
+  "The operation could not be completed": "تعذر إكمال العملية",
+};
+export function errorText(error, fallback = "تعذر إكمال العملية") {
+  const text = typeof error === "string" ? error : error?.message;
+  if (!text) return fallback;
+  return ENGLISH_ERRORS[text] ?? text;
 }
 
 export function todayISO() {

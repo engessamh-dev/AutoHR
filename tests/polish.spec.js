@@ -80,8 +80,8 @@ test("empty archive offers «إضافة أول وثيقة», and the new form de
   await page.locator("#d-title").fill("جهة تجريبية");
   await page.locator("#d-issuer").fill("أمر إداري");
   await page.locator("#d-count").fill("230/547");
+  // Saving goes straight on, without «تأكيد إضافة الوثيقة؟» (as in the employee file).
   await page.locator("#btn-save-doc").click();
-  await page.getByRole("button", { name: "تأكيد", exact: true }).click();
   // Images ask whether to upload as-is or process first, as with any archive upload.
   await page.locator('[data-choice="original"]').click();
   await expect.poll(() => page.evaluate(() => window.calls.some(c => c.command === "cmd_upload_general_doc_file"))).toBe(true);
