@@ -615,20 +615,15 @@ export async function renderSettings(container, user, ctx) {
       ${canSettings ? `<section class="card settings-panel settings-block" data-settings-panel="jobs">
         <div class="settings-block-head">
           <p class="settings-block-title">الدرجة الوظيفية والمرحلة</p>
-          <p class="settings-block-help">تظهر هاتان القائمتان في بطاقة الموظف للاختيار منهما بدل الكتابة. عنصر واحد في كل سطر وبالترتيب الذي تريده. المراحل افتراضيًا من 1 إلى 11، عدّلها إن كان في دائرتك مدى مختلف. قيمة محفوظة سابقًا لموظف تبقى كما هي حتى لو لم تعد في القائمة.</p>
+          <p class="settings-block-help">تظهر هاتان القائمتان في بطاقة الموظف للاختيار منهما بدل الكتابة. اضغط «تعديل» للإضافة أو التغيير أو الحذف أو الترتيب. المراحل افتراضيًا من 1 إلى 11، عدّلها إن كان في دائرتك مدى مختلف. قيمة محفوظة سابقًا لموظف تبقى كما هي حتى لو حُذفت من القائمة.</p>
         </div>
-        <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
-          <div>
-            <label class="section-title" for="job-grades">الدرجات الوظيفية</label>
-            <textarea id="job-grades" class="input-field" rows="12" disabled>جاري التحميل...</textarea>
-          </div>
-          <div>
-            <label class="section-title" for="job-steps">المراحل</label>
-            <textarea id="job-steps" class="input-field" rows="12" dir="ltr" disabled></textarea>
-          </div>
+        <div id="job-lists-body" class="grid grid-cols-1 sm:grid-cols-2 gap-4">
+          <p class="text-sm text-gray-400">جاري التحميل...</p>
         </div>
         <div class="settings-block-foot">
-          <button id="btn-save-job-lists" type="button" class="btn-primary" disabled>حفظ القائمتين</button>
+          <button id="btn-edit-job-lists" type="button" class="btn-primary" disabled>تعديل</button>
+          <button id="btn-save-job-lists" type="button" class="btn-primary hidden" disabled>حفظ</button>
+          <button id="btn-cancel-job-lists" type="button" class="btn-secondary hidden">إلغاء</button>
         </div>
       </section>
       <div class="settings-panel" data-settings-panel="alerts"></div>` : ""}
@@ -661,21 +656,89 @@ export async function renderSettings(container, user, ctx) {
   let usersRendered = false;
   let alertsRendered = false;
   let jobsLoaded = false;
-  let resetJobsDirty = () => {};
+  // «الدرجات والمراحل»: read-only until «تعديل»; then each item can be renamed, moved or
+  // deleted, items added, and the whole change saved or dropped.
+  const JOB_LIST_LABELS = { grades: "الدرجات الوظيفية", steps: "المراحل" };
+  let jobLists = null;
+  let jobDraft = null;
+  const jobsBody = () => container.querySelector("#job-lists-body");
+  const cleanDraft = () => ({
+    grades: jobDraft.grades.map(item => item.trim()).filter(Boolean),
+    steps: jobDraft.steps.map(item => item.trim()).filter(Boolean),
+  });
+  const jobsChanged = () => jobDraft && JSON.stringify(cleanDraft()) !== JSON.stringify(jobLists);
+  const updateJobButtons = () => {
+    const editing = Boolean(jobDraft);
+    container.querySelector("#btn-edit-job-lists").classList.toggle("hidden", editing);
+    container.querySelector("#btn-edit-job-lists").disabled = !jobLists;
+    container.querySelector("#btn-save-job-lists").classList.toggle("hidden", !editing);
+    container.querySelector("#btn-cancel-job-lists").classList.toggle("hidden", !editing);
+    container.querySelector("#btn-save-job-lists").disabled = !jobsChanged();
+  };
+  const drawJobLists = (focus = null) => {
+    jobsBody().innerHTML = ["grades", "steps"].map(key => {
+      const label = JOB_LIST_LABELS[key];
+      if (!jobDraft) {
+        return `<div>
+          <p class="section-title">${label} <span class="badge badge-gray">${jobLists[key].length}</span></p>
+          <ol class="job-list-view" style="list-style:none;margin:0;padding:0;border:1px solid var(--ui-line);border-radius:8px;overflow:hidden">
+            ${jobLists[key].map((item, index) => `<li style="display:flex;gap:10px;align-items:center;padding:7px 12px;${index ? "border-top:1px solid var(--ui-line);" : ""}color:var(--ui-text-strong);font-size:14px">
+              <span style="min-width:20px;font-size:11px;color:var(--ui-text-faint)">${index + 1}</span><span>${escHtml(item)}</span></li>`).join("")}
+          </ol></div>`;
+      }
+      const items = jobDraft[key];
+      return `<div data-job-list="${key}">
+        <p class="section-title">${label} <span class="badge badge-gray">${items.filter(item => item.trim()).length}</span></p>
+        <div style="display:flex;flex-direction:column;gap:6px">
+          ${items.map((item, index) => `<div style="display:flex;gap:6px;align-items:center">
+            <span style="min-width:20px;font-size:11px;color:var(--ui-text-faint)">${index + 1}</span>
+            <input class="input-field flex-1" data-job-item="${index}" value="${escHtml(item)}" maxlength="60" aria-label="${label} ${index + 1}" />
+            <button type="button" class="btn-secondary" data-job-act="up" data-index="${index}" ${index === 0 ? "disabled" : ""} title="نقل للأعلى" aria-label="نقل للأعلى" style="padding:4px 9px">↑</button>
+            <button type="button" class="btn-secondary" data-job-act="down" data-index="${index}" ${index === items.length - 1 ? "disabled" : ""} title="نقل للأسفل" aria-label="نقل للأسفل" style="padding:4px 9px">↓</button>
+            <button type="button" class="btn-danger-outline" data-job-act="delete" data-index="${index}" title="حذف" aria-label="حذف ${escHtml(item)}" style="padding:4px 10px">حذف</button>
+          </div>`).join("")}
+        </div>
+        <button type="button" class="btn-secondary" data-job-act="add" style="margin-top:8px">+ إضافة ${key === "grades" ? "درجة" : "مرحلة"}</button>
+      </div>`;
+    }).join("");
+    if (focus) jobsBody().querySelector(`[data-job-list="${focus.key}"] [data-job-item="${focus.index}"]`)?.focus();
+    updateJobButtons();
+  };
   const loadJobLists = async () => {
-    const grades = container.querySelector("#job-grades");
-    const steps = container.querySelector("#job-steps");
     try {
-      const lists = await api.getJobLists();
-      grades.value = lists.grades.join("\n");
-      steps.value = lists.steps.join("\n");
-      grades.disabled = false;
-      steps.disabled = false;
-      resetJobsDirty = trackUnsavedChanges(container, container.querySelector("#btn-save-job-lists"), ["#job-grades", "#job-steps"]);
+      jobLists = await api.getJobLists();
+      drawJobLists();
     } catch (err) {
-      grades.value = errorText(err);
+      jobsBody().innerHTML = `<p class="text-sm" style="color:var(--ui-danger)">${escHtml(errorText(err))}</p>`;
     }
   };
+  container.querySelector("#job-lists-body")?.addEventListener("input", event => {
+    const input = event.target.closest("[data-job-item]");
+    if (!input || !jobDraft) return;
+    jobDraft[input.closest("[data-job-list]").dataset.jobList][Number(input.dataset.jobItem)] = input.value;
+    updateJobButtons();
+  });
+  container.querySelector("#job-lists-body")?.addEventListener("click", event => {
+    const button = event.target.closest("[data-job-act]");
+    if (!button || !jobDraft) return;
+    const key = button.closest("[data-job-list]").dataset.jobList;
+    const list = jobDraft[key];
+    const index = Number(button.dataset.index);
+    if (button.dataset.jobAct === "add") { list.push(""); drawJobLists({ key, index: list.length - 1 }); return; }
+    if (button.dataset.jobAct === "delete") { list.splice(index, 1); drawJobLists(); return; }
+    const to = button.dataset.jobAct === "up" ? index - 1 : index + 1;
+    [list[index], list[to]] = [list[to], list[index]];
+    drawJobLists({ key, index: to });
+  });
+  container.querySelector("#btn-edit-job-lists")?.addEventListener("click", () => {
+    jobDraft = { grades: [...jobLists.grades], steps: [...jobLists.steps] };
+    drawJobLists();
+  });
+  container.querySelector("#btn-cancel-job-lists")?.addEventListener("click", async () => {
+    if (jobsChanged() && !(await confirmAction("ستُلغى التعديلات على القائمتين. هل تريد المتابعة؟", { title: "إلغاء التعديلات" }))) return;
+    jobDraft = null;
+    drawJobLists();
+  });
   const showTab = id => {
     if (id === "jobs" && !jobsLoaded) {
       jobsLoaded = true;
@@ -923,13 +986,14 @@ export async function renderSettings(container, user, ctx) {
     if (await saveAutoBackup()) renderSettings(container, user, { ...ctx, tab: undefined, keepPosition: true });
   });
 
-  const lines = selector => container.querySelector(selector).value.split("\n").map(line => line.trim()).filter(Boolean);
   const saveJobLists = async () => {
+    const draft = cleanDraft();
+    const duplicate = ["grades", "steps"].map(key => draft[key].find((item, index) => draft[key].indexOf(item) !== index)).find(Boolean);
+    if (duplicate) { showToast(`«${duplicate}» مكرر في القائمة`, "error"); return false; }
     try {
-      const lists = await api.setJobLists({ grades: lines("#job-grades"), steps: lines("#job-steps") });
-      container.querySelector("#job-grades").value = lists.grades.join("\n");
-      container.querySelector("#job-steps").value = lists.steps.join("\n");
-      resetJobsDirty();
+      jobLists = await api.setJobLists(draft);
+      jobDraft = null;
+      drawJobLists();
       showToast("تم حفظ قائمتي الدرجات والمراحل");
       return true;
     } catch (err) {
