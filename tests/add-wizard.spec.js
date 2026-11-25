@@ -76,3 +76,21 @@ test("save creates the employee with family relations, then uploads each image",
   expect(family[0].name_parts.name).toMatchObject({ father: "سامر", grandfather: "خالد", surname: "الجبوري" });
   await expect.poll(() => page.evaluate(() => window.calls.filter(c => c.command === "cmd_upload_national_card_attachment").map(c => c.args.side))).toEqual(["front", "back"]);
 });
+
+test("an enlarged image closes with the × button, Esc, or a click outside it", async ({ page }) => {
+  await page.click('[data-choice="docs"]');
+  await pick(page, "national", "front.jpg");
+  const viewer = page.locator(".aw-viewer");
+  await page.locator(".aw-thumb img").first().click();
+  await expect(viewer).toBeVisible();
+  await viewer.getByRole("button", { name: "إغلاق الصورة" }).click();
+  await expect(viewer).toHaveCount(0);
+  await page.locator(".aw-thumb img").first().click();
+  await page.keyboard.press("Escape");
+  await expect(viewer).toHaveCount(0);
+  // Esc closed only the image, not the wizard.
+  await expect(page.locator(".aw-overlay")).toBeVisible();
+  await page.locator(".aw-thumb img").first().click();
+  await viewer.click({ position: { x: 5, y: 5 } });
+  await expect(viewer).toHaveCount(0);
+});

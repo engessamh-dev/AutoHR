@@ -213,8 +213,23 @@ function openWizard({ employees, onCreated }) {
   };
   const hasWork = () => Object.values(state.docs).some(d => Object.keys(d.images).length) || Object.keys(state.values).length > 0;
   const onKey = event => {
-    if (event.key === "Escape" && !overlay.querySelector(".aw-busy")) { event.stopPropagation(); close(); }
+    if (event.key !== "Escape") return;
+    const viewer = overlay.querySelector(".aw-viewer");
+    if (viewer) { event.stopPropagation(); viewer.remove(); return; }
+    if (!overlay.querySelector(".aw-busy")) { event.stopPropagation(); close(); }
   };
+
+  /** Full-size view of a document image: closes with ×, Esc, or a click outside the image. */
+  function openViewer(img) {
+    overlay.querySelector(".aw-viewer")?.remove();
+    const viewer = htmlToNode(`<div class="aw-viewer" role="dialog" aria-modal="true" aria-label="${img.alt}">
+      <button type="button" class="aw-viewer-close" aria-label="إغلاق الصورة" title="إغلاق الصورة (Esc)">×</button>
+      <img src="${img.src}" alt="${img.alt}">
+    </div>`);
+    viewer.addEventListener("click", event => { if (event.target.tagName !== "IMG") viewer.remove(); });
+    overlay.appendChild(viewer);
+    viewer.querySelector(".aw-viewer-close").focus();
+  }
   document.addEventListener("keydown", onKey, true);
 
   // Dropping image files on a picture slot: the window reports the paths and where they fell.
@@ -400,7 +415,7 @@ function openWizard({ employees, onCreated }) {
     overlay.querySelectorAll("[data-pick]").forEach(b => b.addEventListener("click", () => pick(b.dataset.pick, b.dataset.side)));
     overlay.querySelectorAll("[data-scan]").forEach(b => b.addEventListener("click", () => scan(b.dataset.scan, b.dataset.side)));
     overlay.querySelectorAll("[data-remove]").forEach(b => b.addEventListener("click", () => removeImage(b.dataset.remove, b.dataset.side)));
-    overlay.querySelectorAll(".aw-thumb img").forEach(img => img.addEventListener("click", () => img.closest(".aw-thumb").classList.toggle("is-zoomed")));
+    overlay.querySelectorAll(".aw-thumb img").forEach(img => img.addEventListener("click", () => openViewer(img)));
     // Typing marks a value as the user's own: later documents never replace it by themselves.
     overlay.querySelectorAll("[data-key]").forEach(input => {
       const update = () => {
