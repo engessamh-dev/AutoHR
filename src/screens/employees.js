@@ -757,8 +757,8 @@ function documentStatus({ values, expiry, maxDays, attached, expected }) {
 function documentSections(emp) {
   const hasId = Boolean(emp?.id);
   const sided = (type, prefix) => [
-    sidedCardTile("الوجه الأمامي", "front", emp?.[`${prefix}_front_path`], emp?.[`${prefix}_front_full_path`], hasId, type),
-    sidedCardTile("الوجه الخلفي", "back", emp?.[`${prefix}_back_path`], emp?.[`${prefix}_back_full_path`], hasId, type),
+    sidedCardTile(type === "ministry" ? "الوجه العربي" : "الوجه الأمامي", "front", emp?.[`${prefix}_front_path`], emp?.[`${prefix}_front_full_path`], hasId, type),
+    sidedCardTile(type === "ministry" ? "الوجه الإنكليزي" : "الوجه الخلفي", "back", emp?.[`${prefix}_back_path`], emp?.[`${prefix}_back_full_path`], hasId, type),
   ];
   const sidedCount = prefix => [emp?.[`${prefix}_front_path`], emp?.[`${prefix}_back_path`]].filter(Boolean).length;
   const sections = [
@@ -993,8 +993,8 @@ const printableDocumentDefinitions = [
       ["رقم الهوية", "ministry_badge_no"],
     ],
     attachments: [
-      ["الوجه الأمامي", "ministry_badge_front_path", "ministry_badge_front_full_path"],
-      ["الوجه الخلفي", "ministry_badge_back_path", "ministry_badge_back_full_path"],
+      ["الوجه العربي", "ministry_badge_front_path", "ministry_badge_front_full_path"],
+      ["الوجه الإنكليزي", "ministry_badge_back_path", "ministry_badge_back_full_path"],
     ],
   },
 ];
