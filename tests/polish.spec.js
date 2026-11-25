@@ -157,3 +157,46 @@ test("storage warning hides with «حسنًا» and comes back when a folder cha
   await open();
   await expect(page.getByText(warning)).toBeVisible();
 });
+
+test("archive list deletes a document from its row without opening it", async ({ page }) => {
+  await page.evaluate(() => {
+    window.plainArchive = true;
+    window.docs = [
+      { id: 1, title: "Synthetic Document", attachment_paths: ["Files/GeneralDocs/1/a.jpg"], employee_ids: [] },
+      { id: 7, title: "", attachment_paths: ["Files/GeneralDocs/7/a.jpg", "Files/GeneralDocs/7/b.jpg"], employee_ids: [] },
+    ];
+    const original = window.__TAURI_INTERNALS__.invoke;
+    window.__TAURI_INTERNALS__.invoke = async (command, args) => {
+      if (command === "cmd_delete_general_doc" || command === "cmd_delete_outgoing_doc") {
+        window.calls.push({ command, args });
+        window.docs = window.docs.filter(d => d.id !== args.id);
+        return;
+      }
+      return original(command, args);
+    };
+  });
+  await page.evaluate(() => window.renderActual("general"));
+  await expect(page.locator(".general-doc-row")).toHaveCount(2);
+  await page.locator('.doc-row-delete[data-id="7"]').click();
+  // The confirmation names the empty row and its attachments; the form never opens.
+  await expect(page.getByRole("alertdialog")).toContainText("بدون بيانات");
+  await expect(page.getByRole("alertdialog")).toContainText("مرفقان");
+  await expect(page.locator("#btn-save-doc")).toHaveCount(0);
+  await page.getByRole("button", { name: "إلغاء" }).click();
+  expect(await page.evaluate(() => window.calls.some(c => c.command === "cmd_delete_general_doc"))).toBe(false);
+  await page.locator('.doc-row-delete[data-id="7"]').click();
+  await page.getByRole("button", { name: "تأكيد", exact: true }).click();
+  await expect(page.locator(".general-doc-row")).toHaveCount(1);
+  const deleted = await page.evaluate(() => window.calls.filter(c => c.command === "cmd_delete_general_doc").map(c => c.args));
+  expect(deleted).toEqual([{ id: 7 }]);
+});
+
+test("archive list hides the row delete button without «documents.delete»", async ({ page }) => {
+  await page.evaluate(() => {
+    window.plainArchive = true;
+    window.permissionsOverride = ["documents.view", "documents.manage", "documents.upload"];
+  });
+  await page.evaluate(() => window.renderActual("general"));
+  await expect(page.locator(".general-doc-row")).toHaveCount(1);
+  await expect(page.locator(".doc-row-delete")).toHaveCount(0);
+});

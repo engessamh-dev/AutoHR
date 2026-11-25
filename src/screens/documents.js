@@ -430,6 +430,8 @@ export async function renderDocuments(container, user, ctx) {
     const archiveDocs = currentDocs();
     const filteredDocs = archiveDocs.filter(matchesGeneralSearch);
     const filteredAttachmentPaths = filteredDocs.flatMap(doc => generalDocAttachments(doc));
+    const canDeleteRows = can(user, "documents.delete");
+    const columnCount = canDeleteRows ? 10 : 9;
     const advancedFilterCount = [
       generalNotesSearch,
       generalFileFilter !== "all",
@@ -538,10 +540,11 @@ export async function renderDocuments(container, user, ctx) {
               <th class="table-header">مذكرة داخلية</th>
               <th class="table-header">الموظفون المرتبطون</th>
               <th class="table-header">المرفقات</th>
+              ${canDeleteRows ? `<th class="table-header" style="width:1%"><span class="sr-only">حذف</span></th>` : ""}
             </tr></thead>
             <tbody>
               ${archiveDocs.length === 0
-                ? `<tr><td colspan="9" class="table-cell"><div class="doc-empty">
+                ? `<tr><td colspan="${columnCount}" class="table-cell"><div class="doc-empty">
                     <span class="doc-empty-icon"><svg aria-hidden="true" viewBox="0 0 24 24"><path d="M3 6.5A1.5 1.5 0 0 1 4.5 5H9l2 2.5h8.5A1.5 1.5 0 0 1 21 9v9.5a1.5 1.5 0 0 1-1.5 1.5h-15A1.5 1.5 0 0 1 3 18.5z"/><path d="M12 11v6M9 14h6"/></svg></span>
                     <p class="doc-empty-title">لا توجد وثائق في ${escHtml(archiveName())} بعد</p>
                     ${can(user, "documents.manage")
@@ -550,7 +553,7 @@ export async function renderDocuments(container, user, ctx) {
                       : `<p class="doc-empty-text">ستظهر الوثائق هنا عند إضافتها.</p>`}
                   </div></td></tr>`
                 : filteredDocs.length === 0
-                  ? `<tr><td colspan="9" class="table-cell text-center text-gray-500 py-8">لا توجد نتائج مطابقة</td></tr>`
+                  ? `<tr><td colspan="${columnCount}" class="table-cell text-center text-gray-500 py-8">لا توجد نتائج مطابقة</td></tr>`
                   : filteredDocs.map(d => `
                   <tr class="table-row general-doc-row" data-id="${d.id}" title="اضغط لتعديل الوثيقة">
                     <td class="table-cell font-medium text-gray-100">${escHtml(d.title || "—")}</td>
@@ -576,6 +579,12 @@ export async function renderDocuments(container, user, ctx) {
                         </span>
                       </button>
                     </td>
+                    ${canDeleteRows ? `<td class="table-cell" style="padding-inline:4px">
+                      <button type="button" class="att-icon-btn doc-row-delete" data-id="${d.id}"
+                        title="حذف الوثيقة" aria-label="حذف الوثيقة">
+                        <svg aria-hidden="true" viewBox="0 0 24 24"><path d="M4 7h16M9 7V4.5h6V7M6.5 7l1 12.5h9l1-12.5M10 11v5.5M14 11v5.5"/></svg>
+                      </button>
+                    </td>` : ""}
                   </tr>`).join("")}
             </tbody>
           </table>
@@ -693,7 +702,34 @@ export async function renderDocuments(container, user, ctx) {
       btn.addEventListener("click", () => openAttachmentManager(parseInt(btn.dataset.id, 10)));
     });
 
+    el.querySelectorAll(".doc-row-delete").forEach(btn => {
+      btn.addEventListener("click", event => {
+        event.stopPropagation();
+        deleteDocFromList(parseInt(btn.dataset.id, 10));
+      });
+    });
+
     restoreFocus();
+  }
+
+  // Delete straight from the archive list, without opening the document form.
+  // The backend re-checks "documents.delete" and writes the audit log entry.
+  async function deleteDocFromList(docId) {
+    const doc = currentDocs().find(item => item.id === docId);
+    if (!doc) return;
+    const label = [doc.title, doc.doc_number, doc.doc_count].map(v => String(v ?? "").trim()).filter(Boolean).join(" — ");
+    const attachmentCount = generalDocAttachments(doc).length;
+    const what = label ? `الوثيقة «${label}»` : "هذه الوثيقة (بدون بيانات)";
+    const files = attachmentCount ? ` ومرفقاتها (${arCount(attachmentCount, "attachment")})` : "";
+    if (!(await confirmAction(`تأكيد حذف ${what}${files} من ${archiveName()}؟ لا يمكن التراجع عن هذا الإجراء.`))) return;
+    try {
+      await deleteCurrentDoc(docId);
+      await refreshCurrentDocs();
+      showToast("تم حذف الوثيقة");
+      renderGeneral();
+    } catch (err) {
+      showToast(err?.message ?? "تعذر حذف الوثيقة", "error");
+    }
   }
 
   function attachmentKind(path) {

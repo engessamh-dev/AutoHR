@@ -395,6 +395,7 @@
 .att-icon-btn{width:34px;height:34px;flex:none;display:inline-grid;place-items:center;border-radius:8px;border:1px solid transparent;background:transparent;color:var(--ui-text-muted);font-size:17px;line-height:1;cursor:pointer;transition:background .12s,color .12s}
 .att-icon-btn:hover,.att-icon-btn[aria-expanded="true"]{background:var(--ui-hover);color:var(--ui-text-strong)}
 .att-icon-btn svg{width:18px;height:18px;fill:none;stroke:currentColor;stroke-width:1.8;stroke-linecap:round;stroke-linejoin:round}
+.doc-row-delete:hover,.doc-row-delete:focus-visible{background:var(--ui-danger-bg);color:var(--ui-danger)}
 .att-list{list-style:none;margin:0;padding:6px 8px 10px;display:flex;flex-direction:column;gap:2px}
 .att-row{display:grid;grid-template-columns:44px minmax(0,1fr) auto;align-items:center;gap:12px;padding:7px 10px;border-radius:10px;cursor:pointer}
 .att-row:hover,.att-row:focus-visible{background:var(--ui-hover)}

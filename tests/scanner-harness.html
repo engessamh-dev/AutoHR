@@ -63,7 +63,7 @@ window.runUpload=(method,args)=>{window.result=null;window.failure=null;window.p
 window.runExisting=path=>{window.result=null;window.failure=null;window.pending=reprocessAttachment(path).then(value=>{window.result=value;}).catch(error=>{window.failure=String(error);});};
 window.bindExisting=(path,permissions)=>{document.querySelector("#root").innerHTML=`<div><button data-path="${path}">مرفق</button></div>`;bindAttachmentScannerButtons(document.querySelector("#root"),{permissions});};
 window.renderActual=async screen=>{
-  const root=document.querySelector("#root"),user={permissions};
+  const root=document.querySelector("#root"),user={permissions:window.permissionsOverride ?? permissions};
   if(screen==="employees")await renderEmployees(root,user,{});
   else if(screen==="about")await renderAbout(root,user,{});
   else if(screen==="settings")await renderSettings(root,user,{});
