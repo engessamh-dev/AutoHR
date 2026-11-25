@@ -30,7 +30,9 @@ test("manual entry opens the existing form", async ({ page }) => {
 
 test("national card is required, values are read and tagged by source", async ({ page }) => {
   await page.click('[data-choice="docs"]');
-  await expect(page.locator("[data-next]")).toBeDisabled();
+  // Steps open in any order; saving waits for a name.
+  await expect(page.locator("[data-next]")).toBeEnabled();
+  await expect(page.locator("[data-save-now]")).toBeDisabled();
   await pick(page, "national", "front.jpg");
   await pick(page, "national", "back.jpg", "back");
   await expect(page.locator("[data-next]")).toBeEnabled();
@@ -279,4 +281,23 @@ test("ministry ID: one Arabic side fills department and job, and its name is che
   await page.evaluate(() => { window.openQueue = ["mot-other.jpg"]; });
   await page.click('[data-pick="ministry"][data-side="front"]');
   await expect(page.locator(".aw-note.is-warn", { hasText: "يختلف عن البطاقة الوطنية" })).toContainText("كريم خالد عبد الله");
+});
+
+test("the side list opens any step at any time, before the national card too", async ({ page }) => {
+  await page.click('[data-choice="docs"]');
+  const steps = page.locator(".aw-step");
+  await expect(steps).toHaveCount(8);
+  for (const i of [3, 7, 1, 5]) {
+    await steps.nth(i).click();
+    await expect(steps.nth(i)).toHaveClass(/is-current/);
+  }
+  await expect(page.locator("[data-save]")).toHaveCount(0);
+  await steps.nth(7).click();
+  await expect(page.locator("[data-save]")).toBeDisabled();
+  await expect(page.locator("[data-save-now]")).toBeDisabled();
+  await steps.nth(2).click();
+  await pick(page, "ministry", "ministry.jpg");
+  await steps.nth(0).click();
+  await pick(page, "national", "front.jpg");
+  await expect(page.locator("[data-save-now]")).toBeEnabled();
 });

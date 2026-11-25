@@ -368,13 +368,12 @@ function openWizard({ user, employees, onCreated, resume = null }) {
         const cls = i === state.step ? "is-current" : skipped ? "is-skipped" : done ? "is-done" : "";
         const count = doc ? Object.keys(doc.readings).length : s.id === "family" ? state.members.length : 0;
         const note = i === state.step ? "" : skipped ? "تُخطّي" : done && count ? (s.id === "family" ? `${count} أفراد` : `${count} حقول`) : s.required ? "إلزامي" : "";
-        return `<button type="button" class="aw-step ${cls}" data-go="${i}" ${i > state.step && !canReach(i) ? "disabled" : ""}>
+        return `<button type="button" class="aw-step ${cls}" data-go="${i}">
           <i>${skipped ? "–" : done && i !== state.step ? "✓" : i + 1}</i><span>${s.title}</span><small>${note}</small></button>`;
       }).join("")}
       <div class="aw-progress">الخطوة ${state.step + 1} من ${STEPS.length}<div class="aw-bar"><i style="width:${(state.step + 1) / STEPS.length * 100}%"></i></div></div>
       <div class="aw-progress">مُلئ من المستمسكات: <b>${filledCount()}</b> حقلًا</div></nav>`;
   }
-  const canReach = i => i <= state.step || !isEmpty(state.values.full_name?.value);
 
   /** The source tag of a field, inside a wrapper the input handler can replace. An unsure reading
    *  gets «صحيح» beside it: the user confirms it against the image without retyping it. */
@@ -539,7 +538,8 @@ function openWizard({ user, employees, onCreated, resume = null }) {
     const body = step.id === "family" ? familyBody() : step.id === "summary" ? summaryBody() : docBody(step);
     const last = state.step === STEPS.length - 1;
     const next = STEPS[state.step + 1];
-    const blocked = step.required && isEmpty(state.values.full_name?.value);
+    // Any step can be opened in any order; only saving needs the employee's name.
+    const noName = isEmpty(state.values.full_name?.value);
     const scroll = overlay.querySelector(".aw-content-body")?.scrollTop ?? 0;
     overlay.innerHTML = `<div class="aw-box" dir="rtl" role="dialog" aria-modal="true" aria-label="إضافة موظف من المستمسكات">
       <div class="aw-head"><h2>إضافة موظف من المستمسكات</h2><span class="aw-sub">مستمسك واحد في كل خطوة</span>
@@ -549,11 +549,11 @@ function openWizard({ user, employees, onCreated, resume = null }) {
         <div class="aw-content"><div class="aw-content-title"><b>${step.title}</b><span>${step.hint}</span></div>
           <div class="aw-content-body ${step.sides ? "" : "is-single"}">${body}</div>
           <div class="aw-foot">
-            ${last ? `<button type="button" class="btn-primary" data-save ${state.saving ? "disabled" : ""}>${state.saving ? "جارٍ الحفظ…" : "حفظ الموظف"}</button>`
-                   : `<button type="button" class="btn-primary" data-next ${blocked ? "disabled" : ""}>التالي: ${next.title}</button>`}
+            ${last ? `<button type="button" class="btn-primary" data-save ${canSaveNow() ? "" : "disabled"}>${state.saving ? "جارٍ الحفظ…" : "حفظ الموظف"}</button>`
+                   : `<button type="button" class="btn-primary" data-next>التالي: ${next.title}</button>`}
             ${!step.required && !last ? `<button type="button" class="btn-secondary" data-skip>تخطٍّ</button>` : ""}
             ${state.step > 0 ? `<button type="button" class="btn-secondary" data-back>رجوع</button>` : ""}
-            <span class="aw-hint">${blocked ? "ارفع البطاقة الوطنية أو اكتب اسم الموظف للمتابعة" : "كل القيم قابلة للتعديل قبل الحفظ"}</span>
+            <span class="aw-hint">${noName ? "تنقّل بين الخطوات بأي ترتيب؛ الحفظ يحتاج اسم الموظف من البطاقة الوطنية أو كتابته" : "كل القيم قابلة للتعديل قبل الحفظ"}</span>
           </div></div></div>
       <datalist id="aw-departments">${departments.map(d => `<option value="${escHtml(d)}">`).join("")}</datalist></div>`;
     const content = overlay.querySelector(".aw-content-body");
@@ -622,10 +622,10 @@ function openWizard({ user, employees, onCreated, resume = null }) {
         const check = field?.querySelector(".aw-check");
         if (check) check.innerHTML = checkHtml(key, values[key].value, input.dataset.scope);
         field?.classList.toggle("is-empty", isEmpty(values[key].value) && !input.dataset.part);
-        const next = overlay.querySelector("[data-next]");
-        if (next && current().required) next.disabled = isEmpty(state.values.full_name?.value);
         const saveNow = overlay.querySelector("[data-save-now]");
         if (saveNow) saveNow.disabled = !canSaveNow();
+        const saveLast = overlay.querySelector("[data-save]");
+        if (saveLast) saveLast.disabled = !canSaveNow();
         if (input.dataset.scope && key === "name") inheritChildNames();
       };
       input.addEventListener(input.tagName === "SELECT" ? "change" : "input", update);
@@ -713,7 +713,6 @@ function openWizard({ user, employees, onCreated, resume = null }) {
 
   function go(index) {
     if (index < 0 || index >= STEPS.length) return;
-    if (index > state.step && current().required && isEmpty(state.values.full_name?.value)) return;
     if (STEPS[index].id === "family") inheritChildNames();
     if (STEPS[index].id === "summary") deriveMarital();
     state.step = index;
