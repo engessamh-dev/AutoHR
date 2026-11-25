@@ -732,6 +732,11 @@ fn cmd_scan_document(state: State<DbState>, sess: State<SessionState>, device_id
     let user = authorize(&conn, &sess, "users.manage")?;
     update_user_role(&conn, &user, id, &data.role)
 }
+#[tauri::command] fn cmd_set_user_disabled(state: State<DbState>, sess: State<SessionState>, id: i64, data: UserDisabledData) -> Result<User, AppError> {
+    let conn = state.conn()?;
+    let user = authorize(&conn, &sess, "users.manage")?;
+    set_user_disabled(&conn, &user, id, data.disabled)
+}
 #[tauri::command] fn cmd_reset_user_password(state: State<DbState>, sess: State<SessionState>, id: i64, data: PasswordResetData) -> Result<(), AppError> {
     let conn = state.conn()?;
     let user = authorize(&conn, &sess, "users.manage")?;
@@ -1340,7 +1345,7 @@ pub fn run() {
             cmd_upload_outgoing_doc_file, cmd_delete_outgoing_doc_attachment, cmd_move_outgoing_doc_attachment,
             cmd_select_scanner_device, cmd_scan_document,
             cmd_list_activity_log,
-            cmd_list_users, cmd_create_user, cmd_delete_user, cmd_update_user_role, cmd_reset_user_password,
+            cmd_list_users, cmd_create_user, cmd_delete_user, cmd_update_user_role, cmd_reset_user_password, cmd_set_user_disabled,
             cmd_get_storage_path, cmd_get_backup_path, cmd_open_managed_folder,
             cmd_get_startup_status, cmd_check_setup_folders, cmd_complete_setup, cmd_retry_data_folder,
             cmd_get_storage_status, cmd_change_backup_folder, cmd_export_backup_to, cmd_move_data_folder,

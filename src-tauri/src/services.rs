@@ -48,7 +48,15 @@ pub struct User {
     pub id: i64, pub username: String, pub role: String,
     pub is_master: bool, pub permissions: Vec<String>,
     pub must_change_password: bool, pub created_at: Option<String>,
+    /// Account stopped by an admin («إيقاف الحساب»): cannot sign in, keeps its name in the log.
+    #[serde(default)] pub disabled: bool,
+    /// False when the account was changed outside the program (integrity check).
+    #[serde(default = "default_true")] pub trusted: bool,
+    /// Time of the last successful sign-in, from the audit log.
+    #[serde(default)] pub last_login: Option<String>,
 }
+
+fn default_true() -> bool { true }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct CompanyConfig {
@@ -324,6 +332,9 @@ pub struct UserRoleData { pub role: String }
 #[derive(Debug, Serialize, Deserialize)]
 pub struct PasswordResetData { pub password: String }
 
+#[derive(Debug, Serialize, Deserialize)]
+pub struct UserDisabledData { pub disabled: bool }
+
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct AutoBackupSettings {
     pub daily_enabled: bool,
@@ -365,11 +376,11 @@ fn verify_password(plain: &str, stored: &str) -> AppResult<bool> {
 }
 
 fn validate_new_password(password: &str) -> AppResult<()> {
-    if password.len() < 8 {
-        return Err(AppError::Validation("Password must be at least 8 characters".into()));
+    if password.chars().count() < 8 {
+        return Err(AppError::Validation("كلمة المرور يجب أن تكون 8 أحرف على الأقل".into()));
     }
     if password.len() > 72 {
-        return Err(AppError::Validation("Password must be at most 72 bytes".into()));
+        return Err(AppError::Validation("كلمة المرور طويلة جدًا (الحد 72 حرفًا إنجليزيًا أو 36 حرفًا عربيًا)".into()));
     }
     Ok(())
 }
@@ -381,24 +392,21 @@ pub fn role_permissions(role: &str) -> &'static [&'static str] {
             "documents.view", "documents.manage", "documents.upload", "documents.download", "documents.delete", "documents.print",
             "users.manage", "users.assign_system_admin", "audit.view", "settings.manage", "backups.manage", "backups.restore",
         ],
-        "archive_admin" => &[
-            "dashboard.view", "employees.view", "employees.create", "employees.edit", "employees.delete",
-            "documents.view", "documents.manage", "documents.upload", "documents.download", "documents.delete", "documents.print",
-            "users.manage", "audit.view", "settings.manage", "backups.manage",
-        ],
+        // Three roles since v8: «مسؤول» (system_admin), «موظف» (archive_officer), «مشاهد» (viewer).
+        // The former «مسؤول الأرشيف» (archive_admin) became «مسؤول»; see db::upgrade_to_v8.
         "archive_officer" => &[
             "dashboard.view", "employees.view", "employees.create", "employees.edit",
-            "documents.view", "documents.upload", "documents.download", "documents.print", "audit.view",
+            "documents.view", "documents.upload", "documents.download", "documents.print",
         ],
         "viewer" => &[
-            "dashboard.view", "employees.view", "documents.view", "documents.print",
+            "dashboard.view", "employees.view", "documents.view", "documents.download", "documents.print",
         ],
         _ => &[],
     }
 }
 
 fn valid_role(role: &str) -> bool {
-    matches!(role, "system_admin" | "archive_admin" | "archive_officer" | "viewer")
+    matches!(role, "system_admin" | "archive_officer" | "viewer")
 }
 
 pub fn assert_permission(conn: &Connection, username: &str, permission: &str) -> AppResult<()> {
@@ -408,7 +416,13 @@ pub fn assert_permission(conn: &Connection, username: &str, permission: &str) ->
     // An account changed outside the program (for example its role raised with a database tool)
     // keeps no permissions until a System Admin deals with it.
     if !crate::integrity::user_trusted(conn, id) { return Err(AppError::Unauthorized); }
+    if user_disabled(conn, id) { return Err(AppError::Unauthorized); }
     if role_permissions(&role).contains(&permission) { Ok(()) } else { Err(AppError::Unauthorized) }
+}
+
+/// True for an account stopped by an admin. Databases from before v8 have no such column.
+fn user_disabled(conn: &Connection, id: i64) -> bool {
+    conn.query_row("SELECT disabled FROM users WHERE id=?1", params![id], |r| r.get::<_, bool>(0)).unwrap_or(false)
 }
 
 pub fn app_data_path() -> std::path::PathBuf {
@@ -729,6 +743,10 @@ pub fn login(conn: &Connection, username: &str, password: &str) -> AppResult<Use
         log_audit(conn, Some(username), "LOGIN", Some("session"), None, None, "Failure", Some("Account modified outside the program"));
         return Err(AppError::Validation(crate::integrity::TAMPERED_ACCOUNT_MESSAGE.into()));
     }
+    if user_disabled(conn, row.0) {
+        log_audit(conn, Some(username), "LOGIN", Some("session"), None, None, "Failure", Some("Account disabled"));
+        return Err(AppError::Validation(DISABLED_ACCOUNT_MESSAGE.into()));
+    }
     clear_login_failures(conn, username);
     if !row.2.starts_with("$2") {
         conn.execute("UPDATE users SET password=?1 WHERE id=?2", params![hash_password(password)?, row.0])?;
@@ -739,13 +757,14 @@ pub fn login(conn: &Connection, username: &str, password: &str) -> AppResult<Use
         id: row.0, username: row.1, role: row.3.clone(), is_master,
         permissions: role_permissions(&row.3).iter().map(|p| p.to_string()).collect(),
         must_change_password: row.4, created_at: row.5,
+        disabled: false, trusted: true, last_login: None,
     })
 }
 
 pub fn change_password(conn: &Connection, username: &str, current_password: &str, new_password: &str) -> AppResult<User> {
     validate_new_password(new_password)?;
     if current_password == new_password {
-        return Err(AppError::Validation("New password must be different".into()));
+        return Err(AppError::Validation("كلمة المرور الجديدة يجب أن تختلف عن الحالية".into()));
     }
     let stored: String = conn.query_row(
         "SELECT password FROM users WHERE username=?1", params![username], |r| r.get(0)
@@ -1933,54 +1952,74 @@ pub fn list_activity_log(conn: &Connection, limit: i64) -> AppResult<Vec<Activit
 }
 
 // ── Users ──────────────────────────────────────────────────────────────────
+pub const DISABLED_ACCOUNT_MESSAGE: &str = "هذا الحساب موقوف. اطلب من المسؤول إعادة تفعيله.";
+pub const MAX_USERS: i64 = 10;
+
+fn has_disabled_column(conn: &Connection) -> bool {
+    conn.prepare("SELECT disabled FROM users LIMIT 0").is_ok()
+}
+
 pub fn list_users(conn: &Connection) -> AppResult<Vec<User>> {
-    let mut stmt = conn.prepare("SELECT id,username,role,must_change_password,created_at FROM users ORDER BY id")?;
-    let result = stmt.query_map([], |r| {
+    let disabled = if has_disabled_column(conn) { "u.disabled" } else { "0" };
+    let mut stmt = conn.prepare(&format!(
+        "SELECT u.id,u.username,u.role,u.must_change_password,u.created_at,{disabled},
+                (SELECT MAX(l.created_at) FROM activity_log l WHERE l.user_id=u.id AND l.action='LOGIN' AND l.result='Success')
+         FROM users u ORDER BY u.id"
+    ))?;
+    let rows = stmt.query_map([], |r| {
         let username: String = r.get(1)?; let role: String = r.get(2)?;
         let is_master = username == "sysadmin" || role == "system_admin";
         Ok(User {
             id:r.get(0)?, username, role: role.clone(), is_master,
             permissions: role_permissions(&role).iter().map(|p| p.to_string()).collect(),
             must_change_password:r.get(3)?, created_at:r.get(4)?,
+            disabled: r.get(5)?, trusted: true, last_login: r.get(6)?,
         })
-    })?.collect::<rusqlite::Result<_>>()?;
-    Ok(result)
+    })?.collect::<rusqlite::Result<Vec<_>>>()?;
+    Ok(rows.into_iter().map(|mut user| { user.trusted = crate::integrity::user_trusted(conn, user.id); user }).collect())
+}
+
+fn find_user(conn: &Connection, id: i64) -> AppResult<User> {
+    list_users(conn)?.into_iter().find(|u| u.id == id).ok_or(AppError::NotFound)
+}
+
+fn caller_id(conn: &Connection, caller: &str) -> Option<i64> {
+    conn.query_row("SELECT id FROM users WHERE username=?1", params![caller], |r| r.get(0)).ok()
 }
 
 pub fn create_user(conn: &Connection, caller: &str, data: &UserData) -> AppResult<User> {
     assert_permission(conn, caller, "users.manage")?;
     let username = data.username.trim();
     if username.len() < 3 || username.len() > 64 || !username.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '-' | '.')) {
-        return Err(AppError::Validation("Username must be 3-64 letters, numbers, dots, dashes, or underscores".into()));
+        return Err(AppError::Validation("اسم المستخدم من 3 إلى 64 حرفًا: أحرف إنجليزية وأرقام و . - _ فقط".into()));
     }
-    if !valid_role(&data.role) { return Err(AppError::Validation("Invalid role".into())); }
+    if !valid_role(&data.role) { return Err(AppError::Validation("اختر دورًا للمستخدم".into())); }
     if data.role == "system_admin" {
         assert_permission(conn, caller, "users.assign_system_admin")?;
     }
     validate_new_password(&data.password)?;
     let count: i64 = conn.query_row("SELECT COUNT(*) FROM users", [], |r| r.get(0))?;
-    if count >= 10 { return Err(AppError::Validation("Max 10 users".into())); }
+    if count >= MAX_USERS { return Err(AppError::Validation(format!("وصلت إلى الحد الأقصى ({MAX_USERS} مستخدمين). احذف مستخدمًا لإضافة آخر."))); }
+    // Sign-in matches the name exactly, so «HR.admin» next to «hr.admin» would only confuse.
+    let taken: i64 = conn.query_row("SELECT COUNT(*) FROM users WHERE username=?1 COLLATE NOCASE", params![username], |r| r.get(0))?;
+    if taken > 0 { return Err(AppError::Validation(format!("اسم المستخدم «{username}» موجود"))); }
     conn.execute("INSERT INTO users(username,password,role,must_change_password) VALUES(?1,?2,?3,1)",
-        params![data.username.trim(), hash_password(&data.password)?, data.role])?;
+        params![username, hash_password(&data.password)?, data.role])?;
     let id = conn.last_insert_rowid();
-    log_activity(conn, caller, "CREATE_USER", Some("user"), Some(id), Some(data.username.trim()), None);
-    conn.query_row("SELECT id,username,role,must_change_password,created_at FROM users WHERE id=?1", params![id], |r| {
-        let username: String = r.get(1)?; let role: String = r.get(2)?;
-        let is_master = username == "sysadmin" || role == "system_admin";
-        Ok(User {
-            id:r.get(0)?, username, role: role.clone(), is_master,
-            permissions: role_permissions(&role).iter().map(|p| p.to_string()).collect(),
-            must_change_password:r.get(3)?, created_at:r.get(4)?,
-        })
-    }).map_err(Into::into)
+    log_activity(conn, caller, "CREATE_USER", Some("user"), Some(id), Some(username), Some(&data.role));
+    find_user(conn, id)
+}
+
+fn target_user(conn: &Connection, id: i64) -> AppResult<(String, String)> {
+    conn.query_row("SELECT username,role FROM users WHERE id=?1", params![id], |r| Ok((r.get(0)?, r.get(1)?)))
+        .map_err(|_| AppError::NotFound)
 }
 
 pub fn delete_user(conn: &Connection, caller: &str, id: i64) -> AppResult<()> {
     assert_permission(conn, caller, "users.manage")?;
-    let (username, role): (String, String) = conn.query_row(
-        "SELECT username,role FROM users WHERE id=?1", params![id], |r| Ok((r.get(0)?, r.get(1)?))
-    ).map_err(|_| AppError::NotFound)?;
-    if username == "sysadmin" { return Err(AppError::Validation("Cannot delete sysadmin".into())); }
+    let (username, role) = target_user(conn, id)?;
+    if username == "sysadmin" { return Err(AppError::Validation("لا يمكن حذف مستخدم النظام الأساسي".into())); }
+    if caller_id(conn, caller) == Some(id) { return Err(AppError::Validation("لا يمكنك حذف حسابك".into())); }
     if role == "system_admin" { assert_permission(conn, caller, "users.assign_system_admin")?; }
     conn.execute("DELETE FROM users WHERE id=?1", params![id])?;
     log_activity(conn, caller, "DELETE_USER", Some("user"), Some(id), Some(&username), None);
@@ -1995,31 +2034,46 @@ pub fn get_storage_path(conn: &Connection) -> AppResult<String> {
 
 pub fn update_user_role(conn: &Connection, caller: &str, id: i64, role: &str) -> AppResult<User> {
     assert_permission(conn, caller, "users.manage")?;
-    if !valid_role(role) { return Err(AppError::Validation("Invalid role".into())); }
-    let (username, old_role): (String, String) = conn.query_row(
-        "SELECT username,role FROM users WHERE id=?1", params![id], |r| Ok((r.get(0)?, r.get(1)?))
-    ).map_err(|_| AppError::NotFound)?;
+    if !valid_role(role) { return Err(AppError::Validation("اختر دورًا للمستخدم".into())); }
+    let (username, old_role) = target_user(conn, id)?;
+    if username == "sysadmin" && role != "system_admin" {
+        return Err(AppError::Validation("لا يمكن تغيير دور مستخدم النظام الأساسي".into()));
+    }
+    // An admin who lowers their own role loses the screen they are on; another admin does it.
+    if caller_id(conn, caller) == Some(id) && role != old_role {
+        return Err(AppError::Validation("لا يمكنك تغيير دورك. يغيّره مسؤول آخر.".into()));
+    }
     if username == "sysadmin" || old_role == "system_admin" || role == "system_admin" {
         assert_permission(conn, caller, "users.assign_system_admin")?;
     }
-    if username == "sysadmin" && role != "system_admin" {
-        return Err(AppError::Validation("Cannot change sysadmin role".into()));
+    if role != old_role {
+        conn.execute("UPDATE users SET role=?1 WHERE id=?2", params![role, id])?;
+        log_activity(conn, caller, "CHANGE_USER_ROLE", Some("user"), Some(id), Some(&username), Some(&format!("{old_role} -> {role}")));
     }
-    conn.execute("UPDATE users SET role=?1 WHERE id=?2", params![role, id])?;
-    log_activity(conn, caller, "CHANGE_USER_ROLE", Some("user"), Some(id), Some(&username), Some(&format!("{old_role} -> {role}")));
-    list_users(conn)?.into_iter().find(|u| u.id == id).ok_or(AppError::NotFound)
+    find_user(conn, id)
 }
 
 pub fn reset_user_password(conn: &Connection, caller: &str, id: i64, password: &str) -> AppResult<()> {
     assert_permission(conn, caller, "users.manage")?;
     validate_new_password(password)?;
-    let (username, role): (String, String) = conn.query_row(
-        "SELECT username,role FROM users WHERE id=?1", params![id], |r| Ok((r.get(0)?, r.get(1)?))
-    ).map_err(|_| AppError::NotFound)?;
+    let (username, role) = target_user(conn, id)?;
     if role == "system_admin" { assert_permission(conn, caller, "users.assign_system_admin")?; }
     conn.execute("UPDATE users SET password=?1,must_change_password=1 WHERE id=?2", params![hash_password(password)?, id])?;
+    clear_login_failures(conn, &username);
     log_activity(conn, caller, "RESET_USER_PASSWORD", Some("user"), Some(id), Some(&username), None);
     Ok(())
+}
+
+/// «إيقاف الحساب» / «تفعيل الحساب»: a stopped account cannot sign in or act, and keeps its name in the log.
+pub fn set_user_disabled(conn: &Connection, caller: &str, id: i64, disabled: bool) -> AppResult<User> {
+    assert_permission(conn, caller, "users.manage")?;
+    let (username, role) = target_user(conn, id)?;
+    if username == "sysadmin" { return Err(AppError::Validation("لا يمكن إيقاف مستخدم النظام الأساسي".into())); }
+    if caller_id(conn, caller) == Some(id) { return Err(AppError::Validation("لا يمكنك إيقاف حسابك".into())); }
+    if role == "system_admin" { assert_permission(conn, caller, "users.assign_system_admin")?; }
+    conn.execute("UPDATE users SET disabled=?1 WHERE id=?2", params![disabled, id])?;
+    log_activity(conn, caller, if disabled { "DISABLE_USER" } else { "ENABLE_USER" }, Some("user"), Some(id), Some(&username), None);
+    find_user(conn, id)
 }
 
 #[cfg(test)]
@@ -2035,7 +2089,8 @@ mod auth_tests {
                 password TEXT NOT NULL,
                 role TEXT NOT NULL,
                 must_change_password INTEGER NOT NULL DEFAULT 0,
-                created_at TEXT DEFAULT (datetime('now'))
+                created_at TEXT DEFAULT (datetime('now')),
+                disabled INTEGER NOT NULL DEFAULT 0
             );
             CREATE TABLE activity_log (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -2096,7 +2151,7 @@ mod auth_tests {
     }
 
     #[test]
-    fn viewer_can_view_and_print_but_cannot_download_export_or_modify() {
+    fn viewer_can_view_print_and_download_but_cannot_modify() {
         let conn = auth_db();
         conn.execute(
             "INSERT INTO users(username,password,role) VALUES('viewer',?1,'viewer')",
@@ -2104,39 +2159,71 @@ mod auth_tests {
         ).unwrap();
         assert!(assert_permission(&conn, "viewer", "documents.print").is_ok());
         assert!(assert_permission(&conn, "viewer", "documents.view").is_ok());
-        assert!(assert_permission(&conn, "viewer", "documents.download").is_err());
+        assert!(assert_permission(&conn, "viewer", "documents.download").is_ok());
         assert!(assert_permission(&conn, "viewer", "documents.upload").is_err());
         assert!(assert_permission(&conn, "viewer", "documents.delete").is_err());
+        assert!(assert_permission(&conn, "viewer", "audit.view").is_err());
         assert!(assert_permission(&conn, "viewer", "reports.export").is_err());
     }
 
-    #[test]
-    fn archive_admin_cannot_assign_system_admin() {
-        let conn = auth_db();
-        conn.execute(
-            "INSERT INTO users(username,password,role) VALUES('archiveadmin',?1,'archive_admin')",
-            params![hash_password("admin-password").unwrap()],
-        ).unwrap();
-        assert!(assert_permission(&conn, "archiveadmin", "users.manage").is_ok());
-        assert!(assert_permission(&conn, "archiveadmin", "users.assign_system_admin").is_err());
-        // A restore replaces the users table, so it would let an Archive Admin promote themselves.
-        assert!(assert_permission(&conn, "archiveadmin", "backups.restore").is_err());
-    }
-
-    #[test]
-    fn archive_admin_cannot_delete_system_admin() {
-        let conn = auth_db();
-        for (name, role) in [("archiveadmin2", "archive_admin"), ("secondadmin", "system_admin"), ("officer1", "archive_officer")] {
+    fn add_users<'a>(conn: &'a Connection, users: &[(&str, &str)]) -> impl Fn(&str) -> i64 + 'a {
+        for (name, role) in users {
             conn.execute(
                 "INSERT INTO users(username,password,role) VALUES(?1,?2,?3)",
                 params![name, hash_password("admin-password").unwrap(), role],
             ).unwrap();
         }
-        let id = |name: &str| conn.query_row("SELECT id FROM users WHERE username=?1", params![name], |r| r.get::<_, i64>(0)).unwrap();
-        assert!(matches!(delete_user(&conn, "archiveadmin2", id("secondadmin")), Err(AppError::Unauthorized)));
-        assert!(delete_user(&conn, "archiveadmin2", id("officer1")).is_ok());
-        let remaining: i64 = conn.query_row("SELECT COUNT(*) FROM users WHERE username='secondadmin'", [], |r| r.get(0)).unwrap();
-        assert_eq!(remaining, 1);
+        move |name: &str| conn.query_row("SELECT id FROM users WHERE username=?1", params![name], |r| r.get::<_, i64>(0)).unwrap()
+    }
+
+    #[test]
+    fn the_former_archive_admin_role_has_no_permissions_and_cannot_be_assigned() {
+        let conn = auth_db();
+        let id = add_users(&conn, &[("admin", "system_admin"), ("old", "archive_admin"), ("clerk", "archive_officer")]);
+        assert!(role_permissions("archive_admin").is_empty());
+        assert!(assert_permission(&conn, "old", "users.manage").is_err());
+        assert!(update_user_role(&conn, "admin", id("clerk"), "archive_admin").is_err());
+        assert!(create_user(&conn, "admin", &UserData { username: "x.user".into(), password: "12345678".into(), role: "archive_admin".into() }).is_err());
+    }
+
+    #[test]
+    fn an_admin_cannot_change_their_own_role_or_delete_or_stop_their_own_account() {
+        let conn = auth_db();
+        let id = add_users(&conn, &[("sysadmin", "system_admin"), ("admin2", "system_admin"), ("clerk", "archive_officer")]);
+        assert!(matches!(update_user_role(&conn, "admin2", id("admin2"), "viewer"), Err(AppError::Validation(_))));
+        assert!(matches!(delete_user(&conn, "admin2", id("admin2")), Err(AppError::Validation(_))));
+        assert!(matches!(set_user_disabled(&conn, "admin2", id("admin2"), true), Err(AppError::Validation(_))));
+        assert!(matches!(update_user_role(&conn, "admin2", id("sysadmin"), "viewer"), Err(AppError::Validation(_))));
+        assert!(matches!(delete_user(&conn, "admin2", id("sysadmin")), Err(AppError::Validation(_))));
+        // Saving the same role again changes and logs nothing.
+        update_user_role(&conn, "admin2", id("admin2"), "system_admin").unwrap();
+        let logged: i64 = conn.query_row("SELECT COUNT(*) FROM activity_log WHERE action='CHANGE_USER_ROLE'", [], |r| r.get(0)).unwrap();
+        assert_eq!(logged, 0);
+        assert_eq!(update_user_role(&conn, "admin2", id("clerk"), "viewer").unwrap().role, "viewer");
+        assert!(delete_user(&conn, "admin2", id("clerk")).is_ok());
+    }
+
+    #[test]
+    fn a_stopped_account_cannot_sign_in_or_act_until_enabled_again() {
+        let conn = auth_db();
+        let id = add_users(&conn, &[("admin", "system_admin"), ("clerk", "archive_officer")]);
+        assert!(set_user_disabled(&conn, "admin", id("clerk"), true).unwrap().disabled);
+        assert!(matches!(login(&conn, "clerk", "admin-password"), Err(AppError::Validation(m)) if m == DISABLED_ACCOUNT_MESSAGE));
+        assert!(assert_permission(&conn, "clerk", "documents.view").is_err());
+        assert!(!set_user_disabled(&conn, "admin", id("clerk"), false).unwrap().disabled);
+        assert!(login(&conn, "clerk", "admin-password").is_ok());
+        let last = list_users(&conn).unwrap().into_iter().find(|u| u.username == "clerk").unwrap().last_login;
+        assert!(last.is_some(), "the last successful sign-in is shown in the users list");
+    }
+
+    #[test]
+    fn a_username_that_differs_only_in_letter_case_is_refused_in_arabic() {
+        let conn = auth_db();
+        add_users(&conn, &[("admin", "system_admin"), ("hr.clerk", "archive_officer")]);
+        let error = create_user(&conn, "admin", &UserData { username: "HR.Clerk".into(), password: "12345678".into(), role: "viewer".into() }).unwrap_err();
+        assert!(matches!(error, AppError::Validation(ref m) if m.contains("موجود")));
+        let error = create_user(&conn, "admin", &UserData { username: "أحمد".into(), password: "12345678".into(), role: "viewer".into() }).unwrap_err();
+        assert!(matches!(error, AppError::Validation(ref m) if m.contains("أحرف إنجليزية")));
     }
 
     #[test]
@@ -2189,6 +2276,7 @@ mod auth_tests {
         assert!(!permissions.contains(&"users.manage"));
         assert!(!permissions.contains(&"settings.manage"));
         assert!(!permissions.contains(&"backups.manage"));
+        assert!(!permissions.contains(&"audit.view"), "the system log is for admins only");
     }
 }
 
@@ -3466,13 +3554,10 @@ mod phase3_security_tests {
     #[test]
     fn role_boundaries_match_phase_three() {
         let viewer = role_permissions("viewer");
-        assert!(viewer.contains(&"documents.view") && viewer.contains(&"documents.print"));
-        assert!(!viewer.contains(&"documents.download"));
+        assert!(viewer.contains(&"documents.view") && viewer.contains(&"documents.print") && viewer.contains(&"documents.download"));
         let officer = role_permissions("archive_officer");
         assert!(officer.contains(&"documents.upload") && !officer.contains(&"documents.delete"));
-        let admin = role_permissions("archive_admin");
-        assert!(admin.contains(&"backups.manage") && !admin.contains(&"users.assign_system_admin"));
-        assert!(!admin.contains(&"backups.restore"), "only a System Admin may restore a backup");
+        assert!(role_permissions("archive_admin").is_empty(), "merged into system_admin in v8");
         assert!(role_permissions("system_admin").contains(&"users.assign_system_admin"));
         assert!(role_permissions("system_admin").contains(&"backups.restore"));
     }
@@ -3532,7 +3617,7 @@ fn updating_a_general_doc_preserves_stored_hr_effect() {
     let conn = Connection::open_in_memory().unwrap();
     crate::db::initialize_test(&conn).unwrap();
     conn.execute(
-        "INSERT INTO users(username,password,role) VALUES('docadmin',?1,'archive_admin')",
+        "INSERT INTO users(username,password,role) VALUES('docadmin',?1,'system_admin')",
         params![hash_password("admin-password").unwrap()],
     ).unwrap();
     conn.execute(
@@ -3588,7 +3673,7 @@ fn saving_a_document_requires_issuer_subject_number_and_date() {
     let conn = Connection::open_in_memory().unwrap();
     crate::db::initialize_test(&conn).unwrap();
     conn.execute(
-        "INSERT INTO users(username,password,role) VALUES('docadmin',?1,'archive_admin')",
+        "INSERT INTO users(username,password,role) VALUES('docadmin',?1,'system_admin')",
         params![hash_password("admin-password").unwrap()],
     ).unwrap();
     let empty = GeneralDocData {

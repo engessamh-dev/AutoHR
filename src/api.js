@@ -100,6 +100,7 @@ export const api = {
   deleteUser: (id)            => invoke("cmd_delete_user",  { id }),
   updateUserRole: (id, role)  => invoke("cmd_update_user_role", { id, data: { role } }),
   resetUserPassword: (id, password) => invoke("cmd_reset_user_password", { id, data: { password } }),
+  setUserDisabled: (id, disabled) => invoke("cmd_set_user_disabled", { id, data: { disabled } }),
 
   getScannerSettings: () => invoke("cmd_scanner_settings"),
   setScannerSettings: (settings) => invoke("cmd_set_scanner_settings", { settings }),

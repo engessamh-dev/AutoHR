@@ -176,7 +176,7 @@ pub fn db_path() -> PathBuf {
 /// To change the schema later: bump this constant and add an `if from < N { ... }` step in
 /// `upgrade()`. Every upgrade of an existing database runs only after a verified
 /// pre-upgrade snapshot exists, and the snapshot is restored automatically if a step fails.
-pub const SCHEMA_VERSION: i64 = 7;
+pub const SCHEMA_VERSION: i64 = 8;
 
 #[derive(Debug)]
 pub enum OpenError {
@@ -289,7 +289,10 @@ fn upgrade(conn: &Connection, from: i64) -> SqlResult<()> {
     if from < 7 {
         upgrade_to_v7(conn)?;
     }
-    // Future steps go here, for example: if from < 8 { ... }
+    if from < 8 {
+        upgrade_to_v8(conn)?;
+    }
+    // Future steps go here, for example: if from < 9 { ... }
     #[cfg(test)]
     if FAIL_UPGRADE.with(|flag| flag.get()) {
         return Err(rusqlite::Error::InvalidQuery);
@@ -323,6 +326,15 @@ fn upgrade_to_v3(conn: &Connection) -> SqlResult<()> {
     add_column_if_missing(conn, "employees", "airport_badge_zones", "TEXT")?;
     add_column_if_missing(conn, "employee_vehicles", "annual_front_path", "TEXT")?;
     add_column_if_missing(conn, "employee_vehicles", "annual_back_path", "TEXT")?;
+    Ok(())
+}
+
+/// v8: three roles instead of four. «مسؤول الأرشيف» (archive_admin) becomes «مسؤول» (system_admin),
+/// and an admin can stop an account without deleting it (`disabled`). The rows changed here are
+/// re-sealed by `open_at` after the upgrade, so they are not reported as changed outside the program.
+fn upgrade_to_v8(conn: &Connection) -> SqlResult<()> {
+    add_column_if_missing(conn, "users", "disabled", "INTEGER NOT NULL DEFAULT 0 CHECK(disabled IN (0,1))")?;
+    conn.execute("UPDATE users SET role='system_admin' WHERE role='archive_admin'", [])?;
     Ok(())
 }
 
@@ -364,7 +376,12 @@ pub fn upgrade_restored(conn: &Connection) -> Result<(), OpenError> {
         return Err(OpenError::NewerSchema { found: version, supported: SCHEMA_VERSION });
     }
     if version < SCHEMA_VERSION {
+        // Same as `open_at`: an upgrade that changes sealed rows (v8 changes every user row)
+        // re-seals them, so a backup sealed on this computer is not reported as changed
+        // outside the program after it is restored. Rows already flagged stay flagged.
+        let flagged = crate::integrity::flagged_rows(conn);
         upgrade(conn, version)?;
+        crate::integrity::reseal_after_upgrade(conn, &flagged);
     }
     Ok(())
 }
@@ -1244,5 +1261,26 @@ mod v7_tests {
         assert_eq!(dates(&conn, wizard), (Some("2015-02-01".into()), None));
         assert_eq!(dates(&conn, both), (Some("2015-01-01".into()), Some("2015-03-01".into())));
         assert_eq!(dates(&conn, older), (None, Some("2010-10-03".into())));
+    }
+}
+
+#[cfg(test)]
+mod v8_tests {
+    use super::*;
+
+    /// A v7 database: «مسؤول الأرشيف» accounts become «مسؤول», and accounts can be stopped.
+    #[test]
+    fn v7_archive_admins_become_admins_and_users_gain_disabled_column() {
+        let conn = Connection::open_in_memory().unwrap();
+        migrate_for_tests(&conn);
+        conn.execute_batch("ALTER TABLE users DROP COLUMN disabled;
+            INSERT INTO users(username,password,role) VALUES('old.admin','x','archive_admin'),('clerk','x','archive_officer');
+            PRAGMA user_version = 7;").unwrap();
+        upgrade_restored(&conn).unwrap();
+        let role = |name: &str| conn.query_row("SELECT role FROM users WHERE username=?1", [name], |r| r.get::<_, String>(0)).unwrap();
+        assert_eq!(role("old.admin"), "system_admin");
+        assert_eq!(role("clerk"), "archive_officer");
+        let disabled: i64 = conn.query_row("SELECT disabled FROM users WHERE username='clerk'", [], |r| r.get(0)).unwrap();
+        assert_eq!(disabled, 0);
     }
 }
