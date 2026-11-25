@@ -93,6 +93,10 @@ export const api = {
   // Activity log
   openManagedFolder: (kind) => invoke("cmd_open_managed_folder", { kind }),
   listActivityLog: (limit) => invoke("cmd_list_activity_log", { limit: limit ?? 50 }),
+  searchActivityLog: (filter) => invoke("cmd_search_activity_log", { filter }),
+  exportActivityLog: (destinationPath, headers, rows) => invoke("cmd_export_activity_log", { destinationPath, headers, rows }),
+  auditArchiveView: (relativePath) => invoke("cmd_audit_archive_view", { relativePath }),
+  auditReportPrint: (rows) => invoke("cmd_audit_report_print", { rows }),
 
   // Users
   listUsers:  ()              => invoke("cmd_list_users"),
