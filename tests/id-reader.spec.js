@@ -130,7 +130,7 @@ test("badge: number and dates fill the badge section", async ({ page }) => {
 
 test("residence card: the printed serial fills the card number", async ({ page }) => {
   await page.evaluate(() => {
-    window.employeePatch = { residence_card_back_path: "Files/Employees/1/Documents/Residence/back.jpg", residence_card_back_full_path: "synthetic", residence_card_issuer: "مكتب 00", residence_form_no: "1111" };
+    window.employeePatch = { residence_card_back_path: "Files/Employees/1/Documents/Residence/back.jpg", residence_card_back_full_path: "synthetic", residence_card_issuer: "مكتب 00", residence_form_no: "1111", residence_address: "محلة 100 زقاق 2 دار 3" };
     window.readResult = { document: "other", warnings: [], fields: [{ key: "doc_number", value: "1000001", confidence: 0.6, source: "text" }] };
   });
   await openDocuments(page);
@@ -142,6 +142,21 @@ test("residence card: the printed serial fills the card number", async ({ page }
   // The handwritten fields are kept in the file too.
   await expect(page.locator("#f-residence_card_issuer")).toHaveValue("مكتب 00");
   await expect(page.locator("#f-residence_form_no")).toHaveValue("1111");
+  // The address is shown as م / ز / د and saved as one string.
+  await expect(page.locator("#f-residence_address_m")).toHaveValue("100");
+  await expect(page.locator("#f-residence_address_z")).toHaveValue("2");
+  await expect(page.locator("#f-residence_address_d")).toHaveValue("3");
+  await page.fill("#f-residence_address_z", "22");
+  await page.click("#panel-save");
+  await page.getByRole("button", { name: "تأكيد", exact: true }).click();
+  await expect.poll(() => page.evaluate(() => window.calls.find(c => c.command === "cmd_update_employee")?.args.data.residence_address)).toBe("م 100 ز 22 د 3");
+});
+
+test("residence address written another way is kept whole in م, with a note", async ({ page }) => {
+  await page.evaluate(() => { window.employeePatch = { residence_address: "بغداد - حي تجريبي" }; });
+  await openDocuments(page);
+  await expect(page.locator("#f-residence_address_m")).toHaveValue("بغداد - حي تجريبي");
+  await expect(page.locator(".emp-address-note")).toContainText("بصيغة قديمة");
 });
 
 test("ration card: number from the QR code and the head of household", async ({ page }) => {

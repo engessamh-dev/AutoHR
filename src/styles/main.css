@@ -779,6 +779,9 @@ html[data-ui-scale] #app-shell { height: calc(100vh / var(--ui-scale)); }
 .doc-att-icon{width:18px;height:18px;fill:none;stroke:currentColor;stroke-width:1.8;stroke-linecap:round;stroke-linejoin:round}
 
 /* ── Airport badge access zones (chips) ── */
+.emp-address{display:grid;grid-template-columns:repeat(3,1fr);gap:8px}
+.emp-address label{display:flex;flex-direction:column}
+.emp-address-note{margin-top:4px;font-size:11px;color:var(--ui-warn)}
 .emp-zones{display:flex;flex-wrap:wrap;align-items:center;gap:6px;min-height:38px;height:auto;padding:4px 8px;cursor:text}
 .emp-zone-list{display:contents}
 .emp-zone-chip{display:inline-flex;align-items:center;gap:4px;padding:2px 4px 2px 10px;border:1px solid var(--ui-accent);border-radius:999px;background:var(--ui-accent-soft);color:var(--ui-text-strong);font-size:12px;font-weight:600;letter-spacing:.03em}

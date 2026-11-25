@@ -461,9 +461,12 @@ test("residence card: the printed serial is read, handwritten fields are flagged
   }
   await expect(flagged("residence_card_no")).toHaveCount(0);
   // Typing a handwritten field zooms the card to it.
-  await page.locator('[data-key="residence_address"]').focus();
+  await page.locator('[data-key="residence_address"][data-part="m"]').focus();
   await expect(page.locator('.aw-thumb img[data-side="front"]')).toHaveClass(/is-zoomed/);
-  await page.fill('[data-key="residence_address"]', "محلة 000 زقاق 00 دار 0");
+  await expect(page.locator('.aw-field:has([data-key="residence_address"]) .aw-name span')).toHaveText(["م", "ز", "د"]);
+  await page.fill('[data-key="residence_address"][data-part="m"]', "000");
+  await page.fill('[data-key="residence_address"][data-part="z"]', "11");
+  await page.fill('[data-key="residence_address"][data-part="d"]', "2");
   await page.fill('[data-key="residence_head_name"]', "سامر خالد عبد الله");
   await page.fill('[data-key="residence_form_no"]', "1111");
   await page.fill('[data-key="residence_card_issuer"]', "مكتب 00");
@@ -477,6 +480,7 @@ test("residence card: the printed serial is read, handwritten fields are flagged
   expect(data.residence_head_name).toBe("سامر خالد عبد الله");
   expect(data.residence_form_no).toBe("1111");
   expect(data.residence_card_issuer).toBe("مكتب 00");
+  expect(data.residence_address).toBe("م 000 ز 11 د 2");
 });
 
 test("a registered national number blocks a second record: go back, open the file, or add the documents to it", async ({ page }) => {

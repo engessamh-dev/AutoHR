@@ -6,7 +6,7 @@ import { bindAttachmentScannerButtons } from "../attachments/integration.js";
 import { zoomToolbarHtml, mountZoomViewer } from "../attachments/zoom-viewer.js";
 import { convertFileSrc } from "@tauri-apps/api/core";
 import { open, save } from "@tauri-apps/plugin-dialog";
-import { showToast, formatDate, escHtml, debounce, confirmAction, confirmSaveChanges, AIRPORT_ZONES } from "../utils.js";
+import { showToast, formatDate, escHtml, debounce, confirmAction, confirmSaveChanges, AIRPORT_ZONES, ADDRESS_PARTS, composeAddress, parseAddress } from "../utils.js";
 import { can } from "../permissions.js";
 import { openNameReview } from "./name-review.js";
 import { employeeNameFields, recordNameFields, bindNameFields, readNameFields, readNameGroup, applyNames, joinNameParts } from "./name-fields.js";
@@ -410,6 +410,20 @@ function field(label, id, emp, opts = {}) {
            dir="${opts.ltr ? 'ltr' : 'rtl'}" value="${opts.date ? (emp?.[id] ?? '') : val}" /></div>`;
 }
 
+/** The residence address as the card writes it: محلة (م), زقاق (ز), دار (د). Kept as one string;
+ *  one written another way is put whole in م, with a note to split it. */
+function addressField(label, id, emp) {
+  // Parts already typed in this panel (another tab was shown since) win over the kept string.
+  const typed = ADDRESS_PARTS.some(([key]) => emp && `${id}_${key}` in emp);
+  const parts = typed ? Object.fromEntries(ADDRESS_PARTS.map(([key]) => [key, emp[`${id}_${key}`] ?? ""])) : parseAddress(emp?.[id]);
+  const cap = "font-size:11px;color:var(--ui-text-faint);margin-bottom:4px";
+  return `<div style="grid-column:span 2">
+    <p style="${cap};text-transform:uppercase;letter-spacing:.05em">${label}</p>
+    <div class="emp-address">${ADDRESS_PARTS.map(([key, mark]) => `<label><span style="${cap}">${mark}</span>
+      <input id="f-${id}_${key}" class="input-field" value="${escHtml(parts[key])}" aria-label="${label}: ${mark}" /></label>`).join("")}</div>
+    ${parts.loose ? `<p class="emp-address-note">⚠ العنوان محفوظ بصيغة قديمة، فوُضع كله في «م»: وزّعه على م وز ود.</p>` : ""}</div>`;
+}
+
 /** Comma-separated codes ("S1,T,VIP") → unique upper-case codes. */
 function zoneCodes(value) {
   return [...new Set(String(value ?? "").split(/[\s,،;|]+/).map(z => z.trim().toUpperCase()).filter(Boolean))];
@@ -755,7 +769,7 @@ function documentSections(emp) {
         field("مكتب المعلومات", "residence_card_issuer", emp),
         field("اسم رب الأسرة", "residence_head_name", emp),
         field("رقم الاستمارة", "residence_form_no", emp, {ltr:true}),
-        field("عنوان السكن الحالي", "residence_address", emp, {span:true}),
+        addressField("عنوان السكن", "residence_address", emp),
       ],
       tiles: sided("residence", "residence_card"), attached: sidedCount("residence_card"), expected: 2,
     },
@@ -1520,7 +1534,10 @@ function renderPanel(emp) {
       residence_card_issue_date:g("residence_card_issue_date"),
       residence_head_name:   g("residence_head_name"),
       residence_form_no:     g("residence_form_no"),
-      residence_address:     g("residence_address"),
+      // The three parts when the residence section was shown; otherwise the address as kept.
+      residence_address:     _panelDraft && ADDRESS_PARTS.some(([key]) => `residence_address_${key}` in _panelDraft)
+        ? composeAddress(Object.fromEntries(ADDRESS_PARTS.map(([key]) => [key, g(`residence_address_${key}`)]))) || null
+        : g("residence_address"),
       ration_card_no:        g("ration_card_no"),
       ration_center_name:    g("ration_center_name"),
       // Preserve legacy ration-card values that are no longer editable in the form.

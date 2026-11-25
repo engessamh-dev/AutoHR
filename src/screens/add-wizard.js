@@ -12,7 +12,7 @@
  */
 import { api } from "../api.js";
 import { open } from "@tauri-apps/plugin-dialog";
-import { showToast, escHtml, AIRPORT_ZONES } from "../utils.js";
+import { showToast, escHtml, AIRPORT_ZONES, ADDRESS_PARTS, composeAddress } from "../utils.js";
 import { joinNameParts } from "./name-fields.js";
 import { mergeSides } from "./id-reader.js";
 
@@ -84,7 +84,8 @@ const STEPS = [
       { key: "residence_card_issuer", label: "مكتب المعلومات", ocr: "info_office" },
       { key: "residence_head_name", label: "اسم رب الأسرة", ocr: "head_name" },
       { key: "residence_form_no", label: "رقم الاستمارة", ocr: "form_no", ltr: true },
-      { key: "residence_address", label: "العنوان", ocr: "address", full: true },
+      { key: "residence_address", label: "عنوان السكن", ocr: "address", name: ADDRESS_PARTS, address: true,
+        ocrName: { m: "address", z: "address", d: "address" }, full: true },
     ] },
   { id: "family", title: "أفراد الأسرة", short: "الأسرة",
     hint: "ارفع بطاقة كل فرد. للأبناء يُنقل الأب والجد واللقب من الموظف" },
@@ -126,7 +127,7 @@ const UPLOAD = {
 
 const text = value => String(value ?? "").trim();
 const isEmpty = value => value == null || (typeof value === "object" ? !Object.values(value).some(v => text(v)) : !text(value));
-const shown = (field, value) => field.name ? joinNameParts(value, field.latin) : text(value);
+const shown = (field, value) => field.address ? composeAddress(value) : field.name ? joinNameParts(value, field.latin) : text(value);
 const same = (field, a, b) => shown(field, a).replace(/\s+/g, " ") === shown(field, b).replace(/\s+/g, " ");
 
 /** Values of one person: key -> { value, source, edited, unsure }. */
@@ -1068,6 +1069,7 @@ function openWizard({ user, employees, onCreated, resume = null }) {
       "ration_card_no", "ration_center_name", "residence_card_no", "residence_card_issue_date", "residence_address",
       "residence_head_name", "residence_form_no", "residence_card_issuer"];
     plain.forEach(key => { data[key] = v(key); });
+    data.residence_address = composeAddress(v("residence_address")) || null;
     // The national card's own copies of the birth data, as the form keeps them.
     data.civil_id_birthdate = data.birthdate;
     data.civil_id_birthplace = data.birthplace;
