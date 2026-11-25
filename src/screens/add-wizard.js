@@ -244,25 +244,54 @@ function openWizard({ user, employees, onCreated, resume = null }) {
   overlay.className = "aw-overlay";
   document.body.append(overlay);
   let unlistenDrop = null;
-  // Closing before saving keeps what was entered as a draft (in memory) to continue later.
-  const close = async (keep = true) => {
+  // `keep`: what was entered stays as a draft (in memory) to continue later.
+  const close = (keep = false) => {
+    if (state.employee) { keep = false; onCreated(state.employee); }
     overlay.remove();
     document.removeEventListener("keydown", onKey, true);
     unlistenDrop?.();
     if (keep && hasWork()) {
       dropDraft();
       draft = { owner: user?.username, savedAt: new Date(), state };
-      showToast("حُفظ ما أدخلته كمسودة: تجدها عند «إضافة موظف» حتى تسجيل الخروج");
+      showToast("حُفظت المسودة: تجدها عند «إضافة موظف» حتى تسجيل الخروج");
     } else {
       revokeImages(state);
     }
   };
+
+  /** Leaving with entries asks what to do with them: save the employee, keep a draft, or discard. */
+  function askClose() {
+    if (!unsaved()) return close(false);
+    if (overlay.querySelector(".aw-ask")) return;
+    const missing = nationalMissing();
+    const ask = htmlToNode(`<div class="aw-ask" role="alertdialog" aria-modal="true" aria-label="حفظ قبل الخروج؟">
+      <div class="aw-ask-box"><h3>حفظ قبل الخروج؟</h3>
+        <p>${state.employee ? "لديك تعديلات لم تُحفظ على هذا الموظف." : "لم يُحفظ هذا الموظف بعد."}${missing.length ? ` لحفظه أكمل في البطاقة الوطنية: ${missing.join("، ")}.` : ""}</p>
+        <div class="aw-ask-actions">
+          <button type="button" class="btn-primary" data-ask="save" ${canSaveNow() ? "" : "disabled"}>حفظ الموظف</button>
+          ${state.employee ? "" : `<button type="button" class="btn-secondary" data-ask="draft">حفظ كمسودة</button>`}
+          <button type="button" class="btn-secondary aw-danger" data-ask="discard">خروج دون حفظ</button>
+          <button type="button" class="btn-secondary" data-ask="stay">متابعة الإدخال</button>
+        </div></div></div>`);
+    overlay.appendChild(ask);
+    ask.addEventListener("click", event => {
+      const choice = event.target.closest("[data-ask]")?.dataset.ask ?? (event.target === ask ? "stay" : null);
+      if (!choice) return;
+      ask.remove();
+      if (choice === "save") save().then(ok => { if (ok) close(false); });
+      else if (choice === "draft") close(true);
+      else if (choice === "discard") close(false);
+    });
+    ask.querySelector(canSaveNow() ? '[data-ask="save"]' : '[data-ask="stay"]').focus();
+  }
   const hasWork = () => Object.values(state.docs).some(d => Object.keys(d.images).length) || Object.keys(state.values).length > 0;
   const onKey = event => {
     if (event.key !== "Escape") return;
     const viewer = overlay.querySelector(".aw-viewer");
     if (viewer) { event.stopPropagation(); viewer.remove(); return; }
-    if (!overlay.querySelector(".aw-busy")) { event.stopPropagation(); close(); }
+    const ask = overlay.querySelector(".aw-ask");
+    if (ask) { event.stopPropagation(); ask.remove(); return; }
+    if (!overlay.querySelector(".aw-busy")) { event.stopPropagation(); askClose(); }
   };
 
   /** Mouse-wheel zoom at the pointer (1x–8x) and drag to move, on an image inside `area`; the page
@@ -387,7 +416,7 @@ function openWizard({ user, employees, onCreated, resume = null }) {
         const note = s.id === "family"
           ? (state.members.length ? `${state.members.length} أفراد` : "")
           : complete ? "مكتمل" : filled ? `${filled} من ${total}` : skipped ? "تُخطّي" : s.required ? "إلزامي" : "";
-        return `<button type="button" class="aw-step ${cls}" data-go="${i}" title="${complete ? "كل حقول هذا المستمسك مملوءة" : filled ? `مُلئ ${filled} من ${total} حقول` : ""}">
+        return `<button type="button" class="aw-step ${cls}" data-go="${i}" ${i > 0 && !nationalDone() ? "disabled" : ""} title="${complete ? "كل حقول هذا المستمسك مملوءة" : filled ? `مُلئ ${filled} من ${total} حقول` : ""}">
           <i>${complete && !current ? "✓" : skipped && !current ? "–" : i + 1}</i><span>${s.title}</span><small>${note}</small></button>`;
       }).join("")}
       <div class="aw-progress">الخطوة ${state.step + 1} من ${STEPS.length}<div class="aw-bar"><i style="width:${(state.step + 1) / STEPS.length * 100}%"></i></div></div>
@@ -543,11 +572,53 @@ function openWizard({ user, employees, onCreated, resume = null }) {
       </div></div>`;
   }
 
-  /** Saving is possible from any step once there is a name, and no image is still being read. */
+  /**
+   * The national card is required: the other documents open, and the employee can be saved, once
+   * its essentials are in: the full four-part name, a 12-digit national number, birth date and
+   * gender. Returns the labels still missing.
+   */
+  function nationalMissing() {
+    const v = key => state.values[key]?.value;
+    const name = v("full_name") ?? {};
+    const missing = [];
+    if (!NAME4.every(([part]) => text(name[part]))) missing.push("الاسم الرباعي واللقب");
+    if (!/^\d{12}$/.test(text(v("civil_id")))) missing.push("الرقم الوطني (12 رقمًا)");
+    if (!text(v("birthdate"))) missing.push("تاريخ الولادة");
+    if (!text(v("gender"))) missing.push("الجنس");
+    return missing;
+  }
+  const nationalDone = () => nationalMissing().length === 0;
+
+  /** Saving is possible from any step once the national card is complete and nothing is being read. */
   function canSaveNow() {
     const reading = [...Object.values(state.docs), ...state.members].some(h => Object.keys(h.busy ?? {}).length);
-    return !state.saving && !reading && !isEmpty(state.values.full_name?.value);
+    return !state.saving && !reading && nationalDone();
   }
+
+  /** After an edit: unlock or lock the other steps and the save buttons without redrawing the form. */
+  function refreshGate() {
+    const nav = overlay.querySelector(".aw-stepper");
+    if (nav) {
+      nav.replaceWith(htmlToNode(stepperHtml()));
+      overlay.querySelectorAll(".aw-stepper [data-go]").forEach(b => b.addEventListener("click", () => go(Number(b.dataset.go))));
+    }
+    const ok = canSaveNow();
+    overlay.querySelectorAll("[data-save-now], [data-save]").forEach(b => { b.disabled = !ok; b.title = saveTitle(); });
+    const next = overlay.querySelector("[data-next]");
+    if (next) next.disabled = current().required && !nationalDone();
+    const hint = overlay.querySelector(".aw-hint");
+    if (hint) hint.textContent = gateHint();
+  }
+  const saveLabel = () => state.saving ? "جارٍ الحفظ…" : state.employee ? "حفظ التعديلات" : "حفظ الموظف";
+  const saveTitle = () => {
+    const missing = nationalMissing();
+    if (missing.length) return `يُفعَّل بعد إكمال البطاقة الوطنية: ${missing.join("، ")}`;
+    return state.employee ? "يحفظ التعديلات ويرفع المستمسكات المضافة، وتبقى الواجهة مفتوحة" : "يحفظ الموظف الآن وتبقى الواجهة مفتوحة لإكمال بقية المستمسكات";
+  };
+  const gateHint = () => {
+    const missing = nationalMissing();
+    return missing.length ? `أكمل البطاقة الوطنية لتنتقل لبقية المستمسكات وتحفظ: ${missing.join("، ")}` : "كل القيم قابلة للتعديل قبل الحفظ";
+  };
 
   /** Documents with no image yet: named after saving, to add later. */
   const missingDocs = () => STEPS.filter(s => s.sides && !Object.keys(state.docs[s.id].images).length).map(s => s.title);
@@ -557,22 +628,21 @@ function openWizard({ user, employees, onCreated, resume = null }) {
     const body = step.id === "family" ? familyBody() : step.id === "summary" ? summaryBody() : docBody(step);
     const last = state.step === STEPS.length - 1;
     const next = STEPS[state.step + 1];
-    // Any step can be opened in any order; only saving needs the employee's name.
-    const noName = isEmpty(state.values.full_name?.value);
     const scroll = overlay.querySelector(".aw-content-body")?.scrollTop ?? 0;
     overlay.innerHTML = `<div class="aw-box" dir="rtl" role="dialog" aria-modal="true" aria-label="إضافة موظف من المستمسكات">
       <div class="aw-head"><h2>إضافة موظف من المستمسكات</h2><span class="aw-sub">مستمسك واحد في كل خطوة</span>
-        <button type="button" class="btn-primary aw-head-save" data-save-now ${canSaveNow() ? "" : "disabled"} title="${isEmpty(state.values.full_name?.value) ? "يُفعَّل بعد إدخال اسم الموظف" : "يحفظ الموظف الآن بما أُدخل، والمستمسكات الباقية تُضاف لاحقًا"}">${state.saving ? "جارٍ الحفظ…" : "حفظ الموظف"}</button>
+        ${state.employee ? `<span class="aw-saved" title="الموظف محفوظ؛ يمكنك متابعة إضافة مستمسكاته هنا">✓ محفوظ</span>` : ""}
+        <button type="button" class="btn-primary aw-head-save" data-save-now ${canSaveNow() ? "" : "disabled"} title="${escHtml(saveTitle())}">${saveLabel()}</button>
         <button type="button" class="aw-close" aria-label="إغلاق">✕</button></div>
       <div class="aw-main">${stepperHtml()}
         <div class="aw-content"><div class="aw-content-title"><b>${step.title}</b><span>${step.hint}</span></div>
           <div class="aw-content-body ${step.sides ? "" : "is-single"}">${body}</div>
           <div class="aw-foot">
-            ${last ? `<button type="button" class="btn-primary" data-save ${canSaveNow() ? "" : "disabled"}>${state.saving ? "جارٍ الحفظ…" : "حفظ الموظف"}</button>`
-                   : `<button type="button" class="btn-primary" data-next>التالي: ${next.title}</button>`}
+            ${last ? `<button type="button" class="btn-primary" data-save ${canSaveNow() ? "" : "disabled"} title="${escHtml(saveTitle())}">${saveLabel()}</button>`
+                   : `<button type="button" class="btn-primary" data-next ${step.required && !nationalDone() ? "disabled" : ""}>التالي: ${next.title}</button>`}
             ${!step.required && !last ? `<button type="button" class="btn-secondary" data-skip>تخطٍّ</button>` : ""}
             ${state.step > 0 ? `<button type="button" class="btn-secondary" data-back>رجوع</button>` : ""}
-            <span class="aw-hint">${noName ? "تنقّل بين الخطوات بأي ترتيب؛ الحفظ يحتاج اسم الموظف من البطاقة الوطنية أو كتابته" : "كل القيم قابلة للتعديل قبل الحفظ"}</span>
+            <span class="aw-hint">${escHtml(gateHint())}</span>
           </div></div></div>
       <datalist id="aw-departments">${departments.map(d => `<option value="${escHtml(d)}">`).join("")}</datalist></div>`;
     const content = overlay.querySelector(".aw-content-body");
@@ -601,7 +671,7 @@ function openWizard({ user, employees, onCreated, resume = null }) {
   }
 
   function bind() {
-    overlay.querySelector(".aw-close").addEventListener("click", () => close());
+    overlay.querySelector(".aw-close").addEventListener("click", askClose);
     overlay.querySelector("[data-next]")?.addEventListener("click", () => go(state.step + 1));
     overlay.querySelector("[data-back]")?.addEventListener("click", () => go(state.step - 1));
     overlay.querySelector("[data-skip]")?.addEventListener("click", () => {
@@ -641,10 +711,7 @@ function openWizard({ user, employees, onCreated, resume = null }) {
         const check = field?.querySelector(".aw-check");
         if (check) check.innerHTML = checkHtml(key, values[key].value, input.dataset.scope);
         field?.classList.toggle("is-empty", isEmpty(values[key].value) && !input.dataset.part);
-        const saveNow = overlay.querySelector("[data-save-now]");
-        if (saveNow) saveNow.disabled = !canSaveNow();
-        const saveLast = overlay.querySelector("[data-save]");
-        if (saveLast) saveLast.disabled = !canSaveNow();
+        refreshGate();
         if (input.dataset.scope && key === "name") inheritChildNames();
       };
       input.addEventListener(input.tagName === "SELECT" ? "change" : "input", update);
@@ -732,6 +799,7 @@ function openWizard({ user, employees, onCreated, resume = null }) {
 
   function go(index) {
     if (index < 0 || index >= STEPS.length) return;
+    if (index > 0 && !nationalDone()) return;
     if (STEPS[index].id === "family") inheritChildNames();
     if (STEPS[index].id === "summary") deriveMarital();
     state.step = index;
@@ -853,46 +921,74 @@ function openWizard({ user, employees, onCreated, resume = null }) {
     return { data, spouses, family };
   }
 
-  async function save() {
-    if (isEmpty(state.values.full_name?.value)) { go(0); return; }
-    const twin = duplicateOf(text(state.values.civil_id?.value));
-    if (twin && !(await confirmAction(`يوجد موظف مسجّل بنفس الرقم الوطني: ${twin.full_name ?? ""}. حفظ موظف جديد رغم ذلك؟`))) return;
-    const { data, spouses, family } = payload();
-    state.saving = true;
-    render();
-    let employee;
-    try {
-      employee = await api.createEmployee(data);
-    } catch (error) {
-      state.saving = false;
-      render();
-      showToast(error?.message ?? String(error || "تعذّر حفظ الموظف"), "error");
-      return;
-    }
-    // The pictures go in with the usual upload commands, now that the employee exists.
-    const failed = [];
-    const run = async (label, task) => { try { await task(); } catch { failed.push(label); } };
-    for (const step of STEPS.filter(s => s.sides)) {
+  /** Images not uploaded yet, with how to upload each, once the employee exists. */
+  function pendingUploads(id, spouses, family) {
+    const out = [];
+    for (const step of STEPS.filter(st => st.sides)) {
       for (const [side, image] of Object.entries(state.docs[step.id].images)) {
-        await run(`${step.title} (${SIDE_LABEL[side]})`, () => UPLOAD[step.id](employee.id, side, image.path));
+        if (!image.uploaded) out.push({ image, label: `${step.title} (${SIDE_LABEL[side]})`, task: () => UPLOAD[step.id](id, side, image.path) });
       }
     }
     for (const [index, member] of spouses.entries()) {
       for (const [side, image] of Object.entries(member.images)) {
-        await run(`بطاقة الزوجة ${index + 1}`, () => api.wizardUpload("cmd_upload_spouse_national_card_attachment", { employeeId: employee.id, spouseIndex: index, side, sourcePath: image.path }));
+        if (!image.uploaded) out.push({ image, label: `بطاقة الزوجة ${index + 1}`, task: () => api.wizardUpload("cmd_upload_spouse_national_card_attachment", { employeeId: id, spouseIndex: index, side, sourcePath: image.path }) });
       }
     }
     for (const [index, member] of family.entries()) {
       for (const [side, image] of Object.entries(member.images)) {
-        await run(`بطاقة الفرد ${index + 1}`, () => api.wizardUpload("cmd_upload_family_national_card_attachment", { employeeId: employee.id, memberIndex: index, side, sourcePath: image.path }));
+        if (!image.uploaded) out.push({ image, label: `بطاقة الفرد ${index + 1}`, task: () => api.wizardUpload("cmd_upload_family_national_card_attachment", { employeeId: id, memberIndex: index, side, sourcePath: image.path }) });
       }
     }
+    return out;
+  }
+
+  /** Whether anything changed since the last save (or anything was entered, before the first). */
+  function unsaved() {
+    if (!state.employee) return hasWork();
+    const { data, spouses, family } = payload();
+    return JSON.stringify(data) !== state.savedData || pendingUploads(0, spouses, family).length > 0;
+  }
+
+  /**
+   * Saves and stays open: the first save creates the employee, later saves update it and upload
+   * only the images added since. The employee list is refreshed when the wizard closes.
+   */
+  async function save() {
+    if (!nationalDone()) { go(0); showToast(`أكمل البطاقة الوطنية أولًا: ${nationalMissing().join("، ")}`, "error"); return false; }
+    if (!state.employee) {
+      const twin = duplicateOf(text(state.values.civil_id?.value));
+      if (twin && !(await confirmAction(`يوجد موظف مسجّل بنفس الرقم الوطني: ${twin.full_name ?? ""}. حفظ موظف جديد رغم ذلك؟`))) return false;
+    }
+    const { data, spouses, family } = payload();
+    state.saving = true;
+    render();
+    const first = !state.employee;
+    try {
+      state.employee = first
+        ? await api.createEmployee(data)
+        // Keep what the wizard does not edit (employee number, photo, …) as the record has it.
+        : await api.updateEmployee(state.employee.id, { ...state.employee, ...data });
+    } catch (error) {
+      state.saving = false;
+      render();
+      showToast(error?.message ?? String(error || "تعذّر حفظ الموظف"), "error");
+      return false;
+    }
+    state.savedData = JSON.stringify(data);
+    // The pictures go in with the usual upload commands, now that the employee exists.
+    const failed = [];
+    for (const upload of pendingUploads(state.employee.id, spouses, family)) {
+      try { await upload.task(); upload.image.uploaded = true; } catch { failed.push(upload.label); }
+    }
+    dropDraft();
+    state.saving = false;
+    render();
     const missing = missingDocs();
-    await close(false);
-    if (failed.length) showToast(`حُفظ الموظف، لكن تعذّر رفع: ${failed.join("، ")}. ارفعها من تبويب «المستمسكات».`, "error");
-    else if (missing.length) showToast(`حُفظ الموظف. لم تُرفع بعد: ${missing.join("، ")}. أضفها متى توفرت من تبويب «المستمسكات» في ملفه.`);
-    else showToast("حُفظ الموظف ومستمسكاته");
-    onCreated(employee);
+    const what = first ? "حُفظ الموظف" : "حُفظت التعديلات";
+    if (failed.length) showToast(`${what}، لكن تعذّر رفع: ${failed.join("، ")}. اضغط «حفظ» مرة أخرى أو ارفعها من تبويب «المستمسكات».`, "error");
+    else if (missing.length) showToast(`${what}. لم تُرفع بعد: ${missing.join("، ")}. أضفها الآن هنا أو لاحقًا من تبويب «المستمسكات».`);
+    else showToast(`${what} ومستمسكاته`);
+    return true;
   }
 
   render();

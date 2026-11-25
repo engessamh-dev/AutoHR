@@ -30,12 +30,15 @@ test("manual entry opens the existing form", async ({ page }) => {
 
 test("national card is required, values are read and tagged by source", async ({ page }) => {
   await page.click('[data-choice="docs"]');
-  // Steps open in any order; saving waits for a name.
-  await expect(page.locator("[data-next]")).toBeEnabled();
+  // The other documents and saving wait for the national card's essentials.
+  await expect(page.locator("[data-next]")).toBeDisabled();
   await expect(page.locator("[data-save-now]")).toBeDisabled();
   await pick(page, "national", "front.jpg");
+  await expect(page.locator("[data-next]")).toBeDisabled();
+  await expect(page.locator(".aw-hint")).toContainText("تاريخ الولادة");
   await pick(page, "national", "back.jpg", "back");
   await expect(page.locator("[data-next]")).toBeEnabled();
+  await expect(page.locator("[data-save-now]")).toBeEnabled();
   await expect(page.locator('[data-key="birthdate"]')).toHaveValue("1985-03-14");
   await expect(page.locator('[data-key="full_name"][data-part="first"]')).toHaveValue("سامر");
   // An edit is tagged as manual.
@@ -46,6 +49,7 @@ test("national card is required, values are read and tagged by source", async ({
 test("a later document does not overwrite an earlier value; the conflict can be taken", async ({ page }) => {
   await page.click('[data-choice="docs"]');
   await pick(page, "national", "front.jpg");
+  await pick(page, "national", "back.jpg", "back");
   await page.click("[data-next]");
   await page.click("[data-skip]");
   await pick(page, "ministry", "ministry.jpg");
@@ -224,10 +228,11 @@ test("national and family numbers are checked, and a registered national number 
   await expect(family.locator(".aw-check")).toBeEmpty();
 });
 
-test("closing the wizard keeps a draft to continue or delete", async ({ page }) => {
+test("closing the wizard can keep a draft to continue or delete", async ({ page }) => {
   await page.click('[data-choice="docs"]');
   await pick(page, "national", "front.jpg");
   await page.locator(".aw-close").click();
+  await page.getByRole("button", { name: "حفظ كمسودة" }).click();
   await expect(page.locator(".aw-overlay")).toHaveCount(0);
   await page.click("#btn-add-emp");
   const banner = page.locator(".aw-draft");
@@ -235,8 +240,9 @@ test("closing the wizard keeps a draft to continue or delete", async ({ page }) 
   await banner.getByRole("button", { name: "متابعتها" }).click();
   await expect(page.locator('[data-key="full_name"][data-part="first"]')).toHaveValue("سامر");
   await expect(page.locator(".aw-thumb")).toHaveCount(1);
-  // Saving ends the draft; here: close again, then delete it.
+  // Saving ends the draft; here: keep it again, then delete it.
   await page.locator(".aw-close").click();
+  await page.getByRole("button", { name: "حفظ كمسودة" }).click();
   await page.click("#btn-add-emp");
   await banner.getByRole("button", { name: "حذفها" }).click();
   await expect(banner).toHaveCount(0);
@@ -245,7 +251,7 @@ test("closing the wizard keeps a draft to continue or delete", async ({ page }) 
   await expect(page.locator(".aw-draft")).toHaveCount(0);
 });
 
-test("the employee can be saved from any step once there is a name; missing documents are named", async ({ page }) => {
+test("the employee can be saved from any step once the national card is complete; the wizard stays open and later saves update it", async ({ page }) => {
   // The harness has no toast area: add one to read the message after saving.
   await page.evaluate(() => document.body.insertAdjacentHTML("beforeend", '<div id="toast" class="opacity-0"><span id="toast-msg"></span></div>'));
   await page.click('[data-choice="docs"]');
@@ -259,8 +265,22 @@ test("the employee can be saved from any step once there is a name; missing docu
   const data = await page.evaluate(() => window.calls.find(c => c.command === "cmd_create_employee").args.data);
   expect(data.full_name).toBe("سامر خالد عبد الله الجبوري");
   expect(data.civil_id_birthdate).toBe("1985-03-14");
-  await expect(page.locator(".aw-overlay")).toHaveCount(0);
+  // The wizard stays open on the saved employee.
+  await expect(page.locator(".aw-overlay")).toBeVisible();
+  await expect(page.locator(".aw-saved")).toBeVisible();
+  await expect(saveNow).toHaveText("حفظ التعديلات");
   await expect(page.locator("#toast-msg")).toContainText("لم تُرفع بعد: جواز السفر، هوية وزارة النقل");
+  // A document added afterwards: the next save updates the same employee and uploads only it.
+  await page.locator(".aw-step").nth(2).click();
+  await pick(page, "ministry", "ministry.jpg");
+  await saveNow.click();
+  await expect.poll(() => page.evaluate(() => window.calls.some(c => c.command === "cmd_update_employee"))).toBe(true);
+  const uploads = await page.evaluate(() => window.calls.filter(c => c.command.startsWith("cmd_upload_")).map(c => c.command));
+  expect(uploads).toEqual(["cmd_upload_national_card_attachment", "cmd_upload_national_card_attachment", "cmd_upload_ministry_badge_attachment"]);
+  expect(await page.evaluate(() => window.calls.filter(c => c.command === "cmd_create_employee").length)).toBe(1);
+  // Nothing unsaved: closing asks nothing.
+  await page.locator(".aw-close").click();
+  await expect(page.locator(".aw-overlay")).toHaveCount(0);
 });
 
 test("ministry ID: one Arabic side fills department and job, and its name is checked against the national card", async ({ page }) => {
@@ -271,6 +291,7 @@ test("ministry ID: one Arabic side fills department and job, and its name is che
   });
   await page.click('[data-choice="docs"]');
   await pick(page, "national", "front.jpg");
+  await pick(page, "national", "back.jpg", "back");
   await page.click("[data-next]");
   await page.click("[data-skip]");
   await expect(page.locator('[data-pick="ministry"]')).toHaveCount(1);
@@ -283,23 +304,58 @@ test("ministry ID: one Arabic side fills department and job, and its name is che
   await expect(page.locator(".aw-note.is-warn", { hasText: "يختلف عن البطاقة الوطنية" })).toContainText("كريم خالد عبد الله");
 });
 
-test("the side list opens any step at any time, before the national card too", async ({ page }) => {
+test("other documents stay locked until the national card is complete, then open in any order", async ({ page }) => {
   await page.click('[data-choice="docs"]');
   const steps = page.locator(".aw-step");
   await expect(steps).toHaveCount(8);
+  for (const i of [1, 2, 7]) await expect(steps.nth(i)).toBeDisabled();
+  await pick(page, "national", "front.jpg");
+  await expect(steps.nth(2)).toBeDisabled();
+  // Typing the missing birth date unlocks them without re-reading.
+  await page.fill('[data-key="birthdate"]', "1985-03-14");
+  await expect(steps.nth(2)).toBeEnabled();
   for (const i of [3, 7, 1, 5]) {
     await steps.nth(i).click();
     await expect(steps.nth(i)).toHaveClass(/is-current/);
   }
-  await expect(page.locator("[data-save]")).toHaveCount(0);
-  await steps.nth(7).click();
-  await expect(page.locator("[data-save]")).toBeDisabled();
-  await expect(page.locator("[data-save-now]")).toBeDisabled();
-  await steps.nth(2).click();
-  await pick(page, "ministry", "ministry.jpg");
-  await steps.nth(0).click();
-  await pick(page, "national", "front.jpg");
   await expect(page.locator("[data-save-now]")).toBeEnabled();
+  // An invalid national number locks them again.
+  await steps.nth(0).click();
+  await page.fill('[data-key="civil_id"]', "123");
+  await expect(steps.nth(3)).toBeDisabled();
+  await expect(page.locator("[data-save-now]")).toBeDisabled();
+});
+
+test("leaving with entries asks: save, keep a draft, leave without saving, or stay", async ({ page }) => {
+  await page.click('[data-choice="docs"]');
+  // Nothing entered: closes at once.
+  await page.locator(".aw-close").click();
+  await expect(page.locator(".aw-overlay")).toHaveCount(0);
+  await page.click("#btn-add-emp");
+  await page.click('[data-choice="docs"]');
+  await pick(page, "national", "front.jpg");
+  await page.keyboard.press("Escape");
+  const ask = page.locator(".aw-ask");
+  await expect(ask).toBeVisible();
+  // Not complete yet: saving is offered but disabled, with what is missing.
+  await expect(ask.getByRole("button", { name: "حفظ الموظف" })).toBeDisabled();
+  await expect(ask).toContainText("تاريخ الولادة");
+  await ask.getByRole("button", { name: "متابعة الإدخال" }).click();
+  await expect(ask).toHaveCount(0);
+  // Leaving without saving keeps nothing.
+  await page.locator(".aw-close").click();
+  await ask.getByRole("button", { name: "خروج دون حفظ" }).click();
+  await expect(page.locator(".aw-overlay")).toHaveCount(0);
+  await page.click("#btn-add-emp");
+  await expect(page.locator(".aw-draft")).toHaveCount(0);
+  // Complete: saving from the question creates the employee.
+  await page.click('[data-choice="docs"]');
+  await pick(page, "national", "front.jpg");
+  await pick(page, "national", "back.jpg", "back");
+  await page.locator(".aw-close").click();
+  await ask.getByRole("button", { name: "حفظ الموظف" }).click();
+  await expect.poll(() => page.evaluate(() => window.calls.some(c => c.command === "cmd_create_employee"))).toBe(true);
+  await expect(page.locator(".aw-overlay")).toHaveCount(0);
 });
 
 test("a step shows ✓ only when all its fields are filled; visiting it is not enough", async ({ page }) => {
@@ -309,13 +365,13 @@ test("a step shows ✓ only when all its fields are filled; visiting it is not e
   });
   await page.click('[data-choice="docs"]');
   const steps = page.locator(".aw-step");
-  for (const i of [1, 2, 3, 4]) await steps.nth(i).click();
-  for (const i of [0, 1, 2, 3]) {
+  await pick(page, "national", "front.jpg");
+  await pick(page, "national", "back.jpg", "back");
+  for (const i of [1, 3, 4]) await steps.nth(i).click();
+  for (const i of [1, 3]) {
     await expect(steps.nth(i)).not.toHaveClass(/is-done/);
     await expect(steps.nth(i).locator("i")).not.toHaveText("✓");
   }
-  await steps.nth(0).click();
-  await pick(page, "national", "front.jpg");
   await steps.nth(2).click();
   await pick(page, "ministry", "mot-full.jpg");
   await steps.nth(4).click();
