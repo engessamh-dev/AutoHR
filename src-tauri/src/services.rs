@@ -11,7 +11,6 @@ use std::{
 use bcrypt::{hash, verify, DEFAULT_COST};
 use aes_gcm::{aead::{Aead, KeyInit}, Aes256Gcm, Nonce};
 use argon2::Argon2;
-use chrono::Datelike;
 use rand::{rngs::OsRng, RngCore};
 
 #[derive(Debug, thiserror::Error)]
@@ -337,26 +336,45 @@ pub struct UserDisabledData { pub disabled: bool }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct AutoBackupSettings {
-    pub daily_enabled: bool,
-    pub weekly_enabled: bool,
-    pub monthly_enabled: bool,
+    /// One automatic backup per day, refreshed during work and on sign-out.
+    pub enabled: bool,
     pub has_password: bool,
-    pub last_daily: Option<String>,
-    pub last_weekly: Option<String>,
-    pub last_monthly: Option<String>,
-    pub last_daily_path: Option<String>,
-    pub last_weekly_path: Option<String>,
-    pub last_monthly_path: Option<String>,
+    /// False when a password is saved but cannot be read on this computer or Windows account.
+    pub password_works: bool,
+    /// Minutes between backups while someone works (0 = only on sign-out and close).
+    pub interval_minutes: u32,
+    pub keep_daily: u32,
+    pub keep_weekly: u32,
+    pub keep_monthly: u32,
+    pub auto_delete: bool,
+    /// Local time of the last automatic backup («2026-11-25 14:12»).
+    pub last_backup: Option<String>,
+    pub last_backup_path: Option<String>,
+    /// Everything in the backup folder: backup files and the attachment store.
+    pub used_bytes: u64,
+    pub backup_files: u64,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct AutoBackupSettingsData {
-    pub daily_enabled: bool,
-    #[serde(default)]
-    pub weekly_enabled: bool,
-    pub monthly_enabled: bool,
+    pub enabled: bool,
     pub password: Option<String>,
+    #[serde(default = "default_backup_interval")]
+    pub interval_minutes: u32,
+    #[serde(default = "default_keep_daily")]
+    pub keep_daily: u32,
+    #[serde(default = "default_keep_weekly")]
+    pub keep_weekly: u32,
+    #[serde(default = "default_keep_monthly")]
+    pub keep_monthly: u32,
+    #[serde(default = "default_true")]
+    pub auto_delete: bool,
 }
+
+pub(crate) fn default_backup_interval() -> u32 { 60 }
+pub(crate) fn default_keep_daily() -> u32 { 7 }
+pub(crate) fn default_keep_weekly() -> u32 { 4 }
+pub(crate) fn default_keep_monthly() -> u32 { 12 }
 
 // ── Helpers ────────────────────────────────────────────────────────────────
 fn legacy_hash_password(plain: &str) -> String {
@@ -375,7 +393,7 @@ fn verify_password(plain: &str, stored: &str) -> AppResult<bool> {
     Ok(stored.len() == 64 && stored.bytes().all(|b| b.is_ascii_hexdigit()) && legacy_hash_password(plain) == stored)
 }
 
-fn validate_new_password(password: &str) -> AppResult<()> {
+pub(crate) fn validate_new_password(password: &str) -> AppResult<()> {
     if password.chars().count() < 8 {
         return Err(AppError::Validation("كلمة المرور يجب أن تكون 8 أحرف على الأقل".into()));
     }
@@ -2524,7 +2542,7 @@ pub fn get_backup_path(conn: &Connection) -> AppResult<String> {
     Ok(backup_path(conn).to_string_lossy().into_owned())
 }
 
-fn get_setting(conn: &Connection, key: &str) -> AppResult<Option<String>> {
+pub(crate) fn get_setting(conn: &Connection, key: &str) -> AppResult<Option<String>> {
     conn.query_row("SELECT value FROM app_settings WHERE key=?1", params![key], |r| r.get(0))
         .optional()
         .map_err(Into::into)
@@ -2532,7 +2550,7 @@ fn get_setting(conn: &Connection, key: &str) -> AppResult<Option<String>> {
 
 /// The automatic-backup password, unwrapped from DPAPI. A plain-text value left by an older
 /// release is re-saved protected the first time it is read.
-fn auto_backup_password(conn: &Connection) -> AppResult<String> {
+pub(crate) fn auto_backup_password(conn: &Connection) -> AppResult<String> {
     let Some(stored) = get_setting(conn, "auto_backup_password")?.filter(|value| !value.is_empty()) else {
         return Ok(String::new());
     };
@@ -2547,7 +2565,7 @@ fn set_auto_backup_password(conn: &Connection, password: &str) -> AppResult<()> 
     set_setting(conn, "auto_backup_password", &crate::secure::protect_secret(password)?)
 }
 
-fn set_setting(conn: &Connection, key: &str, value: &str) -> AppResult<()> {
+pub(crate) fn set_setting(conn: &Connection, key: &str, value: &str) -> AppResult<()> {
     conn.execute(
         "INSERT INTO app_settings(key,value) VALUES(?1,?2)
          ON CONFLICT(key) DO UPDATE SET value=excluded.value",
@@ -2725,43 +2743,93 @@ mod document_alert_rule_tests {
     }
 }
 
-fn setting_bool(conn: &Connection, key: &str) -> AppResult<bool> {
+pub(crate) fn setting_bool(conn: &Connection, key: &str) -> AppResult<bool> {
     Ok(matches!(get_setting(conn, key)?.as_deref(), Some("1") | Some("true")))
+}
+
+/// Automatic backups are on when switched on in 1.0.7, or when any of the daily, weekly or
+/// monthly toggles of earlier releases was on.
+pub(crate) fn auto_backup_enabled(conn: &Connection) -> AppResult<bool> {
+    if let Some(value) = get_setting(conn, "auto_backup_enabled")? {
+        return Ok(matches!(value.as_str(), "1" | "true"));
+    }
+    Ok(setting_bool(conn, "auto_backup_daily_enabled")?
+        || setting_bool(conn, "auto_backup_weekly_enabled")?
+        || setting_bool(conn, "auto_backup_monthly_enabled")?)
+}
+
+pub(crate) fn setting_u32(conn: &Connection, key: &str, default: u32) -> AppResult<u32> {
+    Ok(get_setting(conn, key)?.and_then(|value| value.parse::<u32>().ok()).unwrap_or(default))
+}
+
+pub(crate) fn backup_interval_minutes(conn: &Connection) -> AppResult<u32> {
+    setting_u32(conn, "backup_interval_minutes", default_backup_interval())
+}
+
+pub(crate) fn backup_retention(conn: &Connection) -> AppResult<crate::backup_store::Retention> {
+    Ok(crate::backup_store::Retention {
+        keep_daily: setting_u32(conn, "backup_keep_daily", default_keep_daily())?.max(crate::backup_store::MIN_KEEP_DAILY),
+        keep_weekly: setting_u32(conn, "backup_keep_weekly", default_keep_weekly())?,
+        keep_monthly: setting_u32(conn, "backup_keep_monthly", default_keep_monthly())?,
+        auto_delete: get_setting(conn, "backup_auto_delete")?.is_none_or(|value| matches!(value.as_str(), "1" | "true")),
+    })
 }
 
 pub fn get_auto_backup_settings(conn: &Connection, user: &str) -> AppResult<AutoBackupSettings> {
     assert_permission(conn, user, "backups.manage")?;
+    let has_password = get_setting(conn, "auto_backup_password")?.is_some_and(|value| !value.is_empty());
+    let retention = backup_retention(conn)?;
+    let usage = crate::backup_store::usage(&backup_path(conn));
     Ok(AutoBackupSettings {
-        daily_enabled: setting_bool(conn, "auto_backup_daily_enabled")?,
-        weekly_enabled: setting_bool(conn, "auto_backup_weekly_enabled")?,
-        monthly_enabled: setting_bool(conn, "auto_backup_monthly_enabled")?,
-        has_password: get_setting(conn, "auto_backup_password")?.is_some_and(|value| !value.is_empty()),
-        last_daily: get_setting(conn, "auto_backup_last_daily")?,
-        last_weekly: get_setting(conn, "auto_backup_last_weekly")?,
-        last_monthly: get_setting(conn, "auto_backup_last_monthly")?,
-        last_daily_path: get_setting(conn, "auto_backup_last_daily_path")?,
-        last_weekly_path: get_setting(conn, "auto_backup_last_weekly_path")?,
-        last_monthly_path: get_setting(conn, "auto_backup_last_monthly_path")?,
+        enabled: auto_backup_enabled(conn)?,
+        has_password,
+        password_works: has_password && auto_backup_password(conn).is_ok_and(|value| !value.is_empty()),
+        interval_minutes: backup_interval_minutes(conn)?,
+        keep_daily: retention.keep_daily,
+        keep_weekly: retention.keep_weekly,
+        keep_monthly: retention.keep_monthly,
+        auto_delete: retention.auto_delete,
+        last_backup: get_setting(conn, "auto_backup_last_time")?.or(get_setting(conn, "auto_backup_last_daily")?),
+        last_backup_path: get_setting(conn, "auto_backup_last_daily_path")?,
+        used_bytes: usage.bytes,
+        backup_files: usage.backup_files,
     })
 }
 
 pub fn set_auto_backup_settings(conn: &Connection, user: &str, data: &AutoBackupSettingsData) -> AppResult<AutoBackupSettings> {
     assert_permission(conn, user, "backups.manage")?;
+    if !matches!(data.interval_minutes, 0 | 30 | 60 | 120) {
+        return Err(AppError::Validation("اختر مدة النسخ أثناء العمل من القائمة".into()));
+    }
+    if !(crate::backup_store::MIN_KEEP_DAILY..=365).contains(&data.keep_daily) {
+        return Err(AppError::Validation(format!("عدد النسخ اليومية يجب أن يكون بين {} و365", crate::backup_store::MIN_KEEP_DAILY)));
+    }
+    if data.keep_weekly > 104 || data.keep_monthly > 120 {
+        return Err(AppError::Validation("الحد الأعلى 104 نسخة أسبوعية و120 نسخة شهرية".into()));
+    }
     let existing_password = get_setting(conn, "auto_backup_password")?.unwrap_or_default();
     // Moves a legacy plain-text password to DPAPI even when only the toggles change.
     if !existing_password.is_empty() { auto_backup_password(conn).ok(); }
     let password = data.password.as_deref().unwrap_or("").trim();
-    if (data.daily_enabled || data.weekly_enabled || data.monthly_enabled) && password.is_empty() && existing_password.is_empty() {
-        return Err(AppError::Validation("Enter an automatic backup password before enabling automatic backups".into()));
+    if data.enabled && password.is_empty() && existing_password.is_empty() {
+        return Err(AppError::Validation("أدخل كلمة مرور للنسخ التلقائية قبل التفعيل".into()));
     }
     if !password.is_empty() {
         validate_new_password(password)?;
         set_auto_backup_password(conn, password)?;
     }
-    set_setting(conn, "auto_backup_daily_enabled", if data.daily_enabled { "1" } else { "0" })?;
-    set_setting(conn, "auto_backup_weekly_enabled", if data.weekly_enabled { "1" } else { "0" })?;
-    set_setting(conn, "auto_backup_monthly_enabled", if data.monthly_enabled { "1" } else { "0" })?;
-    log_activity(conn, user, "CHANGE_SETTING", Some("settings"), None, Some("automatic_backups"), None);
+    set_setting(conn, "auto_backup_enabled", if data.enabled { "1" } else { "0" })?;
+    set_setting(conn, "backup_interval_minutes", &data.interval_minutes.to_string())?;
+    set_setting(conn, "backup_keep_daily", &data.keep_daily.to_string())?;
+    set_setting(conn, "backup_keep_weekly", &data.keep_weekly.to_string())?;
+    set_setting(conn, "backup_keep_monthly", &data.keep_monthly.to_string())?;
+    set_setting(conn, "backup_auto_delete", if data.auto_delete { "1" } else { "0" })?;
+    let details = format!(
+        "enabled={} interval={}m keep daily={} weekly={} monthly={} auto_delete={}{}",
+        data.enabled, data.interval_minutes, data.keep_daily, data.keep_weekly, data.keep_monthly, data.auto_delete,
+        if password.is_empty() { "" } else { " password changed" },
+    );
+    log_activity(conn, user, "CHANGE_SETTING", Some("settings"), None, Some("automatic_backups"), Some(&details));
     get_auto_backup_settings(conn, user)
 }
 
@@ -2795,17 +2863,17 @@ fn audit_rows_to_restore(conn: &Connection, kept: Vec<AuditSnapshotRow>) -> AppR
 }
 
 #[derive(Debug, Serialize, Deserialize)]
-struct BackupManifest {
+pub(crate) struct BackupManifest {
     format_version: u32,
     created_at: String,
     files: Vec<BackupManifestFile>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
-struct BackupManifestFile {
-    path: String,
-    size: u64,
-    sha256: String,
+pub(crate) struct BackupManifestFile {
+    pub(crate) path: String,
+    pub(crate) size: u64,
+    pub(crate) sha256: String,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -2818,14 +2886,14 @@ pub(crate) fn backup_progress(percent: u8, message: &str) -> BackupProgress {
     BackupProgress { percent, message: message.to_string() }
 }
 
-fn backup_key(password: &str, salt: &[u8]) -> AppResult<[u8; 32]> {
+pub(crate) fn backup_key(password: &str, salt: &[u8]) -> AppResult<[u8; 32]> {
     validate_new_password(password)?;
     let mut key = [0u8; 32];
     Argon2::default().hash_password_into(password.as_bytes(), salt, &mut key).map_err(|e| AppError::Other(e.to_string()))?;
     Ok(key)
 }
 
-fn encrypt_backup(plaintext: &[u8], password: &str, magic: &[u8; 9]) -> AppResult<Vec<u8>> {
+pub(crate) fn encrypt_backup(plaintext: &[u8], password: &str, magic: &[u8; 9]) -> AppResult<Vec<u8>> {
     let mut salt = [0u8; 16]; let mut nonce_bytes = [0u8; 12];
     OsRng.fill_bytes(&mut salt); OsRng.fill_bytes(&mut nonce_bytes);
     let key = backup_key(password, &salt)?;
@@ -2851,9 +2919,23 @@ fn decrypt_backup(encrypted: &[u8], password: &str) -> AppResult<(bool, Vec<u8>)
     let key = backup_key(password, &encrypted[magic.len()..magic.len() + 16])?;
     let plaintext = Aes256Gcm::new_from_slice(&key).map_err(|e| AppError::Other(e.to_string()))?
         .decrypt(Nonce::from_slice(&encrypted[magic.len() + 16..header]), &encrypted[header..])
-        .map_err(|_| AppError::Validation("The backup password is incorrect or the backup is damaged".into()))?;
+        .map_err(|_| AppError::Validation(WRONG_BACKUP_PASSWORD.into()))?;
     Ok((magic == BACKUP_MAGIC_V1, plaintext))
 }
+
+/// Decrypts a backup written by `encrypt_backup` with the given header (format 3 snapshots).
+pub(crate) fn decrypt_with_magic(encrypted: &[u8], password: &str, magic: &[u8; 9]) -> AppResult<Vec<u8>> {
+    let header = magic.len() + 16 + 12;
+    if encrypted.len() <= header || &encrypted[..magic.len()] != magic {
+        return Err(AppError::Validation("هذا الملف ليس نسخة احتياطية صالحة للبرنامج".into()));
+    }
+    let key = backup_key(password, &encrypted[magic.len()..magic.len() + 16])?;
+    Aes256Gcm::new_from_slice(&key).map_err(|e| AppError::Other(e.to_string()))?
+        .decrypt(Nonce::from_slice(&encrypted[magic.len() + 16..header]), &encrypted[header..])
+        .map_err(|_| AppError::Validation(WRONG_BACKUP_PASSWORD.into()))
+}
+
+pub(crate) const WRONG_BACKUP_PASSWORD: &str = "كلمة مرور النسخة الاحتياطية خاطئة، أو أن الملف تالف";
 
 pub(crate) fn sha256_file(path: &Path) -> AppResult<(u64, String)> {
     let mut file = File::open(path).map_err(|e| AppError::Other(e.to_string()))?;
@@ -2869,7 +2951,7 @@ pub(crate) fn sha256_file(path: &Path) -> AppResult<(u64, String)> {
     Ok((size, hex::encode(hash.finalize())))
 }
 
-fn collect_backup_files(root: &Path, relative: &Path, files: &mut Vec<(String, PathBuf)>) -> AppResult<()> {
+pub(crate) fn collect_backup_files(root: &Path, relative: &Path, files: &mut Vec<(String, PathBuf)>) -> AppResult<()> {
     let current = root.join(relative);
     if !current.exists() { return Ok(()); }
     for entry in std::fs::read_dir(&current).map_err(|e| AppError::Other(e.to_string()))? {
@@ -2904,38 +2986,35 @@ fn collect_relative_file_paths(root: &Path, relative: &Path, files: &mut Vec<Str
     Ok(())
 }
 
-pub(crate) fn create_backup_archive(
+/// Writes the plain (unencrypted) full archive: `database.db` from `db_snapshot`, every file of the
+/// data folder under `Data/`, and `manifest.json` (format 2). Used inside a full export and, in
+/// tests, inside a format-2 backup.
+pub(crate) fn write_plain_archive(
     conn: &Connection,
-    password: &str,
-    path: &Path,
+    db_snapshot: &Path,
+    out: File,
     progress: &mut dyn FnMut(BackupProgress),
 ) -> AppResult<()> {
-    progress(backup_progress(3, "جاري تجهيز ملف النسخة الاحتياطية..."));
-    let work_dir = crate::paths::data_root();
-    std::fs::create_dir_all(&work_dir).map_err(|e| AppError::Other(e.to_string()))?;
-    let db_snapshot = tempfile::NamedTempFile::new_in(&work_dir).map_err(|e| AppError::Other(e.to_string()))?;
-    progress(backup_progress(8, "جاري نسخ قاعدة البيانات..."));
-    conn.backup(rusqlite::MAIN_DB, db_snapshot.path(), None::<fn(rusqlite::backup::Progress)>)?;
-    let archive = tempfile::NamedTempFile::new_in(&work_dir).map_err(|e| AppError::Other(e.to_string()))?;
-    let mut zip = zip::ZipWriter::new(archive.reopen().map_err(|e| AppError::Other(e.to_string()))?);
+    let mut zip = zip::ZipWriter::new(out);
     let options = zip::write::SimpleFileOptions::default()
-        .compression_method(zip::CompressionMethod::Deflated);
-    let mut files = vec![("database.db".to_string(), db_snapshot.path().to_path_buf())];
+        .compression_method(zip::CompressionMethod::Deflated)
+        .large_file(true);
+    let mut files = vec![("database.db".to_string(), db_snapshot.to_path_buf())];
     progress(backup_progress(15, "جاري جمع الملفات والمرفقات..."));
     collect_backup_files(&storage_path(conn), Path::new(""), &mut files)?;
     files.sort_by(|a, b| a.0.cmp(&b.0));
     let mut manifest_files = Vec::with_capacity(files.len());
     let total_files = files.len().max(1);
     for (index, (archive_path, source_path)) in files.into_iter().enumerate() {
-        let file_percent = 20 + (((index as u64) * 60) / (total_files as u64)) as u8;
-        progress(backup_progress(file_percent.min(80), "جاري ضغط الملفات داخل النسخة..."));
+        let file_percent = 20 + (((index as u64) * 50) / (total_files as u64)) as u8;
+        progress(backup_progress(file_percent.min(70), "جاري ضغط الملفات داخل النسخة..."));
         let (size, sha256) = sha256_file(&source_path)?;
         zip.start_file(&archive_path, options).map_err(|e| AppError::Other(e.to_string()))?;
         let mut source = File::open(&source_path).map_err(|e| AppError::Other(e.to_string()))?;
         std::io::copy(&mut source, &mut zip).map_err(|e| AppError::Other(e.to_string()))?;
         manifest_files.push(BackupManifestFile { path: archive_path, size, sha256 });
     }
-    progress(backup_progress(84, "جاري كتابة فهرس النسخة..."));
+    progress(backup_progress(72, "جاري كتابة فهرس النسخة..."));
     let manifest = BackupManifest {
         format_version: BACKUP_FORMAT_VERSION,
         created_at: chrono::Utc::now().to_rfc3339(),
@@ -2944,22 +3023,36 @@ pub(crate) fn create_backup_archive(
     zip.start_file("manifest.json", options).map_err(|e| AppError::Other(e.to_string()))?;
     zip.write_all(&serde_json::to_vec_pretty(&manifest).map_err(|e| AppError::Other(e.to_string()))?)
         .map_err(|e| AppError::Other(e.to_string()))?;
-    zip.finish().map_err(|e| AppError::Other(e.to_string()))?;
-    progress(backup_progress(90, "جاري تشفير النسخة الاحتياطية..."));
-    let plaintext = std::fs::read(archive.path()).map_err(|e| AppError::Other(e.to_string()))?;
-    // Verify bytes read back from the destination volume before publishing the backup.
-    let mut pending = tempfile::NamedTempFile::new_in(path.parent().ok_or_else(|| AppError::Validation("Invalid backup destination".into()))?)
-        .map_err(|e| AppError::Other(e.to_string()))?;
-    pending.write_all(&encrypt_backup(&plaintext, password, BACKUP_MAGIC_V2)?)
-        .map_err(|e| AppError::Other(e.to_string()))?;
-    pending.as_file().sync_all().map_err(|e| AppError::Other(e.to_string()))?;
-    progress(backup_progress(94, "جاري فحص SHA-256 وفك الضغط وتجربة الاستعادة المؤقتة..."));
-    verify_written_backup(pending.path(), password)?;
-    pending.persist_noclobber(path).map_err(|e| AppError::Other(e.to_string()))?;
-    progress(backup_progress(100, "اكتمل إنشاء النسخة الاحتياطية"));
+    zip.finish().map_err(|e| AppError::Other(e.to_string()))?.sync_all().map_err(|e| AppError::Other(e.to_string()))?;
     Ok(())
 }
 
+/// A format-2 backup (1.0.6 and earlier): the whole archive encrypted in one piece. Only tests
+/// write it now, to prove such backups can still be restored.
+#[cfg(test)]
+pub(crate) fn create_backup_archive(
+    conn: &Connection,
+    password: &str,
+    path: &Path,
+    progress: &mut dyn FnMut(BackupProgress),
+) -> AppResult<()> {
+    let work_dir = crate::paths::data_root();
+    std::fs::create_dir_all(&work_dir).map_err(|e| AppError::Other(e.to_string()))?;
+    let db_snapshot = tempfile::NamedTempFile::new_in(&work_dir).map_err(|e| AppError::Other(e.to_string()))?;
+    conn.backup(rusqlite::MAIN_DB, db_snapshot.path(), None::<fn(rusqlite::backup::Progress)>)?;
+    let archive = tempfile::NamedTempFile::new_in(&work_dir).map_err(|e| AppError::Other(e.to_string()))?;
+    write_plain_archive(conn, db_snapshot.path(), archive.reopen().map_err(|e| AppError::Other(e.to_string()))?, progress)?;
+    let plaintext = std::fs::read(archive.path()).map_err(|e| AppError::Other(e.to_string()))?;
+    let mut pending = tempfile::NamedTempFile::new_in(path.parent().ok_or_else(|| AppError::Validation("Invalid backup destination".into()))?)
+        .map_err(|e| AppError::Other(e.to_string()))?;
+    pending.write_all(&encrypt_backup(&plaintext, password, BACKUP_MAGIC_V2)?).map_err(|e| AppError::Other(e.to_string()))?;
+    verify_written_backup(pending.path(), password)?;
+    pending.persist_noclobber(path).map_err(|e| AppError::Other(e.to_string()))?;
+    Ok(())
+}
+
+/// A backup in the backup folder (manual, or the safety copy before a restore, move or update):
+/// a small encrypted file with the database, whose attachments go to the shared store once.
 pub(crate) fn create_backup_at(
     conn: &Connection,
     user: &str,
@@ -2972,9 +3065,13 @@ pub(crate) fn create_backup_at(
     let now = chrono::Local::now();
     let dir = backup_path(conn).join(category).join(now.format("%Y").to_string());
     std::fs::create_dir_all(&dir).map_err(|e| AppError::Other(e.to_string()))?;
-    let path = dir.join(format!("autohr_{}_{}.autohrbak", category.to_lowercase(), now.format("%Y-%m-%d_%H%M%S")));
-    create_backup_archive(conn, password, &path, progress)?;
-    log_activity(conn, user, "CREATE_BACKUP", Some("backup"), None, path.file_name().and_then(|n| n.to_str()), None);
+    let stem = format!("autohr_{}_{}", category.to_lowercase(), now.format("%Y-%m-%d_%H%M%S"));
+    // Two backups in the same second (a restore right after another) get distinct names.
+    let path = (1..).map(|n| if n == 1 { dir.join(format!("{stem}.autohrbak")) } else { dir.join(format!("{stem}_{n}.autohrbak")) })
+        .find(|candidate| !candidate.exists())
+        .expect("a free name");
+    crate::backup_store::create_snapshot(conn, password, &path, false, progress)?;
+    log_activity(conn, user, "CREATE_BACKUP", Some("backup"), None, path.file_name().and_then(|n| n.to_str()), Some(category));
     Ok(path.to_string_lossy().into_owned())
 }
 
@@ -2983,61 +3080,6 @@ where
     F: FnMut(BackupProgress),
 {
     create_backup_at(conn, user, password, "Manual", &mut progress)
-}
-
-fn create_automatic_backup(
-    conn: &Connection,
-    password: &str,
-    category: &str,
-    progress: &mut dyn FnMut(BackupProgress),
-) -> AppResult<String> {
-    ensure_backup_layout(conn)?;
-    let now = chrono::Local::now();
-    let dir = backup_path(conn).join(category).join(now.format("%Y").to_string());
-    std::fs::create_dir_all(&dir).map_err(|e| AppError::Other(e.to_string()))?;
-    let path = dir.join(format!("cnsarch_{}_{}.autohrbak", category.to_lowercase(), now.format("%Y-%m-%d_%H%M%S")));
-    create_backup_archive(conn, password, &path, progress)?;
-    log_activity(conn, "system", "CREATE_AUTO_BACKUP", Some("backup"), None, path.file_name().and_then(|n| n.to_str()), Some(category));
-    Ok(path.to_string_lossy().into_owned())
-}
-
-fn stored_backup_file_exists(conn: &Connection, path_key: &str) -> AppResult<bool> {
-    Ok(get_setting(conn, path_key)?
-        .as_deref()
-        .map(Path::new)
-        .is_some_and(Path::is_file))
-}
-
-fn dated_automatic_backup_exists(conn: &Connection, category: &str, marker: &str) -> AppResult<bool> {
-    let year = marker.get(..4).unwrap_or(marker);
-    let dir = backup_path(conn).join(category).join(year);
-    if !dir.is_dir() {
-        return Ok(false);
-    }
-    let prefix = if category == "Monthly" {
-        format!("cnsarch_{}_{}", category.to_lowercase(), marker)
-    } else {
-        format!("cnsarch_{}_{}_", category.to_lowercase(), marker)
-    };
-    for entry in std::fs::read_dir(&dir).map_err(|e| AppError::Other(e.to_string()))? {
-        let entry = entry.map_err(|e| AppError::Other(e.to_string()))?;
-        let name = entry.file_name();
-        let Some(name) = name.to_str() else { continue; };
-        if entry.path().is_file() && name.starts_with(&prefix) && name.ends_with(".autohrbak") {
-            return Ok(true);
-        }
-    }
-    Ok(false)
-}
-
-fn automatic_backup_is_current(conn: &Connection, date_key: &str, path_key: &str, marker: &str, category: &str) -> AppResult<bool> {
-    if get_setting(conn, date_key)?.as_deref() != Some(marker) {
-        return Ok(false);
-    }
-    if stored_backup_file_exists(conn, path_key)? {
-        return Ok(true);
-    }
-    dated_automatic_backup_exists(conn, category, marker)
 }
 
 /// Logged actions that do not change employees, documents, attachments, users or company data.
@@ -3049,9 +3091,11 @@ const NON_DATA_ACTIONS: &[&str] = &[
     "DOCUMENT_TEXT_READ",
     "SAVE_HEALTH_REPORT", "ACCESS_DENIED", "INSTALL_UPDATE", "UPDATE_AUTO_UPDATE_SETTING",
     "CHANGE_BACKUP_FOLDER", "MOVE_DATA_FOLDER", "APPROVE_DATA_INTEGRITY",
+    // Old automatic backups removed by the keep rule (7 daily / 4 weekly / 12 monthly).
+    "DELETE_OLD_BACKUPS",
 ];
 
-fn latest_data_change_activity_id(conn: &Connection) -> AppResult<Option<i64>> {
+pub(crate) fn latest_data_change_activity_id(conn: &Connection) -> AppResult<Option<i64>> {
     let excluded = NON_DATA_ACTIONS.iter().map(|a| format!("'{a}'")).collect::<Vec<_>>().join(",");
     conn.query_row(
         &format!("SELECT MAX(id) FROM activity_log
@@ -3065,162 +3109,18 @@ fn latest_data_change_activity_id(conn: &Connection) -> AppResult<Option<i64>> {
     ).map_err(Into::into)
 }
 
-fn parse_setting_i64(conn: &Connection, key: &str) -> AppResult<Option<i64>> {
+pub(crate) fn parse_setting_i64(conn: &Connection, key: &str) -> AppResult<Option<i64>> {
     Ok(get_setting(conn, key)?.and_then(|value| value.parse::<i64>().ok()))
 }
 
-fn last_automatic_backup_activity_id(conn: &Connection, category: &str) -> AppResult<Option<i64>> {
-    conn.query_row(
-        "SELECT MAX(id) FROM activity_log
-         WHERE result='Success' AND action='CREATE_AUTO_BACKUP' AND details=?1",
-        params![category],
-        |row| row.get(0),
-    ).map_err(Into::into)
-}
-
-fn last_recorded_backup_change_id(conn: &Connection, change_key: &str, category: &str) -> AppResult<Option<i64>> {
-    match parse_setting_i64(conn, change_key)? {
-        Some(id) => Ok(Some(id)),
-        None => last_automatic_backup_activity_id(conn, category),
-    }
-}
-
-fn automatic_backup_needs_creation(
-    conn: &Connection,
-    date_key: &str,
-    path_key: &str,
-    change_key: &str,
-    marker: &str,
-    category: &str,
-    latest_change_id: Option<i64>,
-) -> AppResult<bool> {
-    let Some(latest_change_id) = latest_change_id else {
-        return Ok(false);
-    };
-    if last_recorded_backup_change_id(conn, change_key, category)?
-        .is_some_and(|backup_change_id| backup_change_id >= latest_change_id)
-    {
-        return Ok(false);
-    }
-    Ok(!automatic_backup_is_current(conn, date_key, path_key, marker, category)? || latest_change_id > 0)
-}
-
-fn create_and_record_automatic_backup(
-    conn: &Connection,
-    password: &str,
-    category: &str,
-    date_key: &str,
-    path_key: &str,
-    change_key: &str,
-    marker: &str,
-    latest_change_id: i64,
-    progress: &mut dyn FnMut(BackupProgress),
-) -> AppResult<String> {
-    let path = create_automatic_backup(conn, password, category, progress)?;
-    set_setting(conn, date_key, marker)?;
-    set_setting(conn, path_key, &path)?;
-    set_setting(conn, change_key, &latest_change_id.to_string())?;
-    Ok(path)
-}
-
-pub fn run_due_automatic_backups_with_progress<F>(conn: &Connection, mut progress: F) -> AppResult<Vec<String>>
+pub fn run_due_automatic_backups_with_progress<F>(conn: &Connection, in_session: bool, mut progress: F) -> AppResult<Vec<String>>
 where
     F: FnMut(BackupProgress),
 {
-    let password = auto_backup_password(conn)?;
-    if password.is_empty() {
-        return Ok(Vec::new());
-    }
-
-    let today = chrono::Local::now().format("%Y-%m-%d").to_string();
-    let iso_week = chrono::Local::now().iso_week();
-    let week = format!("{}-W{:02}", iso_week.year(), iso_week.week());
-    let month = chrono::Local::now().format("%Y-%m").to_string();
-    let latest_change_id = latest_data_change_activity_id(conn)?;
-    let mut created = Vec::new();
-
-    if setting_bool(conn, "auto_backup_daily_enabled")?
-        && automatic_backup_needs_creation(
-            conn,
-            "auto_backup_last_daily",
-            "auto_backup_last_daily_path",
-            "auto_backup_last_daily_change_id",
-            &today,
-            "Daily",
-            latest_change_id,
-        )?
-    {
-        progress(backup_progress(2, "جاري إنشاء النسخة اليومية التلقائية..."));
-        create_and_record_automatic_backup(
-            conn,
-            &password,
-            "Daily",
-            "auto_backup_last_daily",
-            "auto_backup_last_daily_path",
-            "auto_backup_last_daily_change_id",
-            &today,
-            latest_change_id.unwrap_or_default(),
-            &mut progress,
-        )?;
-        created.push("يومي".to_string());
-    }
-
-    if setting_bool(conn, "auto_backup_weekly_enabled")?
-        && automatic_backup_needs_creation(
-            conn,
-            "auto_backup_last_weekly",
-            "auto_backup_last_weekly_path",
-            "auto_backup_last_weekly_change_id",
-            &week,
-            "Weekly",
-            latest_change_id,
-        )?
-    {
-        progress(backup_progress(2, "جاري إنشاء النسخة الأسبوعية التلقائية..."));
-        create_and_record_automatic_backup(
-            conn,
-            &password,
-            "Weekly",
-            "auto_backup_last_weekly",
-            "auto_backup_last_weekly_path",
-            "auto_backup_last_weekly_change_id",
-            &week,
-            latest_change_id.unwrap_or_default(),
-            &mut progress,
-        )?;
-        created.push("أسبوعي".to_string());
-    }
-
-    if setting_bool(conn, "auto_backup_monthly_enabled")?
-        && automatic_backup_needs_creation(
-            conn,
-            "auto_backup_last_monthly",
-            "auto_backup_last_monthly_path",
-            "auto_backup_last_monthly_change_id",
-            &month,
-            "Monthly",
-            latest_change_id,
-        )?
-    {
-        progress(backup_progress(2, "جاري إنشاء النسخة الشهرية التلقائية..."));
-        create_and_record_automatic_backup(
-            conn,
-            &password,
-            "Monthly",
-            "auto_backup_last_monthly",
-            "auto_backup_last_monthly_path",
-            "auto_backup_last_monthly_change_id",
-            &month,
-            latest_change_id.unwrap_or_default(),
-            &mut progress,
-        )?;
-        created.push("شهري".to_string());
-    }
-
-    Ok(created)
+    crate::backup_store::run_due_automatic_backups(conn, in_session, &mut progress)
 }
 
-fn validate_database(path: &Path) -> AppResult<()> {
+pub(crate) fn validate_database(path: &Path) -> AppResult<()> {
     let source_conn = Connection::open_with_flags(path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)?;
     validate_database_connection(&source_conn)
 }
@@ -3243,7 +3143,13 @@ fn validate_database_connection(source_conn: &Connection) -> AppResult<()> {
     Ok(())
 }
 
-fn validate_backup_references(database_path: &Path, staging: &Path) -> AppResult<()> {
+pub(crate) fn validate_backup_references(database_path: &Path, staging: &Path) -> AppResult<()> {
+    validate_backup_references_with(database_path, &|relative| staging.join("Data").join(relative).is_file())
+}
+
+/// Every file the database points to must be in the backup; `present` answers for a path
+/// relative to the data folder.
+pub(crate) fn validate_backup_references_with(database_path: &Path, present: &dyn Fn(&Path) -> bool) -> AppResult<()> {
     let conn = Connection::open(database_path)?;
     let mut references = Vec::<String>::new();
     let metadata_columns: Vec<String> = {
@@ -3313,17 +3219,23 @@ fn validate_backup_references(database_path: &Path, staging: &Path) -> AppResult
     }
     for reference in references {
         let relative = crate::files::safe_relative_path(&reference)?;
-        if !staging.join("Data").join(relative).is_file() {
-            return Err(AppError::Validation(format!("Backup is missing referenced file {reference}")));
+        if !present(&relative) {
+            return Err(AppError::Validation(format!("النسخة ينقصها ملف مرفق: {reference}")));
         }
     }
     Ok(())
 }
 
+#[cfg(test)]
 fn extract_and_validate_backup(plaintext: &[u8], staging: &Path) -> AppResult<BackupManifest> {
+    extract_and_validate_archive(std::io::Cursor::new(plaintext), staging)
+}
+
+/// Unpacks a full archive (format 2, or the inside of a format-4 export) into `staging` and
+/// checks it completely before anything live is touched.
+pub(crate) fn extract_and_validate_archive<R: Read + std::io::Seek>(reader: R, staging: &Path) -> AppResult<BackupManifest> {
     std::fs::create_dir_all(staging.join("Data")).map_err(|e| AppError::Other(e.to_string()))?;
-    let cursor = std::io::Cursor::new(plaintext);
-    let mut archive = zip::ZipArchive::new(cursor).map_err(|_| AppError::Validation("Backup archive is damaged".into()))?;
+    let mut archive = zip::ZipArchive::new(reader).map_err(|_| AppError::Validation("Backup archive is damaged".into()))?;
     if archive.len() > MAX_BACKUP_FILES + 1 {
         return Err(AppError::Validation("Backup contains too many files".into()));
     }
@@ -3376,7 +3288,7 @@ fn extract_and_validate_backup(plaintext: &[u8], staging: &Path) -> AppResult<Ba
 }
 
 // Exercise the real SQLite restore API in isolation before touching live data.
-fn trial_restore_database(source: &Path) -> AppResult<()> {
+pub(crate) fn trial_restore_database(source: &Path) -> AppResult<()> {
     let trial = tempfile::tempdir().map_err(|e| AppError::Other(e.to_string()))?;
     let mut conn = Connection::open(trial.path().join("trial.db"))?;
     conn.restore(rusqlite::MAIN_DB, source, None::<fn(rusqlite::backup::Progress)>)?;
@@ -3386,18 +3298,85 @@ fn trial_restore_database(source: &Path) -> AppResult<()> {
     validate_database_connection(&conn)
 }
 
+/// Which kind of backup a file is, from its first bytes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum BackupKind { DatabaseOnly, Full, Snapshot, FullExport }
+
+pub(crate) fn backup_kind(path: &Path) -> AppResult<BackupKind> {
+    let mut magic = [0u8; 9];
+    File::open(path).and_then(|mut file| file.read_exact(&mut magic))
+        .map_err(|_| AppError::Validation("تعذرت قراءة ملف النسخة الاحتياطية".into()))?;
+    match &magic {
+        m if m == BACKUP_MAGIC_V1 => Ok(BackupKind::DatabaseOnly),
+        m if m == BACKUP_MAGIC_V2 => Ok(BackupKind::Full),
+        m if m == crate::backup_store::SNAPSHOT_MAGIC => Ok(BackupKind::Snapshot),
+        m if m == crate::backup_store::STREAM_MAGIC => Ok(BackupKind::FullExport),
+        _ => Err(AppError::Validation("هذا الملف ليس نسخة احتياطية صالحة للبرنامج".into())),
+    }
+}
+
+/// Opens a backup of any supported kind into `staging` (database.db and Data/) and checks it
+/// completely: hashes, database integrity, every referenced file, and a trial restore.
+pub(crate) fn stage_backup(path: &Path, password: &str, staging: &Path) -> AppResult<()> {
+    match backup_kind(path)? {
+        BackupKind::DatabaseOnly => Err(AppError::Validation(
+            "هذه نسخة قديمة جدًا فيها قاعدة البيانات فقط بدون المرفقات، ولا يمكن استعادتها بأمان.".into(),
+        )),
+        BackupKind::Full => {
+            let size = std::fs::metadata(path).map_err(|e| AppError::Other(e.to_string()))?.len();
+            if size == 0 || size > MAX_BACKUP_SIZE {
+                return Err(AppError::Validation("ملف النسخة فارغ أو أكبر من المسموح لهذا النوع القديم من النسخ".into()));
+            }
+            let encrypted = std::fs::read(path).map_err(|e| AppError::Other(e.to_string()))?;
+            let (_, plaintext) = decrypt_backup(&encrypted, password)?;
+            extract_and_validate_archive(std::io::Cursor::new(plaintext), staging).map(|_| ())
+        }
+        BackupKind::Snapshot => crate::backup_store::materialize_snapshot(path, password, staging),
+        BackupKind::FullExport => {
+            // Next to the staging folder, not inside it: everything inside must be listed in the backup.
+            let plain = tempfile::NamedTempFile::new_in(staging.parent().unwrap_or(staging)).map_err(|e| AppError::Other(e.to_string()))?;
+            crate::backup_store::decrypt_stream_file(path, plain.as_file(), password)?;
+            let reader = plain.reopen().map_err(|e| AppError::Other(e.to_string()))?;
+            let result = extract_and_validate_archive(std::io::BufReader::new(reader), staging).map(|_| ());
+            drop(plain);
+            result
+        }
+    }
+}
+
 pub(crate) fn verify_written_backup(path: &Path, password: &str) -> AppResult<()> {
-    let size = std::fs::metadata(path).map_err(|e| AppError::Other(e.to_string()))?.len();
-    if size == 0 || size > MAX_BACKUP_SIZE {
-        return Err(AppError::Validation("The backup file is empty or too large".into()));
+    match backup_kind(path)? {
+        BackupKind::Snapshot => crate::backup_store::verify_snapshot_file(path, password),
+        BackupKind::DatabaseOnly => Err(AppError::Validation("Full backup verification requires a v2 backup".into())),
+        _ => {
+            let staging = tempfile::tempdir().map_err(|e| AppError::Other(e.to_string()))?;
+            stage_backup(path, password, staging.path())
+        }
     }
-    let encrypted = std::fs::read(path).map_err(|e| AppError::Other(e.to_string()))?;
-    let (legacy, plaintext) = decrypt_backup(&encrypted, password)?;
-    if legacy {
-        return Err(AppError::Validation("Full backup verification requires a v2 backup".into()));
+}
+
+/// Settings that belong to this computer's backups, not to the data: they are kept as they are
+/// when a backup is restored, so a restore never switches automatic backups off or loses the
+/// attachment store key. The marker of the last backed-up change is cleared, so the restored
+/// data is backed up again at the next opportunity.
+fn backup_settings_to_keep(conn: &Connection) -> AppResult<Vec<(String, String)>> {
+    let mut stmt = conn.prepare(
+        r"SELECT key,value FROM app_settings
+          WHERE (key LIKE 'auto\_backup\_%' ESCAPE '\' OR key LIKE 'backup\_%' ESCAPE '\')
+            AND key NOT LIKE '%change\_id' ESCAPE '\'",
+    )?;
+    let rows = stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?.collect::<rusqlite::Result<_>>()?;
+    Ok(rows)
+}
+
+fn put_back_backup_settings(conn: &Connection, kept: &[(String, String)]) -> AppResult<()> {
+    conn.execute(
+        r"DELETE FROM app_settings WHERE key LIKE 'auto\_backup\_%' ESCAPE '\' OR key LIKE 'backup\_%' ESCAPE '\'",
+        [],
+    )?;
+    for (key, value) in kept {
+        set_setting(conn, key, value)?;
     }
-    let staging = tempfile::tempdir().map_err(|e| AppError::Other(e.to_string()))?;
-    extract_and_validate_backup(&plaintext, staging.path())?;
     Ok(())
 }
 
@@ -3407,34 +3386,38 @@ where
 {
     // A restore replaces the users table too, so it is limited to System Admins.
     assert_permission(conn, user, "backups.restore")?;
-    progress(backup_progress(2, "جاري تجهيز عملية الاستعادة..."));
     let source = Path::new(source_path);
-    if source.extension().and_then(|e| e.to_str()).is_none_or(|e| !e.eq_ignore_ascii_case("autohrbak")) {
-        return Err(AppError::Validation("Select an encrypted .autohrbak backup file".into()));
+    progress(backup_progress(2, "جاري تجهيز عملية الاستعادة..."));
+    let result = if source.extension().and_then(|e| e.to_str()).is_none_or(|e| !e.eq_ignore_ascii_case("autohrbak")) {
+        Err(AppError::Validation("اختر ملف نسخة احتياطية بامتداد .autohrbak".into()))
+    } else {
+        restore_inner(conn, user, source, password, &mut progress)
+    };
+    if let Err(error) = &result {
+        // A failed restore is recorded too: it is the most sensitive operation in the program.
+        let reason = serde_json::to_string(error).unwrap_or_default();
+        log_audit(conn, Some(user), "RESTORE_BACKUP", Some("backup"), None, source.file_name().and_then(|n| n.to_str()), "Failure", Some(reason.trim_matches('"')));
     }
+    result
+}
+
+fn restore_inner(conn: &mut Connection, user: &str, source: &Path, password: &str, progress: &mut dyn FnMut(BackupProgress)) -> AppResult<()> {
     progress(backup_progress(6, "جاري فحص ملف النسخة الاحتياطية..."));
-    let metadata = std::fs::metadata(source).map_err(|_| AppError::Validation("The backup file could not be read".into()))?;
-    if !metadata.is_file() || metadata.len() == 0 || metadata.len() > MAX_BACKUP_SIZE {
-        return Err(AppError::Validation("The backup file is empty or too large".into()));
+    if !source.is_file() {
+        return Err(AppError::Validation("تعذرت قراءة ملف النسخة الاحتياطية".into()));
     }
-    progress(backup_progress(10, "جاري قراءة ملف النسخة الاحتياطية..."));
-    let encrypted = std::fs::read(source).map_err(|_| AppError::Validation("The backup file could not be read".into()))?;
-    progress(backup_progress(18, "جاري فك تشفير النسخة الاحتياطية..."));
-    let (is_legacy, plaintext) = decrypt_backup(&encrypted, password)?;
-    if is_legacy {
-        return Err(AppError::Validation("This legacy database-only backup cannot safely restore attachments. Use an AutoHR v2 full backup.".into()));
-    }
-    progress(backup_progress(28, "جاري فحص SHA-256 وفك الضغط وتجربة الاستعادة المؤقتة..."));
+    progress(backup_progress(12, "جاري فك التشفير وفحص الملفات وتجربة الاستعادة المؤقتة..."));
     let staging = tempfile::tempdir_in(crate::paths::data_root()).map_err(|e| AppError::Other(e.to_string()))?;
-    extract_and_validate_backup(&plaintext, staging.path())?;
-    progress(backup_progress(40, "جاري حفظ سجل التدقيق الحالي..."));
-    let audit: Vec<AuditSnapshotRow> = read_audit_rows(conn)?;
+    stage_backup(source, password, staging.path())?;
     progress(backup_progress(45, "جاري إنشاء نسخة أمان قبل الاستعادة..."));
     let mut backup_progress_mapper = |step: BackupProgress| {
         let mapped = 45 + (((step.percent as u16) * 18) / 100) as u8;
         progress(backup_progress(mapped.min(63), "جاري إنشاء نسخة أمان قبل الاستعادة..."));
     };
     create_backup_at(conn, user, password, "PreRestore", &mut backup_progress_mapper)?;
+    // Kept after the safety copy, so that its own entry is not lost.
+    let audit: Vec<AuditSnapshotRow> = read_audit_rows(conn)?;
+    let kept_settings = backup_settings_to_keep(conn)?;
     progress(backup_progress(65, "جاري تجهيز ملفات الاستعادة..."));
     let current_data = storage_path(conn);
     let data_root = crate::paths::data_root();
@@ -3446,16 +3429,23 @@ where
     progress(backup_progress(70, "جاري حفظ نسخة تراجع من قاعدة البيانات الحالية..."));
     conn.backup(rusqlite::MAIN_DB, &rollback_database, None::<fn(rusqlite::backup::Progress)>)?;
     std::fs::write(&restore_marker, b"AutoHR restore in progress").map_err(|e| AppError::Other(e.to_string()))?;
+    // From here on, any early exit must remove the marker: otherwise the next start would roll
+    // the database back over work done after this failed attempt.
+    let give_up = |error: AppError| {
+        std::fs::remove_file(&rollback_database).ok();
+        std::fs::remove_file(&restore_marker).ok();
+        error
+    };
     let staged_data = staging.path().join("Data");
     progress(backup_progress(76, "جاري استبدال المرفقات والملفات..."));
     if current_data.exists() {
-        std::fs::rename(&current_data, &rollback_data).map_err(|e| AppError::Other(e.to_string()))?;
+        std::fs::rename(&current_data, &rollback_data).map_err(|error| give_up(AppError::Validation(format!(
+            "تعذر استبدال مجلد المرفقات، ولم يتغير شيء. أغلق أي ملف مرفق مفتوح في برنامج آخر وأي نافذة لمجلد البيانات، ثم أعد المحاولة. ({error})"
+        ))))?;
     }
     if let Err(error) = std::fs::rename(&staged_data, &current_data) {
         if rollback_data.exists() { std::fs::rename(&rollback_data, &current_data).ok(); }
-        std::fs::remove_file(&rollback_database).ok();
-        std::fs::remove_file(&restore_marker).ok();
-        return Err(AppError::Other(error.to_string()));
+        return Err(give_up(AppError::Other(error.to_string())));
     }
     progress(backup_progress(86, "جاري استعادة قاعدة البيانات..."));
     // The seal triggers belong to the database being replaced; they are put back afterwards.
@@ -3467,15 +3457,14 @@ where
         if rollback_data.exists() { std::fs::rename(&rollback_data, &current_data).ok(); }
         conn.restore(rusqlite::MAIN_DB, &rollback_database, None::<fn(rusqlite::backup::Progress)>).ok();
         crate::integrity::attach(conn, false);
-        std::fs::remove_file(&rollback_database).ok();
-        std::fs::remove_file(&restore_marker).ok();
-        return Err(error);
+        return Err(give_up(error));
     }
     // A backup made on another computer, or before seals existed, is accepted by the System Admin
     // who restores it; a backup sealed on this computer keeps its own seals and is checked as is.
     if crate::integrity::attach(conn, false) == crate::integrity::State::Unapproved {
         crate::integrity::approve(conn, user, "restore")?;
     }
+    put_back_backup_settings(conn, &kept_settings)?;
     progress(backup_progress(94, "جاري إعادة ربط سجل التدقيق..."));
     for row in audit_rows_to_restore(conn, audit)? {
         conn.execute(
@@ -3636,10 +3625,10 @@ mod phase3_security_tests {
         set_setting(&conn, "auto_backup_daily_enabled", "1").unwrap();
         set_setting(&conn, "auto_backup_password", "strong-password").unwrap();
         // No data changes means no backup.
-        assert!(run_due_automatic_backups_with_progress(&conn, |_| {}).unwrap().is_empty());
+        assert!(run_due_automatic_backups_with_progress(&conn, false, |_| {}).unwrap().is_empty());
         conn.execute("INSERT INTO employees(id,full_name) VALUES(1,'Before change')", []).unwrap();
         log_activity(&conn, "testadmin", "CREATE_EMPLOYEE", Some("employee"), Some(1), None, None);
-        assert_eq!(run_due_automatic_backups_with_progress(&conn, |_| {}).unwrap(), vec!["يومي"]);
+        assert_eq!(run_due_automatic_backups_with_progress(&conn, false, |_| {}).unwrap(), vec!["يومي"]);
         // A plain-text password from an older release is re-saved protected once read.
         assert_ne!(get_setting(&conn, "auto_backup_password").unwrap().unwrap(), "strong-password");
         assert_eq!(auto_backup_password(&conn).unwrap(), "strong-password");
@@ -3651,29 +3640,37 @@ mod phase3_security_tests {
             log_activity(&conn, "testadmin", action, Some("employee"), Some(1), None, None);
         }
         log_activity(&conn, "testadmin", "CHANGE_SETTING", Some("settings"), None, Some("automatic_backups"), None);
-        assert!(run_due_automatic_backups_with_progress(&conn, |_| {}).unwrap().is_empty());
-        std::thread::sleep(std::time::Duration::from_millis(1100));
+        assert!(run_due_automatic_backups_with_progress(&conn, false, |_| {}).unwrap().is_empty());
         conn.execute("UPDATE employees SET full_name='After change' WHERE id=1", []).unwrap();
         log_activity(&conn, "testadmin", "UPDATE_EMPLOYEE", Some("employee"), Some(1), None, None);
-        assert_eq!(run_due_automatic_backups_with_progress(&conn, |_| {}).unwrap(), vec!["يومي"]);
+        // While someone works, the next backup waits for the interval (an hour by default)…
+        assert!(run_due_automatic_backups_with_progress(&conn, true, |_| {}).unwrap().is_empty());
+        // …and on sign-out it is taken at once, replacing today's file instead of adding one.
+        assert_eq!(run_due_automatic_backups_with_progress(&conn, false, |_| {}).unwrap(), vec!["يومي"]);
         let second_path = get_setting(&conn, "auto_backup_last_daily_path").unwrap().unwrap();
-        assert_ne!(first_path, second_path);
-        assert!(Path::new(&first_path).is_file());
-        let encrypted = std::fs::read(&second_path).unwrap();
-        let (_, plaintext) = decrypt_backup(&encrypted, "strong-password").unwrap();
+        assert_eq!(first_path, second_path);
+        assert_eq!(crate::backup_store::automatic_backups(&crate::paths::backup_root()).len(), 1);
         let staging = tempfile::tempdir().unwrap();
-        extract_and_validate_backup(&plaintext, staging.path()).unwrap();
+        stage_backup(Path::new(&second_path), "strong-password", staging.path()).unwrap();
         let restored = Connection::open(staging.path().join("database.db")).unwrap();
         let name: String = restored.query_row("SELECT full_name FROM employees WHERE id=1", [], |r| r.get(0)).unwrap();
         assert_eq!(name, "After change");
-        assert!(run_due_automatic_backups_with_progress(&conn, |_| {}).unwrap().is_empty());
+        assert!(run_due_automatic_backups_with_progress(&conn, false, |_| {}).unwrap().is_empty());
+        // An interval of zero means sign-out only.
+        conn.execute("UPDATE employees SET full_name='Interval off' WHERE id=1", []).unwrap();
+        log_activity(&conn, "testadmin", "UPDATE_EMPLOYEE", Some("employee"), Some(1), None, None);
+        set_setting(&conn, "backup_interval_minutes", "0").unwrap();
+        set_setting(&conn, "auto_backup_last_time", "2000-01-01 00:00").unwrap();
+        assert!(run_due_automatic_backups_with_progress(&conn, true, |_| {}).unwrap().is_empty());
+        set_setting(&conn, "backup_interval_minutes", "30").unwrap();
+        assert_eq!(run_due_automatic_backups_with_progress(&conn, true, |_| {}).unwrap(), vec!["يومي"]);
         conn.execute("UPDATE employees SET full_name='Disabled backup' WHERE id=1", []).unwrap();
         log_activity(&conn, "testadmin", "UPDATE_EMPLOYEE", Some("employee"), Some(1), None, None);
         set_setting(&conn, "auto_backup_daily_enabled", "0").unwrap();
-        assert!(run_due_automatic_backups_with_progress(&conn, |_| {}).unwrap().is_empty());
-        set_setting(&conn, "auto_backup_daily_enabled", "1").unwrap();
+        assert!(run_due_automatic_backups_with_progress(&conn, false, |_| {}).unwrap().is_empty());
+        set_setting(&conn, "auto_backup_enabled", "1").unwrap();
         set_setting(&conn, "auto_backup_password", "").unwrap();
-        assert!(run_due_automatic_backups_with_progress(&conn, |_| {}).unwrap().is_empty());
+        assert!(run_due_automatic_backups_with_progress(&conn, false, |_| {}).unwrap().is_empty());
     }
 
     fn backup_test_archive(hash_override: Option<&str>) -> Vec<u8> {

@@ -1,5 +1,5 @@
 // lib.rs — GCANS v2.0
-mod db; mod names; mod services; mod files; mod scanner; mod paths; mod storage; mod ai_detect; mod secure; mod ocr; mod ocr_parse; mod health; mod errlog; mod integrity;
+mod backup_store; mod db; mod names; mod services; mod files; mod scanner; mod paths; mod storage; mod ai_detect; mod secure; mod ocr; mod ocr_parse; mod health; mod errlog; mod integrity;
 mod scanner_commands;
 #[cfg(debug_assertions)]
 mod devseed;
@@ -968,7 +968,7 @@ async fn cmd_move_data_folder(window: Window, state: State<'_, DbState>, sess: S
     set_auto_backup_settings(&conn, &user, &data)
 }
 #[tauri::command]
-async fn cmd_run_due_auto_backups(window: Window, sess: State<'_, SessionState>) -> Result<Vec<String>, AppError> {
+async fn cmd_run_due_auto_backups(window: Window, sess: State<'_, SessionState>, in_session: Option<bool>) -> Result<Vec<String>, AppError> {
     // Only a signed-in session can trigger backups. Without one nothing could have changed
     // since the last run, so there is nothing due and the call quietly does nothing.
     if session_identity(&sess).is_err() { return Ok(Vec::new()); }
@@ -978,7 +978,10 @@ async fn cmd_run_due_auto_backups(window: Window, sess: State<'_, SessionState>)
         // up-to-date database, and quietly does nothing during setup.
         if !db::db_path().is_file() { return Ok(Vec::new()); }
         let conn = db::open_existing().map_err(AppError::from)?;
-        match run_due_automatic_backups_with_progress(&conn, move |progress| {
+        // The regular check while someone works is quiet: no progress window.
+        let quiet = in_session.unwrap_or(false);
+        match run_due_automatic_backups_with_progress(&conn, quiet, move |progress| {
+            if quiet { return; }
             let _ = progress_window.emit("auto-backup-progress", progress);
         }) {
             Ok(created) => Ok(created),

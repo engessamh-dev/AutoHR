@@ -318,26 +318,26 @@ fn check_backups(conn: &Connection) -> HealthItem {
         }
     };
 
-    let enabled: Vec<&str> = [("auto_backup_daily_enabled", "يومي"), ("auto_backup_weekly_enabled", "أسبوعي"), ("auto_backup_monthly_enabled", "شهري")]
-        .into_iter()
-        .filter(|(key, _)| setting(conn, key).as_deref() == Some("1"))
-        .map(|(_, label)| label)
-        .collect();
-    if enabled.is_empty() {
+    if !crate::services::auto_backup_enabled(conn).unwrap_or(false) {
         if status == "ok" { status = "warn"; }
         details.push("النسخ التلقائي: غير مفعّل".into());
     } else {
-        details.push(format!("النسخ التلقائي: {}", enabled.join("، ")));
+        let interval = crate::services::backup_interval_minutes(conn).unwrap_or(60);
+        details.push(if interval == 0 {
+            "النسخ التلقائي: نسخة لكل يوم عند الخروج".to_string()
+        } else {
+            format!("النسخ التلقائي: نسخة لكل يوم، تُحدَّث كل {interval} دقيقة أثناء العمل وعند الخروج")
+        });
         if setting(conn, "auto_backup_password").is_none() {
             if status == "ok" { status = "warn"; }
             details.push("النسخ التلقائي مفعّل لكن كلمة مروره غير محفوظة".into());
         }
     }
-    for (key, label) in [("auto_backup_last_daily", "آخر نسخة يومية"), ("auto_backup_last_weekly", "آخر نسخة أسبوعية"), ("auto_backup_last_monthly", "آخر نسخة شهرية")] {
-        if let Some(value) = setting(conn, key) {
-            details.push(format!("{label}: {value}"));
-        }
+    if let Some(value) = setting(conn, "auto_backup_last_time").or_else(|| setting(conn, "auto_backup_last_daily")) {
+        details.push(format!("آخر نسخة تلقائية: {value}"));
     }
+    let usage = crate::backup_store::usage(&crate::paths::backup_root());
+    details.push(format!("المساحة التي يشغلها مجلد النسخ: {:.1} MB", usage.bytes as f64 / 1_048_576.0));
     item("backups", "النسخ الاحتياطية", status, details)
 }
 
