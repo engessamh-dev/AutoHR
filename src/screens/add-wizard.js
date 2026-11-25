@@ -555,20 +555,24 @@ function openWizard({ user, employees, onCreated, resume = null }) {
     + state.members.reduce((n, m) => n + Object.values(m.values).filter(v => v.source && !isEmpty(v.value)).length, 0);
 
   /** How far a step is filled: its own fields with a value (not those another document filled). */
+  /**
+   * How far a step is filled: every field with a value counts, whichever document gave it (a
+   * passport's birth date read from the national card is not missing). A document step counts
+   * only once it has an image or a value of its own, so an untouched step shows nothing.
+   */
   function stepFill(s) {
-    if (s.photo) return { filled: state.photo ? 1 : 0, total: 1 };
+    if (s.photo) return { filled: state.photo ? 1 : 0, total: 1, missing: [] };
     if (s.id === "family") {
       const named = state.members.filter(m => !isEmpty(m.values.name?.value)).length;
-      return { filled: named, total: state.members.length };
+      return { filled: named, total: state.members.length, missing: [] };
     }
     const fields = s.id === "summary" ? MANUAL.filter(f => !f.optional) : s.fields ?? [];
-    const own = fields.filter(f => {
-      if (f.fixed) return !!department || !!state.docs[s.id]?.readings?.[f.key];
-      const entry = state.values[f.key];
-      if (isEmpty(entry?.value)) return false;
-      return s.id === "summary" || !entry.source || entry.edited || entry.source === s.id || !STEPS.some(o => o.id === entry.source && o.id !== s.id);
-    });
-    return { filled: own.length, total: fields.length };
+    const has = f => f.fixed ? !!department || !!state.docs[s.id]?.readings?.[f.key] : !isEmpty(state.values[f.key]?.value);
+    const started = s.id === "summary" || Object.keys(state.docs[s.id]?.images ?? {}).length > 0
+      || fields.some(f => { const e = state.values[f.key]; return !isEmpty(e?.value) && (e.source === s.id || !e.source); });
+    if (!started) return { filled: 0, total: fields.length, missing: [] };
+    const missing = fields.filter(f => !has(f)).map(f => f.label);
+    return { filled: fields.length - missing.length, total: fields.length, missing };
   }
 
   /** The side list: ✓ only when every field of the step is filled; otherwise how many are. */
@@ -576,15 +580,15 @@ function openWizard({ user, employees, onCreated, resume = null }) {
     return `<nav class="aw-stepper" aria-label="خطوات الإضافة"><p class="aw-stepper-title">المستمسكات بالترتيب</p>
       ${STEPS.map((s, i) => {
         const doc = state.docs[s.id];
-        const { filled, total } = stepFill(s);
+        const { filled, total, missing } = stepFill(s);
         const complete = total > 0 && filled === total;
         const skipped = doc?.skipped && !Object.keys(doc.images).length && !filled;
         const current = i === state.step;
         const cls = current ? "is-current" : complete ? "is-done" : filled ? "is-partial" : skipped ? "is-skipped" : "";
         const note = s.id === "family"
           ? (state.members.length ? `${state.members.length} أفراد` : "")
-          : complete ? "مكتمل" : filled ? `${filled} من ${total}` : skipped ? "تُخطّي" : s.required ? "إلزامي" : "";
-        return `<button type="button" class="aw-step ${cls}" data-go="${i}" ${i > 0 && !nationalDone() ? "disabled" : ""} title="${complete ? "كل حقول هذا المستمسك مملوءة" : filled ? `مُلئ ${filled} من ${total} حقول` : ""}">
+          : complete ? "مكتمل" : filled ? `ناقص ${missing.length}` : skipped ? "تُخطّي" : s.required ? "إلزامي" : "";
+        return `<button type="button" class="aw-step ${cls}" data-go="${i}" ${i > 0 && !nationalDone() ? "disabled" : ""} title="${complete ? "كل حقول هذا المستمسك مملوءة" : filled ? `حقول فارغة: ${missing.join("، ")}` : ""}">
           <i>${complete && !current ? "✓" : skipped && !current ? "–" : i + 1}</i><span>${s.title}</span><small>${note}</small></button>`;
       }).join("")}
       <div class="aw-progress">الخطوة ${state.step + 1} من ${STEPS.length}<div class="aw-bar"><i style="width:${(state.step + 1) / STEPS.length * 100}%"></i></div></div>

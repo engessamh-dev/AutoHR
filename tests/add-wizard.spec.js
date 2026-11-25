@@ -491,10 +491,29 @@ test("a step shows ✓ only when all its fields are filled; visiting it is not e
   await steps.nth(5).click();
   // National: some fields only (front side) → a count, no ✓.
   await expect(steps.nth(0)).toHaveClass(/is-partial/);
-  await expect(steps.nth(0).locator("small")).toContainText("من 11");
+  await expect(steps.nth(0).locator("small")).toHaveText(/^ناقص \d+$/);
+  await expect(steps.nth(0)).toHaveAttribute("title", /حقول فارغة: .*اسم الأم/);
   // Ministry: every field read → ✓.
   await expect(steps.nth(6)).toHaveClass(/is-done/);
   await expect(steps.nth(6).locator("i")).toHaveText("✓");
+});
+
+test("a passport whose birth date and gender came from the national card is complete, not «5 من 7»", async ({ page }) => {
+  await page.evaluate(() => {
+    const f = (key, value) => ({ key, value, confidence: 0.95, source: "mrz" });
+    window.imageReads["pp.jpg"] = { document: "passport", warnings: [], fields: [f("latin_given", "SAMER KHALID ABDULLAH"), f("latin_surname", "ALJUBOURI"), f("passport_no", "A00000009"), f("passport_type", "P"), f("issue_date", "2023-01-01"), f("expiry_date", "2031-01-01"), f("birthdate", "1985-03-14"), f("gender", "ذكر")] };
+  });
+  await page.click('[data-choice="docs"]');
+  const steps = page.locator(".aw-step");
+  await pick(page, "national", "front.jpg");
+  await pick(page, "national", "back.jpg", "back");
+  // Untouched: the national card's birth date does not make the passport look half-filled.
+  await expect(steps.nth(2).locator("small")).toHaveText("");
+  await steps.nth(2).click();
+  await pick(page, "passport", "pp.jpg", "page");
+  await steps.nth(3).click();
+  await expect(steps.nth(2)).toHaveClass(/is-done/);
+  await expect(steps.nth(2).locator("small")).toHaveText("مكتمل");
 });
 
 test("residence card: the printed serial is read, handwritten fields are flagged to copy from the image and saved", async ({ page }) => {
