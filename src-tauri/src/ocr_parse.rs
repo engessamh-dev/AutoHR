@@ -24,6 +24,9 @@ pub struct ReadResult {
     pub warnings: Vec<String>,
 }
 
+/// Values the MRZ carries that are also printed: a disagreement between the two is reported.
+const MRZ_CHECKED: &[(&str, &str)] = &[("birthdate", "تاريخ الولادة"), ("expiry_date", "تاريخ النفاذ"), ("gender", "الجنس"), ("national_no", "الرقم الوطني")];
+
 impl ReadResult {
     fn get(&self, key: &str) -> Option<&Field> { self.fields.iter().find(|f| f.key == key) }
 
@@ -33,8 +36,16 @@ impl ReadResult {
             return;
         }
         match self.fields.iter_mut().find(|f| f.key == key) {
-            // An MRZ or QR value that passed its check wins over printed text.
-            Some(existing) if existing.source != "text" && existing.confidence >= confidence => {}
+            // An MRZ or QR value that passed its check wins over printed text; printed text that
+            // says otherwise is named, so the card can be looked at.
+            Some(existing) if existing.source != "text" && existing.confidence >= confidence => {
+                if source == "text" && existing.source == "mrz" && existing.value != value {
+                    if let Some(label) = MRZ_CHECKED.iter().find(|(k, _)| *k == key).map(|(_, l)| *l) {
+                        let (printed, strip) = (value.clone(), existing.value.clone());
+                        self.warnings.push(format!("{label} المطبوع «{printed}» يختلف عن الشريط السفلي «{strip}»: اعتمدنا الشريط السفلي، قارنه بالبطاقة."));
+                    }
+                }
+            }
             Some(existing) => *existing = Field { key: key.into(), value, confidence, source },
             None => self.fields.push(Field { key: key.into(), value, confidence, source }),
         }
@@ -46,6 +57,27 @@ impl ReadResult {
 
 /// Arabic normalisation for matching labels: hamza forms, ta marbuta, alef maqsura, Persian
 /// letters the recogniser may pick, diacritics and tatweel.
+/// Where on the image each printed value was read: (key, line box). Values from the MRZ or a QR
+/// code are not located. A date or number is matched by its digits, a name by its words.
+pub fn locate(result: &ReadResult, lines: &[Line]) -> Vec<(String, [f32; 4])> {
+    let digits = |t: &str| ascii_digits(t).chars().filter(char::is_ascii_digit).collect::<String>();
+    result
+        .fields
+        .iter()
+        .filter(|f| f.source == "text")
+        .filter_map(|f| {
+            let wanted_digits = digits(&f.value);
+            let line = if wanted_digits.len() >= 4 {
+                lines.iter().find(|l| digits(&l.text).contains(&wanted_digits))
+            } else {
+                let words: Vec<String> = f.value.split(|c: char| c.is_whitespace() || c == '-').filter(|w| !w.is_empty()).map(normalize).collect();
+                (!words.is_empty()).then(|| lines.iter().find(|l| { let t = normalize(&l.text); words.iter().all(|w| t.contains(w.as_str())) })).flatten()
+            }?;
+            Some((f.key.clone(), line.bbox))
+        })
+        .collect()
+}
+
 /// The reader's mark for a thin separator between letters (`ocr::SEPARATOR`).
 const SEP: char = '\u{2010}';
 
@@ -1932,5 +1964,54 @@ mod tests {
         assert!(mother.confidence < 0.8, "guessed by position: offered for review");
         assert_eq!(r.get("mother_father").unwrap().value, "ناصر");
         assert_eq!(r.get("surname").unwrap().value, "الساعدي");
+    }
+
+    #[test]
+    fn printed_birth_date_that_disagrees_with_the_mrz_is_reported() {
+        let (l1, l2) = td1();
+        let lines = vec![line("تاريخ الولادة رۆژی لەدایک بوون 1990/01/07", 0.), line(&l1, 200.), line(&l2, 215.)];
+        let r = parse(&lines);
+        assert_eq!(r.get("birthdate").unwrap().value, "1990-01-01");
+        assert_eq!(r.get("birthdate").unwrap().source, "mrz");
+        assert!(r.warnings.iter().any(|w| w.contains("تاريخ الولادة") && w.contains("1990-01-07")), "{:?}", r.warnings);
+        // Agreeing values give no warning.
+        let lines = vec![line("تاريخ الولادة رۆژی لەدایک بوون 1990/01/01", 0.), line(&l1, 200.), line(&l2, 215.)];
+        assert!(parse(&lines).warnings.is_empty());
+    }
+
+    #[test]
+    fn printed_values_are_located_on_their_lines() {
+        let lines = vec![line("الاسم ناو كريم", 0.), line("الاب باوك سالم", 20.), line("100000000001", 40.)];
+        let r = parse(&lines);
+        let at: std::collections::HashMap<_, _> = locate(&r, &lines).into_iter().collect();
+        assert_eq!(at["first"][1], 0.);
+        assert_eq!(at["father"][1], 20.);
+        assert_eq!(at["national_no"][1], 40.);
+    }
+
+    #[test]
+    fn ministry_id_arabic_side_with_split_boxes() {
+        // Made-up values; label and value parts in separate boxes on each row, as the reader gives them.
+        let b = |t: &str, x0: f32, y: f32, x1: f32| Line { text: t.into(), confidence: 0.95, bbox: [x0, y, x1, y + 70.] };
+        let lines = vec![
+            b("جمهورية العراق", 900., 10., 1250.), b("وزارة النقل", 170., 10., 400.),
+            b("الشركة العامة لخدمات", 600., 250., 1050.),
+            b("سالم", 700., 330., 830.), b("كريم جواد", 830., 330., 1110.), b("الأسم", 1115., 330., 1300.),
+            b("الصيانة", 600., 410., 800.), b("قسم هندسة", 790., 410., 1110.), b("الدائرة", 1100., 410., 1300.),
+            b("العنوان الوظيفي مهندس أقدم", 300., 495., 1310.),
+            b("200300400", 650., 575., 1010.), b("رقم الهوية", 1015., 575., 1300.),
+            b("2023/01/15", 580., 660., 930.), b("تاريخ الأصدارة", 945., 660., 1300.),
+            b("2028/01/14", 590., 740., 940.), b("تاريخ النفاذة", 990., 740., 1300.),
+            b("الدائرة الإدارية", 190., 785., 500.),
+        ];
+        let r = parse(&lines);
+        assert_eq!(r.document, "ministry_badge");
+        let v = |k: &str| r.get(k).map(|f| f.value.clone()).unwrap_or_default();
+        assert_eq!((v("first"), v("father"), v("grandfather")), ("كريم".into(), "جواد".into(), "سالم".into()));
+        assert_eq!(v("department"), "قسم هندسة الصيانة");
+        assert_eq!(v("job_title"), "مهندس أقدم");
+        assert_eq!(v("doc_number"), "200300400");
+        assert_eq!(v("issue_date"), "2023-01-15");
+        assert_eq!(v("expiry_date"), "2028-01-14");
     }
 }
