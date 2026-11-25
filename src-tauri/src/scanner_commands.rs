@@ -389,7 +389,7 @@ pub(crate) async fn cmd_image_preview(
         authorize(&conn, &sess, "employees.create")?;
         let upload = files::validate_upload(&source_path, false, true, 25 * 1024 * 1024)?;
         if !upload.mime_type.starts_with("image/") {
-            return Err(AppError::Validation("الصورة الشخصية: JPEG أو PNG أو WebP".into()));
+            return Err(AppError::Validation("اختر صورة JPEG أو PNG أو WebP".into()));
         }
     }
     tauri::async_runtime::spawn_blocking(move || {

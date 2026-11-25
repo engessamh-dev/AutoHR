@@ -55,8 +55,9 @@ const STEPS = [
       { key: "birthdate", label: "تاريخ الولادة", ocr: "birthdate", date: true },
       { key: "gender", label: "الجنس", ocr: "gender", options: GENDERS },
     ] },
-  { id: "ministry", title: "هوية وزارة النقل", short: "هوية الوزارة", sides: ["front"],
-    hint: "الوجه العربي يكفي: منه القسم والعنوان الوظيفي ورقم الهوية ونفاذها، ويُطابَق الاسم مع البطاقة الوطنية",
+  { id: "ministry", title: "هوية وزارة النقل", short: "هوية الوزارة", sides: ["front", "back"],
+    sideLabels: { front: "الوجه العربي", back: "الوجه الإنكليزي" }, keepOnly: ["back"],
+    hint: "تُقرأ البيانات من الوجه العربي: القسم والعنوان الوظيفي ورقم الهوية ونفاذها، ويُطابَق الاسم مع البطاقة الوطنية. الوجه الإنكليزي يُحفظ مرفقًا فقط",
     fields: [
       { key: "job_title", label: "العنوان الوظيفي", ocr: "job_title" },
       { key: "department", label: "القسم", ocr: "department", list: "departments" },
@@ -118,6 +119,9 @@ const RELATIONS = [["spouse", "زوج / زوجة"], ["son", "ابن"], ["daughte
 // What the family member's «صلة القرابة» stores.
 const STORED_RELATION = { son: "ابن", daughter: "ابنة", father: "أب", mother: "أم", brother: "أخ", sister: "أخت", other: "أخرى" };
 const SIDE_LABEL = { front: "الوجه الأمامي", back: "الوجه الخلفي", page: "صفحة البيانات" };
+const sideLabel = (slot, side) => STEPS.find(s => s.id === slot)?.sideLabels?.[side] ?? SIDE_LABEL[side];
+/** A side kept as an attachment only, never read (the ministry ID's English side). */
+const keptOnly = (slot, side) => !!STEPS.find(s => s.id === slot)?.keepOnly?.includes(side);
 const UPLOAD = {
   national: (id, side, path) => api.wizardUpload("cmd_upload_national_card_attachment", { employeeId: id, side, sourcePath: path }),
   passport: (id, _side, path) => api.wizardUpload("cmd_upload_passport_attachment", { employeeId: id, sourcePath: path }),
@@ -644,10 +648,12 @@ function openWizard({ user, employees, onCreated, resume = null }) {
   }
 
   function slotHtml(slot, side, image, busy) {
-    if (busy?.[side]) return `<div class="aw-pic is-busy"><div class="aw-drop"><span class="aw-spinner" aria-hidden="true"></span><b>جارٍ قراءة ${SIDE_LABEL[side]}…</b></div></div>`;
-    if (image) return `<div class="aw-pic"><div class="aw-thumb"><img src="${image.url}" alt="${SIDE_LABEL[side]}" data-slot="${slot}" data-side="${side}"><span class="aw-thumb-cap">${SIDE_LABEL[side]}<em>${image.count ? `✓ قُرئ ${image.count}` : "لم يُقرأ شيء"}</em></span></div>
+    const label = sideLabel(slot, side);
+    const kept = keptOnly(slot, side);
+    if (busy?.[side]) return `<div class="aw-pic is-busy"><div class="aw-drop"><span class="aw-spinner" aria-hidden="true"></span><b>${kept ? "جارٍ تحميل" : "جارٍ قراءة"} ${label}…</b></div></div>`;
+    if (image) return `<div class="aw-pic"><div class="aw-thumb"><img src="${image.url}" alt="${label}" data-slot="${slot}" data-side="${side}"><span class="aw-thumb-cap">${label}<em>${kept ? "✓ يُحفظ مرفقًا" : image.count ? `✓ قُرئ ${image.count}` : "لم يُقرأ شيء"}</em></span></div>
       <div class="aw-pic-actions"><button type="button" class="btn-secondary" data-pick="${slot}" data-side="${side}">استبدال</button><button type="button" class="btn-secondary" data-remove="${slot}" data-side="${side}">إزالة</button></div></div>`;
-    return `<div class="aw-pic"><div class="aw-drop" data-slot="${slot}" data-side="${side}"><b>${SIDE_LABEL[side]}</b>
+    return `<div class="aw-pic"><div class="aw-drop" data-slot="${slot}" data-side="${side}"><b>${label}</b>${kept ? "<small>يُحفظ مرفقًا ولا يُقرأ</small>" : ""}
       <div class="aw-drop-actions"><button type="button" class="btn-primary" data-pick="${slot}" data-side="${side}">اختيار صورة من الحاسبة</button><button type="button" class="btn-secondary" data-scan="${slot}" data-side="${side}">مسح بالماسح</button></div>
       <small>أو اسحب الصورة إلى هنا · JPG · PNG · WebP</small></div></div>`;
   }
@@ -1112,6 +1118,21 @@ function openWizard({ user, employees, onCreated, resume = null }) {
     // Each side reads on its own: the other side can be chosen while this one is read.
     holder.busy[side] = true;
     render();
+    if (keptOnly(slot, side)) {
+      // Stored as the second attachment only: shown, not read.
+      try {
+        const bytes = await api.imagePreview(path);
+        URL.revokeObjectURL(holder.images[side]?.url ?? "");
+        holder.images[side] = { path, url: URL.createObjectURL(new Blob([new Uint8Array(bytes)], { type: "image/jpeg" })), count: 0, kept: true };
+        holder.skipped = false;
+      } catch (error) {
+        showToast(error?.message ?? String(error || "تعذّر فتح الصورة"), "error");
+      } finally {
+        delete holder.busy[side];
+        render();
+      }
+      return;
+    }
     try {
       const reading = await api.readImageFields(path);
       const old = holder.images[side];
@@ -1210,7 +1231,7 @@ function openWizard({ user, employees, onCreated, resume = null }) {
     if (photo && !photo.uploaded) out.push({ image: photo, label: "الصورة الشخصية", task: () => api.uploadEmployeePhotoCrop(id, photo.path, photo.turns, photo.rect) });
     for (const step of STEPS.filter(st => st.sides)) {
       for (const [side, image] of Object.entries(state.docs[step.id].images)) {
-        if (!image.uploaded) out.push({ image, label: `${step.title} (${SIDE_LABEL[side]})`, task: () => UPLOAD[step.id](id, side, image.path) });
+        if (!image.uploaded) out.push({ image, label: `${step.title} (${sideLabel(step.id, side)})`, task: () => UPLOAD[step.id](id, side, image.path) });
       }
     }
     for (const [index, member] of spouses.entries()) {

@@ -289,7 +289,7 @@ test("the employee can be saved from any step once the national card is complete
   await expect(page.locator(".aw-overlay")).toHaveCount(0);
 });
 
-test("ministry ID: one Arabic side fills department and job, and its name is checked against the national card", async ({ page }) => {
+test("ministry ID: the Arabic side fills department and job and its name is checked; the English side is kept, not read", async ({ page }) => {
   await page.evaluate(() => {
     const f = (key, value) => ({ key, value, confidence: 0.95, source: "text" });
     window.imageReads["mot-same.jpg"] = { document: "ministry_badge", warnings: [], fields: [f("first", "سامر"), f("father", "خالد"), f("grandfather", "عبد الله"), f("department", "قسم هندسة الصيانة"), f("job_title", "مهندس أقدم"), f("doc_number", "200300400"), f("expiry_date", "2028-01-14")] };
@@ -301,14 +301,23 @@ test("ministry ID: one Arabic side fills department and job, and its name is che
   await page.click("[data-next]");
   await page.click("[data-skip]");
   await page.click("[data-skip]");
-  await expect(page.locator('[data-pick="ministry"]')).toHaveCount(1);
+  await expect(page.locator('[data-pick="ministry"]')).toHaveCount(2);
+  await expect(page.locator('.aw-drop[data-slot="ministry"] b')).toHaveText(["الوجه العربي", "الوجه الإنكليزي"]);
   await pick(page, "ministry", "mot-same.jpg");
+  // The English side: the same data, kept as the second attachment without reading it.
+  await page.evaluate(() => { window.openQueue = ["mot-en.jpg"]; });
+  await page.click('[data-pick="ministry"][data-side="back"]');
+  await expect(page.locator(".aw-thumb-cap", { hasText: "الوجه الإنكليزي" })).toContainText("يُحفظ مرفقًا");
+  expect(await page.evaluate(() => window.calls.some(c => c.command === "cmd_read_image_fields" && c.args.sourcePath === "mot-en.jpg"))).toBe(false);
   await expect(page.locator('[data-key="department"]')).toHaveValue("قسم هندسة الصيانة");
   await expect(page.locator('[data-key="job_title"]')).toHaveValue("مهندس أقدم");
   await expect(page.locator(".aw-note.is-ok", { hasText: "يطابق البطاقة الوطنية" })).toBeVisible();
   await page.evaluate(() => { window.openQueue = ["mot-other.jpg"]; });
   await page.click('[data-pick="ministry"][data-side="front"]');
   await expect(page.locator(".aw-other")).toContainText("هذا المستمسك باسم شخص آخر: «كريم خالد عبد الله»");
+  await page.locator(".aw-other").getByRole("button", { name: "هو للموظف نفسه" }).click();
+  await page.click("[data-save-now]");
+  await expect.poll(() => page.evaluate(() => window.calls.filter(c => c.command === "cmd_upload_ministry_badge_attachment").map(c => [c.args.side, c.args.sourcePath]))).toEqual([["front", "mot-other.jpg"], ["back", "mot-en.jpg"]]);
 });
 
 test("another person's document: red warning with replace or confirm; a misread letter only asks to compare", async ({ page }) => {
