@@ -52,6 +52,13 @@ npx tauri signer generate -w "$env:USERPROFILE\.tauri\autohr-updater.key"
    pre-release), and attach the installer, the `.sig` and `latest.json`.
    Since 1.0.5 the app reads `https://github.com/engessamh-dev/CNSArch-releases/releases/latest/download/latest.json`.
    The source repository `engessamh-dev/AutoHR` can stay private.
+5. **«ما الجديد» (what's new):** write the notes in the **description** of that same release
+   `v<version>` on GitHub, in simple Arabic, one point per line starting with `- `
+   (a line starting with `## ` becomes a heading). Since 1.1.0 the app shows this text once,
+   on the first sign-in after updating, and from «حول النظام» → «ما الجديد في هذا الإصدار».
+   It can be edited on GitHub at any time (Edit release) without a new build.
+   Also add the same points to `src/whats-new.json` before building: the app shows that copy
+   when it has no internet. The short `notes` in `latest.json` appear in the update prompt.
 
 ### Transition from 1.0.3
 
