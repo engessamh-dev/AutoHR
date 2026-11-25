@@ -52,11 +52,11 @@ const STEPS = [
       { key: "birthdate", label: "تاريخ الولادة", ocr: "birthdate", date: true },
       { key: "gender", label: "الجنس", ocr: "gender", options: GENDERS },
     ] },
-  { id: "ministry", title: "هوية وزارة النقل", short: "هوية الوزارة", sides: ["front", "back"],
-    hint: "منها العنوان الوظيفي ورقم الهوية ونفاذها",
+  { id: "ministry", title: "هوية وزارة النقل", short: "هوية الوزارة", sides: ["front"],
+    hint: "الوجه العربي يكفي: منه القسم والعنوان الوظيفي ورقم الهوية ونفاذها، ويُطابَق الاسم مع البطاقة الوطنية",
     fields: [
       { key: "job_title", label: "العنوان الوظيفي", ocr: "job_title" },
-      { key: "department", label: "القسم", list: "departments" },
+      { key: "department", label: "القسم", ocr: "department", list: "departments" },
       { key: "ministry_badge_no", label: "رقم الهوية", ocr: "doc_number", ltr: true },
       { key: "ministry_badge_issue_date", label: "تاريخ الإصدار", ocr: "issue_date", date: true },
       { key: "ministry_badge_expiry", label: "تاريخ النفاذ", ocr: "expiry_date", date: true },
@@ -459,7 +459,23 @@ function openWizard({ user, employees, onCreated, resume = null }) {
     const readings = Object.values(doc.readings).length ? doc.readings : null;
     return `<div class="aw-pics">${step.sides.map(side => slotHtml(step.id, side, doc.images[side], doc.busy)).join("")}</div>
       <div class="aw-fields">${step.fields.map(f => fieldHtml(f, state.values, readings, step.id)).join("")}
+      ${step.id === "national" ? "" : nameCheckHtml(doc)}
       ${(doc.warnings ?? []).map(w => `<div class="aw-field is-full aw-note is-warn">⚠ ${escHtml(w)}</div>`).join("")}</div>`;
+  }
+
+  /** A document that prints the employee's name (first, father, grandfather): compared with the
+   *  name from the national card, part by part, as far as the document goes. */
+  function nameCheckHtml(doc) {
+    const fields = Object.values(doc.results ?? {}).flatMap(r => r.fields ?? []);
+    const read = Object.fromEntries(["first", "father", "grandfather", "surname"].map(k => [k, fields.find(f => f.key === k)?.value]).filter(([, v]) => v));
+    const parts = Object.keys(read);
+    const kept = state.values.full_name?.value ?? {};
+    if (!parts.length || isEmpty(kept)) return "";
+    const norm = v => text(v).replace(/[أإآ]/g, "ا").replace(/ة/g, "ه").replace(/[ىی]/g, "ي").replace(/\s+/g, " ");
+    const shownRead = parts.map(k => read[k]).join(" ");
+    const shownKept = parts.map(k => kept[k] ?? "").join(" ");
+    if (parts.every(k => norm(read[k]) === norm(kept[k]))) return `<div class="aw-field is-full aw-note is-ok">✓ الاسم في هذا المستمسك «${escHtml(shownRead)}» يطابق البطاقة الوطنية</div>`;
+    return `<div class="aw-field is-full aw-note is-warn">⚠ الاسم في هذا المستمسك «${escHtml(shownRead)}» يختلف عن البطاقة الوطنية «${escHtml(shownKept.trim())}»: تأكد أنه للموظف نفسه</div>`;
   }
 
   function memberHtml(member, index) {

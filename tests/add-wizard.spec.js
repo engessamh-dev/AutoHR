@@ -260,3 +260,23 @@ test("the employee can be saved from any step once there is a name; missing docu
   await expect(page.locator(".aw-overlay")).toHaveCount(0);
   await expect(page.locator("#toast-msg")).toContainText("لم تُرفع بعد: جواز السفر، هوية وزارة النقل");
 });
+
+test("ministry ID: one Arabic side fills department and job, and its name is checked against the national card", async ({ page }) => {
+  await page.evaluate(() => {
+    const f = (key, value) => ({ key, value, confidence: 0.95, source: "text" });
+    window.imageReads["mot-same.jpg"] = { document: "ministry_badge", warnings: [], fields: [f("first", "سامر"), f("father", "خالد"), f("grandfather", "عبد الله"), f("department", "قسم هندسة الصيانة"), f("job_title", "مهندس أقدم"), f("doc_number", "200300400"), f("expiry_date", "2028-01-14")] };
+    window.imageReads["mot-other.jpg"] = { document: "ministry_badge", warnings: [], fields: [f("first", "كريم"), f("father", "خالد"), f("grandfather", "عبد الله")] };
+  });
+  await page.click('[data-choice="docs"]');
+  await pick(page, "national", "front.jpg");
+  await page.click("[data-next]");
+  await page.click("[data-skip]");
+  await expect(page.locator('[data-pick="ministry"]')).toHaveCount(1);
+  await pick(page, "ministry", "mot-same.jpg");
+  await expect(page.locator('[data-key="department"]')).toHaveValue("قسم هندسة الصيانة");
+  await expect(page.locator('[data-key="job_title"]')).toHaveValue("مهندس أقدم");
+  await expect(page.locator(".aw-note.is-ok", { hasText: "يطابق البطاقة الوطنية" })).toBeVisible();
+  await page.evaluate(() => { window.openQueue = ["mot-other.jpg"]; });
+  await page.click('[data-pick="ministry"][data-side="front"]');
+  await expect(page.locator(".aw-note.is-warn", { hasText: "يختلف عن البطاقة الوطنية" })).toContainText("كريم خالد عبد الله");
+});

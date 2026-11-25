@@ -1988,4 +1988,30 @@ mod tests {
         assert_eq!(at["father"][1], 20.);
         assert_eq!(at["national_no"][1], 40.);
     }
+
+    #[test]
+    fn ministry_id_arabic_side_with_split_boxes() {
+        // Made-up values; label and value parts in separate boxes on each row, as the reader gives them.
+        let b = |t: &str, x0: f32, y: f32, x1: f32| Line { text: t.into(), confidence: 0.95, bbox: [x0, y, x1, y + 70.] };
+        let lines = vec![
+            b("جمهورية العراق", 900., 10., 1250.), b("وزارة النقل", 170., 10., 400.),
+            b("الشركة العامة لخدمات", 600., 250., 1050.),
+            b("سالم", 700., 330., 830.), b("كريم جواد", 830., 330., 1110.), b("الأسم", 1115., 330., 1300.),
+            b("الصيانة", 600., 410., 800.), b("قسم هندسة", 790., 410., 1110.), b("الدائرة", 1100., 410., 1300.),
+            b("العنوان الوظيفي مهندس أقدم", 300., 495., 1310.),
+            b("200300400", 650., 575., 1010.), b("رقم الهوية", 1015., 575., 1300.),
+            b("2023/01/15", 580., 660., 930.), b("تاريخ الأصدارة", 945., 660., 1300.),
+            b("2028/01/14", 590., 740., 940.), b("تاريخ النفاذة", 990., 740., 1300.),
+            b("الدائرة الإدارية", 190., 785., 500.),
+        ];
+        let r = parse(&lines);
+        assert_eq!(r.document, "ministry_badge");
+        let v = |k: &str| r.get(k).map(|f| f.value.clone()).unwrap_or_default();
+        assert_eq!((v("first"), v("father"), v("grandfather")), ("كريم".into(), "جواد".into(), "سالم".into()));
+        assert_eq!(v("department"), "قسم هندسة الصيانة");
+        assert_eq!(v("job_title"), "مهندس أقدم");
+        assert_eq!(v("doc_number"), "200300400");
+        assert_eq!(v("issue_date"), "2023-01-15");
+        assert_eq!(v("expiry_date"), "2028-01-14");
+    }
 }
