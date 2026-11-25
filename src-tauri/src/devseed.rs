@@ -418,25 +418,28 @@ fn attach_pictures(conn: &Connection, pics: &Path, id: i64, index: usize, p: &Pe
 
 fn seed_archive(conn: &Connection, pics: &Path, ids: &[i64]) -> AppResult<usize> {
     let emp = |i: usize| ids.get(i).copied().into_iter().collect::<Vec<_>>();
-    // title, number, days ago, issuer, linked employees, pages attached, outgoing
+    // The archive form's columns (documents.js): title = الجهة المصدرة, doc_number = إلى,
+    // issuer = الموضوع, doc_count = العدد.
+    // subject, number, days ago, from (incoming) or to (outgoing), linked employees, pages, outgoing
     let docs: Vec<(&str, &str, i64, &str, Vec<i64>, usize, bool)> = vec![
         ("أمر إداري بتعيين موظف جديد", "ت/101", 5, "قسم الموارد البشرية", emp(5), 1, false),
-        ("كتاب شكر وتقدير", "ش/214", 20, "مكتب المدير العام", [emp(0), emp(2)].concat(), 2, false),
-        ("طلب إجازة اعتيادية", "ج/77", 9, "شعبة الذاتية", emp(3), 1, false),
-        ("تعميم بتحديث البيانات الشخصية", "ع/12", 33, "الدائرة الإدارية", vec![], 3, false),
-        ("أمر نقل إلى قسم آخر", "ن/58", 60, "قسم الموارد البشرية", emp(9), 0, false),
-        ("كتاب استفسار عن باج المطار", "م/301", 2, "سلطة الطيران المدني", emp(2), 1, false),
+        ("شكر وتقدير", "ش/214", 20, "مكتب المدير العام", [emp(0), emp(2)].concat(), 2, false),
+        ("منح إجازة اعتيادية", "ج/77", 9, "شعبة الذاتية", emp(3), 1, false),
+        ("تحديث البيانات الشخصية للموظفين", "ع/12", 33, "الدائرة الإدارية", vec![], 3, false),
+        ("نقل موظف إلى قسم آخر", "ن/58", 60, "قسم الموارد البشرية", emp(9), 0, false),
+        ("استفسار عن باج دخول المطار", "م/301", 2, "سلطة الطيران المدني", emp(2), 1, false),
         ("محضر اجتماع لجنة المشتريات", "ل/9", 90, "لجنة المشتريات", vec![], 0, false),
-        ("طلب تجديد هوية وزارة النقل", "ص/45", 3, "شعبة الذاتية", emp(9), 1, true),
-        ("إشعار مباشرة بالعمل", "ص/46", 7, "قسم الموارد البشرية", emp(5), 1, true),
-        ("كتاب إلى مديرية الجوازات", "ص/52", 15, "مكتب المدير العام", emp(6), 2, true),
-        ("جواب على استفسار", "ص/60", 40, "الدائرة الإدارية", vec![], 0, true),
+        ("تجديد هوية وزارة النقل", "ص/45", 3, "وزارة النقل", emp(9), 1, true),
+        ("إشعار مباشرة بالعمل", "ص/46", 7, "الدائرة الإدارية", emp(5), 1, true),
+        ("تأييد صحة صدور جواز سفر", "ص/52", 15, "مديرية الجوازات", emp(6), 2, true),
+        ("جواب على استفسار", "ص/60", 40, "سلطة الطيران المدني", vec![], 0, true),
     ];
     let accents = [[40, 90, 160], [150, 60, 60], [50, 130, 90], [120, 90, 40]];
-    for (index, (title, number, ago, issuer, employee_ids, pages, outgoing)) in docs.iter().enumerate() {
+    for (index, (subject, number, ago, party, employee_ids, pages, outgoing)) in docs.iter().enumerate() {
+        let (from, to) = if *outgoing { ("قسم الموارد البشرية", Some(party.to_string())) } else { (*party, None) };
         let data = GeneralDocData {
-            title: title.to_string(), doc_type: None, doc_number: Some(number.to_string()),
-            issue_date: Some(day(-ago)), issuer: Some(issuer.to_string()), doc_count: Some(pages.max(&1).to_string()),
+            title: from.to_string(), doc_type: None, doc_number: to,
+            issue_date: Some(day(-ago)), issuer: Some(subject.to_string()), doc_count: Some(number.to_string()),
             margin: if index % 3 == 0 { Some("للاطلاع والحفظ".into()) } else { None },
             is_internal_memo: index % 4 == 3, hr_effect_type: None, hr_affects_promotion: false,
             hr_affects_allowance: false, hr_effect_months: 0, hr_effect_days: 0,
@@ -476,6 +479,9 @@ mod tests {
         assert_eq!(count("SELECT COUNT(*) FROM employee_vehicles WHERE annual_front_path IS NOT NULL"), 3);
         assert_eq!(count("SELECT COUNT(*) FROM general_docs"), 7);
         assert_eq!(count("SELECT COUNT(*) FROM outgoing_docs"), 4);
+        assert_eq!(count("SELECT COUNT(*) FROM outgoing_docs WHERE doc_number='مديرية الجوازات' AND doc_count='ص/52'"), 1);
+        assert_eq!(count("SELECT COUNT(*) FROM general_docs WHERE title='سلطة الطيران المدني' AND issuer='استفسار عن باج دخول المطار'"), 1);
+        assert_eq!(count("SELECT COUNT(*) FROM general_doc_attachments"), 8);
         assert_eq!(count("SELECT COUNT(*) FROM employees WHERE civil_id_front_path IS NOT NULL AND civil_id_back_path IS NULL"), 1);
         assert_eq!(count("SELECT must_change_password FROM users WHERE username='sysadmin'"), 0);
         assert!(seed(&conn).is_err(), "a second run adds nothing");
