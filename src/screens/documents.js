@@ -4,10 +4,9 @@
 import { isScannable, reprocessAttachment } from "../attachments/scanner.js";
 import { zoomToolbarHtml, mountZoomViewer } from "../attachments/zoom-viewer.js";
 import { api }       from "../api.js";
-import { showToast, escHtml, confirmAction, confirmSaveChanges, arCount, AR_NOUNS } from "../utils.js";
+import { showToast, escHtml, confirmAction, confirmSaveChanges, arCount, AR_NOUNS, errorText, formatDate, debounce } from "../utils.js";
 
 const FILE_GEN = { ...AR_NOUNS.file, two: "ملفين" };
-const DOC_GEN = { ...AR_NOUNS.document, two: "وثيقتين" };
 import { open, save } from "@tauri-apps/plugin-dialog";
 import { can }       from "../permissions.js";
 import pdfWorkerUrl from "pdfjs-dist/build/pdf.worker.min.mjs?url";
@@ -33,11 +32,12 @@ function todayIso() {
 }
 
 export async function renderDocuments(container, user, ctx) {
-  let [generalDocs, outgoingDocs, employees, documentTypes] = await Promise.all([
+  let [generalDocs, outgoingDocs, employees, documentTypes, companyConfig] = await Promise.all([
     api.listGeneralDocs(),
     api.listOutgoingDocs(),
     api.listEmployees(),
     api.getDocumentTypes().catch(() => []),
+    api.getCompanyConfig().catch(() => null),
   ]);
 
   async function downloadStoredFile(path) {
@@ -53,31 +53,46 @@ export async function renderDocuments(container, user, ctx) {
       const savedPath = await api.downloadDocument(path, destination);
       showToast(`تم تحميل الملف إلى ${savedPath}`);
     } catch (error) {
-      showToast(error?.message ?? "تعذر تحميل الملف", "error");
+      showToast(errorText(error, "تعذر تحميل الملف"), "error");
     }
   }
 
   let activeTab = ctx?.archiveTab === "outgoing" ? "outgoing" : "general";
-  const compactArchiveMode = Boolean(ctx?.compactArchiveMode);
   const initialEditDocId = Number.isFinite(Number(ctx?.editDocId)) ? Number(ctx.editDocId) : null;
   const initialManageAttachmentDocId = Number.isFinite(Number(ctx?.manageAttachmentDocId))
     ? Number(ctx.manageAttachmentDocId)
     : null;
   let activeDocFormGuard = null;
   window.autohrCanLeaveCurrentScreen = () => activeDocFormGuard ? activeDocFormGuard() : true;
+  // Page-level listeners of the open document form, removed when another form opens.
+  let formListeners = null;
   let generalSearch = "";
-  let generalNotesSearch = "";
   let generalFileFilter = "all";
   let generalDateFrom = "";
   let generalDateTo = "";
-  let generalIssuerFilter = "";
-  let generalRecipientFilter = "";
-  let generalSubjectFilter = "";
-  let generalCountFilter = "";
-  let generalMarginFilter = "";
   let generalMemoFilter = "all";
-  let generalEmployeeFilter = "";
   let generalFiltersOpen = false;
+  // Newest issue date first; a click on a column header sorts by that column.
+  let sortKey = "issue_date";
+  let sortDir = "desc";
+  let currentPage = 1;
+  const PAGE_SIZE = 50;
+  const renderSoon = debounce(() => { currentPage = 1; renderGeneral(); }, 200);
+
+  // The stored field names do not match what they hold (kept as they are, so stored data
+  // needs no migration): title = الجهة المصدرة، doc_number = إلى، issuer = الموضوع، doc_count = العدد.
+  const COLUMN_LABELS = {
+    title: "الجهة المصدرة للوثيقة",
+    doc_number: "إلى",
+    issue_date: "تاريخ الإصدار",
+    issuer: "الموضوع",
+    doc_count: "العدد",
+  };
+  // In «الصادر» the sender is always this unit, so «إلى» comes first.
+  const listColumns = () => isOutgoing()
+    ? ["doc_number", "title", "issue_date", "issuer", "doc_count"]
+    : ["title", "doc_number", "issue_date", "issuer", "doc_count"];
+  const ownUnitName = () => String(companyConfig?.department_name || companyConfig?.company_name || "").trim();
 
   const isOutgoing = () => activeTab === "outgoing";
   const archiveName = () => isOutgoing() ? "الصادر" : "الوارد";
@@ -95,13 +110,13 @@ export async function renderDocuments(container, user, ctx) {
   const moveCurrentDocAttachment = (id, path, direction) =>
     isOutgoing() ? api.moveOutgoingDocAttachment(id, path, direction) : api.moveGeneralDocAttachment(id, path, direction);
 
-  function parseAttachments(emp) {
-    try { return JSON.parse(emp?.attachment_paths ?? "[]"); }
-    catch { return []; }
-  }
-
   function fileName(path) {
     return String(path ?? "").split(/[/\\]/).pop() || path;
+  }
+
+  /** The file's own name, without the number the program adds in front when storing it. */
+  function displayName(path) {
+    return fileName(path).replace(/^\d+_/, "");
   }
 
   function generalDocAttachments(doc) {
@@ -255,7 +270,7 @@ export async function renderDocuments(container, user, ctx) {
         renderPreviewBody();
       } catch (error) {
         currentIndex -= direction;
-        showToast(error?.message ?? "تعذر فتح المرفق", "error");
+        showToast(errorText(error, "تعذر فتح المرفق"), "error");
       }
     }
 
@@ -278,7 +293,7 @@ export async function renderDocuments(container, user, ctx) {
     overlay.querySelector("#document-preview-next")?.addEventListener("click", () => navigatePreview(1));
     overlay.querySelector("#document-preview-print")?.addEventListener("click", async () => {
       try { await printDocument(previewPaths[currentIndex], asset.title); }
-      catch (error) { showToast(error?.message ?? "تعذرت طباعة الوثيقة", "error"); }
+      catch (error) { showToast(errorText(error, "تعذرت طباعة الوثيقة"), "error"); }
     });
     overlay.querySelector("#document-preview-download")?.addEventListener("click", () => {
       downloadStoredFile(previewPaths[currentIndex]);
@@ -300,7 +315,7 @@ export async function renderDocuments(container, user, ctx) {
     const blob = new Blob([new Uint8Array(bytes)], { type: mimeType });
     return {
       path,
-      title: fileName(path).replace(/^\d+_/, ""),
+      title: displayName(path),
       extension,
       assetUrl: URL.createObjectURL(blob),
     };
@@ -351,20 +366,17 @@ export async function renderDocuments(container, user, ctx) {
     overlay.querySelector("#all-documents-close").addEventListener("click", close);
     overlay.querySelector("#all-documents-print")?.addEventListener("click", async () => {
       try { await printAllDocuments(paths, title); }
-      catch (error) { showToast(error?.message ?? "تعذرت طباعة المرفقات", "error"); }
+      catch (error) { showToast(errorText(error, "تعذرت طباعة المرفقات"), "error"); }
     });
     document.addEventListener("keydown", onKeyDown);
     document.body.append(overlay);
   }
 
-  function formatIncomingDate(value) {
-    const match = String(value ?? "").match(/^(\d{4})-(\d{2})-(\d{2})/);
-    return match ? `${match[3]}/${match[2]}/${match[1]}` : "—";
-  }
-
-  function employeesWithDocs() {
-    return employees.filter(e => parseAttachments(e).length > 0);
-  }
+  const ICONS = {
+    incoming: `<svg aria-hidden="true" class="doc-tab-icon" viewBox="0 0 24 24"><path d="M4 13h4l1.5 2.5h5L16 13h4"/><path d="M4 13 6.5 5h11L20 13v5.5a1.5 1.5 0 0 1-1.5 1.5h-13A1.5 1.5 0 0 1 4 18.5z"/></svg>`,
+    outgoing: `<svg aria-hidden="true" class="doc-tab-icon" viewBox="0 0 24 24"><path d="M21 3 10 14"/><path d="m21 3-7 18-4-7-7-4z"/></svg>`,
+    clip: `<svg aria-hidden="true" class="doc-clip-icon" viewBox="0 0 24 24"><path d="m20.5 11.5-8.2 8.2a5 5 0 0 1-7.1-7.1l8.5-8.5a3.3 3.3 0 0 1 4.7 4.7l-8.4 8.4a1.7 1.7 0 0 1-2.4-2.4l7.7-7.7"/></svg>`,
+  };
 
   function matchesGeneralSearch(doc) {
     const attachments = generalDocAttachments(doc);
@@ -375,171 +387,140 @@ export async function renderDocuments(container, user, ctx) {
     if (generalMemoFilter === "yes" && !doc.is_internal_memo) return false;
     if (generalMemoFilter === "no" && doc.is_internal_memo) return false;
 
-    const includesNeedle = (value, needle) => String(value ?? "").toLowerCase().includes(needle);
-    const issuerNeedle = generalIssuerFilter.trim().toLowerCase();
-    if (issuerNeedle && !includesNeedle(doc.title, issuerNeedle)) return false;
-    const recipientNeedle = generalRecipientFilter.trim().toLowerCase();
-    if (recipientNeedle && !includesNeedle(doc.doc_number, recipientNeedle)) return false;
-    const subjectNeedle = generalSubjectFilter.trim().toLowerCase();
-    if (subjectNeedle && !includesNeedle(doc.issuer, subjectNeedle)) return false;
-    const countNeedle = generalCountFilter.trim().toLowerCase();
-    if (countNeedle && !includesNeedle(doc.doc_count, countNeedle)) return false;
-    const marginNeedle = generalMarginFilter.trim().toLowerCase();
-    if (marginNeedle && !includesNeedle(doc.margin, marginNeedle)) return false;
-    const employeeNeedle = generalEmployeeFilter.trim().toLowerCase();
-    if (employeeNeedle && !(doc.employee_names ?? []).some(name => includesNeedle(name, employeeNeedle))) return false;
-
-    const notesNeedle = generalNotesSearch.trim().toLowerCase();
-    if (notesNeedle && !includesNeedle(doc.notes, notesNeedle)) return false;
-
     const needle = generalSearch.trim().toLowerCase();
     if (!needle) return true;
     return [
       doc.title,
       doc.doc_number,
       doc.issue_date,
+      doc.issue_date ? formatDate(doc.issue_date) : "",
       doc.issuer,
       doc.doc_count,
       doc.margin,
       doc.is_internal_memo ? "مذكرة داخلية" : "",
       doc.notes,
-      ...attachments,
+      ...attachments.map(fileName),
       ...(doc.employee_names ?? []),
-    ].some(value => includesNeedle(value, needle));
+    ].some(value => String(value ?? "").toLowerCase().includes(needle));
+  }
+
+  function sortDocs(docs) {
+    const direction = sortDir === "asc" ? 1 : -1;
+    return [...docs].sort((a, b) => {
+      const av = String(a[sortKey] ?? "").trim();
+      const bv = String(b[sortKey] ?? "").trim();
+      // Empty values always go last, whatever the direction.
+      if (!av && bv) return 1;
+      if (av && !bv) return -1;
+      const order = sortKey === "issue_date" ? av.localeCompare(bv) : av.localeCompare(bv, "ar", { numeric: true });
+      return order * direction || b.id - a.id;
+    });
   }
 
   function html() {
     return `<div class="space-y-4">
-      <!-- Tabs -->
-      <div style="display:flex;gap:8px;border-bottom:1px solid var(--ui-line);padding-bottom:0">
-        ${[["general","📂 الوارد"],["outgoing","📤 الصادر"]].map(([id, label]) => `
-          <button class="doc-tab" data-tab="${id}" style="padding:8px 16px;border:none;cursor:pointer;
-            font-size:13px;border-bottom:2px solid ${activeTab===id?"var(--ui-accent)":"transparent"};
-            background:transparent;color:${activeTab===id?"var(--ui-accent)":"var(--ui-text-muted)"};
-            font-weight:${activeTab===id?"700":"400"}">${label}</button>`).join("")}
+      <div class="doc-tabs" role="tablist">
+        ${[["general", "الوارد", ICONS.incoming], ["outgoing", "الصادر", ICONS.outgoing]].map(([id, label, icon]) => `
+          <button type="button" class="doc-tab" role="tab" data-tab="${id}" aria-selected="${activeTab === id}">${icon}<span>${label}</span></button>`).join("")}
       </div>
 
       <div id="doc-content"></div>
     </div>`;
   }
 
+  function employeesCell(names) {
+    if (!names.length) return "—";
+    const rest = names.length - 1;
+    return `<div class="doc-emp-cell" title="${escHtml(names.join("\n"))}">
+      <span class="badge badge-gray doc-emp-name">${escHtml(names[0])}</span>
+      ${rest ? `<span class="badge badge-gray doc-emp-more" dir="ltr">+${rest}</span>` : ""}
+    </div>`;
+  }
+
   function renderGeneral() {
     const el = document.getElementById("doc-content");
     if (!el) return;
+    formListeners?.abort();
+    formListeners = null;
     const focusedId = document.activeElement?.id;
     const archiveDocs = currentDocs();
-    const filteredDocs = archiveDocs.filter(matchesGeneralSearch);
+    const filteredDocs = sortDocs(archiveDocs.filter(matchesGeneralSearch));
+    const pageCount = Math.max(1, Math.ceil(filteredDocs.length / PAGE_SIZE));
+    currentPage = Math.min(Math.max(1, currentPage), pageCount);
+    const pageDocs = filteredDocs.slice((currentPage - 1) * PAGE_SIZE, currentPage * PAGE_SIZE);
     const filteredAttachmentPaths = filteredDocs.flatMap(doc => generalDocAttachments(doc));
     const canDeleteRows = can(user, "documents.delete");
-    const columnCount = canDeleteRows ? 10 : 9;
+    const canManage = can(user, "documents.manage");
+    const columns = listColumns();
+    const columnCount = columns.length + 3 + (canDeleteRows ? 1 : 0);
     const advancedFilterCount = [
-      generalNotesSearch,
       generalFileFilter !== "all",
       generalDateFrom,
       generalDateTo,
-      generalIssuerFilter,
-      generalRecipientFilter,
-      generalSubjectFilter,
-      generalCountFilter,
-      generalMarginFilter,
       generalMemoFilter !== "all",
-      generalEmployeeFilter,
     ].filter(Boolean).length;
-    const hasActiveFilters = generalSearch || advancedFilterCount > 0;
+    const hasActiveFilters = Boolean(generalSearch.trim()) || advancedFilterCount > 0;
+    const label = (text, forId) => `<label for="${forId}" class="doc-filter-label">${text}</label>`;
+    const sortHeader = key => {
+      const active = sortKey === key;
+      const arrow = active ? (sortDir === "asc" ? "↑" : "↓") : "";
+      return `<th class="table-header doc-th" aria-sort="${active ? (sortDir === "asc" ? "ascending" : "descending") : "none"}">
+        <button type="button" class="doc-sort${active ? " active" : ""}" data-key="${key}" title="ترتيب حسب ${COLUMN_LABELS[key]}">${COLUMN_LABELS[key]}<span class="doc-sort-arrow" aria-hidden="true">${arrow}</span></button>
+      </th>`;
+    };
+    const cell = (doc, key) => {
+      if (key === "issue_date") return `<td class="table-cell doc-cell-date">${formatDate(doc.issue_date)}</td>`;
+      if (key === "issuer") return `<td class="table-cell">${escHtml(doc.issuer || "—")}${doc.is_internal_memo ? ` <span class="doc-memo-tag">مذكرة داخلية</span>` : ""}</td>`;
+      if (key === "title") return `<td class="table-cell font-medium text-gray-100">${escHtml(doc.title || "—")}</td>`;
+      return `<td class="table-cell">${escHtml(doc[key] || "—")}</td>`;
+    };
     el.innerHTML = `
       <div class="space-y-4">
-        ${compactArchiveMode ? "" : `<div class="card space-y-3">
+        <div class="card space-y-3">
           <div class="flex gap-3 items-center flex-wrap">
             <input id="general-doc-search" class="input-field flex-1 min-w-[220px]"
-              placeholder="بحث في ${archiveName()}..." value="${escHtml(generalSearch)}" />
-            <span class="badge badge-gray">${filteredDocs.length} / ${archiveDocs.length}</span>
+              placeholder="بحث في ${archiveName()}: الجهة، الموضوع، العدد، الهامش، النبذة، أسماء الموظفين..." value="${escHtml(generalSearch)}" />
+            <span class="badge badge-gray" dir="ltr">${filteredDocs.length} / ${archiveDocs.length}</span>
+            ${hasActiveFilters && can(user, "documents.print") && filteredAttachmentPaths.length
+              ? `<button id="btn-print-filtered-attachments" class="btn-secondary px-3 py-2" title="طباعة مرفقات الوثائق الظاهرة في النتائج">طباعة مرفقات النتائج</button>` : ""}
             <button id="btn-toggle-general-filters" class="btn-secondary px-3 py-2"
               aria-expanded="${generalFiltersOpen ? "true" : "false"}">
               فلاتر البحث${advancedFilterCount ? ` (${advancedFilterCount})` : ""}
             </button>
-            <button id="btn-add-doc" class="btn-primary px-4 py-2">+ إضافة وثيقة</button>
+            ${canManage ? `<button id="btn-add-doc" class="btn-primary px-4 py-2">+ إضافة وثيقة</button>` : ""}
           </div>
           ${generalFiltersOpen ? `
-          <div class="grid grid-cols-1 md:grid-cols-3 gap-3">
-            <div>
-              <label for="general-issuer-filter" style="display:block;font-size:11px;color:var(--ui-text-faint);margin-bottom:4px">الجهة المصدرة للوثيقة</label>
-              <input id="general-issuer-filter" class="input-field"
-                placeholder="فلترة حسب الجهة..." value="${escHtml(generalIssuerFilter)}" />
-            </div>
-            <div>
-              <label for="general-recipient-filter" style="display:block;font-size:11px;color:var(--ui-text-faint);margin-bottom:4px">إلى</label>
-              <input id="general-recipient-filter" class="input-field"
-                placeholder="فلترة حسب الجهة المستلمة..." value="${escHtml(generalRecipientFilter)}" />
-            </div>
-            <div>
-              <label for="general-subject-filter" style="display:block;font-size:11px;color:var(--ui-text-faint);margin-bottom:4px">الموضوع</label>
-              <input id="general-subject-filter" class="input-field"
-                placeholder="فلترة حسب الموضوع..." value="${escHtml(generalSubjectFilter)}" />
-            </div>
-            <div>
-              <label for="general-file-filter" style="display:block;font-size:11px;color:var(--ui-text-faint);margin-bottom:4px">حالة المرفق</label>
+          <div class="doc-filter-grid">
+            <div>${label("من تاريخ إصدار", "general-date-from")}
+              <input id="general-date-from" class="input-field" type="date" value="${escHtml(generalDateFrom)}" /></div>
+            <div>${label("إلى تاريخ إصدار", "general-date-to")}
+              <input id="general-date-to" class="input-field" type="date" value="${escHtml(generalDateTo)}" /></div>
+            <div>${label("المرفقات", "general-file-filter")}
               <select id="general-file-filter" class="input-field">
                 <option value="all" ${generalFileFilter === "all" ? "selected" : ""}>الكل</option>
-                <option value="with" ${generalFileFilter === "with" ? "selected" : ""}>لديه مرفق</option>
-                <option value="without" ${generalFileFilter === "without" ? "selected" : ""}>بدون مرفق</option>
-              </select>
-            </div>
-            <div>
-              <label for="general-date-from" style="display:block;font-size:11px;color:var(--ui-text-faint);margin-bottom:4px">من تاريخ إصدار</label>
-              <input id="general-date-from" class="input-field" type="date" value="${escHtml(generalDateFrom)}" />
-            </div>
-            <div>
-              <label for="general-date-to" style="display:block;font-size:11px;color:var(--ui-text-faint);margin-bottom:4px">إلى تاريخ إصدار</label>
-              <input id="general-date-to" class="input-field" type="date" value="${escHtml(generalDateTo)}" />
-            </div>
-            <div>
-              <label for="general-count-filter" style="display:block;font-size:11px;color:var(--ui-text-faint);margin-bottom:4px">العدد</label>
-              <input id="general-count-filter" class="input-field"
-                placeholder="فلترة حسب العدد..." value="${escHtml(generalCountFilter)}" />
-            </div>
-            <div>
-              <label for="general-margin-filter" style="display:block;font-size:11px;color:var(--ui-text-faint);margin-bottom:4px">الهامش</label>
-              <input id="general-margin-filter" class="input-field"
-                placeholder="فلترة حسب الهامش..." value="${escHtml(generalMarginFilter)}" />
-            </div>
-            <div>
-              <label for="general-memo-filter" style="display:block;font-size:11px;color:var(--ui-text-faint);margin-bottom:4px">مذكرة داخلية</label>
+                <option value="with" ${generalFileFilter === "with" ? "selected" : ""}>لها مرفقات</option>
+                <option value="without" ${generalFileFilter === "without" ? "selected" : ""}>بدون مرفقات</option>
+              </select></div>
+            <div>${label("مذكرة داخلية", "general-memo-filter")}
               <select id="general-memo-filter" class="input-field">
                 <option value="all" ${generalMemoFilter === "all" ? "selected" : ""}>الكل</option>
                 <option value="yes" ${generalMemoFilter === "yes" ? "selected" : ""}>نعم</option>
                 <option value="no" ${generalMemoFilter === "no" ? "selected" : ""}>لا</option>
-              </select>
-            </div>
-            <div>
-              <label for="general-employee-filter" style="display:block;font-size:11px;color:var(--ui-text-faint);margin-bottom:4px">الموظفون المرتبطون</label>
-              <input id="general-employee-filter" class="input-field"
-                placeholder="فلترة باسم الموظف..." value="${escHtml(generalEmployeeFilter)}" />
-            </div>
+              </select></div>
           </div>
-          <div>
-            <label for="general-notes-search" style="display:block;font-size:11px;color:var(--ui-text-faint);margin-bottom:4px">البحث في نبذة عامة عن الوثيقة</label>
-            <input id="general-notes-search" class="input-field"
-              placeholder="اكتب جزءا من نبذة الوثيقة..." value="${escHtml(generalNotesSearch)}" />
-          </div>
-          <div class="flex justify-end">
-            ${hasActiveFilters ? `<button id="btn-clear-general-filters" class="btn-secondary px-3 py-2">مسح الفلاتر</button>` : ""}
-            ${can(user, "documents.print") ? `<button id="btn-print-filtered-attachments" class="btn-primary px-3 py-2" style="margin-right:8px">طباعة مرفقات النتائج</button>` : ""}
-            <button id="btn-close-general-filters" class="btn-secondary px-3 py-2" style="margin-right:8px">إغلاق</button>
+          <div class="flex justify-end gap-2">
+            ${hasActiveFilters ? `<button id="btn-clear-general-filters" class="btn-secondary px-3 py-2">مسح البحث والفلاتر</button>` : ""}
+            <button id="btn-close-general-filters" class="btn-secondary px-3 py-2">إغلاق</button>
           </div>
           ` : ""}
-        </div>`}
+        </div>
         <div class="card overflow-auto">
-          <table class="w-full">
+          <table class="w-full doc-table">
             <thead><tr>
-              <th class="table-header">الجهة المصدرة للوثيقة</th>
-              <th class="table-header">إلى</th>
-              <th class="table-header">تاريخ الإصدار</th>
-              <th class="table-header">الموضوع</th>
-              <th class="table-header">العدد</th>
-              <th class="table-header">الهامش</th>
-              <th class="table-header">مذكرة داخلية</th>
-              <th class="table-header">الموظفون المرتبطون</th>
-              <th class="table-header">المرفقات</th>
+              ${columns.map(sortHeader).join("")}
+              <th class="table-header doc-th">الهامش</th>
+              <th class="table-header doc-th">الموظفون المرتبطون</th>
+              <th class="table-header doc-th">المرفقات</th>
               ${canDeleteRows ? `<th class="table-header" style="width:1%"><span class="sr-only">حذف</span></th>` : ""}
             </tr></thead>
             <tbody>
@@ -547,35 +528,23 @@ export async function renderDocuments(container, user, ctx) {
                 ? `<tr><td colspan="${columnCount}" class="table-cell"><div class="doc-empty">
                     <span class="doc-empty-icon"><svg aria-hidden="true" viewBox="0 0 24 24"><path d="M3 6.5A1.5 1.5 0 0 1 4.5 5H9l2 2.5h8.5A1.5 1.5 0 0 1 21 9v9.5a1.5 1.5 0 0 1-1.5 1.5h-15A1.5 1.5 0 0 1 3 18.5z"/><path d="M12 11v6M9 14h6"/></svg></span>
                     <p class="doc-empty-title">لا توجد وثائق في ${escHtml(archiveName())} بعد</p>
-                    ${can(user, "documents.manage")
+                    ${canManage
                       ? `<p class="doc-empty-text">ابدأ بإضافة أول وثيقة، ويمكنك إرفاق ملفاتها أو مسحها ضوئيًا.</p>
                          <button type="button" id="btn-add-first-doc" class="btn-primary px-5 py-2">+ إضافة أول وثيقة</button>`
                       : `<p class="doc-empty-text">ستظهر الوثائق هنا عند إضافتها.</p>`}
                   </div></td></tr>`
                 : filteredDocs.length === 0
                   ? `<tr><td colspan="${columnCount}" class="table-cell text-center text-gray-500 py-8">لا توجد نتائج مطابقة</td></tr>`
-                  : filteredDocs.map(d => `
-                  <tr class="table-row general-doc-row" data-id="${d.id}" title="اضغط لتعديل الوثيقة">
-                    <td class="table-cell font-medium text-gray-100">${escHtml(d.title || "—")}</td>
-                    <td class="table-cell">${escHtml(d.doc_number || "—")}</td>
-                    <td class="table-cell" dir="ltr">${formatIncomingDate(d.issue_date)}</td>
-                    <td class="table-cell">${escHtml(d.issuer ?? "—")}</td>
-                    <td class="table-cell">${escHtml(d.doc_count ?? "—")}</td>
-                    <td class="table-cell">${escHtml(d.margin ?? "—")}</td>
-                    <td class="table-cell">${d.is_internal_memo ? `<span class="badge badge-green">نعم</span>` : "—"}</td>
+                  : pageDocs.map(d => `
+                  <tr class="table-row general-doc-row" data-id="${d.id}" title="${canManage ? "اضغط لتعديل الوثيقة" : "اضغط لعرض الوثيقة"}">
+                    ${columns.map(key => cell(d, key)).join("")}
+                    <td class="table-cell">${d.margin ? `<span class="doc-cell-clip" title="${escHtml(d.margin)}">${escHtml(d.margin)}</span>` : "—"}</td>
+                    <td class="table-cell">${employeesCell(d.employee_names ?? [])}</td>
                     <td class="table-cell">
-                      ${(d.employee_names ?? []).length
-                        ? `<div class="flex gap-1 flex-wrap">${d.employee_names.map(name =>
-                            `<span class="badge badge-green">${escHtml(name)}</span>`).join("")}</div>`
-                        : "—"}
-                    </td>
-                    <td class="table-cell">
-                      <button class="btn-manage-doc-attachments" data-id="${d.id}" title="إدارة مرفقات الوثيقة"
+                      <button class="btn-manage-doc-attachments" data-id="${d.id}" title="مرفقات الوثيقة" aria-label="مرفقات الوثيقة (${generalDocAttachments(d).length})"
                         style="border:none;background:transparent;cursor:pointer;padding:2px">
-                        <span class="badge ${generalDocAttachments(d).length ? "badge-green" : "badge-gray"}"
-                          style="gap:6px;font-size:12px;padding:5px 11px">
-                          <span>📎</span>
-                          <span dir="ltr">${generalDocAttachments(d).length}</span>
+                        <span class="badge ${generalDocAttachments(d).length ? "badge-green" : "badge-gray"} doc-clip-badge">
+                          ${ICONS.clip}<span dir="ltr">${generalDocAttachments(d).length}</span>
                         </span>
                       </button>
                     </td>
@@ -588,9 +557,13 @@ export async function renderDocuments(container, user, ctx) {
                   </tr>`).join("")}
             </tbody>
           </table>
+          ${pageCount > 1 ? `<div class="doc-pager">
+            <button type="button" class="btn-secondary px-3 py-1" id="doc-page-prev" ${currentPage === 1 ? "disabled" : ""}>السابق</button>
+            <span>صفحة <b dir="ltr">${currentPage}</b> من <b dir="ltr">${pageCount}</b></span>
+            <button type="button" class="btn-secondary px-3 py-1" id="doc-page-next" ${currentPage === pageCount ? "disabled" : ""}>التالي</button>
+          </div>` : ""}
         </div>
       </div>`;
-    if (!can(user, "documents.manage")) el.querySelectorAll("#btn-add-doc,#btn-save-doc").forEach(node => node.remove());
     el.querySelector("#btn-toggle-general-filters")?.addEventListener("click", () => {
       generalFiltersOpen = !generalFiltersOpen;
       renderGeneral();
@@ -600,92 +573,51 @@ export async function renderDocuments(container, user, ctx) {
       renderGeneral();
     });
     el.querySelector("#btn-print-filtered-attachments")?.addEventListener("click", async () => {
-      if (filteredAttachmentPaths.length === 0) {
-        showToast("لا توجد مرفقات ضمن نتائج الفلتر", "error");
-        return;
-      }
       try {
-        await printAllDocuments(filteredAttachmentPaths, `مرفقات نتائج فلتر ${archiveName()}`);
+        await printAllDocuments(filteredAttachmentPaths, `مرفقات نتائج البحث في ${archiveName()}`);
       } catch (error) {
-        showToast(error?.message ?? "تعذرت طباعة مرفقات النتائج", "error");
+        showToast(errorText(error, "تعذرت طباعة مرفقات النتائج"), "error");
       }
     });
-
-    const restoreFocus = () => {
-      if (!focusedId) return;
-      const focused = el.querySelector(`#${focusedId}`);
-      focused?.focus();
-      if (["general-doc-search", "general-notes-search", "general-issuer-filter", "general-recipient-filter",
-        "general-subject-filter", "general-count-filter", "general-margin-filter", "general-employee-filter"].includes(focusedId)) {
-        focused.setSelectionRange(focused.value.length, focused.value.length);
-      }
-    };
 
     const searchInput = el.querySelector("#general-doc-search");
+    if (focusedId === "general-doc-search" && searchInput) {
+      searchInput.focus();
+      searchInput.setSelectionRange(searchInput.value.length, searchInput.value.length);
+    } else if (focusedId) {
+      el.querySelector(`#${focusedId}`)?.focus();
+    }
     searchInput?.addEventListener("input", () => {
       generalSearch = searchInput.value;
+      renderSoon();
+    });
+    const onFilter = (selector, apply) => el.querySelector(selector)?.addEventListener("change", event => {
+      apply(event.target.value);
+      currentPage = 1;
       renderGeneral();
     });
-    const notesSearchInput = el.querySelector("#general-notes-search");
-    notesSearchInput?.addEventListener("input", () => {
-      generalNotesSearch = notesSearchInput.value;
-      renderGeneral();
-    });
-    el.querySelector("#general-file-filter")?.addEventListener("change", (event) => {
-      generalFileFilter = event.target.value;
-      renderGeneral();
-    });
-    el.querySelector("#general-date-from")?.addEventListener("change", (event) => {
-      generalDateFrom = event.target.value;
-      renderGeneral();
-    });
-    el.querySelector("#general-date-to")?.addEventListener("change", (event) => {
-      generalDateTo = event.target.value;
-      renderGeneral();
-    });
-    el.querySelector("#general-issuer-filter")?.addEventListener("input", (event) => {
-      generalIssuerFilter = event.target.value;
-      renderGeneral();
-    });
-    el.querySelector("#general-recipient-filter")?.addEventListener("input", (event) => {
-      generalRecipientFilter = event.target.value;
-      renderGeneral();
-    });
-    el.querySelector("#general-subject-filter")?.addEventListener("input", (event) => {
-      generalSubjectFilter = event.target.value;
-      renderGeneral();
-    });
-    el.querySelector("#general-count-filter")?.addEventListener("input", (event) => {
-      generalCountFilter = event.target.value;
-      renderGeneral();
-    });
-    el.querySelector("#general-margin-filter")?.addEventListener("input", (event) => {
-      generalMarginFilter = event.target.value;
-      renderGeneral();
-    });
-    el.querySelector("#general-memo-filter")?.addEventListener("change", (event) => {
-      generalMemoFilter = event.target.value;
-      renderGeneral();
-    });
-    el.querySelector("#general-employee-filter")?.addEventListener("input", (event) => {
-      generalEmployeeFilter = event.target.value;
-      renderGeneral();
-    });
+    onFilter("#general-file-filter", value => { generalFileFilter = value; });
+    onFilter("#general-date-from", value => { generalDateFrom = value; });
+    onFilter("#general-date-to", value => { generalDateTo = value; });
+    onFilter("#general-memo-filter", value => { generalMemoFilter = value; });
     el.querySelector("#btn-clear-general-filters")?.addEventListener("click", () => {
       generalSearch = "";
-      generalNotesSearch = "";
       generalFileFilter = "all";
       generalDateFrom = "";
       generalDateTo = "";
-      generalIssuerFilter = "";
-      generalRecipientFilter = "";
-      generalSubjectFilter = "";
-      generalCountFilter = "";
-      generalMarginFilter = "";
       generalMemoFilter = "all";
-      generalEmployeeFilter = "";
+      currentPage = 1;
       renderGeneral();
     });
+    el.querySelectorAll(".doc-sort").forEach(button => button.addEventListener("click", () => {
+      const key = button.dataset.key;
+      if (sortKey === key) sortDir = sortDir === "asc" ? "desc" : "asc";
+      else { sortKey = key; sortDir = key === "issue_date" ? "desc" : "asc"; }
+      currentPage = 1;
+      renderGeneral();
+    }));
+    el.querySelector("#doc-page-prev")?.addEventListener("click", () => { currentPage -= 1; renderGeneral(); });
+    el.querySelector("#doc-page-next")?.addEventListener("click", () => { currentPage += 1; renderGeneral(); });
 
     el.querySelector("#btn-add-doc")?.addEventListener("click", () => showDocForm());
     el.querySelector("#btn-add-first-doc")?.addEventListener("click", () => showDocForm());
@@ -708,8 +640,6 @@ export async function renderDocuments(container, user, ctx) {
         deleteDocFromList(parseInt(btn.dataset.id, 10));
       });
     });
-
-    restoreFocus();
   }
 
   // Delete straight from the archive list, without opening the document form.
@@ -728,7 +658,7 @@ export async function renderDocuments(container, user, ctx) {
       showToast("تم حذف الوثيقة");
       renderGeneral();
     } catch (err) {
-      showToast(err?.message ?? "تعذر حذف الوثيقة", "error");
+      showToast(errorText(err, "تعذر حذف الوثيقة"), "error");
     }
   }
 
@@ -770,14 +700,7 @@ export async function renderDocuments(container, user, ctx) {
         renderGeneral();
       } else {
         const doc = currentDocs().find(item => item.id === docId);
-        const badge = document.querySelector("#d-manage-attachments .badge");
-        if (badge && doc) {
-          const count = generalDocAttachments(doc).length;
-          badge.classList.toggle("badge-green", count > 0);
-          badge.classList.toggle("badge-gray", count === 0);
-          const countText = badge.querySelector("[dir='ltr']");
-          if (countText) countText.textContent = String(count);
-        }
+        if (doc) setAttachmentBadge(document, generalDocAttachments(doc).length);
       }
     };
     const onKeyDown = event => {
@@ -872,8 +795,8 @@ export async function renderDocuments(container, user, ctx) {
                 <li class="att-row" data-index="${index}" tabindex="0" title="اضغط للاستعراض">
                   <span class="att-thumb ${kind.image ? "" : `att-thumb-file att-thumb-${escHtml(kind.ext)}`}" ${kind.image ? `data-thumb-path="${escHtml(path)}"` : ""}>${escHtml(kind.short)}</span>
                   <span class="att-info">
-                    <span class="att-name">مرفق ${index + 1}</span>
-                    <span class="att-meta">${escHtml(kind.label)}</span>
+                    <span class="att-name" title="${escHtml(displayName(path))}">${escHtml(displayName(path))}</span>
+                    <span class="att-meta">مرفق ${index + 1} · ${escHtml(kind.label)}</span>
                   </span>
                   <span class="att-actions">
                     <button type="button" class="att-icon-btn att-act-preview" title="استعراض" aria-label="استعراض مرفق ${index + 1}">
@@ -894,13 +817,13 @@ export async function renderDocuments(container, user, ctx) {
 
       const runSafely = async (task, fallback) => {
         try { await task(); }
-        catch (error) { showToast(error?.message ?? fallback, "error"); }
+        catch (error) { showToast(errorText(error, fallback), "error"); }
       };
       const previewAt = index => runSafely(
-        () => openDocumentPreview(attachments[index], fileName(attachments[index]), attachments),
+        () => openDocumentPreview(attachments[index], displayName(attachments[index]), attachments),
         "تعذر استعراض الوثيقة");
       const printAt = index => runSafely(
-        () => printDocument(attachments[index], fileName(attachments[index])),
+        () => printDocument(attachments[index], displayName(attachments[index])),
         "تعذرت طباعة الوثيقة");
       const moveAt = (index, direction) => runSafely(async () => {
         await moveCurrentDocAttachment(docId, attachments[index], direction);
@@ -908,7 +831,7 @@ export async function renderDocuments(container, user, ctx) {
         renderManager();
       }, "تعذر تغيير ترتيب المرفق");
       const deleteAt = index => runSafely(async () => {
-        if (!(await confirmAction(`تأكيد حذف «مرفق ${index + 1}»؟`))) return;
+        if (!(await confirmAction(`تأكيد حذف «${displayName(attachments[index])}» (مرفق ${index + 1})؟`))) return;
         const path = attachments[index];
         await deleteCurrentDocAttachment(docId, path);
         if (thumbCache.get(path)) URL.revokeObjectURL(thumbCache.get(path));
@@ -977,7 +900,7 @@ export async function renderDocuments(container, user, ctx) {
               } catch (error) {
                 await refreshCurrentDocs();
                 renderManager();
-                showToast(error?.message ?? "تعذر حذف جميع المرفقات", "error");
+                showToast(errorText(error, "تعذر حذف جميع المرفقات"), "error");
               }
             },
           });
@@ -1003,7 +926,7 @@ export async function renderDocuments(container, user, ctx) {
           await refreshCurrentDocs();
           showToast(`تم رفع ${arCount(files.length, FILE_GEN)}`);
           renderManager();
-        } catch (err) { showToast(err?.message ?? "خطأ", "error"); }
+        } catch (err) { showToast(errorText(err, "خطأ"), "error"); }
       });
 
       loadThumbnails();
@@ -1012,60 +935,224 @@ export async function renderDocuments(container, user, ctx) {
     renderManager();
   }
 
+  const fieldLabel = (forId, text, required = false) =>
+    `<label for="${forId}" class="doc-field-label">${text}${required ? ` <span class="doc-required" aria-hidden="true">*</span>` : ""}</label>`;
+
+  const ATTACHMENT_BUTTONS = (count, hint) => `
+    <div style="border-top:1px solid var(--ui-line);padding-top:12px">
+      <div style="display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap">
+        <div>
+          <p style="font-size:12px;font-weight:700;color:var(--ui-text)">مرفقات الوثيقة</p>
+          <p style="font-size:11px;color:var(--ui-text-faint);margin-top:3px">${hint}</p>
+        </div>
+        <div style="display:flex;align-items:center;gap:8px">
+          <button type="button" id="d-manage-attachments" class="btn-secondary doc-att-button">
+            ${ICONS.clip.replace("doc-clip-icon", "doc-att-icon")}
+            <span>المرفقات</span>
+            <span class="badge ${count ? "badge-green" : "badge-gray"} doc-att-count"><span dir="ltr">${count}</span></span>
+          </button>
+          ${can(user, "documents.upload") ? `<button type="button" id="d-scan-attachment" class="btn-secondary doc-att-button" title="مسح وثيقة ضوئياً وإضافتها إلى المرفقات">
+            <svg aria-hidden="true" class="doc-att-icon" viewBox="0 0 24 24">
+              <path d="M5 10V7a1.5 1.5 0 0 1 1.5-1.5h11A1.5 1.5 0 0 1 19 7v3"/>
+              <rect x="3" y="10" width="18" height="9" rx="2"/>
+              <path d="M3 14h18"/>
+              <path d="M6.5 16.5h6M17 16.5h.01"/>
+            </svg>
+            <span>ماسح ضوئي</span>
+          </button>` : ""}
+        </div>
+      </div>
+      <ul id="d-pending-list" class="doc-pending-list" hidden></ul>
+    </div>
+    <div id="d-scan-progress" style="display:none;align-items:center;gap:14px;padding:12px 14px;border:1px solid var(--ui-line-strong);border-radius:10px;background:var(--ui-info-bg)">
+      <div id="d-scan-progress-bar" style="width:62px;height:62px;flex:none;display:grid;place-items:center;border-radius:50%;background:conic-gradient(#22c55e 0%,var(--ui-sunken) 0);transition:background .35s ease">
+        <div style="width:46px;height:46px;display:grid;place-items:center;border-radius:50%;background:var(--ui-sunken);box-shadow:inset 0 0 8px rgba(0,0,0,.35)">
+          <span id="d-scan-progress-percent" dir="ltr" style="font-size:11px;font-weight:700;color:var(--ui-info)">0%</span>
+        </div>
+      </div>
+      <div>
+        <p style="font-size:12px;font-weight:700;color:var(--ui-text-strong);margin-bottom:3px">المسح الضوئي</p>
+        <span id="d-scan-progress-label" style="font-size:11px;color:var(--ui-info)">جاري بدء المسح الضوئي...</span>
+      </div>
+    </div>`;
+
+  /** Updates the count on the «المرفقات» button of the open form or view page. */
+  function setAttachmentBadge(root, count) {
+    const badge = root.querySelector("#d-manage-attachments .badge");
+    if (!badge) return;
+    badge.classList.toggle("badge-green", count > 0);
+    badge.classList.toggle("badge-gray", count === 0);
+    badge.querySelector("[dir='ltr']").textContent = String(count);
+  }
+
+  /**
+   * Runs the scanner with the progress ring of the form. `useScan(path)` receives the scanned
+   * file and returns the message to show when it is done; it is the only thing that changes
+   * data, so a scan never saves the form's fields.
+   */
+  async function scanWithProgress(root, useScan) {
+    const button = root.querySelector("#d-scan-attachment");
+    button.disabled = true;
+    let deviceId;
+    try {
+      deviceId = await api.selectScannerDevice();
+    } catch (error) {
+      button.disabled = false;
+      showToast(errorText(error, "تعذر اختيار الماسح الضوئي"), "error");
+      return;
+    }
+    const progress = root.querySelector("#d-scan-progress");
+    const progressBar = root.querySelector("#d-scan-progress-bar");
+    const progressLabel = root.querySelector("#d-scan-progress-label");
+    const progressPercent = root.querySelector("#d-scan-progress-percent");
+    progress.style.borderColor = "";
+    delete progress.dataset.error;
+    let percent = 5;
+    const updateProgress = (value, label) => {
+      percent = value;
+      progress.style.display = "flex";
+      const progressColor = progress.dataset.error === "true" ? "#dc2626" : "#22c55e";
+      progressBar.style.background = `conic-gradient(${progressColor} ${value}%,var(--ui-sunken) ${value}%)`;
+      progressPercent.textContent = `${value}%`;
+      progressLabel.textContent = label;
+    };
+    updateProgress(percent, "جاري انتظار الماسح الضوئي...");
+    const progressTimer = setInterval(() => {
+      if (percent >= 90) return;
+      const next = Math.min(90, percent + (percent < 55 ? 7 : 3));
+      updateProgress(next, next < 55 ? "جاري مسح الوثيقة..." : "جاري معالجة الصورة...");
+    }, 700);
+    try {
+      const scannedPath = await api.scanDocument(deviceId);
+      updateProgress(94, "جاري إضافة الصورة إلى المرفقات...");
+      const done = await useScan(scannedPath);
+      clearInterval(progressTimer);
+      updateProgress(100, done);
+      showToast(done);
+      await new Promise(resolve => setTimeout(resolve, 900));
+      if (progress.isConnected) progress.style.display = "none";
+    } catch (error) {
+      clearInterval(progressTimer);
+      progress.style.borderColor = "var(--ui-danger-line)";
+      progress.dataset.error = "true";
+      updateProgress(100, "تعذر إكمال عملية المسح");
+      showToast(errorText(error, "تعذر استخدام الماسح الضوئي"), "error");
+    } finally {
+      clearInterval(progressTimer);
+      button.disabled = false;
+    }
+  }
+
+  /** Scans straight into an existing document: only the scanned file is added. */
+  function bindScanIntoExistingDoc(root, docId) {
+    root.querySelector("#d-scan-attachment")?.addEventListener("click", async () => {
+      const current = currentDocs().find(item => item.id === docId);
+      if (generalDocAttachments(current).length >= 20) {
+        showToast("تم الوصول إلى الحد الأقصى للمرفقات", "warn");
+        return;
+      }
+      await scanWithProgress(root, async scannedPath => {
+        await uploadCurrentDocFile(docId, scannedPath);
+        await refreshCurrentDocs();
+        setAttachmentBadge(root, generalDocAttachments(currentDocs().find(item => item.id === docId)).length);
+        return "أُضيفت الصورة الممسوحة إلى مرفقات الوثيقة";
+      });
+    });
+  }
+
+  /** Read-only page for users who may not edit documents. */
+  function showDocView(doc) {
+    formListeners?.abort();
+    formListeners = null;
+    activeDocFormGuard = null;
+    const el = document.getElementById("doc-content");
+    const names = doc.employee_names ?? [];
+    const rows = [
+      ...listColumns().map(key => [COLUMN_LABELS[key], key === "issue_date" ? formatDate(doc.issue_date) : doc[key]]),
+      ["مذكرة داخلية", doc.is_internal_memo ? "نعم" : ""],
+      ["نبذة عامة عن الوثيقة", doc.notes],
+      ["الهامش", doc.margin],
+    ];
+    el.innerHTML = `
+      <div id="doc-form-stage" class="doc-form-stage">
+        <div id="doc-form-card" class="card doc-form-card space-y-4">
+          <div class="flex items-center justify-between gap-3">
+            <p class="section-title" style="margin:0">عرض وثيقة</p>
+            <span class="badge badge-gray">${escHtml(archiveName())}</span>
+          </div>
+          <dl class="doc-view-grid">
+            ${rows.map(([label, value]) => `<div><dt>${label}</dt><dd>${escHtml(String(value ?? "").trim() || "—")}</dd></div>`).join("")}
+            <div class="doc-view-wide"><dt>الموظفون المرتبطون</dt><dd>${names.length
+              ? `<div class="doc-chip-list">${names.map(name => `<span class="doc-chip">${escHtml(name)}</span>`).join("")}</div>`
+              : "—"}</dd></div>
+          </dl>
+          ${ATTACHMENT_BUTTONS(generalDocAttachments(doc).length, "اضغط «المرفقات» لاستعراضها أو طباعتها")}
+          <div class="flex justify-end">
+            <button id="btn-cancel-doc" class="btn-secondary px-5">إغلاق</button>
+          </div>
+        </div>
+      </div>`;
+    const close = () => renderGeneral();
+    el.querySelector("#btn-cancel-doc").addEventListener("click", close);
+    el.querySelector("#doc-form-stage").addEventListener("click", event => { if (event.target === event.currentTarget) close(); });
+    el.querySelector("#d-manage-attachments").addEventListener("click", () => openAttachmentManager(doc.id, false));
+    bindScanIntoExistingDoc(el, doc.id);
+  }
+
   function showDocForm(doc = null) {
+    if (!can(user, "documents.manage")) {
+      if (doc) showDocView(doc);
+      return;
+    }
+    formListeners?.abort();
+    formListeners = new AbortController();
+    const { signal } = formListeners;
     const el = document.getElementById("doc-content");
     const isEdit = Boolean(doc);
+    const outgoing = isOutgoing();
     let pendingAttachments = [];
     let formDirty = false;
     const selectedEmployeeIds = new Set(doc?.employee_ids ?? []);
     const hasEmployeeLinks = selectedEmployeeIds.size > 0;
-    el.innerHTML = `
-      <div id="doc-form-stage" style="min-height:calc(100vh - 190px);padding:20px 0 20px 56px">
-        <div id="doc-form-card" class="card doc-form-card space-y-4">
-          <p class="section-title">${isEdit ? "تعديل وثيقة" : "إضافة وثيقة جديدة"}</p>
-          <div class="doc-form-grid">
-            <div>
-              <label for="d-title" style="display:block;font-size:11px;color:var(--ui-text-faint);margin-bottom:4px">الجهة المصدرة للوثيقة <span class="doc-required" aria-hidden="true">*</span></label>
-              <input id="d-title" class="input-field" required aria-required="true" value="${escHtml(doc?.title ?? "")}" />
-            </div>
-            <div>
-              <label for="d-issuer" style="display:block;font-size:11px;color:var(--ui-text-faint);margin-bottom:4px">الموضوع <span class="doc-required" aria-hidden="true">*</span></label>
-              <div style="display:grid;grid-template-columns:1fr auto auto;gap:8px;align-items:center">
-                <div style="position:relative;min-width:0">
-                  <input id="d-issuer" class="input-field" required aria-required="true" value="${escHtml(doc?.issuer ?? "")}" autocomplete="off" />
-                  <div id="d-subject-menu" class="hidden" style="position:absolute;z-index:50;top:calc(100% + 6px);left:0;right:0;max-height:220px;overflow:auto;background:var(--ui-surface);border:1px solid var(--ui-line-strong);border-radius:8px;box-shadow:0 12px 28px rgba(0,0,0,.35)">
-                    ${documentTypes.map(type => `<button type="button" class="d-subject-option" data-value="${escHtml(type)}" style="display:block;width:100%;text-align:right;padding:10px 12px;border:0;border-bottom:1px solid var(--ui-line);background:transparent;color:var(--ui-text-strong);cursor:pointer">${escHtml(type)}</button>`).join("")}
-                  </div>
-                </div>
-                <datalist id="d-subject-options">
-                  ${documentTypes.map(type => `<option value="${escHtml(type)}"></option>`).join("")}
-                </datalist>
-                <button type="button" id="d-add-subject" class="btn-secondary px-3" style="align-self:stretch" title="إضافة الموضوع المكتوب إلى قائمة المواضيع" aria-label="إضافة الموضوع المكتوب إلى قائمة المواضيع">+</button>
-                <button type="button" id="d-delete-subject" class="btn-secondary px-3" style="align-self:stretch;display:grid;place-items:center" title="حذف الموضوع المكتوب من قائمة المواضيع" aria-label="حذف الموضوع المكتوب من قائمة المواضيع">
-                  <svg aria-hidden="true" viewBox="0 0 24 24" style="width:16px;height:16px;fill:none;stroke:var(--ui-danger);stroke-width:1.8;stroke-linecap:round;stroke-linejoin:round"><path d="M4 7h16M10 11v6M14 11v6M6 7l1 13h10l1-13M9 7V4h6v3"/></svg>
-                </button>
+    const employeeName = id => employees.find(employee => employee.id === id)?.full_name ?? "";
+    const titleField = `<div>
+              ${fieldLabel("d-title", COLUMN_LABELS.title, !outgoing)}
+              <input id="d-title" class="input-field" ${outgoing ? "" : `required aria-required="true"`} value="${escHtml(doc?.title ?? (outgoing ? ownUnitName() : ""))}" />
+            </div>`;
+    const toField = `<div>
+              ${fieldLabel("d-number", COLUMN_LABELS.doc_number, outgoing)}
+              <input id="d-number" class="input-field" ${outgoing ? `required aria-required="true"` : ""} value="${escHtml(doc?.doc_number ?? "")}" />
+            </div>`;
+    const subjectField = `<div>
+              ${fieldLabel("d-issuer", COLUMN_LABELS.issuer, true)}
+              <div style="position:relative;min-width:0">
+                <input id="d-issuer" class="input-field" required aria-required="true" value="${escHtml(doc?.issuer ?? "")}" autocomplete="off"
+                  role="combobox" aria-autocomplete="list" aria-controls="d-subject-menu" aria-expanded="false" />
+                <div id="d-subject-menu" class="doc-subject-menu hidden" role="listbox"></div>
               </div>
-            </div>
-            <div>
-              <label for="d-number" style="display:block;font-size:11px;color:var(--ui-text-faint);margin-bottom:4px">إلى</label>
-              <input id="d-number" class="input-field" value="${escHtml(doc?.doc_number ?? "")}" />
-            </div>
+            </div>`;
+    el.innerHTML = `
+      <div id="doc-form-stage" class="doc-form-stage">
+        <div id="doc-form-card" class="card doc-form-card space-y-4">
+          <p class="section-title">${isEdit ? "تعديل وثيقة" : "إضافة وثيقة جديدة"}${outgoing ? " صادرة" : " واردة"}</p>
+          <div class="doc-form-grid">
+            ${outgoing ? `${toField}${subjectField}${titleField}` : `${titleField}${subjectField}${toField}`}
             <div class="doc-form-pair">
               <div>
-                <label for="d-date" style="display:block;font-size:11px;color:var(--ui-text-faint);margin-bottom:4px">تاريخ الإصدار <span class="doc-required" aria-hidden="true">*</span></label>
+                ${fieldLabel("d-date", COLUMN_LABELS.issue_date, true)}
                 <input id="d-date" class="input-field" type="date" required aria-required="true" value="${escHtml(doc?.issue_date ?? (isEdit ? "" : todayIso()))}" />
               </div>
               <div>
-                <label for="d-count" style="display:block;font-size:11px;color:var(--ui-text-faint);margin-bottom:4px">العدد <span class="doc-required" aria-hidden="true">*</span></label>
+                ${fieldLabel("d-count", COLUMN_LABELS.doc_count, true)}
                 <input id="d-count" class="input-field" required aria-required="true" value="${escHtml(doc?.doc_count ?? "")}" />
               </div>
             </div>
             <div>
-              <label for="d-notes" style="display:block;font-size:11px;color:var(--ui-text-faint);margin-bottom:4px">نبذة عامة عن الوثيقة</label>
+              ${fieldLabel("d-notes", "نبذة عامة عن الوثيقة")}
               <textarea id="d-notes" class="input-field" style="height:70px;resize:none">${escHtml(doc?.notes ?? "")}</textarea>
             </div>
             <div>
-              <label for="d-margin" style="display:block;font-size:11px;color:var(--ui-text-faint);margin-bottom:4px">الهامش</label>
+              ${fieldLabel("d-margin", "الهامش")}
               <textarea id="d-margin" class="input-field" style="height:70px;resize:none">${escHtml(doc?.margin ?? "")}</textarea>
             </div>
           </div>
@@ -1083,12 +1170,12 @@ export async function renderDocuments(container, user, ctx) {
               </label>
             </div>
             <div id="d-employee-linking" class="space-y-3" style="display:${hasEmployeeLinks ? "block" : "none"};margin-top:12px">
-              <input id="d-employee-search" class="input-field" placeholder="بحث باسم الموظف أو رقمه الوظيفي..." />
-              <div class="flex items-center justify-between">
-                <p style="font-size:11px;color:var(--ui-text-faint)">يمكن تحديد موظف واحد أو أكثر</p>
-                <span id="d-selected-count" class="badge badge-gray">المحدد: ${selectedEmployeeIds.size}</span>
+              <div class="flex items-center justify-between gap-3">
+                <div id="d-employee-chips" class="doc-chip-list"></div>
+                <span id="d-selected-count" class="badge badge-gray" style="flex:none">المحدد: ${selectedEmployeeIds.size}</span>
               </div>
-              <div id="d-employee-list" style="max-height:240px;overflow:auto;border:1px solid var(--ui-line);border-radius:8px">
+              <input id="d-employee-search" class="input-field" placeholder="ابحث باسم الموظف أو رقمه الوظيفي لإضافته..." />
+              <div id="d-employee-list" style="max-height:200px;overflow:auto;border:1px solid var(--ui-line);border-radius:8px">
                 ${employees.map(employee => `
                   <label class="doc-employee-option" data-search="${escHtml(`${employee.full_name} ${employee.employee_number ?? ""}`.toLowerCase())}"
                     style="display:flex;align-items:center;gap:9px;padding:9px 11px;border-bottom:1px solid var(--ui-line);cursor:pointer">
@@ -1101,43 +1188,8 @@ export async function renderDocuments(container, user, ctx) {
               </div>
             </div>
           </div>
-          <div style="border-top:1px solid var(--ui-line);padding-top:12px">
-            <div style="display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap">
-              <div>
-                <p style="font-size:12px;font-weight:700;color:var(--ui-text)">مرفقات الوثيقة</p>
-                <p style="font-size:11px;color:var(--ui-text-faint);margin-top:3px">${isEdit ? "اضغط على الأيقونة لإدارة الملفات المرفقة" : "أضف المرفقات الآن، وتُحفظ مع الوثيقة عند الضغط على «حفظ»"}</p>
-              </div>
-              <div style="display:flex;align-items:center;gap:8px">
-                <button type="button" id="d-manage-attachments" class="btn-secondary doc-att-button"
-                  title="${isEdit ? "عرض المرفقات وإدارتها" : "اختيار ملفات من الحاسوب، وتُحفظ مع الوثيقة"}">
-                  <svg aria-hidden="true" class="doc-att-icon" viewBox="0 0 24 24"><path d="m20.5 11.5-8.2 8.2a5 5 0 0 1-7.1-7.1l8.5-8.5a3.3 3.3 0 0 1 4.7 4.7l-8.4 8.4a1.7 1.7 0 0 1-2.4-2.4l7.7-7.7"/></svg>
-                  <span>المرفقات</span>
-                  <span class="badge ${isEdit && generalDocAttachments(doc).length ? "badge-green" : "badge-gray"} doc-att-count"><span dir="ltr">${isEdit ? generalDocAttachments(doc).length : 0}</span></span>
-                </button>
-                <button type="button" id="d-scan-attachment" class="btn-secondary doc-att-button" title="مسح وثيقة ضوئياً وإضافتها إلى المرفقات">
-                  <svg aria-hidden="true" class="doc-att-icon" viewBox="0 0 24 24">
-                    <path d="M5 10V7a1.5 1.5 0 0 1 1.5-1.5h11A1.5 1.5 0 0 1 19 7v3"/>
-                    <rect x="3" y="10" width="18" height="9" rx="2"/>
-                    <path d="M3 14h18"/>
-                    <path d="M6.5 16.5h6M17 16.5h.01"/>
-                  </svg>
-                  <span>ماسح ضوئي</span>
-                </button>
-              </div>
-            </div>
-            ${isEdit ? "" : `<ul id="d-pending-list" class="doc-pending-list" hidden></ul>`}
-          </div>
-          <div id="d-scan-progress" style="display:none;align-items:center;gap:14px;padding:12px 14px;border:1px solid var(--ui-line-strong);border-radius:10px;background:var(--ui-info-bg)">
-            <div id="d-scan-progress-bar" style="width:62px;height:62px;flex:none;display:grid;place-items:center;border-radius:50%;background:conic-gradient(#22c55e 0%,var(--ui-sunken) 0);transition:background .35s ease">
-              <div style="width:46px;height:46px;display:grid;place-items:center;border-radius:50%;background:var(--ui-sunken);box-shadow:inset 0 0 8px rgba(0,0,0,.35)">
-                <span id="d-scan-progress-percent" dir="ltr" style="font-size:11px;font-weight:700;color:var(--ui-info)">0%</span>
-              </div>
-            </div>
-            <div>
-              <p style="font-size:12px;font-weight:700;color:var(--ui-text-strong);margin-bottom:3px">المسح الضوئي</p>
-              <span id="d-scan-progress-label" style="font-size:11px;color:var(--ui-info)">جاري بدء المسح الضوئي...</span>
-            </div>
-          </div>
+          ${ATTACHMENT_BUTTONS(isEdit ? generalDocAttachments(doc).length : 0,
+            isEdit ? "اضغط «المرفقات» لإدارة الملفات، أو امسح وثيقة لإضافتها مباشرة" : "أضف المرفقات الآن، وتُحفظ مع الوثيقة عند الضغط على «حفظ»")}
           <p id="d-required-hint" class="doc-required-hint" role="status" hidden></p>
           <div class="flex gap-3 items-center">
             <button id="btn-save-doc" class="btn-primary flex-1">حفظ</button>
@@ -1148,222 +1200,219 @@ export async function renderDocuments(container, user, ctx) {
           </div>` : ""}
         </div>
       </div>`;
-    if (!can(user, "documents.upload")) el.querySelector("#btn-upload-emp-doc")?.remove();
-    if (!can(user, "documents.delete")) el.querySelectorAll(".btn-del-emp-doc").forEach(node => node.remove());
+    if (!can(user, "documents.upload")) el.querySelector("#d-manage-attachments")?.remove();
 
-    if (!can(user, "documents.manage")) {
-      el.querySelector("#btn-save-doc")?.remove();
-      el.querySelectorAll("input,select,textarea").forEach(field => { field.disabled = true; });
-    }
-    if (!can(user, "documents.upload")) {
-      el.querySelector("#d-manage-attachments")?.remove();
-      el.querySelector("#d-scan-attachment")?.remove();
-    }
-    if (!can(user, "documents.manage")) {
-      el.querySelector("#d-add-subject")?.remove();
-      el.querySelector("#d-delete-subject")?.remove();
-    }
-
-    const updateSubjectOptions = () => {
-      const list = el.querySelector("#d-subject-options");
-      if (list) list.innerHTML = documentTypes.map(type => `<option value="${escHtml(type)}"></option>`).join("");
-      const menu = el.querySelector("#d-subject-menu");
-      if (!menu) return;
-      menu.innerHTML = documentTypes.map(type =>
-        `<button type="button" class="d-subject-option" data-value="${escHtml(type)}" style="display:block;width:100%;text-align:right;padding:10px 12px;border:0;border-bottom:1px solid var(--ui-line);background:transparent;color:var(--ui-text-strong);cursor:pointer">${escHtml(type)}</button>`
-      ).join("");
-      bindSubjectOptions();
-    };
+    // «الموضوع»: the saved subjects, narrowed to what is typed. A new subject joins the list when
+    // the document is saved; × next to a subject takes it off the list.
     const subjectInput = el.querySelector("#d-issuer");
     const subjectMenu = el.querySelector("#d-subject-menu");
-    const showSubjectMenu = () => subjectMenu?.classList.remove("hidden");
-    const hideSubjectMenu = () => subjectMenu?.classList.add("hidden");
-    const bindSubjectOptions = () => {
-      el.querySelectorAll(".d-subject-option").forEach(button => {
-        button.addEventListener("mousedown", event => event.preventDefault());
-        button.addEventListener("click", () => {
-          subjectInput.value = button.dataset.value || "";
-          subjectInput.dispatchEvent(new Event("input", { bubbles: true }));
-          formDirty = true;
-          hideSubjectMenu();
-        });
-      });
+    const renderSubjectMenu = () => {
+      const needle = subjectInput.value.trim().toLowerCase();
+      const matches = documentTypes.filter(type => !needle || type.toLowerCase().includes(needle));
+      subjectMenu.innerHTML = matches.map(type => `
+        <div class="doc-subject-option" role="option">
+          <button type="button" class="doc-subject-pick" data-value="${escHtml(type)}">${escHtml(type)}</button>
+          <button type="button" class="doc-subject-remove" data-value="${escHtml(type)}" title="حذف «${escHtml(type)}» من قائمة المواضيع" aria-label="حذف ${escHtml(type)} من قائمة المواضيع">✕</button>
+        </div>`).join("");
+      const open = matches.length > 0 && document.activeElement === subjectInput;
+      subjectMenu.classList.toggle("hidden", !open);
+      subjectInput.setAttribute("aria-expanded", String(open));
+      subjectMenu.querySelectorAll("button").forEach(button => button.addEventListener("mousedown", event => event.preventDefault()));
+      subjectMenu.querySelectorAll(".doc-subject-pick").forEach(button => button.addEventListener("click", () => {
+        subjectInput.value = button.dataset.value;
+        hideSubjectMenu();
+        formDirty = true;
+        updateRequiredState();
+      }));
+      subjectMenu.querySelectorAll(".doc-subject-remove").forEach(button => button.addEventListener("click", async () => {
+        const subject = button.dataset.value;
+        if (!(await confirmAction(`حذف «${subject}» من قائمة المواضيع؟ لا تتغير الوثائق المحفوظة به.`))) return;
+        try {
+          await saveDocumentTypes(documentTypes.filter(type => type !== subject));
+          showToast("حُذف الموضوع من القائمة");
+        } catch (error) {
+          showToast(errorText(error, "تعذر تحديث قائمة المواضيع"), "error");
+        }
+        subjectInput.focus();
+        renderSubjectMenu();
+      }));
     };
-    bindSubjectOptions();
-    subjectInput?.addEventListener("focus", showSubjectMenu);
-    subjectInput?.addEventListener("click", showSubjectMenu);
-    subjectInput?.addEventListener("keydown", event => {
-      if (event.key === "ArrowDown") showSubjectMenu();
+    const hideSubjectMenu = () => {
+      subjectMenu.classList.add("hidden");
+      subjectInput.setAttribute("aria-expanded", "false");
+    };
+    subjectInput.addEventListener("focus", renderSubjectMenu);
+    subjectInput.addEventListener("input", renderSubjectMenu);
+    subjectInput.addEventListener("blur", hideSubjectMenu);
+    subjectInput.addEventListener("keydown", event => {
+      if (event.key === "ArrowDown") { renderSubjectMenu(); subjectMenu.querySelector(".doc-subject-pick")?.focus(); event.preventDefault(); }
       if (event.key === "Escape") hideSubjectMenu();
     });
+    subjectMenu.addEventListener("keydown", event => {
+      if (event.key === "Escape") { hideSubjectMenu(); subjectInput.focus(); }
+    });
     document.addEventListener("mousedown", event => {
-      if (!el.contains(event.target) || (!subjectInput?.contains(event.target) && !subjectMenu?.contains(event.target))) {
-        hideSubjectMenu();
-      }
-    });
-    el.querySelector("#d-add-subject")?.addEventListener("click", async () => {
-      const subject = el.querySelector("#d-issuer")?.value.trim();
-      if (!subject) return showToast("أدخل الموضوع أولاً", "warn");
-      if (documentTypes.includes(subject)) return showToast("الموضوع موجود في القائمة");
-      try {
-        await saveDocumentTypes([...documentTypes, subject]);
-        updateSubjectOptions();
-        formDirty = true;
-        showToast("تمت إضافة الموضوع للقائمة");
-      } catch (error) {
-        showToast(error?.message ?? "تعذر حفظ قائمة الموضوعات", "error");
-      }
-    });
-    el.querySelector("#d-delete-subject")?.addEventListener("click", async () => {
-      const subject = el.querySelector("#d-issuer")?.value.trim();
-      if (!subject) return showToast("اختر الموضوع أولاً", "warn");
-      if (!documentTypes.includes(subject)) return showToast("الموضوع غير موجود في القائمة", "warn");
-      if (!(await confirmAction("تأكيد حذف هذا الموضوع من القائمة؟"))) return;
-      const nextTypes = documentTypes.filter(type => type !== subject);
-      if (nextTypes.length === 0) return showToast("يجب أن يبقى موضوع واحد على الأقل", "warn");
-      try {
-        await saveDocumentTypes(nextTypes);
-        updateSubjectOptions();
-        formDirty = true;
-        showToast("تم حذف الموضوع من القائمة");
-      } catch (error) {
-        showToast(error?.message ?? "تعذر تحديث قائمة الموضوعات", "error");
-      }
-    });
+      if (!subjectMenu.contains(event.target) && event.target !== subjectInput) hideSubjectMenu();
+    }, { signal });
 
-    const collectDocData = () => {
-      const issuer = el.querySelector("#d-issuer")?.value.trim() || null;
-      return {
-        title: el.querySelector("#d-title")?.value.trim() || "",
-        doc_type: null,
-        doc_number: el.querySelector("#d-number")?.value.trim() || null,
-        issue_date: el.querySelector("#d-date")?.value || null,
-        issuer,
-        doc_count: el.querySelector("#d-count")?.value.trim() || null,
-        margin: el.querySelector("#d-margin")?.value.trim() || null,
-        is_internal_memo: Boolean(el.querySelector("#d-internal-memo")?.checked),
-        notes: el.querySelector("#d-notes")?.value.trim() || null,
-        employee_ids: el.querySelector("#d-has-employees")?.checked
-          ? [...el.querySelectorAll(".d-employee-checkbox:checked")]
-              .map(checkbox => parseInt(checkbox.value, 10))
-              .sort((a, b) => a - b)
-          : [],
-      };
-    };
+    const collectDocData = () => ({
+      title: el.querySelector("#d-title")?.value.trim() || "",
+      doc_type: null,
+      doc_number: el.querySelector("#d-number")?.value.trim() || null,
+      issue_date: el.querySelector("#d-date")?.value || null,
+      issuer: el.querySelector("#d-issuer")?.value.trim() || null,
+      doc_count: el.querySelector("#d-count")?.value.trim() || null,
+      margin: el.querySelector("#d-margin")?.value.trim() || null,
+      is_internal_memo: Boolean(el.querySelector("#d-internal-memo")?.checked),
+      notes: el.querySelector("#d-notes")?.value.trim() || null,
+      employee_ids: el.querySelector("#d-has-employees")?.checked ? [...selectedEmployeeIds].sort((a, b) => a - b) : [],
+    });
     const initialDocData = JSON.stringify(collectDocData());
     const hasUnsavedDocChanges = () =>
-      can(user, "documents.manage") && (formDirty || pendingAttachments.length > 0 || JSON.stringify(collectDocData()) !== initialDocData);
-    // The fields a document cannot be saved without. The date starts as today,
-    // so it only blocks saving when someone clears it.
+      formDirty || pendingAttachments.length > 0 || JSON.stringify(collectDocData()) !== initialDocData;
+    // The fields a document cannot be saved without. The date starts as today, so it only
+    // blocks saving when someone clears it. In «الصادر» the sender is this unit (filled in),
+    // and the receiver is the field that must be filled.
     const requiredDocFields = [
-      ["#d-title", "الجهة المصدرة للوثيقة"],
-      ["#d-issuer", "الموضوع"],
-      ["#d-count", "العدد"],
-      ["#d-date", "تاريخ الإصدار"],
+      outgoing ? ["#d-number", COLUMN_LABELS.doc_number] : ["#d-title", COLUMN_LABELS.title],
+      ["#d-issuer", COLUMN_LABELS.issuer],
+      ["#d-count", COLUMN_LABELS.doc_count],
+      ["#d-date", COLUMN_LABELS.issue_date],
     ];
-    const missingDocFields = () => requiredDocFields.filter(([selector]) => {
-      const field = el.querySelector(selector);
-      return field && !field.value.trim();
-    });
+    const missingDocFields = () => requiredDocFields.filter(([selector]) => !el.querySelector(selector)?.value.trim());
     const updateRequiredState = () => {
       const saveButton = el.querySelector("#btn-save-doc");
       const hint = el.querySelector("#d-required-hint");
-      if (!saveButton || !hint) return;
       const missing = missingDocFields();
+      let touchedMissing = false;
       requiredDocFields.forEach(([selector]) => {
         const field = el.querySelector(selector);
-        if (field) field.toggleAttribute("aria-invalid", missing.some(([s]) => s === selector) && field.dataset.touched === "1");
+        const invalid = missing.some(([s]) => s === selector) && field.dataset.touched === "1";
+        touchedMissing ||= invalid;
+        field.toggleAttribute("aria-invalid", invalid);
       });
       saveButton.disabled = missing.length > 0;
       saveButton.title = missing.length ? "أكمل الحقول المطلوبة أولاً" : "";
       hint.hidden = missing.length === 0;
+      // A quiet note while the form is being filled; red only for a field that was left empty.
+      hint.classList.toggle("is-error", touchedMissing);
       hint.textContent = missing.length ? `لحفظ الوثيقة أكمل: ${missing.map(([, label]) => label).join("، ")}` : "";
     };
-    const saveDoc = async (skipConfirm = false) => {
+    const rememberSubject = async subject => {
+      if (!subject || documentTypes.includes(subject)) return;
+      try { await saveDocumentTypes([...documentTypes, subject]); } catch { /* the document is saved; the list is a convenience */ }
+    };
+    const saveDoc = async () => {
       const missing = missingDocFields();
       if (missing.length) {
-        missing.forEach(([selector]) => { const field = el.querySelector(selector); if (field) field.dataset.touched = "1"; });
+        missing.forEach(([selector]) => { el.querySelector(selector).dataset.touched = "1"; });
         updateRequiredState();
         showToast(`لا يمكن حفظ الوثيقة قبل إكمال: ${missing.map(([, label]) => label).join("، ")}`, "error");
         el.querySelector(missing[0][0])?.focus();
         return false;
       }
-      if (!skipConfirm && !(await confirmAction(isEdit ? "تأكيد حفظ تعديلات الوثيقة؟" : "تأكيد إضافة الوثيقة؟"))) return false;
+      const data = collectDocData();
+      let created = null;
       try {
-        const data = collectDocData();
         if (isEdit) {
           await updateCurrentDoc(doc.id, data);
         } else {
-          const created = await createCurrentDoc(data);
-          for (const file of pendingAttachments) await uploadCurrentDocFile(created.id, file);
+          created = await createCurrentDoc(data);
         }
-        await refreshCurrentDocs();
-        activeDocFormGuard = null;
-        showToast(isEdit ? "تم حفظ تعديلات الوثيقة" : "تمت إضافة الوثيقة");
-        renderGeneral();
-        return true;
       } catch (err) {
-        showToast(err?.message ?? "خطأ", "error");
+        showToast(errorText(err, "تعذر حفظ الوثيقة"), "error");
         return false;
       }
+      await rememberSubject(data.issuer);
+      // The document now exists: a file that fails to upload must not lead to saving it twice,
+      // so the form becomes the edit form of the new document and names what was not uploaded.
+      const failed = [];
+      for (const file of pendingAttachments) {
+        try { await uploadCurrentDocFile(created.id, file); }
+        catch (error) { failed.push(`${pendingName(file)} (${errorText(error, "تعذر الرفع")})`); }
+      }
+      await refreshCurrentDocs();
+      activeDocFormGuard = null;
+      if (failed.length) {
+        showToast(`حُفظت الوثيقة، ولم يُرفع: ${failed.join("، ")}. أضفه من «المرفقات».`, "error");
+        const saved = currentDocs().find(item => item.id === created.id);
+        if (saved) showDocForm(saved); else renderGeneral();
+        return true;
+      }
+      showToast(isEdit ? "تم حفظ تعديلات الوثيقة" : "تمت إضافة الوثيقة");
+      renderGeneral();
+      return true;
     };
     const closeDocForm = async () => {
       if (hasUnsavedDocChanges()) {
         const choice = await confirmSaveChanges();
         if (choice === "cancel") return false;
-        if (choice === "save") return await saveDoc(true);
+        if (choice === "save") return await saveDoc();
       }
       activeDocFormGuard = null;
       renderGeneral();
       return true;
     };
     activeDocFormGuard = closeDocForm;
-    el.querySelector("#doc-form-stage")?.addEventListener("click", event => {
+    el.querySelector("#doc-form-stage").addEventListener("click", event => {
       if (event.target === event.currentTarget) closeDocForm();
     });
     el.querySelectorAll("#doc-form-card input,#doc-form-card select,#doc-form-card textarea").forEach(field => {
+      if (field.id === "d-employee-search") return;
       field.addEventListener("input", () => { formDirty = true; updateRequiredState(); });
       field.addEventListener("change", () => { formDirty = true; updateRequiredState(); });
     });
     requiredDocFields.forEach(([selector]) => {
-      el.querySelector(selector)?.addEventListener("blur", event => {
+      el.querySelector(selector).addEventListener("blur", event => {
         event.currentTarget.dataset.touched = "1";
         updateRequiredState();
       });
     });
     updateRequiredState();
 
+    // Employees: the selected ones show as chips above the list, so they are never lost in it.
     const hasEmployeesCheckbox = el.querySelector("#d-has-employees");
     const employeeLinking = el.querySelector("#d-employee-linking");
-    const updateSelectedCount = () => {
-      const count = el.querySelectorAll(".d-employee-checkbox:checked").length;
-      el.querySelector("#d-selected-count").textContent = `المحدد: ${count}`;
+    const renderEmployeeChips = () => {
+      const chips = el.querySelector("#d-employee-chips");
+      chips.innerHTML = [...selectedEmployeeIds].map(id => `<span class="doc-chip">${escHtml(employeeName(id))}
+          <button type="button" class="doc-chip-remove" data-id="${id}" aria-label="إزالة ${escHtml(employeeName(id))}" title="إزالة">✕</button></span>`).join("")
+        || `<span style="font-size:11px;color:var(--ui-text-faint)">لم يُحدد أي موظف. اختر موظفًا أو أكثر من القائمة.</span>`;
+      el.querySelector("#d-selected-count").textContent = `المحدد: ${selectedEmployeeIds.size}`;
+      chips.querySelectorAll(".doc-chip-remove").forEach(button => button.addEventListener("click", () => {
+        const id = Number(button.dataset.id);
+        selectedEmployeeIds.delete(id);
+        const checkbox = el.querySelector(`.d-employee-checkbox[value="${id}"]`);
+        if (checkbox) checkbox.checked = false;
+        formDirty = true;
+        renderEmployeeChips();
+      }));
     };
+    renderEmployeeChips();
     hasEmployeesCheckbox.addEventListener("change", () => {
       employeeLinking.style.display = hasEmployeesCheckbox.checked ? "block" : "none";
       if (!hasEmployeesCheckbox.checked) {
+        selectedEmployeeIds.clear();
         el.querySelectorAll(".d-employee-checkbox").forEach(checkbox => { checkbox.checked = false; });
-        updateSelectedCount();
+        renderEmployeeChips();
       }
     });
-    el.querySelectorAll(".d-employee-checkbox").forEach(checkbox =>
-      checkbox.addEventListener("change", updateSelectedCount));
-    el.querySelector("#d-employee-search")?.addEventListener("input", event => {
+    el.querySelectorAll(".d-employee-checkbox").forEach(checkbox => checkbox.addEventListener("change", () => {
+      const id = Number(checkbox.value);
+      if (checkbox.checked) selectedEmployeeIds.add(id); else selectedEmployeeIds.delete(id);
+      renderEmployeeChips();
+    }));
+    el.querySelector("#d-employee-search").addEventListener("input", event => {
       const needle = event.target.value.trim().toLowerCase();
       el.querySelectorAll(".doc-employee-option").forEach(option => {
         option.style.display = !needle || option.dataset.search.includes(needle) ? "flex" : "none";
       });
     });
+
     const pendingName = path => String(path).split(/[\\/]/).pop();
     const renderPendingAttachments = () => {
-      const badge = el.querySelector("#d-manage-attachments .badge");
-      if (badge) {
-        badge.classList.toggle("badge-green", pendingAttachments.length > 0);
-        badge.classList.toggle("badge-gray", pendingAttachments.length === 0);
-        badge.querySelector("[dir='ltr']").textContent = String(pendingAttachments.length);
-      }
+      setAttachmentBadge(el, pendingAttachments.length);
       const list = el.querySelector("#d-pending-list");
-      if (!list) return;
       list.hidden = pendingAttachments.length === 0;
       list.innerHTML = pendingAttachments.map((path, index) => {
         const name = pendingName(path);
@@ -1387,91 +1436,34 @@ export async function renderDocuments(container, user, ctx) {
       formDirty = true;
       renderPendingAttachments();
     };
-    const pickPendingAttachments = async () => {
-      const selected = await open({
-        multiple: true,
-        filters: [{ name: "ملفات الوثائق", extensions: DOCUMENT_EXTENSIONS }],
-      });
-      if (!selected) return;
-      addPendingAttachments(Array.isArray(selected) ? selected : [selected]);
-    };
     el.querySelector("#d-manage-attachments")?.addEventListener("click", async () => {
       if (isEdit) {
         openAttachmentManager(doc.id, false);
         return;
       }
-      await pickPendingAttachments();
+      const selected = await open({
+        multiple: true,
+        filters: [{ name: "ملفات الوثائق", extensions: DOCUMENT_EXTENSIONS }],
+      });
+      if (selected) addPendingAttachments(Array.isArray(selected) ? selected : [selected]);
     });
-    el.querySelector("#d-scan-attachment")?.addEventListener("click", async () => {
-      const attachmentCount = isEdit ? generalDocAttachments(doc).length : pendingAttachments.length;
-      if (attachmentCount >= 20) {
-        showToast("تم الوصول إلى الحد الأقصى للمرفقات", "warn");
-        return;
-      }
-      const button = el.querySelector("#d-scan-attachment");
-      button.disabled = true;
-      let deviceId;
-      try {
-        deviceId = await api.selectScannerDevice();
-      } catch (error) {
-        button.disabled = false;
-        showToast(error?.message ?? String(error || "تعذر اختيار الماسح الضوئي"), "error");
-        return;
-      }
-      const progress = el.querySelector("#d-scan-progress");
-      const progressBar = el.querySelector("#d-scan-progress-bar");
-      const progressLabel = el.querySelector("#d-scan-progress-label");
-      const progressPercent = el.querySelector("#d-scan-progress-percent");
-      let percent = 5;
-      const updateProgress = (value, label) => {
-        percent = value;
-        progress.style.display = "flex";
-        const progressColor = progress.dataset.error === "true" ? "#dc2626" : "#22c55e";
-        progressBar.style.background = `conic-gradient(${progressColor} ${value}%,var(--ui-sunken) ${value}%)`;
-        progressPercent.textContent = `${value}%`;
-        progressLabel.textContent = label;
-      };
-      updateProgress(percent, "جاري انتظار الماسح الضوئي...");
-      const progressTimer = setInterval(() => {
-        if (percent >= 90) return;
-        const next = Math.min(90, percent + (percent < 55 ? 7 : 3));
-        updateProgress(next, next < 55 ? "جاري مسح الوثيقة..." : "جاري معالجة الصورة...");
-      }, 700);
-      try {
-        const scannedPath = await api.scanDocument(deviceId);
-        updateProgress(94, isEdit ? "جاري حفظ الوثيقة تلقائياً..." : "جاري تجهيز الصورة...");
-        if (isEdit) {
-          await updateCurrentDoc(doc.id, collectDocData());
-          await uploadCurrentDocFile(doc.id, scannedPath);
-          await refreshCurrentDocs();
-          activeDocFormGuard = null;
-          clearInterval(progressTimer);
-          updateProgress(100, "اكتمل المسح والحفظ بنجاح");
-          showToast("تم مسح الوثيقة وحفظها تلقائياً");
-          await new Promise(resolve => setTimeout(resolve, 650));
-          showDocForm(currentDocs().find(item => item.id === doc.id));
+    if (isEdit) {
+      bindScanIntoExistingDoc(el, doc.id);
+    } else {
+      el.querySelector("#d-scan-attachment")?.addEventListener("click", async () => {
+        if (pendingAttachments.length >= 20) {
+          showToast("تم الوصول إلى الحد الأقصى للمرفقات", "warn");
           return;
         }
-        addPendingAttachments([scannedPath]);
-        clearInterval(progressTimer);
-        updateProgress(100, "اكتمل المسح، وسيُحفظ مع الوثيقة");
-        showToast("أُضيفت الصورة الممسوحة إلى المرفقات، وتُحفظ مع الوثيقة");
-        await new Promise(resolve => setTimeout(resolve, 900));
-        progress.style.display = "none";
-      } catch (error) {
-        clearInterval(progressTimer);
-        progress.style.borderColor = "var(--ui-danger-line)";
-        progress.dataset.error = "true";
-        updateProgress(100, "تعذر إكمال عملية المسح");
-        showToast(error?.message ?? String(error || "تعذر استخدام الماسح الضوئي"), "error");
-      } finally {
-        clearInterval(progressTimer);
-        button.disabled = false;
-      }
-    });
+        await scanWithProgress(el, async scannedPath => {
+          addPendingAttachments([scannedPath]);
+          return "أُضيفت الصورة الممسوحة إلى المرفقات، وتُحفظ مع الوثيقة";
+        });
+      });
+    }
 
     el.querySelector("#btn-cancel-doc").addEventListener("click", () => closeDocForm());
-    el.querySelector("#btn-save-doc")?.addEventListener("click", () => saveDoc(false));
+    el.querySelector("#btn-save-doc").addEventListener("click", () => saveDoc());
     el.querySelector("#btn-delete-doc")?.addEventListener("click", async () => {
       if (!(await confirmAction("تأكيد حذف الوثيقة؟ لا يمكن التراجع عن هذا الإجراء."))) return;
       try {
@@ -1480,112 +1472,7 @@ export async function renderDocuments(container, user, ctx) {
         activeDocFormGuard = null;
         showToast("تم حذف الوثيقة");
         renderGeneral();
-      } catch (err) { showToast(err?.message ?? "خطأ", "error"); }
-    });
-  }
-
-  function renderEmployeeDocs() {
-    const el = document.getElementById("doc-content");
-    if (!el) return;
-    const withDocs = employeesWithDocs();
-    el.innerHTML = `
-      <div class="space-y-4">
-        <div class="card space-y-3">
-          <p class="section-title">رفع وثيقة لموظف موجود</p>
-          <div class="grid grid-cols-1 md:grid-cols-[1fr_auto] gap-3 items-end">
-            <div>
-              <label for="emp-doc-employee" style="display:block;font-size:11px;color:var(--ui-text-faint);margin-bottom:4px">الموظف</label>
-              <select id="emp-doc-employee" class="input-field">
-                <option value="">— اختر موظفاً —</option>
-                ${employees.map(e => `
-                  <option value="${e.id}">
-                    ${escHtml(e.full_name)}${e.employee_number ? ` - ${escHtml(e.employee_number)}` : ""}
-                  </option>`).join("")}
-              </select>
-            </div>
-            <button id="btn-upload-emp-doc" class="btn-primary px-4 py-2">رفع وثيقة…</button>
-          </div>
-        </div>
-
-        <div class="card overflow-auto">
-          <div class="flex items-center justify-between gap-3 mb-4">
-            <p class="section-title mb-0">الوثائق المرفوعة للموظفين</p>
-            <span class="badge badge-gray">${arCount(withDocs.reduce((sum, e) => sum + parseAttachments(e).length, 0), "document")}</span>
-          </div>
-          ${withDocs.length === 0
-            ? `<p class="text-center text-gray-500 py-8">لا توجد وثائق موظفين مرفوعة</p>`
-            : withDocs.map(e => {
-                const paths = parseAttachments(e);
-                return `<div style="border:1px solid var(--ui-line);border-radius:8px;margin-bottom:12px;overflow:hidden">
-                  <div style="display:flex;justify-content:space-between;gap:12px;align-items:center;padding:10px 12px;background:var(--ui-surface-2)">
-                    <div>
-                      <p class="font-medium text-gray-100">${escHtml(e.full_name)}</p>
-                      <p class="text-xs text-gray-500" dir="ltr">${escHtml(e.employee_number ?? "—")}</p>
-                    </div>
-                    <span class="badge badge-green">${paths.length}</span>
-                  </div>
-                  <table class="w-full">
-                    <thead><tr>
-                      <th class="table-header">اسم الوثيقة</th>
-                      <th class="table-header">المسار</th>
-                      <th class="table-header">إجراء</th>
-                    </tr></thead>
-                    <tbody>
-                      ${paths.map(path => `
-                        <tr class="table-row">
-                          <td class="table-cell font-medium text-gray-100">📄 ${escHtml(fileName(path))}</td>
-                          <td class="table-cell text-xs" dir="ltr">${escHtml(path)}</td>
-                          <td class="table-cell">
-                            ${can(user, "documents.download") ? `<button class="btn-secondary text-xs px-2 py-1 btn-download-emp-doc"
-                              data-path="${escHtml(path)}">تنزيل</button>` : ""}
-                            <button class="btn-danger text-xs px-2 py-1 btn-del-emp-doc"
-                              data-emp-id="${e.id}" data-path="${escHtml(path)}">حذف</button>
-                          </td>
-                        </tr>`).join("")}
-                    </tbody>
-                  </table>
-                </div>`;
-              }).join("")}
-        </div>
-      </div>`;
-
-    el.querySelector("#btn-upload-emp-doc")?.addEventListener("click", async () => {
-      const empId = parseInt(el.querySelector("#emp-doc-employee")?.value || "0", 10);
-      if (!empId) { showToast("اختر الموظف أولاً", "warn"); return; }
-      try {
-        const selected = await open({
-          multiple: true,
-          filters: [{ name: "ملفات الوثائق", extensions: DOCUMENT_EXTENSIONS }],
-        });
-        if (!selected) return;
-        const files = Array.isArray(selected) ? selected : [selected];
-        if (!(await confirmAction(`تأكيد رفع ${arCount(files.length, DOC_GEN)} للموظف؟`))) return;
-        for (const file of files) {
-          await api.uploadDocumentAttachment(empId, file);
-        }
-        employees = await api.listEmployees();
-        showToast(`تم رفع ${arCount(files.length, DOC_GEN)}`);
-        renderEmployeeDocs();
-      } catch (err) { showToast(err?.message ?? String(err || "خطأ في الرفع"), "error"); }
-    });
-
-    el.querySelectorAll(".btn-del-emp-doc").forEach(btn => {
-      btn.addEventListener("click", async () => {
-        const empId = parseInt(btn.dataset.empId, 10);
-        const path = btn.dataset.path;
-        if (!(await confirmAction("تأكيد حذف هذه الوثيقة من ملف الموظف؟"))) return;
-        try {
-          await api.deleteAttachment(empId, path);
-          employees = await api.listEmployees();
-          showToast("تم حذف الوثيقة");
-          renderEmployeeDocs();
-        } catch (err) { showToast(err?.message ?? String(err || "خطأ في الحذف"), "error"); }
-      });
-    });
-    el.querySelectorAll(".btn-download-emp-doc").forEach(btn => {
-      btn.addEventListener("click", async () => {
-        await downloadStoredFile(btn.dataset.path);
-      });
+      } catch (err) { showToast(errorText(err, "تعذر حذف الوثيقة"), "error"); }
     });
   }
 
@@ -1595,12 +1482,8 @@ export async function renderDocuments(container, user, ctx) {
     btn.addEventListener("click", async () => {
       if (activeDocFormGuard && !(await activeDocFormGuard())) return;
       activeTab = btn.dataset.tab;
-      container.querySelectorAll(".doc-tab").forEach(b => {
-        const a = b.dataset.tab === activeTab;
-        b.style.borderBottomColor = a ? "var(--ui-accent)" : "transparent";
-        b.style.color = a ? "var(--ui-accent)" : "var(--ui-text-muted)";
-        b.style.fontWeight = a ? "700" : "400";
-      });
+      container.querySelectorAll(".doc-tab").forEach(b => b.setAttribute("aria-selected", String(b.dataset.tab === activeTab)));
+      currentPage = 1;
       renderGeneral();
     });
   });
