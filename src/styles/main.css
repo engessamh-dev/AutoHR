@@ -894,6 +894,10 @@ html[data-ui-scale] #app-shell { height: calc(100vh / var(--ui-scale)); }
 .aw-chips{display:flex;flex-wrap:wrap;gap:6px;align-items:center;min-height:36px;padding:4px 6px;border:1px solid var(--ui-line-strong);border-radius:8px;background:var(--ui-sunken)}
 .aw-chip{display:inline-flex;align-items:center;gap:6px;padding:2px 6px 2px 10px;border-radius:999px;border:1px solid var(--ui-accent);background:var(--ui-accent-soft);color:var(--ui-text-strong);font-weight:700;font-size:12.5px}
 .aw-chip button{background:none;border:0;color:var(--ui-text-muted);cursor:pointer;font-size:11px;padding:0 2px}
+.aw-chip-add,.emp-zone-add{display:inline-flex;align-items:center;padding:2px 10px;border-radius:999px;border:1px dashed var(--ui-line-strong);background:transparent;color:var(--ui-text-muted);font-size:12px;font-weight:600;cursor:pointer}
+.aw-chip-add:hover,.emp-zone-add:hover,.aw-chip-add:focus-visible,.emp-zone-add:focus-visible{border-color:var(--ui-accent);color:var(--ui-text-strong);outline:none}
+.emp-zone-quick{display:flex;flex-wrap:wrap;gap:6px;margin-top:6px}
+.emp-zone-quick:empty{display:none}
 .aw-chip-input{flex:1;min-width:120px;background:none;border:0;outline:none;color:var(--ui-text-strong);font:inherit;font-size:12.5px}
 .aw-foot{display:flex;gap:8px;align-items:center;padding:10px 16px;border-top:1px solid var(--ui-line)}
 .aw-hint{margin-inline-start:auto;font-size:12px;color:var(--ui-text-faint)}

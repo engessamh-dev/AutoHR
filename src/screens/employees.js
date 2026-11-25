@@ -6,7 +6,7 @@ import { bindAttachmentScannerButtons } from "../attachments/integration.js";
 import { zoomToolbarHtml, mountZoomViewer } from "../attachments/zoom-viewer.js";
 import { convertFileSrc } from "@tauri-apps/api/core";
 import { open, save } from "@tauri-apps/plugin-dialog";
-import { showToast, formatDate, escHtml, debounce, confirmAction, confirmSaveChanges } from "../utils.js";
+import { showToast, formatDate, escHtml, debounce, confirmAction, confirmSaveChanges, AIRPORT_ZONES } from "../utils.js";
 import { can } from "../permissions.js";
 import { openNameReview } from "./name-review.js";
 import { employeeNameFields, recordNameFields, bindNameFields, readNameFields, readNameGroup, applyNames, joinNameParts } from "./name-fields.js";
@@ -428,13 +428,20 @@ function zonesField(label, id, emp) {
       <input type="hidden" id="f-${id}" value="${escHtml(codes.join(","))}" />
       <span class="emp-zone-list">${zoneChipsHtml(codes)}</span>
       <input type="text" class="emp-zone-input" dir="ltr" maxlength="12" placeholder="أضف رمزاً" aria-label="${label}" />
-    </div></div>`;
+    </div><div class="emp-zone-quick">${zoneQuickHtml(codes)}</div></div>`;
+}
+
+/** One-click buttons for the usual codes the badge does not have yet. */
+function zoneQuickHtml(codes) {
+  return AIRPORT_ZONES.filter(z => !codes.includes(z)).map(z => `<button type="button" class="emp-zone-add" data-zone="${z}" dir="ltr" title="إضافة ${z}">+ ${z}</button>`).join("");
 }
 
 function setZones(box, codes) {
   const hidden = box.querySelector("input[type=hidden]");
   hidden.value = codes.join(",");
   box.querySelector(".emp-zone-list").innerHTML = zoneChipsHtml(codes);
+  const quick = box.parentElement.querySelector(".emp-zone-quick");
+  if (quick) quick.innerHTML = zoneQuickHtml(codes);
   markPanelDirty();
 }
 
@@ -1305,6 +1312,12 @@ function handlePanelUiClick(event) {
     const scope = viewer.closest("#tab-content") ?? document;
     const buttons = [...scope.querySelectorAll(".emp-view-attachment")];
     openAttachmentViewer(buttons.map(viewerItemFromButton), Math.max(0, buttons.indexOf(viewer)));
+  }
+  const zoneAdd = target.closest(".emp-zone-add");
+  if (zoneAdd) {
+    const box = zoneAdd.parentElement.previousElementSibling;
+    setZones(box, zoneCodes([box.querySelector("input[type=hidden]").value, zoneAdd.dataset.zone].join(",")));
+    return;
   }
   const zoneRemove = target.closest(".emp-zone-remove");
   if (zoneRemove) {

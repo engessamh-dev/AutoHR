@@ -57,6 +57,11 @@ test("a later document does not overwrite an earlier value; the conflict can be 
   await pick(page, "airport", "airport.jpg");
   await expect(page.locator('[data-key="job_title"]')).toHaveValue("مهندس");
   await expect(page.locator(".aw-chip")).toHaveCount(3);
+  // The usual codes not on the badge are one click away.
+  await expect(page.locator("[data-chip-add]")).toHaveText(["+ C"]);
+  await page.click('[data-chip-add="C"]');
+  await expect(page.locator(".aw-chip")).toHaveCount(4);
+  await expect(page.locator("[data-chip-add]")).toHaveCount(0);
   await page.locator('[data-take="job_title"]').click();
   await expect(page.locator('[data-key="job_title"]')).toHaveValue("مهندس اتصالات");
 });

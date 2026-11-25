@@ -959,18 +959,6 @@ fn parse_ration(lines: &[Line], codes: &[String], result: &mut ReadResult) {
         (Some((p, c)), None) => result.set("ration_no", p, c, "text"),
         (None, None) => {}
     }
-    // The long number printed under the QR code: digits only, longer than the card number.
-    let card_no = result.get("ration_no").map(|f| f.value.clone()).unwrap_or_default();
-    let reference = lines
-        .iter()
-        .filter_map(|l| {
-            let digits = ascii_digits(&l.text).replace(' ', "");
-            (digits.len() >= 11 && digits.chars().all(|c| c.is_ascii_digit()) && digits != card_no).then_some((digits, l.confidence))
-        })
-        .max_by(|a, b| a.1.total_cmp(&b.1));
-    if let Some((digits, c)) = reference {
-        result.set("ration_ref", digits, c, "text");
-    }
     if let Some(i) = lines.iter().position(|l| has_label(&l.text, "اسم رب الاسره")) {
         // Below the label: the Kurdish label line, then the printed name.
         let name = lines[i + 1..].iter().take(4).find(|l| {
@@ -1806,8 +1794,8 @@ mod tests {
         assert_eq!(r.get("ration_no").unwrap().value, "0100000001");
         assert_eq!(r.get("ration_no").unwrap().source, "qr");
         assert_eq!(r.get("head_name").unwrap().value, "أحمد علي حسين كاظم");
-        // The long number under the QR code is kept apart from the card number.
-        assert_eq!(r.get("ration_ref").unwrap().value, "1000000000001");
+        // The long number under the QR code is not taken for the card number.
+        assert!(r.fields.iter().all(|f| f.value != "1000000000001"));
         // Without the QR code the printed number is used.
         let r = parse(&lines);
         assert_eq!(r.get("ration_no").unwrap().source, "text");
@@ -1821,6 +1809,10 @@ mod tests {
         assert_eq!(rows(&latin)[0].0.text, "S1 T VIP");
         let arabic = vec![boxed_at("حسن", 100., 0.), boxed_at("علي", 200., 0.)];
         assert_eq!(rows(&arabic)[0].0.text, "علي حسن");
+        // Zone codes, C included, as printed.
+        let mut r = ReadResult::default();
+        airport_zones(&[line("Airport", 0.), line("S1 T VIP C", 100.)], &mut r);
+        assert_eq!(r.get("zones").unwrap().value, "S1,T,VIP,C");
     }
 
     #[test]

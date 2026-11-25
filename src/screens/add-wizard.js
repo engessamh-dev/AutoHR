@@ -12,7 +12,7 @@
  */
 import { api } from "../api.js";
 import { open } from "@tauri-apps/plugin-dialog";
-import { showToast, escHtml, confirmAction } from "../utils.js";
+import { showToast, escHtml, confirmAction, AIRPORT_ZONES } from "../utils.js";
 import { joinNameParts } from "./name-fields.js";
 import { mergeSides } from "./id-reader.js";
 
@@ -491,7 +491,8 @@ function openWizard({ user, employees, onCreated, resume = null }) {
     } else if (field.chips) {
       const codes = text(value).split(",").filter(Boolean);
       control = `<div class="aw-chips" data-chips="${field.key}" data-scope="${scope}">${codes.map(c => `<span class="aw-chip" dir="ltr">${escHtml(c)}<button type="button" data-chip-remove="${escHtml(c)}" aria-label="حذف ${escHtml(c)}">✕</button></span>`).join("")}
-        <input class="aw-chip-input" dir="ltr" placeholder="أضف رمزًا ثم Enter" aria-label="إضافة صلاحية"></div>`;
+        <input class="aw-chip-input" dir="ltr" placeholder="أضف رمزًا ثم Enter" aria-label="إضافة صلاحية">
+        ${AIRPORT_ZONES.filter(z => !codes.includes(z)).map(z => `<button type="button" class="aw-chip-add" data-chip-add="${z}" dir="ltr" title="إضافة ${z}">+ ${z}</button>`).join("")}</div>`;
     } else {
       control = `<input id="${id}" class="input-field" ${attrs} type="${field.date ? "date" : "text"}" dir="${field.ltr || field.date ? "ltr" : "rtl"}" value="${escHtml(value ?? "")}" placeholder="${escHtml(field.placeholder ?? "")}" ${field.list ? `list="aw-${field.list}"` : ""}>`;
     }
@@ -753,6 +754,7 @@ function openWizard({ user, employees, onCreated, resume = null }) {
       };
       const codes = () => text(values[key]?.value).split(",").filter(Boolean);
       box.querySelectorAll("[data-chip-remove]").forEach(b => b.addEventListener("click", () => set(codes().filter(c => c !== b.dataset.chipRemove))));
+      box.querySelectorAll("[data-chip-add]").forEach(b => b.addEventListener("click", () => set([...codes(), b.dataset.chipAdd])));
       const input = box.querySelector(".aw-chip-input");
       input.addEventListener("keydown", event => {
         if ((event.key === "Enter" || event.key === ",") && input.value.trim()) {

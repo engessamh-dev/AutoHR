@@ -268,3 +268,6 @@ export function arCount(count, forms) {
   if (r >= 11) return `${n} ${f.many}`;
   return `${n} ${f.sing}`;
 }
+
+/** Baghdad airport badge access codes offered for one-click adding (any other code can be typed). */
+export const AIRPORT_ZONES = ["S1", "T", "VIP", "C"];

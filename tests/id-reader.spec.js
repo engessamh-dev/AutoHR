@@ -306,3 +306,13 @@ test("a new vehicle's registration image: + رفع saves, then uploads to the sa
   await expect.poll(() => page.evaluate(() => window.calls.find(c => c.command === "cmd_upload_vehicle_annual_attachment")?.args)).toMatchObject({ employeeId: 1, vehicleIndex: 0, side: "front" });
   await expect(page.locator('.tab-btn[data-tab="vehicle"]')).toHaveCSS("font-weight", "700");
 });
+
+test("badge zones: the usual codes, C included, are added with one click", async ({ page }) => {
+  await page.evaluate(() => { window.employeePatch = { airport_badge_zones: "S1,T" }; });
+  await openDocuments(page);
+  const quick = page.locator(".emp-zone-add");
+  await expect(quick).toHaveText(["+ VIP", "+ C"]);
+  await page.click('.emp-zone-add[data-zone="C"]');
+  await expect(page.locator("#f-airport_badge_zones")).toHaveValue("S1,T,C");
+  await expect(quick).toHaveText(["+ VIP"]);
+});
