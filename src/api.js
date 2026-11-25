@@ -48,6 +48,15 @@ export const api = {
   deletePassportAttachment: (empId, rel) => invoke("cmd_delete_passport_attachment", { employeeId: empId, relativePath: rel }),
   // Reads the fields of a stored national card or passport image on this device (nothing is saved).
   readDocumentFields: (rel) => invoke("cmd_read_document_fields", { relativePath: rel }),
+  readImageFields: (sourcePath) => invoke("cmd_read_image_fields", { sourcePath }),
+  // The add-employee wizard uploads the images it already showed and read, without the
+  // per-file crop dialog. Only the document upload commands are allowed here.
+  wizardUpload: (command, args) => {
+    if (!/^cmd_upload_(national_card|passport|ministry_badge|airport_badge|ration_card|residence_card|spouse_national_card|family_national_card)_attachment$/.test(command)) {
+      return Promise.reject(new Error("Unsupported upload"));
+    }
+    return invoke(command, args);
+  },
   uploadRationCardAttachment: (empId, path) => uploadWithScanner("cmd_upload_ration_card_attachment", { employeeId: empId, sourcePath: path }),
   deleteRationCardAttachment: (empId, rel) => invoke("cmd_delete_ration_card_attachment", { employeeId: empId, relativePath: rel }),
 

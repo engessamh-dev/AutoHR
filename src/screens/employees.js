@@ -11,6 +11,7 @@ import { can } from "../permissions.js";
 import { openNameReview } from "./name-review.js";
 import { employeeNameFields, recordNameFields, bindNameFields, readNameFields, readNameGroup, applyNames, joinNameParts } from "./name-fields.js";
 import { readDocumentFields } from "./id-reader.js";
+import { openAddEmployee } from "./add-wizard.js";
 
 let _employees = [];
 let _filter = "";
@@ -108,7 +109,16 @@ export async function renderEmployees(container, user, ctx) {
     _statusFilter = e.target.value;
     renderTable();
   });
-  container.querySelector("#btn-add-emp").addEventListener("click", () => openPanel(null));
+  container.querySelector("#btn-add-emp").addEventListener("click", () => openAddEmployee({
+    user,
+    employees: _employees,
+    onManual: () => openPanel(null),
+    onCreated: async created => {
+      _employees = await api.listEmployees();
+      renderTable();
+      openPanel(_employees.find(e => e.id === created.id) ?? created);
+    },
+  }));
   container.querySelector("#emp-overlay").addEventListener("click", () => closePanel());
   if (!can(user, "employees.create")) container.querySelector("#btn-add-emp")?.remove();
   if (can(user, "employees.edit")) {
@@ -210,6 +220,9 @@ function renderTable({ keepVisibleRows = false } = {}) {
 function openPanel(emp, tab = "basic", sectionState = new Map()) {
   _activeTab = TABS.some(t => t.id === tab) ? tab : "basic";
   _panelDraft = emp ? { ...emp } : { is_active: 1, spouses: "[]", family_members: "[]", vehicles: "[]" };
+  // One birth date and place: older records may hold them only in the national card's copy.
+  _panelDraft.birthdate ||= _panelDraft.civil_id_birthdate ?? null;
+  _panelDraft.birthplace ||= _panelDraft.civil_id_birthplace ?? null;
   _panelDirty = false;
   _sectionState = sectionState;
   document.getElementById("emp-panel").style.transform = "translateX(0)";
@@ -301,6 +314,7 @@ function collectVisiblePanelFields(panel) {
     rows.forEach(row => {
       arr.push(applyNames({
         name:        "",
+        relation:    row.querySelector(".fm-relation")?.value || "",
         gender:      row.querySelector(".fm-gender")?.value || "",
         birthplace:  row.querySelector(".fm-birthplace")?.value?.trim() || "",
         birthdate:   row.querySelector(".fm-birthdate")?.value || "",
@@ -699,14 +713,12 @@ function documentSections(emp) {
   const sections = [
     {
       key: "national", title: "البطاقة الوطنية", expiry: "civil_id_expiry_date", maxDays: 30,
-      keys: ["civil_id", "civil_id_issuer", "civil_id_issue_date", "civil_id_expiry_date", "civil_id_birthplace", "civil_id_birthdate", "civil_id_family_number"],
+      keys: ["civil_id", "civil_id_issuer", "civil_id_issue_date", "civil_id_expiry_date", "civil_id_family_number"],
       fields: [
         field("رقم البطاقة الوطنية", "civil_id", emp, {ltr:true, span:true}),
         field("جهة الإصدار", "civil_id_issuer", emp),
         field("تاريخ الإصدار", "civil_id_issue_date", emp, {date:true}),
         field("تاريخ النفاذ", "civil_id_expiry_date", emp, {date:true}),
-        field("محل الولادة", "civil_id_birthplace", emp),
-        field("تاريخ الولادة", "civil_id_birthdate", emp, {date:true}),
         field("الرقم العائلي", "civil_id_family_number", emp, {ltr:true}),
       ],
       tiles: sided("national", "civil_id"), attached: sidedCount("civil_id"), expected: 2,
@@ -725,14 +737,12 @@ function documentSections(emp) {
     },
     {
       key: "residence", title: "بطاقة السكن",
-      keys: ["residence_card_issuer", "residence_head_name", "residence_address", "residence_form_no", "residence_card_no", "residence_card_issue_date"],
+      // The old card's other fields are handwritten and cannot be read; the address is kept.
+      keys: ["residence_card_no", "residence_card_issue_date", "residence_address"],
       fields: [
-        field("مكتب معلومات", "residence_card_issuer", emp),
-        employeeNameFields("اسم رب الأسرة", "residence_head_name", emp),
-        field("عنوان السكن الحالي", "residence_address", emp, {span:true}),
-        field("رقم الاستمارة", "residence_form_no", emp, {ltr:true}),
         field("رقم بطاقة السكن", "residence_card_no", emp, {ltr:true}),
         field("تاريخ الإصدار", "residence_card_issue_date", emp, {date:true}),
+        field("عنوان السكن الحالي", "residence_address", emp, {span:true}),
       ],
       tiles: sided("residence", "residence_card"), attached: sidedCount("residence_card"), expected: 2,
     },
@@ -854,8 +864,8 @@ const printableDocumentDefinitions = [
       ["جهة الإصدار", "civil_id_issuer"],
       ["تاريخ الإصدار", "civil_id_issue_date"],
       ["تاريخ النفاذ", "civil_id_expiry_date"],
-      ["محل الولادة", "civil_id_birthplace"],
-      ["تاريخ الولادة", "civil_id_birthdate"],
+      ["محل الولادة", "birthplace"],
+      ["تاريخ الولادة", "birthdate"],
       ["الرقم العائلي", "civil_id_family_number"],
     ],
     attachments: [
@@ -889,12 +899,9 @@ const printableDocumentDefinitions = [
     id: "residence",
     title: "بطاقة السكن",
     fields: [
-      ["مكتب معلومات", "residence_card_issuer"],
-      ["اسم رب الأسرة", "residence_head_name"],
-      ["عنوان السكن الحالي", "residence_address"],
-      ["رقم الاستمارة", "residence_form_no"],
       ["رقم بطاقة السكن", "residence_card_no"],
       ["تاريخ الإصدار", "residence_card_issue_date"],
+      ["عنوان السكن الحالي", "residence_address"],
     ],
     attachments: [
       ["الوجه الأمامي", "residence_card_front_path", "residence_card_front_full_path"],
@@ -1486,8 +1493,8 @@ function renderPanel(emp) {
       civil_id_issuer:       g("civil_id_issuer"),
       civil_id_issue_date:   g("civil_id_issue_date"),
       civil_id_expiry_date:  g("civil_id_expiry_date"),
-      civil_id_birthplace:   g("civil_id_birthplace"),
-      civil_id_birthdate:    g("civil_id_birthdate"),
+      civil_id_birthplace:   g("birthplace"),
+      civil_id_birthdate:    g("birthdate"),
       civil_id_family_number:g("civil_id_family_number"),
       residence_card_no:     g("residence_card_no"),
       residence_card_issuer: g("residence_card_issuer"),
@@ -2088,6 +2095,8 @@ function familyAttachmentCard(label, side, member, memberIndex) {
   });
 }
 
+export const FAMILY_RELATIONS = [["", "—"], ["ابن", "ابن"], ["ابنة", "ابنة"], ["أب", "أب"], ["أم", "أم"], ["أخ", "أخ"], ["أخت", "أخت"], ["أخرى", "أخرى"]];
+
 function familyRowHtml(m = {}, i = Date.now()) {
   const existing = typeof i === "number" && i < 100;
   const rowKey = existing ? `row:family:${i}` : "";
@@ -2095,11 +2104,18 @@ function familyRowHtml(m = {}, i = Date.now()) {
   return `<div class="family-row emp-row${rowOpenClass(rowKey, existing)}" data-row-key="${rowKey}" data-national-card-front-path="${escHtml(m.national_card_front_path ?? "")}" data-national-card-back-path="${escHtml(m.national_card_back_path ?? "")}">
     ${rowHead({
       title: existing ? `فرد رقم ${i + 1}` : "فرد جديد",
-      summary: personSummary({ name: m.name, gender: m.gender, birthdate: m.birthdate }),
+      summary: [m.relation, personSummary({ name: m.name, gender: m.gender, birthdate: m.birthdate })].filter(Boolean).join(" · "),
       extra: `<span class="emp-pill ${attached === 2 ? "ok" : "none"}">المرفقات ${attached}/2</span>`,
       removeClass: "btn-remove-member",
     })}
-    <div style="grid-column:span 2">
+    <div>
+      <p style="font-size:10px;color:var(--ui-text-faint);margin-bottom:3px">صلة القرابة</p>
+      <select class="input-field fm-relation">
+        ${FAMILY_RELATIONS.map(([value, label]) =>
+          `<option value="${value}" ${(m.relation ?? "")===value?"selected":""}>${label}</option>`).join("")}
+      </select>
+    </div>
+    <div>
       <p style="font-size:10px;color:var(--ui-text-faint);margin-bottom:3px">رقم البطاقة الموحدة</p>
       <input class="input-field fm-civil" dir="ltr" value="${escHtml(m.civil_id??"")}"/>
     </div>
@@ -2402,9 +2418,8 @@ function ocrRows(result, target) {
          ["civil_id", "رقم البطاقة الوطنية", "national_no", { ltr: true }], ["birthdate", "تاريخ الولادة", "birthdate", { date: true }]]
       : [["civil_id", "رقم البطاقة الوطنية", "national_no", { ltr: true }], ["civil_id_issuer", "جهة الإصدار", "issuer"],
          ["civil_id_issue_date", "تاريخ الإصدار", "issue_date", { date: true }], ["civil_id_expiry_date", "تاريخ النفاذ", "expiry_date", { date: true }],
-         ["civil_id_birthplace", "محل الولادة (البطاقة)", "birthplace"], ["civil_id_birthdate", "تاريخ الولادة (البطاقة)", "birthdate", { date: true }],
          ["civil_id_family_number", "الرقم العائلي", "family_no", { ltr: true }],
-         ["birthplace", "محل الولادة (البيانات الأساسية)", "birthplace"], ["birthdate", "تاريخ الولادة (البيانات الأساسية)", "birthdate", { date: true }]]
+         ["birthplace", "محل الولادة", "birthplace"], ["birthdate", "تاريخ الولادة", "birthdate", { date: true }]]
     : [["civil_id", "رقم البطاقة الوطنية", "national_no", { ltr: true }], ["issuer", "جهة الإصدار", "issuer"],
        ["issue_date", "تاريخ الإصدار", "issue_date", { date: true }], ["expiry_date", "تاريخ النفاذ", "expiry_date", { date: true }],
        ["birthplace", "محل الولادة", "birthplace"], ["birthdate", "تاريخ الولادة", "birthdate", { date: true }]];

@@ -328,3 +328,43 @@ pub(crate) async fn cmd_read_document_fields(
     .await
     .map_err(|e| AppError::Other(e.to_string()))?
 }
+
+/// What the add-employee wizard gets back for one picked or scanned image.
+#[derive(serde::Serialize)]
+pub(crate) struct ImageReading {
+    pub result: ocr_parse::ReadResult,
+    /// A small JPEG of the image, upright, for the wizard to show beside the read values.
+    pub preview: Vec<u8>,
+}
+
+/// Reads the fields of a document image the user just picked (or scanned) for a new employee.
+/// Nothing is stored: the wizard uploads the file with the usual upload commands after saving.
+#[tauri::command]
+pub(crate) async fn cmd_read_image_fields(
+    state: State<'_, DbState>,
+    sess: State<'_, SessionState>,
+    source_path: String,
+) -> Result<ImageReading, AppError> {
+    {
+        let conn = state.conn()?;
+        let owner = authorize(&conn, &sess, "employees.create")?;
+        assert_permission(&conn, &owner, "documents.upload")?;
+        let upload = files::validate_upload(&source_path, false, true, 25 * 1024 * 1024)?;
+        if !upload.mime_type.starts_with("image/") {
+            return Err(AppError::Validation("قراءة البيانات تعمل على الصور فقط (JPEG أو PNG أو WebP)".into()));
+        }
+        log_audit(&conn, Some(&owner), "DOCUMENT_TEXT_READ", Some("document"), None, Some("add-employee wizard"), "Success", None);
+    }
+    tauri::async_runtime::spawn_blocking(move || {
+        let image = scanner::load_image(std::path::Path::new(&source_path))
+            .map_err(|_| AppError::Validation("قراءة البيانات تعمل على الصور فقط (JPEG أو PNG أو WebP)".into()))?;
+        let preview = scanner::jpeg(&scanner::thumbnail(&image, 900), 85)?;
+        let result = match ocr::read_lines(&image) {
+            Some(lines) => ocr_parse::parse_with_codes(&lines, &ocr::read_qr_codes(&image)),
+            None => return Err(AppError::Other("text reader unavailable".into())),
+        };
+        Ok(ImageReading { result, preview })
+    })
+    .await
+    .map_err(|e| AppError::Other(e.to_string()))?
+}

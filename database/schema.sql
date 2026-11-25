@@ -157,6 +157,7 @@ CREATE TABLE IF NOT EXISTS employee_family_members (
   id                       INTEGER PRIMARY KEY AUTOINCREMENT,
   employee_id              INTEGER NOT NULL REFERENCES employees(id) ON DELETE CASCADE,
   sort_order               INTEGER NOT NULL DEFAULT 0,
+  relation                 TEXT,
   civil_id                 TEXT,
   name                     TEXT,
   gender                   TEXT,

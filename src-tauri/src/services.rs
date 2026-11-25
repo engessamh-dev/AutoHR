@@ -939,7 +939,7 @@ fn load_employee_spouses(conn: &Connection, employee_id: i64) -> AppResult<Vec<s
 
 fn load_employee_family_members(conn: &Connection, employee_id: i64) -> AppResult<Vec<serde_json::Value>> {
     repeating_array(conn,
-        "SELECT civil_id,name,gender,birthplace,birthdate,issue_date,expiry_date,issuer,blood_type,national_card_front_path,national_card_back_path,name_parts
+        "SELECT civil_id,name,gender,birthplace,birthdate,issue_date,expiry_date,issuer,blood_type,national_card_front_path,national_card_back_path,name_parts,relation
          FROM employee_family_members WHERE employee_id=?1 ORDER BY sort_order,id",
         employee_id,
         |row| {
@@ -956,6 +956,7 @@ fn load_employee_family_members(conn: &Connection, employee_id: i64) -> AppResul
                 "issuer": optional_json_value(row_text(row, 7)?),
                 "blood_type": optional_json_value(row_text(row, 8)?),
                 "name_parts": serde_json::Value::Object(crate::names::parts_object(row_text(row, 11)?.as_deref())),
+                "relation": optional_json_value(row_text(row, 12)?),
                 "national_card_front_path": optional_json_value(front.clone()),
                 "national_card_back_path": optional_json_value(back.clone()),
                 "national_card_front_full_path": optional_json_value(attachment_full_path(conn, &front)),
@@ -1164,15 +1165,15 @@ fn replace_employee_family_members(conn: &Connection, employee_id: i64, family_j
     for (index, member) in members.iter().enumerate() {
         let (names, name_parts) = resolve_row_names(member, stored.get(index), &crate::names::FAMILY_ARABIC);
         conn.execute(
-            "INSERT INTO employee_family_members(employee_id,sort_order,civil_id,name,gender,birthplace,birthdate,issue_date,expiry_date,issuer,blood_type,national_card_front_path,national_card_back_path,name_parts)
-             VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14)",
+            "INSERT INTO employee_family_members(employee_id,sort_order,civil_id,name,gender,birthplace,birthdate,issue_date,expiry_date,issuer,blood_type,national_card_front_path,national_card_back_path,name_parts,relation)
+             VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15)",
             params![
                 employee_id, index as i64,
                 value_string(member, "civil_id"), names[0], value_string(member, "gender"),
                 value_string(member, "birthplace"), value_string(member, "birthdate"), value_string(member, "issue_date"),
                 value_string(member, "expiry_date"), value_string(member, "issuer"), value_string(member, "blood_type"),
                 value_string(member, "national_card_front_path"), value_string(member, "national_card_back_path"),
-                name_parts,
+                name_parts, value_string(member, "relation"),
             ],
         )?;
     }
