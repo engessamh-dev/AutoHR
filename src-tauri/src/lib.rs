@@ -957,6 +957,12 @@ async fn cmd_move_data_folder(window: Window, state: State<'_, DbState>, sess: S
     let user = authorize(&conn, &sess, "settings.manage")?;
     set_document_alert_rules(&conn, &user, &rules)
 }
+/// For the home-screen reminder: when a full backup was last exported (None: never).
+#[tauri::command] fn cmd_last_full_export(state: State<DbState>, sess: State<SessionState>) -> Result<Option<String>, AppError> {
+    let conn = state.conn()?;
+    authorize(&conn, &sess, "backups.manage")?;
+    get_setting(&conn, "backup_last_export")
+}
 #[tauri::command] fn cmd_get_auto_backup_settings(state: State<DbState>, sess: State<SessionState>) -> Result<AutoBackupSettings, AppError> {
     let conn = state.conn()?;
     let user = authorize(&conn, &sess, "backups.manage")?;
@@ -1500,7 +1506,7 @@ pub fn run() {
             cmd_get_document_alert_rules, cmd_set_document_alert_rules,
             cmd_run_due_auto_backups, cmd_exit_app,
             cmd_get_document_types, cmd_set_document_types,
-            cmd_inspect_backup, cmd_list_backups, cmd_get_job_lists, cmd_set_job_lists,
+            cmd_inspect_backup, cmd_list_backups, cmd_last_full_export, cmd_get_job_lists, cmd_set_job_lists,
             cmd_create_backup, cmd_restore_backup, cmd_audit_document_view, cmd_audit_document_download, cmd_download_document,
             cmd_get_document_preview_path, cmd_read_document, cmd_print_document, cmd_print_employee_documents, cmd_save_report_xlsx,
         ])

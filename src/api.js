@@ -147,6 +147,7 @@ export const api = {
   // Opens and checks a backup before a restore; says its date and what it holds.
   inspectBackup: (path, password) => invoke("cmd_inspect_backup", { sourcePath: path, password }),
   listBackups: () => invoke("cmd_list_backups"),
+  lastFullExport: () => invoke("cmd_last_full_export"),
   // «الدرجة الوظيفية» and «رقم المرحلة» lists (read: employees.view; save: settings.manage)
   getJobLists: () => invoke("cmd_get_job_lists"),
   setJobLists: (lists) => invoke("cmd_set_job_lists", { lists }),

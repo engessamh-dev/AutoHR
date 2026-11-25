@@ -148,6 +148,7 @@ pub fn export_backup_to(
     }
     crate::backup_store::write_full_export(conn, password, &path, progress)?;
     log_activity(conn, user, "EXPORT_BACKUP", Some("backup"), None, path.to_str(), None);
+    crate::services::set_setting(conn, "backup_last_export", &chrono::Local::now().format("%Y-%m-%d %H:%M").to_string())?;
     progress(backup_progress(100, "تم تصدير النسخة الاحتياطية والتحقق منها"));
     Ok(path.to_string_lossy().into_owned())
 }
@@ -567,6 +568,8 @@ mod tests {
         let user = admin(&conn);
         add_employee(&conn, &data, 1, "في التصدير");
         let export = export_backup_to(&conn, &user, "Backup-2026!", &env.root.join("usb"), &mut |_| {}).unwrap();
+        // The home-screen reminder counts from the last full export.
+        assert!(crate::services::get_setting(&conn, "backup_last_export").unwrap().is_some());
         let old = env.root.join("old-1.0.6.autohrbak");
         crate::services::create_backup_archive(&conn, "Backup-2026!", &old, &mut |_| {}).unwrap();
         add_employee(&conn, &data, 2, "بعد التصدير");

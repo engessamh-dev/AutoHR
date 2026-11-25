@@ -2,7 +2,7 @@
  * screens/settings.js — Company identity & logo, storage locations, backups (admins only)
  */
 import { api }       from "../api.js";
-import { showToast, confirmAction, confirmSaveChanges, applyBranding, escHtml, errorText, beginBusyTask } from "../utils.js";
+import { showToast, confirmAction, confirmSaveChanges, applyBranding, escHtml, errorText, beginBusyTask, friendlyTime } from "../utils.js";
 import { open }      from "@tauri-apps/plugin-dialog";
 import { can }       from "../permissions.js";
 import { listen }    from "@tauri-apps/api/event";
@@ -67,6 +67,36 @@ function mountSubnav(panel, key) {
 }
 
 const ltr = text => `\u2066${text}\u2069`;
+
+// One choice for automatic backup: off, only on sign-out/close, or also every N minutes of work.
+const AUTO_BACKUP_MODES = [
+  ["off", "متوقف"],
+  ["0", "عند الخروج فقط"],
+  ["30", "كل 30 دقيقة"],
+  ["60", "كل ساعة"],
+  ["120", "كل ساعتين"],
+];
+function autoBackupMode(settings) {
+  if (!settings?.enabled) return "off";
+  const interval = String(settings.interval_minutes ?? 60);
+  return AUTO_BACKUP_MODES.some(([value]) => value === interval) ? interval : "60";
+}
+
+/** «آخر نسخة: اليوم 1:00 م · التالية: 2:00 م · المساحة: 2.4 GB». */
+function autoBackupStatusLine(settings) {
+  const last = settings?.last_backup ? friendlyTime(settings.last_backup) : "لم تُنشأ بعد";
+  let next;
+  const mode = autoBackupMode(settings);
+  if (mode === "off") next = "متوقف";
+  else if (mode === "0") next = "عند الخروج أو الإغلاق";
+  else {
+    const lastTime = settings?.last_backup ? new Date(settings.last_backup.replace(" ", "T")) : null;
+    const due = lastTime && !Number.isNaN(lastTime.getTime()) ? new Date(lastTime.getTime() + Number(mode) * 60000) : null;
+    next = due && due > new Date() ? `${friendlyTime(`${due.getFullYear()}-${String(due.getMonth() + 1).padStart(2, "0")}-${String(due.getDate()).padStart(2, "0")} ${String(due.getHours()).padStart(2, "0")}:${String(due.getMinutes()).padStart(2, "0")}`).replace(/^اليوم /, "")} إذا تغيّرت البيانات`
+      : "عند أول تغيير في البيانات";
+  }
+  return `آخر نسخة: ${escHtml(last)} · التالية: ${escHtml(next)} · المساحة: ${escHtml(formatBytes(settings?.used_bytes ?? 0))}`;
+}
 
 function formatBytes(bytes) {
   const value = Number(bytes) || 0;
@@ -450,6 +480,7 @@ export async function renderSettings(container, user, ctx) {
   // «التحديثات» is now a section of «الدعم وحول النظام».
   if (activeSettingsTab === "updates") { activeSettingsTab = "support"; activeSubsection.support = "updates"; }
   if (!tabs.some(tab => tab.id === activeSettingsTab)) activeSettingsTab = tabs[0].id;
+  if (ctx?.sub && !ctx?.keepPosition) activeSubsection[activeSettingsTab] = ctx.sub;
 
   const logoMarkup = () =>
     `<img src="${escHtml(COMPANY_LOGO.medium)}" id="logo-preview" alt="${escHtml(COMPANY_LOGO.alt)}" class="settings-logo company-logo-tile" />`;
@@ -536,22 +567,16 @@ export async function renderSettings(container, user, ctx) {
         ${autoBackup?.has_password && autoBackup?.password_works === false ? `<div class="settings-storage-warning text-xs" role="alert">
           <span>كلمة مرور النسخ التلقائي المحفوظة لا تعمل على هذا الجهاز أو حساب Windows هذا، لذلك لا تُنشأ نسخ تلقائية. أدخل كلمة المرور من جديد واحفظ.</span>
         </div>` : ""}
-        <p class="settings-status-line">آخر نسخة تلقائية: ${autoBackup?.last_backup ? escHtml(ltr(autoBackup.last_backup)) : "لم تُنشأ بعد"}
-          · المساحة المستخدمة في مجلد النسخ: ${escHtml(formatBytes(autoBackup?.used_bytes ?? 0))}
-          (${escHtml(String(autoBackup?.backup_files ?? 0))} ملف نسخة)</p>
-        <div class="backup-schedules">
-          <label class="backup-schedule">
-            <input id="auto-backup-enabled" type="checkbox" ${autoBackup?.enabled ? "checked" : ""} />
-            <span class="backup-schedule-name">تفعيل النسخ التلقائي</span>
-            <span class="backup-schedule-last">نسخة يومية واحدة تُحدَّث خلال اليوم ولا تتكرر.</span>
-          </label>
-        </div>
+        ${autoBackup?.same_drive ? `<div class="settings-storage-warning text-xs" role="status">
+          <span>النسخ على نفس القرص لا تحميك إذا تعطّل. اختر قرصًا آخر أو فلاشًا من «مواقع الحفظ ← تغيير المجلد…».</span>
+        </div>` : ""}
+        <p class="settings-status-line">${autoBackupStatusLine(autoBackup)}</p>
         <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
           <div>
-            <label class="settings-path-label" for="auto-backup-interval">التحديث أثناء العمل</label>
-            <select id="auto-backup-interval" class="input-field">
-              ${[[30, "كل 30 دقيقة"], [60, "كل ساعة"], [120, "كل ساعتين"], [0, "متوقف (عند الخروج والإغلاق فقط)"]].map(([value, label]) =>
-                `<option value="${value}" ${Number(autoBackup?.interval_minutes ?? 60) === value ? "selected" : ""}>${label}</option>`).join("")}
+            <label class="settings-path-label" for="auto-backup-mode">النسخ التلقائي</label>
+            <select id="auto-backup-mode" class="input-field">
+              ${AUTO_BACKUP_MODES.map(([value, label]) =>
+                `<option value="${value}" ${autoBackupMode(autoBackup) === value ? "selected" : ""}>${label}</option>`).join("")}
             </select>
           </div>
         </div>
@@ -781,7 +806,7 @@ export async function renderSettings(container, user, ctx) {
 
   const resetCompanyDirty = trackUnsavedChanges(container, container.querySelector("#btn-save-cfg"), ["#c-company", "#c-dept", "#c-div"]);
   const resetAutoBackupDirty = trackUnsavedChanges(container, container.querySelector("#btn-save-auto-backup"),
-    ["#auto-backup-enabled", "#auto-backup-interval", "#auto-keep-daily", "#auto-keep-weekly", "#auto-keep-monthly", "#auto-backup-delete", "#auto-backup-password"]);
+    ["#auto-backup-mode", "#auto-keep-daily", "#auto-keep-weekly", "#auto-keep-monthly", "#auto-backup-delete", "#auto-backup-password"]);
 
   const saveCompany = async () => {
     const data = {
@@ -950,9 +975,11 @@ export async function renderSettings(container, user, ctx) {
   const saveAutoBackup = async () => {
     const number = id => Number(container.querySelector(id)?.value);
     const data = {
-      enabled: Boolean(container.querySelector("#auto-backup-enabled")?.checked),
+      enabled: container.querySelector("#auto-backup-mode")?.value !== "off",
       password: container.querySelector("#auto-backup-password")?.value || null,
-      interval_minutes: number("#auto-backup-interval"),
+      // «متوقف» keeps the last interval, so turning it back on restores the same choice.
+      interval_minutes: container.querySelector("#auto-backup-mode")?.value === "off"
+        ? Number(autoBackup?.interval_minutes ?? 60) : number("#auto-backup-mode"),
       keep_daily: number("#auto-keep-daily"),
       keep_weekly: number("#auto-keep-weekly"),
       keep_monthly: number("#auto-keep-monthly"),

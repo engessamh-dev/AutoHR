@@ -359,6 +359,10 @@ pub struct AutoBackupSettings {
     /// Everything in the backup folder: backup files and the attachment store.
     pub used_bytes: u64,
     pub backup_files: u64,
+    /// The backup folder is on the same disk as the data: a disk failure would take both.
+    pub same_drive: bool,
+    /// Last «تصدير نسخة كاملة» (local time), for the reminder to keep a copy elsewhere.
+    pub last_export: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -2802,6 +2806,8 @@ pub fn get_auto_backup_settings(conn: &Connection, user: &str) -> AppResult<Auto
         last_backup_path: get_setting(conn, "auto_backup_last_daily_path")?,
         used_bytes: usage.bytes,
         backup_files: usage.backup_files,
+        same_drive: matches!((crate::paths::drive_of(&crate::paths::data_root()), crate::paths::drive_of(&backup_path(conn))), (Some(a), Some(b)) if a == b),
+        last_export: get_setting(conn, "backup_last_export")?,
     })
 }
 
