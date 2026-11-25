@@ -306,8 +306,61 @@ test("ministry ID: one Arabic side fills department and job, and its name is che
   await expect(page.locator(".aw-note.is-ok", { hasText: "يطابق البطاقة الوطنية" })).toBeVisible();
   await page.evaluate(() => { window.openQueue = ["mot-other.jpg"]; });
   await page.click('[data-pick="ministry"][data-side="front"]');
-  await expect(page.locator(".aw-note.is-warn", { hasText: "يختلف عن البطاقة الوطنية" })).toContainText("كريم خالد عبد الله");
+  await expect(page.locator(".aw-other")).toContainText("هذا المستمسك باسم شخص آخر: «كريم خالد عبد الله»");
 });
+
+test("another person's document: red warning with replace or confirm; a misread letter only asks to compare", async ({ page }) => {
+  await page.evaluate(() => {
+    const f = (key, value) => ({ key, value, confidence: 0.95, source: "text" });
+    window.imageReads["pass-son.jpg"] = { document: "passport", warnings: [], fields: [f("first", "يوسف"), f("father", "سامر"), f("grandfather", "خالد"), f("surname", "الجبوري"), f("passport_no", "A00000001")] };
+    window.imageReads["pass-misread.jpg"] = { document: "passport", warnings: [], fields: [f("first", "سامز"), f("father", "خالد"), f("grandfather", "عبد الله"), f("surname", "الجبوري")] };
+    window.imageReads["pass-own.jpg"] = { document: "passport", warnings: [], fields: [f("first", "سامر"), f("father", "خالد"), f("grandfather", "عبد الله"), f("surname", "الجبوري")] };
+  });
+  await page.click('[data-choice="docs"]');
+  await pick(page, "national", "front.jpg");
+  await pick(page, "national", "back.jpg", "back");
+  await page.click("[data-next]");
+  await pick(page, "passport", "pass-son.jpg", "page");
+  const other = page.locator(".aw-other");
+  await expect(other).toContainText("باسم شخص آخر: «يوسف سامر خالد الجبوري»");
+  // Confirming keeps it, with a calm note.
+  await other.getByRole("button", { name: "هو للموظف نفسه" }).click();
+  await expect(other).toHaveCount(0);
+  await expect(page.locator(".aw-note.is-ok", { hasText: "أكّدت أن المستمسك للموظف" })).toBeVisible();
+  // Replacing reads a new image: the check starts again.
+  await pick(page, "passport", "pass-misread.jpg", "page");
+  await expect(page.locator(".aw-note.is-warn", { hasText: "قد يكون خطأ قراءة" })).toBeVisible();
+  await expect(other).toHaveCount(0);
+  await pick(page, "passport", "pass-son.jpg", "page");
+  await page.evaluate(() => { window.openQueue = ["pass-own.jpg"]; });
+  await other.getByRole("button", { name: "استبدال الصورة" }).click();
+  await expect(page.locator(".aw-note.is-ok", { hasText: "يطابق البطاقة الوطنية" })).toBeVisible();
+  await expect(other).toHaveCount(0);
+});
+
+test("a document number of another employee is flagged; a shared ration card and its head of household only noted", async ({ page }) => {
+  await page.evaluate(() => {
+    const f = (key, value) => ({ key, value, confidence: 0.95, source: "text" });
+    window.imageReads["ration.jpg"] = { document: "ration", warnings: [], fields: [f("ration_no", "0100000001"), f("head_name", "خالد عبد الله حسن الجبوري")] };
+  });
+  await page.keyboard.press("Escape");
+  await page.evaluate(async () => { window.employeePatch = { passport_no: "A00000001", ration_card_no: "0100000001" }; await window.renderActual("employees"); });
+  await page.click("#btn-add-emp");
+  await page.click('[data-choice="docs"]');
+  await pick(page, "national", "front.jpg");
+  await pick(page, "national", "back.jpg", "back");
+  await page.click("[data-next]");
+  const passport = page.locator(".aw-field", { has: page.locator('[data-key="passport_no"]') });
+  await page.fill('[data-key="passport_no"]', "a00000001");
+  await expect(passport.locator(".aw-note.is-error")).toContainText("رقم جواز هذا مسجّل للموظف Synthetic Employee");
+  await page.locator(".aw-step").nth(4).click();
+  await pick(page, "ration", "ration.jpg", "page");
+  const ration = page.locator(".aw-field", { has: page.locator('[data-key="ration_card_no"]') });
+  await expect(ration.locator(".aw-note.is-warn")).toContainText("طبيعي إن كانا من أسرة واحدة");
+  await expect(page.locator(".aw-note.is-warn", { hasText: "رب الأسرة في البطاقة «خالد عبد الله حسن الجبوري» وليس الموظف" })).toBeVisible();
+  await expect(page.locator(".aw-other")).toHaveCount(0);
+});
+
 
 test("other documents stay locked until the national card is complete, then open in any order", async ({ page }) => {
   await page.click('[data-choice="docs"]');

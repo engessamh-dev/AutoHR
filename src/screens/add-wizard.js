@@ -153,6 +153,19 @@ function readingsFor(fields, result) {
   return out;
 }
 
+/** Letters that differ between two name parts (normalised), as edit distance. */
+function nameDistance(a, b) {
+  const norm = v => text(v).replace(/[أإآ]/g, "ا").replace(/ة/g, "ه").replace(/[ىی]/g, "ي").replace(/\s+/g, "");
+  const [x, y] = [norm(a), norm(b)];
+  let prev = Array.from({ length: y.length + 1 }, (_, j) => j);
+  for (let i = 1; i <= x.length; i++) {
+    const cur = [i];
+    for (let j = 1; j <= y.length; j++) cur[j] = Math.min(prev[j] + 1, cur[j - 1] + 1, prev[j - 1] + (x[i - 1] === y[j - 1] ? 0 : 1));
+    prev = cur;
+  }
+  return prev[y.length];
+}
+
 /** Fields the card has written by hand (not read), on any side. */
 const handwrittenOf = results => [...new Set(Object.values(results ?? {}).flatMap(r => r?.handwritten ?? []))];
 
@@ -473,6 +486,7 @@ function openWizard({ user, employees, onCreated, resume = null }) {
       const digits = v.replace(/\D/g, "").length;
       if (!/^[0-9A-Z]{14,22}$/.test(v) || digits < 10) return `<div class="aw-note is-warn">⚠ صيغة الرقم العائلي غير معتادة: أرقام مع حرف أو حرفين لاتينيين (14 إلى 22 خانة)</div>`;
     }
+    if (!scope) return numberOwnerHtml(key, v);
     return "";
   }
   const duplicateOf = civilId => employees.find(e => text(e.civil_id) && text(e.civil_id) === civilId);
@@ -514,23 +528,62 @@ function openWizard({ user, employees, onCreated, resume = null }) {
     const readings = Object.values(doc.readings).length ? doc.readings : null;
     return `<div class="aw-pics">${step.sides.map(side => slotHtml(step.id, side, doc.images[side], doc.busy)).join("")}</div>
       <div class="aw-fields">${step.fields.map(f => fieldHtml(f, state.values, readings, step.id, "", doc.handwritten ?? [])).join("")}
-      ${step.id === "national" ? "" : nameCheckHtml(doc)}
+      ${step.id === "national" ? "" : nameCheckHtml(doc, step)}
       ${(doc.warnings ?? []).map(w => `<div class="aw-field is-full aw-note is-warn">⚠ ${escHtml(w)}</div>`).join("")}</div>`;
   }
 
   /** A document that prints the employee's name (first, father, grandfather): compared with the
-   *  name from the national card, part by part, as far as the document goes. */
-  function nameCheckHtml(doc) {
-    const fields = Object.values(doc.results ?? {}).flatMap(r => r.fields ?? []);
-    const read = Object.fromEntries(["first", "father", "grandfather", "surname"].map(k => [k, fields.find(f => f.key === k)?.value]).filter(([, v]) => v));
-    const parts = Object.keys(read);
+   *  name from the national card, part by part, as far as the document goes. A different name means
+   *  someone else's document (a relative's, say): red, with «استبدال الصورة» or «هو للموظف نفسه».
+   *  A one-letter difference is more likely a misread, and only asks to compare. The ration card
+   *  carries the head of household, who may legitimately be someone else: a softer notice. */
+  function nameCheckHtml(doc, step) {
     const kept = state.values.full_name?.value ?? {};
-    if (!parts.length || isEmpty(kept)) return "";
-    const norm = v => text(v).replace(/[أإآ]/g, "ا").replace(/ة/g, "ه").replace(/[ىی]/g, "ي").replace(/\s+/g, " ");
-    const shownRead = parts.map(k => read[k]).join(" ");
-    const shownKept = parts.map(k => kept[k] ?? "").join(" ");
-    if (parts.every(k => norm(read[k]) === norm(kept[k]))) return `<div class="aw-field is-full aw-note is-ok">✓ الاسم في هذا المستمسك «${escHtml(shownRead)}» يطابق البطاقة الوطنية</div>`;
-    return `<div class="aw-field is-full aw-note is-warn">⚠ الاسم في هذا المستمسك «${escHtml(shownRead)}» يختلف عن البطاقة الوطنية «${escHtml(shownKept.trim())}»: تأكد أنه للموظف نفسه</div>`;
+    if (isEmpty(kept)) return "";
+    const sides = Object.entries(doc.results ?? {});
+    const fieldOf = key => sides.map(([side, r]) => [side, (r.fields ?? []).find(f => f.key === key)]).find(([, f]) => f?.value);
+    const parts = ["first", "father", "grandfather", "surname"];
+    const read = Object.fromEntries(parts.map(k => [k, fieldOf(k)?.[1]?.value]).filter(([, v]) => v));
+    const side = parts.map(fieldOf).find(Boolean)?.[0];
+    const head = step.id === "ration" && fieldOf("head_name");
+    if (head) {
+      // Compared as words, so a compound name («عبد الله») lines up.
+      const keptWords = ["first", "father", "grandfather"].map(k => text(kept[k])).join(" ").split(/\s+/).filter(Boolean);
+      const headText = text(head[1].value);
+      const same = nameDistance(headText.split(/\s+/).slice(0, keptWords.length).join(" "), keptWords.join(" ")) === 0;
+      return same
+        ? `<div class="aw-field is-full aw-note is-ok">✓ رب الأسرة في البطاقة هو الموظف «${escHtml(headText)}»</div>`
+        : `<div class="aw-field is-full aw-note is-warn">ℹ رب الأسرة في البطاقة «${escHtml(headText)}» وليس الموظف «${escHtml(keptWords.join(" "))}». هذا طبيعي إن كان الموظف فردًا في الأسرة: تأكد أنها بطاقة أسرته.</div>`;
+    }
+    const names = Object.keys(read).filter(k => !isEmpty(kept[k]));
+    if (!names.length) return "";
+    const shownRead = Object.values(read).join(" ");
+    const shownKept = parts.filter(k => read[k]).map(k => kept[k] ?? "").join(" ").trim();
+    const distance = names.map(k => nameDistance(read[k], kept[k]));
+    if (distance.every(d => d === 0)) {
+      return `<div class="aw-field is-full aw-note is-ok">✓ الاسم في هذا المستمسك «${escHtml(shownRead)}» يطابق البطاقة الوطنية</div>`;
+    }
+    if (doc.nameOk) return `<div class="aw-field is-full aw-note is-ok">✓ أكّدت أن المستمسك للموظف رغم اختلاف الاسم «${escHtml(shownRead)}»</div>`;
+    if (distance.every(d => d <= 1)) {
+      return `<div class="aw-field is-full aw-note is-warn">⚠ الاسم في هذا المستمسك «${escHtml(shownRead)}» قريب من البطاقة الوطنية «${escHtml(shownKept)}»: قد يكون خطأ قراءة، قارنه بالصورة</div>`;
+    }
+    return `<div class="aw-field is-full aw-other" role="alert">⛔ هذا المستمسك باسم شخص آخر: «${escHtml(shownRead)}»، والموظف «${escHtml(shownKept)}».
+      <div class="aw-other-actions"><button type="button" class="btn-primary" data-name-replace="${step.id}" data-side="${side ?? step.sides[0]}">استبدال الصورة</button>
+      <button type="button" class="btn-secondary" data-name-ok="${step.id}">هو للموظف نفسه</button></div></div>`;
+  }
+
+  /** A number already on another employee's record: passport, badges (red); ration and residence
+   *  cards, which family members share (a notice). */
+  function numberOwnerHtml(key, value) {
+    const v = text(value).toUpperCase();
+    const shared = { ration_card_no: true, residence_card_no: true };
+    const owned = { passport_no: "جواز", airport_badge_no: "باج المطار", ministry_badge_no: "هوية الوزارة", ration_card_no: "البطاقة التموينية", residence_card_no: "بطاقة السكن" };
+    if (!v || !owned[key]) return "";
+    const other = employees.find(e => e.id !== state.employee?.id && text(e[key]).toUpperCase() === v);
+    if (!other) return "";
+    return shared[key]
+      ? `<div class="aw-note is-warn">ℹ رقم ${owned[key]} نفسه مسجّل للموظف ${escHtml(other.full_name ?? "")}: طبيعي إن كانا من أسرة واحدة</div>`
+      : `<div class="aw-note is-error">⛔ رقم ${owned[key]} هذا مسجّل للموظف ${escHtml(other.full_name ?? "")}: قد يكون المستمسك له</div>`;
   }
 
   function memberHtml(member, index) {
@@ -691,6 +744,8 @@ function openWizard({ user, employees, onCreated, resume = null }) {
     overlay.querySelector("[data-save-now]")?.addEventListener("click", save);
     overlay.querySelectorAll("[data-go]").forEach(b => b.addEventListener("click", () => go(Number(b.dataset.go))));
     overlay.querySelectorAll("[data-pick]").forEach(b => b.addEventListener("click", () => pick(b.dataset.pick, b.dataset.side)));
+    overlay.querySelectorAll("[data-name-replace]").forEach(b => b.addEventListener("click", () => pick(b.dataset.nameReplace, b.dataset.side)));
+    overlay.querySelectorAll("[data-name-ok]").forEach(b => b.addEventListener("click", () => { state.docs[b.dataset.nameOk].nameOk = true; render(); }));
     overlay.querySelectorAll("[data-scan]").forEach(b => b.addEventListener("click", () => scan(b.dataset.scan, b.dataset.side)));
     overlay.querySelectorAll("[data-remove]").forEach(b => b.addEventListener("click", () => removeImage(b.dataset.remove, b.dataset.side)));
     // On the thumbnail itself: wheel zooms, drag moves, double-click resets; a plain click enlarges.
@@ -859,6 +914,7 @@ function openWizard({ user, employees, onCreated, resume = null }) {
       const merged = mergeSides(Object.values(holder.results));
       holder.warnings = merged.warnings;
       holder.handwritten = handwrittenOf(holder.results);
+      holder.nameOk = false;
       holder.readings = readingsFor(fields, merged);
       holder.images[side] = { path, url, count: Object.keys(readingsFor(fields, reading.result)).length };
       holder.skipped = false;
