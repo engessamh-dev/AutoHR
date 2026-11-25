@@ -35,6 +35,7 @@ function harness({ fail = false } = {}) {
     confirmAction: async () => true,
     clearLoginMessage: () => {},
     applyUiScale: () => {},
+    clearAddEmployeeDraft: () => {},
     listen: async () => () => {},
     requestAnimationFrame: fn => fn(),
     setTimeout: fn => { fn(); },
