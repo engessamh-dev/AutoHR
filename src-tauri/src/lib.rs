@@ -137,6 +137,22 @@ fn session_identity(sess: &State<SessionState>) -> Result<String, AppError> {
     sess.0.lock().unwrap().as_ref().map(|s| s.username.clone()).ok_or(AppError::Unauthorized)
 }
 
+/// Records a refused or failed change in the audit log, with the reason, and passes the result on.
+/// A refused permission is already recorded by `authorize` as ACCESS_DENIED.
+fn logged_failure<T>(conn: &Connection, user: &str, action: &str, target_type: Option<&str>, target_id: Option<i64>,
+    target_name: Option<&str>, result: Result<T, AppError>) -> Result<T, AppError> {
+    if let Err(error) = &result {
+        let reason = match error {
+            AppError::Unauthorized => "You are not authorized to perform this action".to_string(),
+            AppError::NotFound => "The requested item was not found".to_string(),
+            AppError::Validation(message) | AppError::Other(message) => message.clone(),
+            AppError::Db(_) => "The database operation could not be completed".to_string(),
+        };
+        log_audit(conn, Some(user), action, target_type, target_id, target_name, "Failure", Some(&reason));
+    }
+    result
+}
+
 fn authorize(conn: &Connection, sess: &State<SessionState>, permission: &str) -> Result<String, AppError> {
     let username = session_user(sess)?;
     if let Err(error) = assert_permission(conn, &username, permission) {
@@ -403,7 +419,8 @@ fn cmd_scan_document(state: State<DbState>, sess: State<SessionState>, device_id
 }
 #[tauri::command] fn cmd_update_company_config(state: State<DbState>, sess: State<SessionState>, data: CompanyConfigData) -> Result<CompanyConfig, AppError> {
     let user = session_user(&sess)?;
-    update_company_config(&*state.conn()?, &user, &data)
+    let conn = state.conn()?;
+    logged_failure(&conn, &user, "CHANGE_SETTING", Some("settings"), None, Some("company_config"), update_company_config(&conn, &user, &data))
 }
 #[tauri::command] fn cmd_next_employee_number(state: State<DbState>, sess: State<SessionState>) -> Result<String, AppError> {
     let conn = state.conn()?;
@@ -423,12 +440,12 @@ fn cmd_scan_document(state: State<DbState>, sess: State<SessionState>, device_id
 #[tauri::command] fn cmd_create_employee(state: State<DbState>, sess: State<SessionState>, data: EmployeeData) -> Result<Employee, AppError> {
     let conn = state.conn()?;
     let user = authorize(&conn, &sess, "employees.create")?;
-    create_employee(&conn, &data, &user)
+    logged_failure(&conn, &user, "CREATE_EMPLOYEE", Some("employee"), None, Some(data.full_name.trim()), create_employee(&conn, &data, &user))
 }
 #[tauri::command] fn cmd_update_employee(state: State<DbState>, sess: State<SessionState>, id: i64, data: EmployeeData) -> Result<Employee, AppError> {
     let conn = state.conn()?;
     let user = authorize(&conn, &sess, "employees.edit")?;
-    update_employee(&conn, id, &data, &user)
+    logged_failure(&conn, &user, "UPDATE_EMPLOYEE", Some("employee"), Some(id), Some(data.full_name.trim()), update_employee(&conn, id, &data, &user))
 }
 #[tauri::command] fn cmd_list_name_review(state: State<DbState>, sess: State<SessionState>) -> Result<Vec<names::ReviewItem>, AppError> {
     let conn = state.conn()?;
@@ -443,7 +460,7 @@ fn cmd_scan_document(state: State<DbState>, sess: State<SessionState>, device_id
 #[tauri::command] fn cmd_delete_employee(state: State<DbState>, sess: State<SessionState>, id: i64) -> Result<(), AppError> {
     let conn = state.conn()?;
     let user = authorize(&conn, &sess, "employees.delete")?;
-    delete_employee(&conn, id, &user)
+    logged_failure(&conn, &user, "DELETE_EMPLOYEE", Some("employee"), Some(id), None, delete_employee(&conn, id, &user))
 }
 #[tauri::command] fn cmd_upload_employee_photo(state: State<DbState>, sess: State<SessionState>, employee_id: i64, source_path: String) -> Result<String, AppError> {
     let conn = state.conn()?;
@@ -624,8 +641,8 @@ fn cmd_scan_document(state: State<DbState>, sess: State<SessionState>, device_id
 }
 #[tauri::command] fn cmd_delete_grade_history(state: State<DbState>, sess: State<SessionState>, id: i64) -> Result<(), AppError> {
     let conn = state.conn()?;
-    authorize(&conn, &sess, "employees.edit")?;
-    delete_grade_history(&conn, id)
+    let user = authorize(&conn, &sess, "employees.edit")?;
+    delete_grade_history(&conn, id, &user)
 }
 #[tauri::command] fn cmd_list_general_docs(state: State<DbState>, sess: State<SessionState>) -> Result<Vec<GeneralDoc>, AppError> {
     let conn = state.conn()?;
@@ -635,17 +652,17 @@ fn cmd_scan_document(state: State<DbState>, sess: State<SessionState>, device_id
 #[tauri::command] fn cmd_create_general_doc(state: State<DbState>, sess: State<SessionState>, data: GeneralDocData) -> Result<GeneralDoc, AppError> {
     let conn = state.conn()?;
     let user = authorize(&conn, &sess, "documents.manage")?;
-    create_general_doc(&conn, &data, &user)
+    logged_failure(&conn, &user, "CREATE_DOC", Some("general_doc"), None, Some(data.title.trim()), create_general_doc(&conn, &data, &user))
 }
 #[tauri::command] fn cmd_update_general_doc(state: State<DbState>, sess: State<SessionState>, id: i64, data: GeneralDocData) -> Result<GeneralDoc, AppError> {
     let conn = state.conn()?;
     let user = authorize(&conn, &sess, "documents.manage")?;
-    update_general_doc(&conn, id, &data, &user)
+    logged_failure(&conn, &user, "UPDATE_DOC", Some("general_doc"), Some(id), Some(data.title.trim()), update_general_doc(&conn, id, &data, &user))
 }
 #[tauri::command] fn cmd_delete_general_doc(state: State<DbState>, sess: State<SessionState>, id: i64) -> Result<(), AppError> {
     let conn = state.conn()?;
     let user = authorize(&conn, &sess, "documents.delete")?;
-    delete_general_doc(&conn, id, &user)
+    logged_failure(&conn, &user, "DELETE_DOC", Some("general_doc"), Some(id), None, delete_general_doc(&conn, id, &user))
 }
 #[tauri::command] fn cmd_upload_general_doc_file(state: State<DbState>, sess: State<SessionState>, doc_id: i64, source_path: String) -> Result<String, AppError> {
     let conn = state.conn()?;
@@ -676,17 +693,17 @@ fn cmd_scan_document(state: State<DbState>, sess: State<SessionState>, device_id
 #[tauri::command] fn cmd_create_outgoing_doc(state: State<DbState>, sess: State<SessionState>, data: GeneralDocData) -> Result<GeneralDoc, AppError> {
     let conn = state.conn()?;
     let user = authorize(&conn, &sess, "documents.manage")?;
-    create_outgoing_doc(&conn, &data, &user)
+    logged_failure(&conn, &user, "CREATE_OUTGOING_DOC", Some("outgoing_doc"), None, Some(data.title.trim()), create_outgoing_doc(&conn, &data, &user))
 }
 #[tauri::command] fn cmd_update_outgoing_doc(state: State<DbState>, sess: State<SessionState>, id: i64, data: GeneralDocData) -> Result<GeneralDoc, AppError> {
     let conn = state.conn()?;
     let user = authorize(&conn, &sess, "documents.manage")?;
-    update_outgoing_doc(&conn, id, &data, &user)
+    logged_failure(&conn, &user, "UPDATE_OUTGOING_DOC", Some("outgoing_doc"), Some(id), Some(data.title.trim()), update_outgoing_doc(&conn, id, &data, &user))
 }
 #[tauri::command] fn cmd_delete_outgoing_doc(state: State<DbState>, sess: State<SessionState>, id: i64) -> Result<(), AppError> {
     let conn = state.conn()?;
     let user = authorize(&conn, &sess, "documents.delete")?;
-    delete_outgoing_doc(&conn, id, &user)
+    logged_failure(&conn, &user, "DELETE_OUTGOING_DOC", Some("outgoing_doc"), Some(id), None, delete_outgoing_doc(&conn, id, &user))
 }
 #[tauri::command] fn cmd_upload_outgoing_doc_file(state: State<DbState>, sess: State<SessionState>, doc_id: i64, source_path: String) -> Result<String, AppError> {
     let conn = state.conn()?;
@@ -721,21 +738,23 @@ fn cmd_scan_document(state: State<DbState>, sess: State<SessionState>, device_id
 }
 #[tauri::command] fn cmd_create_user(state: State<DbState>, sess: State<SessionState>, data: UserData) -> Result<User, AppError> {
     let user = session_user(&sess)?;
-    create_user(&*state.conn()?, &user, &data)
+    let conn = state.conn()?;
+    logged_failure(&conn, &user, "CREATE_USER", Some("user"), None, Some(data.username.trim()), create_user(&conn, &user, &data))
 }
 #[tauri::command] fn cmd_delete_user(state: State<DbState>, sess: State<SessionState>, id: i64) -> Result<(), AppError> {
     let user = session_user(&sess)?;
-    delete_user(&*state.conn()?, &user, id)
+    let conn = state.conn()?;
+    logged_failure(&conn, &user, "DELETE_USER", Some("user"), Some(id), None, delete_user(&conn, &user, id))
 }
 #[tauri::command] fn cmd_update_user_role(state: State<DbState>, sess: State<SessionState>, id: i64, data: UserRoleData) -> Result<User, AppError> {
     let conn = state.conn()?;
     let user = authorize(&conn, &sess, "users.manage")?;
-    update_user_role(&conn, &user, id, &data.role)
+    logged_failure(&conn, &user, "CHANGE_USER_ROLE", Some("user"), Some(id), None, update_user_role(&conn, &user, id, &data.role))
 }
 #[tauri::command] fn cmd_reset_user_password(state: State<DbState>, sess: State<SessionState>, id: i64, data: PasswordResetData) -> Result<(), AppError> {
     let conn = state.conn()?;
     let user = authorize(&conn, &sess, "users.manage")?;
-    reset_user_password(&conn, &user, id, &data.password)
+    logged_failure(&conn, &user, "RESET_USER_PASSWORD", Some("user"), Some(id), None, reset_user_password(&conn, &user, id, &data.password))
 }
 #[tauri::command] fn cmd_get_storage_path(state: State<DbState>, sess: State<SessionState>) -> Result<String, AppError> {
     let conn = state.conn()?;
@@ -1019,9 +1038,56 @@ async fn cmd_restore_backup(window: Window, state: State<'_, DbState>, sess: Sta
 }
 #[tauri::command] fn cmd_save_report_xlsx(state: State<DbState>, sess: State<SessionState>, destination_path: String, headers: Vec<String>, rows: Vec<Vec<String>>) -> Result<(), AppError> {
     let conn = state.conn()?;
-    authorize(&conn, &sess, "employees.view")?;
+    let user = authorize(&conn, &sess, "employees.view")?;
     let workbook = build_report_xlsx(&headers, &rows)?;
-    std::fs::write(destination_path, workbook).map_err(|e| AppError::Other(e.to_string()))
+    std::fs::write(&destination_path, workbook).map_err(|e| AppError::Other(e.to_string()))?;
+    log_activity(&conn, &user, "EXPORT_REPORT", Some("report"), None, file_name_of(&destination_path).as_deref(),
+        Some(&serde_json::json!({ "rows": rows.len() }).to_string()));
+    Ok(())
+}
+
+fn file_name_of(path: &str) -> Option<String> {
+    std::path::Path::new(path).file_name().map(|n| n.to_string_lossy().into_owned())
+}
+
+// ── سجل النظام ──────────────────────────────────────────────────────────────
+#[tauri::command] fn cmd_search_activity_log(state: State<DbState>, sess: State<SessionState>, filter: ActivityLogFilter) -> Result<ActivityLogPage, AppError> {
+    let conn = state.conn()?;
+    authorize(&conn, &sess, "audit.view")?;
+    search_activity_log(&conn, &filter)
+}
+/// Saves the log entries the screen shows (already in Arabic) to an Excel file, and records it.
+#[tauri::command] fn cmd_export_activity_log(state: State<DbState>, sess: State<SessionState>, destination_path: String, headers: Vec<String>, rows: Vec<Vec<String>>) -> Result<(), AppError> {
+    let conn = state.conn()?;
+    let user = authorize(&conn, &sess, "audit.view")?;
+    if rows.len() as i64 > AUDIT_EXPORT_LIMIT { return Err(AppError::Validation("Too many rows to export".into())); }
+    let workbook = build_report_xlsx(&headers, &rows)?;
+    std::fs::write(&destination_path, workbook).map_err(|e| AppError::Other(e.to_string()))?;
+    log_activity(&conn, &user, "EXPORT_AUDIT_LOG", Some("audit"), None, file_name_of(&destination_path).as_deref(),
+        Some(&serde_json::json!({ "rows": rows.len() }).to_string()));
+    Ok(())
+}
+/// Printing (or saving as PDF) the employees report happens in the window; it is recorded here.
+#[tauri::command] fn cmd_audit_report_print(state: State<DbState>, sess: State<SessionState>, rows: usize) -> Result<(), AppError> {
+    let conn = state.conn()?;
+    let user = authorize(&conn, &sess, "employees.view")?;
+    log_activity(&conn, &user, "PRINT_REPORT", Some("report"), None, None, Some(&serde_json::json!({ "rows": rows }).to_string()));
+    Ok(())
+}
+/// The archive's preview reads files with `cmd_read_document`, which also feeds thumbnails and so
+/// does not log. Opening an attachment to look at it is recorded here, once per opening.
+#[tauri::command] fn cmd_audit_archive_view(state: State<DbState>, sess: State<SessionState>, relative_path: String) -> Result<(), AppError> {
+    let conn = state.conn()?;
+    let user = authorize(&conn, &sess, "documents.view")?;
+    let found = |table: &str, column: &str| conn.query_row(
+        &format!("SELECT {column} FROM {table} WHERE file_path=?1"), rusqlite::params![relative_path], |r| r.get::<_, i64>(0)).ok();
+    let (kind, id) = match found("general_doc_attachments", "general_doc_id") {
+        Some(id) => ("general_doc", Some(id)),
+        None => ("outgoing_doc", found("outgoing_doc_attachments", "outgoing_doc_id")),
+    };
+    if id.is_none() { return Err(AppError::NotFound); }
+    log_activity(&conn, &user, "VIEW_DOCUMENT", Some(kind), id, Some(&relative_path), None);
+    Ok(())
 }
 
 
@@ -1340,6 +1406,10 @@ pub fn run() {
             cmd_upload_outgoing_doc_file, cmd_delete_outgoing_doc_attachment, cmd_move_outgoing_doc_attachment,
             cmd_select_scanner_device, cmd_scan_document,
             cmd_list_activity_log,
+            cmd_search_activity_log,
+            cmd_export_activity_log,
+            cmd_audit_archive_view,
+            cmd_audit_report_print,
             cmd_list_users, cmd_create_user, cmd_delete_user, cmd_update_user_role, cmd_reset_user_password,
             cmd_get_storage_path, cmd_get_backup_path, cmd_open_managed_folder,
             cmd_get_startup_status, cmd_check_setup_folders, cmd_complete_setup, cmd_retry_data_folder,

@@ -255,12 +255,21 @@ fn scanner_upload_inner(
             }
             _ => return Err(AppError::Validation("Unsupported attachment target".into())),
         };
+        let side = context.side.as_deref().unwrap_or_default();
+        let details = match command {
+            "cmd_upload_employee_photo" => Some("photo".to_string()),
+            "cmd_upload_family_national_card_attachment" => context.member_index.map(|i| format!("{i}:{side}")),
+            "cmd_upload_spouse_national_card_attachment" => context.spouse_index.map(|i| format!("{i}:{side}")),
+            "cmd_upload_vehicle_annual_attachment" => context.vehicle_index.map(|i| format!("{i}:{side}")),
+            _ => context.side.clone(),
+        };
         scanner::audit_upload(
             &tx,
             owner,
             command,
             context.employee_id.or(context.doc_id),
             &rel,
+            details.as_deref(),
         )?;
         Ok(serde_json::Value::String(rel))
     })();
