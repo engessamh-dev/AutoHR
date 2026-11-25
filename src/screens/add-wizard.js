@@ -41,6 +41,8 @@ const STEPS = [
       { key: "civil_id_issue_date", label: "تاريخ الإصدار", ocr: "issue_date", date: true },
       { key: "civil_id_expiry_date", label: "تاريخ النفاذ", ocr: "expiry_date", date: true },
     ] },
+  { id: "photo", title: "الصورة الشخصية", short: "الصورة", photo: true,
+    hint: "اختياري: قصّها من صورة البطاقة الوطنية أو اختر صورة، ثم حرّك الإطار وكبّره من زاويته" },
   { id: "passport", title: "جواز السفر", short: "الجواز", sides: ["page"],
     hint: "صفحة البيانات تكفي، والشريط السفلي يُطابق المواليد والجنس",
     fields: [
@@ -194,6 +196,7 @@ function dropDraft() {
 function revokeImages(state) {
   Object.values(state.docs).forEach(d => Object.values(d.images).forEach(i => URL.revokeObjectURL(i.url)));
   state.members.forEach(m => Object.values(m.images).forEach(i => URL.revokeObjectURL(i.url)));
+  if (state.photo?.source === "file") URL.revokeObjectURL(state.photo.url);
 }
 
 /** Called on logout: a draft belongs to the session that made it. */
@@ -365,7 +368,8 @@ function openWizard({ user, employees, onCreated, resume = null }) {
     }
     // Only the documents: the family's cards stay with the record's own family list.
     const failed = [];
-    for (const upload of pendingUploads(twin.id, [], [])) {
+    // The photo goes in only where the record has none: an existing photo is not replaced here.
+    for (const upload of pendingUploads(twin.id, [], []).filter(u => u.image !== state.photo || !twin.photo_path)) {
       try { await upload.task(); upload.image.uploaded = true; } catch { failed.push(upload.label); }
     }
     state.saving = false;
@@ -400,7 +404,7 @@ function openWizard({ user, employees, onCreated, resume = null }) {
     });
     ask.querySelector(canSaveNow() ? '[data-ask="save"]' : '[data-ask="stay"]').focus();
   }
-  const hasWork = () => Object.values(state.docs).some(d => Object.keys(d.images).length) || Object.keys(state.values).length > 0;
+  const hasWork = () => Object.values(state.docs).some(d => Object.keys(d.images).length) || Object.keys(state.values).length > 0 || !!state.photo;
   const onKey = event => {
     if (event.key !== "Escape") return;
     const viewer = overlay.querySelector(".aw-viewer");
@@ -506,6 +510,7 @@ function openWizard({ user, employees, onCreated, resume = null }) {
 
   /** How far a step is filled: its own fields with a value (not those another document filled). */
   function stepFill(s) {
+    if (s.photo) return { filled: state.photo ? 1 : 0, total: 1 };
     if (s.id === "family") {
       const named = state.members.filter(m => !isEmpty(m.values.name?.value)).length;
       return { filled: named, total: state.members.length };
@@ -695,6 +700,91 @@ function openWizard({ user, employees, onCreated, resume = null }) {
       <div class="aw-fields">${fields.map(f => fieldHtml(f, member.values, Object.keys(member.readings).length ? member.readings : null, "member", scope)).join("")}</div></div></section>`;
   }
 
+  /** The personal photo: a part of the national card's front or of a picked image, chosen with a
+   *  box the user moves (drag) and resizes (corner). Saved as the employee's photo. */
+  function photoBody() {
+    const front = state.docs.national.images.front;
+    const photo = state.photo;
+    const actions = `<div class="aw-photo-actions">
+      <button type="button" class="${front ? "btn-primary" : "btn-secondary"}" data-photo-card ${front ? "" : "disabled"} title="${front ? "" : "ارفع الوجه الأمامي للبطاقة الوطنية أولًا"}">قصّ من البطاقة الوطنية</button>
+      <button type="button" class="btn-secondary" data-photo-pick>اختيار صورة من الحاسبة</button>
+      ${photo ? `<button type="button" class="btn-secondary" data-photo-remove>إزالة</button>` : ""}</div>`;
+    if (!photo) {
+      return `<div class="aw-photo">${actions}<p class="aw-photo-empty">${front ? "يمكن قصّ الصورة من البطاقة الوطنية التي رفعتها، أو اختيار صورة أخرى." : "لم تُرفع البطاقة الوطنية بعد: اختر صورة من الحاسبة، أو ارجع وارفع البطاقة لتقصّ صورته منها."}</p></div>`;
+    }
+    const [x0, y0, x1, y1] = photo.rect;
+    return `<div class="aw-photo">${actions}
+      <div class="aw-photo-work">
+        <div class="aw-crop-area"><img src="${photo.url}" alt="${photo.source === "card" ? "البطاقة الوطنية" : "الصورة المختارة"}" draggable="false">
+          <div class="aw-crop" style="left:${x0 * 100}%;top:${y0 * 100}%;width:${(x1 - x0) * 100}%;height:${(y1 - y0) * 100}%" aria-label="منطقة الصورة الشخصية"><span class="aw-crop-handle" aria-hidden="true"></span></div></div>
+        <div class="aw-photo-result"><div class="aw-photo-preview" style="${photoPreviewStyle(photo)}"></div>
+          <small>${photo.source === "card" ? "من البطاقة الوطنية" : "من صورة مختارة"}${photo.uploaded ? " · محفوظة" : ""}</small></div></div></div>`;
+  }
+
+  const photoPreviewStyle = photo => {
+    const [x0, y0, x1, y1] = photo.rect;
+    const [w, h] = [Math.max(0.01, x1 - x0), Math.max(0.01, y1 - y0)];
+    const pos = (start, size) => size >= 0.999 ? 0 : start / (1 - size) * 100;
+    return `background-image:url('${photo.url}');background-size:${100 / w}% ${100 / h}%;background-position:${pos(x0, w)}% ${pos(y0, h)}%`;
+  };
+
+  function useCardPhoto() {
+    const front = state.docs.national.images.front;
+    if (!front) return;
+    const holder = state.docs.national;
+    const face = holder.face?.front ?? [0.04, 0.3, 0.3, 0.85];
+    state.photo = { source: "card", path: front.path, url: front.url, turns: holder.turns?.front ?? 0, rect: face, uploaded: false };
+    render();
+  }
+
+  async function pickPhoto() {
+    const selected = await open({ multiple: false, filters: [{ name: "صورة شخصية", extensions: IMAGE_EXTENSIONS }] });
+    if (!selected) return;
+    try {
+      const bytes = await api.imagePreview(selected);
+      const url = URL.createObjectURL(new Blob([new Uint8Array(bytes)], { type: "image/jpeg" }));
+      if (state.photo?.source === "file") URL.revokeObjectURL(state.photo.url);
+      state.photo = { source: "file", path: selected, url, turns: 0, rect: [0, 0, 1, 1], uploaded: false };
+      render();
+    } catch (error) {
+      showToast(error?.message ?? String(error || "تعذّر فتح الصورة"), "error");
+    }
+  }
+
+  /** Drag inside the box moves it; drag the corner resizes it. Kept inside the image. */
+  function bindCrop() {
+    const area = overlay.querySelector(".aw-crop-area");
+    const box = area?.querySelector(".aw-crop");
+    if (!box) return;
+    const preview = overlay.querySelector(".aw-photo-preview");
+    box.addEventListener("pointerdown", event => {
+      event.preventDefault();
+      const resize = event.target.classList.contains("aw-crop-handle");
+      const bounds = area.getBoundingClientRect();
+      const start = [event.clientX, event.clientY];
+      const [x0, y0, x1, y1] = state.photo.rect;
+      box.setPointerCapture?.(event.pointerId);
+      const move = e => {
+        const dx = (e.clientX - start[0]) / bounds.width, dy = (e.clientY - start[1]) / bounds.height;
+        let rect;
+        if (resize) {
+          rect = [x0, y0, Math.min(1, Math.max(x0 + 0.05, x1 + dx)), Math.min(1, Math.max(y0 + 0.05, y1 + dy))];
+        } else {
+          const nx = Math.min(1 - (x1 - x0), Math.max(0, x0 + dx)), ny = Math.min(1 - (y1 - y0), Math.max(0, y0 + dy));
+          rect = [nx, ny, nx + (x1 - x0), ny + (y1 - y0)];
+        }
+        state.photo.rect = rect;
+        state.photo.uploaded = false;
+        Object.assign(box.style, { left: `${rect[0] * 100}%`, top: `${rect[1] * 100}%`, width: `${(rect[2] - rect[0]) * 100}%`, height: `${(rect[3] - rect[1]) * 100}%` });
+        if (preview) preview.setAttribute("style", photoPreviewStyle(state.photo));
+      };
+      const up = () => { box.removeEventListener("pointermove", move); box.removeEventListener("pointerup", up); box.removeEventListener("pointercancel", up); render(); };
+      box.addEventListener("pointermove", move);
+      box.addEventListener("pointerup", up);
+      box.addEventListener("pointercancel", up);
+    });
+  }
+
   function familyBody() {
     const spouses = state.members.filter(m => m.relation === "spouse").length;
     const marital = state.values.marital_status;
@@ -785,7 +875,7 @@ function openWizard({ user, employees, onCreated, resume = null }) {
 
   function render() {
     const step = current();
-    const body = step.id === "family" ? familyBody() : step.id === "summary" ? summaryBody() : docBody(step);
+    const body = step.photo ? photoBody() : step.id === "family" ? familyBody() : step.id === "summary" ? summaryBody() : docBody(step);
     const last = state.step === STEPS.length - 1;
     const next = STEPS[state.step + 1];
     const scroll = overlay.querySelector(".aw-content-body")?.scrollTop ?? 0;
@@ -843,6 +933,14 @@ function openWizard({ user, employees, onCreated, resume = null }) {
     overlay.querySelector("[data-save-now]")?.addEventListener("click", save);
     overlay.querySelectorAll("[data-go]").forEach(b => b.addEventListener("click", () => go(Number(b.dataset.go))));
     overlay.querySelectorAll("[data-pick]").forEach(b => b.addEventListener("click", () => pick(b.dataset.pick, b.dataset.side)));
+    overlay.querySelector("[data-photo-card]")?.addEventListener("click", useCardPhoto);
+    overlay.querySelector("[data-photo-pick]")?.addEventListener("click", pickPhoto);
+    overlay.querySelector("[data-photo-remove]")?.addEventListener("click", () => {
+      if (state.photo?.source === "file") URL.revokeObjectURL(state.photo.url);
+      state.photo = null;
+      render();
+    });
+    bindCrop();
     overlay.querySelectorAll("[data-name-replace]").forEach(b => b.addEventListener("click", () => pick(b.dataset.nameReplace, b.dataset.side)));
     overlay.querySelectorAll("[data-name-ok]").forEach(b => b.addEventListener("click", () => { state.docs[b.dataset.nameOk].nameOk = true; render(); }));
     overlay.querySelectorAll("[data-scan]").forEach(b => b.addEventListener("click", () => scan(b.dataset.scan, b.dataset.side)));
@@ -1014,6 +1112,12 @@ function openWizard({ user, employees, onCreated, resume = null }) {
       holder.warnings = merged.warnings;
       holder.handwritten = handwrittenOf(holder.results);
       holder.nameOk = false;
+      holder.turns = { ...(holder.turns ?? {}), [side]: reading.turns ?? 0 };
+      holder.face = { ...(holder.face ?? {}), [side]: reading.face ?? null };
+      // A photo cut from the national card follows a new front image.
+      if (slot === "national" && side === "front" && state.photo?.source === "card") {
+        state.photo = { ...state.photo, path, url, turns: reading.turns ?? 0, rect: reading.face ?? state.photo.rect, uploaded: false };
+      }
       holder.readings = readingsFor(fields, merged);
       holder.images[side] = { path, url, count: Object.keys(readingsFor(fields, reading.result)).length };
       holder.skipped = false;
@@ -1040,6 +1144,7 @@ function openWizard({ user, employees, onCreated, resume = null }) {
     delete holder.images[side];
     delete holder.results[side];
     if (holder.regions) delete holder.regions[side];
+    if (slot === "national" && side === "front" && state.photo?.source === "card") state.photo = null;
     const merged = Object.values(holder.results).length ? mergeSides(Object.values(holder.results)) : null;
     holder.readings = merged ? readingsFor(fields, merged) : {};
     holder.warnings = merged?.warnings ?? [];
@@ -1095,6 +1200,8 @@ function openWizard({ user, employees, onCreated, resume = null }) {
   /** Images not uploaded yet, with how to upload each, once the employee exists. */
   function pendingUploads(id, spouses, family) {
     const out = [];
+    const photo = state.photo;
+    if (photo && !photo.uploaded) out.push({ image: photo, label: "الصورة الشخصية", task: () => api.uploadEmployeePhotoCrop(id, photo.path, photo.turns, photo.rect) });
     for (const step of STEPS.filter(st => st.sides)) {
       for (const [side, image] of Object.entries(state.docs[step.id].images)) {
         if (!image.uploaded) out.push({ image, label: `${step.title} (${SIDE_LABEL[side]})`, task: () => UPLOAD[step.id](id, side, image.path) });

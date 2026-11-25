@@ -1302,7 +1302,7 @@ pub fn run() {
             cmd_list_employees, cmd_get_employee,
             cmd_create_employee, cmd_update_employee, cmd_delete_employee,
             cmd_list_name_review, cmd_save_name_review,
-            cmd_upload_employee_photo, cmd_delete_employee_photo,
+            cmd_upload_employee_photo, cmd_delete_employee_photo, cmd_upload_employee_photo_crop, cmd_image_preview,
             cmd_upload_national_card_attachment, cmd_delete_national_card_attachment,
             cmd_upload_family_national_card_attachment, cmd_delete_family_national_card_attachment,
             cmd_upload_spouse_national_card_attachment, cmd_delete_spouse_national_card_attachment,

@@ -52,6 +52,7 @@ test("a later document does not overwrite an earlier value; the conflict can be 
   await pick(page, "national", "back.jpg", "back");
   await page.click("[data-next]");
   await page.click("[data-skip]");
+  await page.click("[data-skip]");
   await pick(page, "ministry", "ministry.jpg");
   await page.click("[data-next]");
   await pick(page, "airport", "airport.jpg");
@@ -71,7 +72,7 @@ test("save creates the employee with family relations, then uploads each image",
   await pick(page, "national", "front.jpg");
   await pick(page, "national", "back.jpg", "back");
   await page.click("[data-next]");
-  for (let i = 0; i < 5; i++) await page.click("[data-skip]");
+  for (let i = 0; i < 6; i++) await page.click("[data-skip]");
   await page.click('[data-member-add="manual"]');
   await page.selectOption('[data-relation="0"]', "son");
   await page.click("[data-next]");
@@ -276,7 +277,7 @@ test("the employee can be saved from any step once the national card is complete
   await expect(saveNow).toHaveText("حفظ التعديلات");
   await expect(page.locator("#toast-msg")).toContainText("لم تُرفع بعد: جواز السفر، هوية وزارة النقل");
   // A document added afterwards: the next save updates the same employee and uploads only it.
-  await page.locator(".aw-step").nth(2).click();
+  await page.locator(".aw-step").nth(3).click();
   await pick(page, "ministry", "ministry.jpg");
   await saveNow.click();
   await expect.poll(() => page.evaluate(() => window.calls.some(c => c.command === "cmd_update_employee"))).toBe(true);
@@ -299,6 +300,7 @@ test("ministry ID: one Arabic side fills department and job, and its name is che
   await pick(page, "national", "back.jpg", "back");
   await page.click("[data-next]");
   await page.click("[data-skip]");
+  await page.click("[data-skip]");
   await expect(page.locator('[data-pick="ministry"]')).toHaveCount(1);
   await pick(page, "ministry", "mot-same.jpg");
   await expect(page.locator('[data-key="department"]')).toHaveValue("قسم هندسة الصيانة");
@@ -319,7 +321,7 @@ test("another person's document: red warning with replace or confirm; a misread 
   await page.click('[data-choice="docs"]');
   await pick(page, "national", "front.jpg");
   await pick(page, "national", "back.jpg", "back");
-  await page.click("[data-next]");
+  await page.locator(".aw-step").nth(2).click();
   await pick(page, "passport", "pass-son.jpg", "page");
   const other = page.locator(".aw-other");
   await expect(other).toContainText("باسم شخص آخر: «يوسف سامر خالد الجبوري»");
@@ -349,11 +351,11 @@ test("a document number of another employee is flagged; a shared ration card and
   await page.click('[data-choice="docs"]');
   await pick(page, "national", "front.jpg");
   await pick(page, "national", "back.jpg", "back");
-  await page.click("[data-next]");
+  await page.locator(".aw-step").nth(2).click();
   const passport = page.locator(".aw-field", { has: page.locator('[data-key="passport_no"]') });
   await page.fill('[data-key="passport_no"]', "a00000001");
   await expect(passport.locator(".aw-note.is-error")).toContainText("رقم جواز هذا مسجّل للموظف Synthetic Employee");
-  await page.locator(".aw-step").nth(4).click();
+  await page.locator(".aw-step").nth(5).click();
   await pick(page, "ration", "ration.jpg", "page");
   const ration = page.locator(".aw-field", { has: page.locator('[data-key="ration_card_no"]') });
   await expect(ration.locator(".aw-note.is-warn")).toContainText("طبيعي إن كانا من أسرة واحدة");
@@ -365,14 +367,14 @@ test("a document number of another employee is flagged; a shared ration card and
 test("other documents stay locked until the national card is complete, then open in any order", async ({ page }) => {
   await page.click('[data-choice="docs"]');
   const steps = page.locator(".aw-step");
-  await expect(steps).toHaveCount(8);
-  for (const i of [1, 2, 7]) await expect(steps.nth(i)).toBeDisabled();
+  await expect(steps).toHaveCount(9);
+  for (const i of [1, 2, 3, 8]) await expect(steps.nth(i)).toBeDisabled();
   await pick(page, "national", "front.jpg");
   await expect(steps.nth(2)).toBeDisabled();
   // Typing the missing birth date unlocks them without re-reading.
   await page.fill('[data-key="birthdate"]', "1985-03-14");
   await expect(steps.nth(2)).toBeEnabled();
-  for (const i of [3, 7, 1, 5]) {
+  for (const i of [4, 8, 1, 6]) {
     await steps.nth(i).click();
     await expect(steps.nth(i)).toHaveClass(/is-current/);
   }
@@ -425,20 +427,20 @@ test("a step shows ✓ only when all its fields are filled; visiting it is not e
   const steps = page.locator(".aw-step");
   await pick(page, "national", "front.jpg");
   await pick(page, "national", "back.jpg", "back");
-  for (const i of [1, 3, 4]) await steps.nth(i).click();
-  for (const i of [1, 3]) {
+  for (const i of [2, 4, 5]) await steps.nth(i).click();
+  for (const i of [2, 4]) {
     await expect(steps.nth(i)).not.toHaveClass(/is-done/);
     await expect(steps.nth(i).locator("i")).not.toHaveText("✓");
   }
-  await steps.nth(2).click();
+  await steps.nth(3).click();
   await pick(page, "ministry", "mot-full.jpg");
-  await steps.nth(4).click();
+  await steps.nth(5).click();
   // National: some fields only (front side) → a count, no ✓.
   await expect(steps.nth(0)).toHaveClass(/is-partial/);
   await expect(steps.nth(0).locator("small")).toContainText("من 11");
   // Ministry: every field read → ✓.
-  await expect(steps.nth(2)).toHaveClass(/is-done/);
-  await expect(steps.nth(2).locator("i")).toHaveText("✓");
+  await expect(steps.nth(3)).toHaveClass(/is-done/);
+  await expect(steps.nth(3).locator("i")).toHaveText("✓");
 });
 
 test("residence card: the printed serial is read, handwritten fields are flagged to copy from the image and saved", async ({ page }) => {
@@ -451,7 +453,7 @@ test("residence card: the printed serial is read, handwritten fields are flagged
   await page.click('[data-choice="docs"]');
   await pick(page, "national", "front.jpg");
   await pick(page, "national", "back.jpg", "back");
-  await page.locator(".aw-step").nth(5).click();
+  await page.locator(".aw-step").nth(6).click();
   await pick(page, "residence", "res-front.jpg");
   await pick(page, "residence", "res-back.jpg", "back");
   await expect(page.locator('[data-key="residence_card_no"]')).toHaveValue("1234567");
@@ -529,4 +531,46 @@ test("a registered national number: «فتح ملفه» opens that employee and 
   await page.click("#panel-close").catch(() => page.keyboard.press("Escape"));
   await page.click("#btn-add-emp");
   await expect(page.locator(".aw-draft")).toContainText("سامر خالد عبد الله الجبوري");
+});
+
+test("personal photo: cut from the national card with a movable box, or picked; saved as the employee's photo", async ({ page }) => {
+  await page.evaluate(() => { window.imageTurns = { "front.jpg": 1 }; window.imageFaces = { "front.jpg": [0.1, 0.3, 0.3, 0.8] }; });
+  await page.click('[data-choice="docs"]');
+  await pick(page, "national", "front.jpg");
+  await pick(page, "national", "back.jpg", "back");
+  await page.click("[data-next]");
+  await expect(page.locator(".aw-content-title b")).toHaveText("الصورة الشخصية");
+  await page.getByRole("button", { name: "قصّ من البطاقة الوطنية" }).click();
+  const box = page.locator(".aw-crop");
+  await expect(box).toHaveAttribute("style", /left:\s*10%/);
+  // Dragging moves the box; the corner resizes it.
+  const area = await page.locator(".aw-crop-area").boundingBox();
+  const b = await box.boundingBox();
+  await page.mouse.move(b.x + b.width / 2, b.y + b.height / 2);
+  await page.mouse.down();
+  await page.mouse.move(b.x + b.width / 2 + area.width * 0.1, b.y + b.height / 2, { steps: 4 });
+  await page.mouse.up();
+  const handle = await page.locator(".aw-crop-handle").boundingBox();
+  await page.mouse.move(handle.x + handle.width / 2, handle.y + handle.height / 2);
+  await page.mouse.down();
+  await page.mouse.move(handle.x + handle.width / 2 + area.width * 0.05, handle.y + handle.height / 2, { steps: 4 });
+  await page.mouse.up();
+  await expect(page.locator(".aw-step").nth(1)).toHaveClass(/is-current/);
+  await page.click("[data-save-now]");
+  await expect.poll(() => page.evaluate(() => window.calls.some(c => c.command === "cmd_upload_employee_photo_crop"))).toBe(true);
+  const crop = await page.evaluate(() => window.calls.find(c => c.command === "cmd_upload_employee_photo_crop").args);
+  expect(crop.sourcePath).toBe("front.jpg");
+  expect(crop.turns).toBe(1);
+  expect(crop.rect[0]).toBeCloseTo(0.2, 1);
+  expect(crop.rect[2]).toBeCloseTo(0.45, 1);
+  expect(crop.rect[1]).toBeCloseTo(0.3, 2);
+  await expect(page.locator(".aw-photo-result small")).toContainText("محفوظة");
+  // Another picked image replaces it, uploaded on the next save.
+  await page.evaluate(() => { window.openQueue = ["portrait.jpg"]; });
+  await page.getByRole("button", { name: "اختيار صورة من الحاسبة" }).click();
+  await expect(page.locator(".aw-photo-result small")).toHaveText("من صورة مختارة");
+  await page.click("[data-save-now]");
+  await expect.poll(() => page.evaluate(() => window.calls.filter(c => c.command === "cmd_upload_employee_photo_crop").length)).toBe(2);
+  const picked = await page.evaluate(() => window.calls.filter(c => c.command === "cmd_upload_employee_photo_crop")[1].args);
+  expect(picked).toMatchObject({ sourcePath: "portrait.jpg", turns: 0, rect: [0, 0, 1, 1] });
 });

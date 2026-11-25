@@ -337,6 +337,11 @@ pub(crate) struct ImageReading {
     pub preview: Vec<u8>,
     /// Where each printed value was read, as fractions of the preview: key -> [x0, y0, x1, y1].
     pub regions: std::collections::HashMap<String, [f32; 4]>,
+    /// Quarter turns that made the image upright: a crop of the preview maps back to the file.
+    pub turns: u8,
+    /// On a national card front: a first guess of where the personal photo is (fractions of the
+    /// preview), for «قصّ من البطاقة الوطنية». The user adjusts it.
+    pub face: Option<[f32; 4]>,
 }
 
 /// Reads the fields of a document image the user just picked (or scanned) for a new employee.
@@ -360,7 +365,7 @@ pub(crate) async fn cmd_read_image_fields(
     tauri::async_runtime::spawn_blocking(move || {
         let image = scanner::load_image(std::path::Path::new(&source_path))
             .map_err(|_| AppError::Validation("قراءة البيانات تعمل على الصور فقط (JPEG أو PNG أو WebP)".into()))?;
-        let Some((lines, upright)) = ocr::read_lines_upright(&image) else {
+        let Some((lines, upright, turns)) = ocr::read_lines_upright(&image) else {
             return Err(AppError::Other("text reader unavailable".into()));
         };
         let result = ocr_parse::parse_with_codes(&lines, &ocr::read_qr_codes(&image));
@@ -369,9 +374,135 @@ pub(crate) async fn cmd_read_image_fields(
             .into_iter()
             .map(|(key, b)| (key, [(b[0] / w).clamp(0., 1.), (b[1] / h).clamp(0., 1.), (b[2] / w).clamp(0., 1.), (b[3] / h).clamp(0., 1.)]))
             .collect();
+        let face = matches!(result.document.as_str(), "national_front" | "national").then(|| face_guess(&lines, w, h)).flatten();
         let preview = scanner::jpeg(&scanner::thumbnail(&image::DynamicImage::ImageRgb8(upright), 900), 85)?;
-        Ok(ImageReading { result, preview, regions })
+        Ok(ImageReading { result, preview, regions, turns, face })
     })
     .await
     .map_err(|e| AppError::Other(e.to_string()))?
+}
+
+/// The personal photo on a national card front: no text is printed over it. Taken as the widest
+/// column left of the text, from below the top header to the bottom of the text, at a portrait
+/// shape. Only a starting point for the user's crop box.
+fn face_guess(lines: &[ocr::Line], w: f32, h: f32) -> Option<[f32; 4]> {
+    if lines.len() < 4 {
+        return None;
+    }
+    let top = lines.iter().map(|l| l.bbox[1]).fold(f32::MAX, f32::min);
+    let bottom = lines.iter().map(|l| l.bbox[3]).fold(f32::MIN, f32::max);
+    let left = lines.iter().map(|l| l.bbox[0]).fold(f32::MAX, f32::min);
+    let right = lines.iter().map(|l| l.bbox[2]).fold(f32::MIN, f32::max);
+    // Rows in the lower part of the card: the photo sits left of where they start.
+    let body_top = top + (bottom - top) * 0.3;
+    let body_left = lines.iter().filter(|l| l.bbox[1] >= body_top).map(|l| l.bbox[0]).fold(f32::MAX, f32::min);
+    let width = (right - left).max(1.);
+    let (x0, x1) = if body_left - left > width * 0.15 { (left, body_left) } else { (left, left + width * 0.28) };
+    // Text printed under the photo (a card number) ends it; otherwise the text's bottom does.
+    let under = lines
+        .iter()
+        .filter(|l| l.bbox[1] >= body_top && l.bbox[2] <= x1 + width * 0.05)
+        .map(|l| l.bbox[1])
+        .fold(f32::MAX, f32::min);
+    let end = if under < f32::MAX { under - (x1 - x0) * 0.03 } else { bottom };
+    let photo_h = ((x1 - x0) * 1.3).min(end - top);
+    let y0 = end - photo_h;
+    Some([(x0 / w).clamp(0., 1.), (y0 / h).clamp(0., 1.), (x1 / w).clamp(0., 1.), (end / h).clamp(0., 1.)])
+}
+
+/// A small upright-as-stored JPEG of a picked image, for the wizard's photo crop box (the asset
+/// protocol only serves the data folder). Nothing is stored.
+#[tauri::command]
+pub(crate) async fn cmd_image_preview(
+    state: State<'_, DbState>,
+    sess: State<'_, SessionState>,
+    source_path: String,
+) -> Result<tauri::ipc::Response, AppError> {
+    {
+        let conn = state.conn()?;
+        authorize(&conn, &sess, "employees.create")?;
+        let upload = files::validate_upload(&source_path, false, true, 25 * 1024 * 1024)?;
+        if !upload.mime_type.starts_with("image/") {
+            return Err(AppError::Validation("الصورة الشخصية: JPEG أو PNG أو WebP".into()));
+        }
+    }
+    tauri::async_runtime::spawn_blocking(move || {
+        let image = scanner::load_image(std::path::Path::new(&source_path))?;
+        scanner::jpeg(&scanner::thumbnail(&image, 900), 85)
+    })
+    .await
+    .map_err(|e| AppError::Other(e.to_string()))?
+    .map(tauri::ipc::Response::new)
+}
+
+/// Saves part of a picked image as the employee's personal photo: the image is turned upright
+/// as the reader turned it (`turns`), then cut to `rect` (fractions of the upright image).
+#[tauri::command]
+pub(crate) fn cmd_upload_employee_photo_crop(
+    state: State<DbState>,
+    sess: State<SessionState>,
+    employee_id: i64,
+    source_path: String,
+    turns: u8,
+    rect: [f32; 4],
+) -> Result<String, AppError> {
+    let conn = state.conn()?;
+    let user = authorize(&conn, &sess, "employees.edit")?;
+    files::validate_upload(&source_path, false, true, 25 * 1024 * 1024)?;
+    let image = scanner::load_image(std::path::Path::new(&source_path))?;
+    let photo = crop_upright(&image, turns, rect)?;
+    let temp = tempfile::Builder::new().prefix("autohr-photo-").suffix(".jpg").tempfile().map_err(|e| AppError::Other(e.to_string()))?;
+    std::fs::write(temp.path(), scanner::jpeg(&photo, 92)?).map_err(|e| AppError::Other(e.to_string()))?;
+    let path = temp.path().to_str().ok_or_else(|| AppError::Validation("Invalid path".into()))?.to_owned();
+    let result = crate::services::upload_employee_photo(&conn, employee_id, &path)?;
+    crate::services::log_activity(&conn, &user, "UPLOAD_DOCUMENT", Some("employee"), Some(employee_id), Some(&result), Some("photo"));
+    Ok(result)
+}
+
+pub(crate) fn crop_upright(image: &image::DynamicImage, turns: u8, rect: [f32; 4]) -> Result<image::DynamicImage, AppError> {
+    let upright = ocr::rotate(&image.to_rgb8(), turns % 4);
+    let (w, h) = (upright.width() as f32, upright.height() as f32);
+    let [x0, y0, x1, y1] = rect.map(|v| if v.is_finite() { v.clamp(0., 1.) } else { 0. });
+    let (left, top) = ((x0.min(x1) * w) as u32, (y0.min(y1) * h) as u32);
+    let (width, height) = (((x1 - x0).abs() * w) as u32, ((y1 - y0).abs() * h) as u32);
+    if width < 16 || height < 16 {
+        return Err(AppError::Validation("منطقة الصورة صغيرة جدًا".into()));
+    }
+    Ok(image::DynamicImage::ImageRgb8(image::imageops::crop_imm(&upright, left, top, width, height).to_image()))
+}
+
+#[cfg(test)]
+mod photo_tests {
+    use super::*;
+
+    #[test]
+    fn crop_turns_the_image_upright_then_cuts_the_fractions() {
+        // 40 x 20, red on the left half: one quarter turn makes it 20 x 40 with red on the top half.
+        let mut img = image::RgbImage::new(40, 20);
+        for (x, _, p) in img.enumerate_pixels_mut() { *p = if x < 20 { image::Rgb([255, 0, 0]) } else { image::Rgb([0, 0, 255]) }; }
+        let source = image::DynamicImage::ImageRgb8(img);
+        let unturned = crop_upright(&source, 0, [0., 0., 0.5, 1.]).unwrap().to_rgb8();
+        assert_eq!((unturned.width(), unturned.height()), (20, 20));
+        assert!(unturned.pixels().all(|p| p.0 == [255, 0, 0]));
+        let turned = crop_upright(&source, 1, [0., 0., 1., 0.5]).unwrap().to_rgb8();
+        assert_eq!((turned.width(), turned.height()), (20, 20));
+        let colours: std::collections::HashSet<_> = turned.pixels().map(|p| p.0).collect();
+        assert_eq!(colours.len(), 1);
+        assert!(crop_upright(&source, 0, [0., 0., 0.1, 0.1]).is_err());
+        assert!(crop_upright(&source, 0, [f32::NAN, 0., 1., 1.]).is_ok());
+    }
+
+    #[test]
+    fn face_guess_is_left_of_the_text_body() {
+        let l = |x0: f32, y0: f32, x1: f32| ocr::Line { text: "x".into(), confidence: 0.9, bbox: [x0, y0, x1, y0 + 20.] };
+        let lines = vec![l(0., 0., 1000.), l(0., 40., 1000.), l(400., 200., 1000.), l(400., 300., 1000.), l(400., 500., 1000.)];
+        let f = face_guess(&lines, 1000., 600.).unwrap();
+        assert!(f[0] < 0.01 && (f[2] - 0.4).abs() < 0.01, "{f:?}");
+        assert!(f[3] <= 0.88 && f[3] > f[1], "{f:?}");
+        // A number printed under the photo ends it.
+        let mut with_number = lines.clone();
+        with_number.push(l(10., 560., 300.));
+        let f = face_guess(&with_number, 1000., 600.).unwrap();
+        assert!(f[3] < 560. / 600., "{f:?}");
+    }
 }

@@ -30,6 +30,10 @@ export const api = {
   deleteAttachment: (empId, rel)  => invoke("cmd_delete_attachment", { employeeId: empId, relativePath: rel }),
   deleteEmployeePhoto: (empId) => invoke("cmd_delete_employee_photo", { employeeId: empId }),
   uploadEmployeePhoto: (empId, path) => uploadWithScanner("cmd_upload_employee_photo", { employeeId: empId, sourcePath: path }),
+  // The add-employee wizard's personal photo: a part of a picked image (or of the national card),
+  // turned upright by `turns` quarter turns, then cut to `rect` (fractions of the upright image).
+  uploadEmployeePhotoCrop: (empId, path, turns, rect) => invoke("cmd_upload_employee_photo_crop", { employeeId: empId, sourcePath: path, turns, rect }),
+  imagePreview: (path) => invoke("cmd_image_preview", { sourcePath: path }),
   uploadNationalCardAttachment: (empId, side, path) => uploadWithScanner("cmd_upload_national_card_attachment", { employeeId: empId, side, sourcePath: path }),
   deleteNationalCardAttachment: (empId, side) => invoke("cmd_delete_national_card_attachment", { employeeId: empId, side }),
   uploadFamilyNationalCardAttachment: (empId, memberIndex, side, path) => uploadWithScanner("cmd_upload_family_national_card_attachment", { employeeId: empId, memberIndex, side, sourcePath: path }),

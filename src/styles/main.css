@@ -897,6 +897,17 @@ html[data-ui-scale] #app-shell { height: calc(100vh / var(--ui-scale)); }
 .aw-chips{display:flex;flex-wrap:wrap;gap:6px;align-items:center;min-height:36px;padding:4px 6px;border:1px solid var(--ui-line-strong);border-radius:8px;background:var(--ui-sunken)}
 .aw-chip{display:inline-flex;align-items:center;gap:6px;padding:2px 6px 2px 10px;border-radius:999px;border:1px solid var(--ui-accent);background:var(--ui-accent-soft);color:var(--ui-text-strong);font-weight:700;font-size:12.5px}
 .aw-chip button{background:none;border:0;color:var(--ui-text-muted);cursor:pointer;font-size:11px;padding:0 2px}
+.aw-photo{display:flex;flex-direction:column;gap:12px}
+.aw-photo-actions{display:flex;flex-wrap:wrap;gap:8px}
+.aw-photo-empty{font-size:13px;color:var(--ui-text-muted)}
+.aw-photo-work{display:flex;gap:16px;align-items:flex-start;flex-wrap:wrap}
+.aw-crop-area{position:relative;display:inline-block;line-height:0;border-radius:8px;overflow:hidden;user-select:none;touch-action:none}
+.aw-photo-work .aw-crop-area img{display:block;width:auto;height:auto;max-width:min(620px,100%);max-height:58vh;min-width:0;opacity:1;object-fit:fill;border-radius:0}
+.aw-crop{position:absolute;border:2px solid var(--ui-accent);box-shadow:0 0 0 9999px rgba(0,0,0,.35);cursor:move;background:transparent}
+.aw-crop-handle{position:absolute;right:-7px;bottom:-7px;width:14px;height:14px;border-radius:3px;background:var(--ui-accent);cursor:nwse-resize}
+.aw-photo-result{display:flex;flex-direction:column;align-items:center;gap:6px}
+.aw-photo-preview{width:132px;height:170px;border-radius:8px;border:1px solid var(--ui-line-strong);background-repeat:no-repeat;background-color:var(--ui-sunken)}
+.aw-photo-result small{font-size:11.5px;color:var(--ui-text-muted)}
 .aw-chip-add,.emp-zone-add{display:inline-flex;align-items:center;padding:2px 10px;border-radius:999px;border:1px dashed var(--ui-line-strong);background:transparent;color:var(--ui-text-muted);font-size:12px;font-weight:600;cursor:pointer}
 .aw-chip-add:hover,.emp-zone-add:hover,.aw-chip-add:focus-visible,.emp-zone-add:focus-visible{border-color:var(--ui-accent);color:var(--ui-text-strong);outline:none}
 .emp-zone-quick{display:flex;flex-wrap:wrap;gap:6px;margin-top:6px}
