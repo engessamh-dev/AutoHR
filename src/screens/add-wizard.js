@@ -77,11 +77,13 @@ const STEPS = [
       { key: "ration_center_name", label: "اسم رب الأسرة", ocr: "head_name" },
     ] },
   { id: "residence", title: "بطاقة السكن", short: "السكن", sides: ["front", "back"],
-    hint: "البطاقة القديمة: يُقرأ رقمها المطبوع فقط، والباقي بخط اليد",
+    hint: "البطاقة القديمة: يُقرأ رقمها المطبوع فقط، والباقي بخط اليد فانقله من الصورة",
     fields: [
       { key: "residence_card_no", label: "رقم بطاقة السكن", ocr: "doc_number", ltr: true },
       { key: "residence_card_issue_date", label: "تاريخ الإصدار", ocr: "issue_date", date: true },
-      { key: "residence_address", label: "العنوان", full: true },
+      { key: "residence_head_name", label: "اسم رب الأسرة", ocr: "head_name" },
+      { key: "residence_form_no", label: "رقم الاستمارة", ocr: "form_no", ltr: true },
+      { key: "residence_address", label: "العنوان", ocr: "address", full: true },
     ] },
   { id: "family", title: "أفراد الأسرة", short: "الأسرة",
     hint: "ارفع بطاقة كل فرد. للأبناء يُنقل الأب والجد واللقب من الموظف" },
@@ -150,6 +152,9 @@ function readingsFor(fields, result) {
   }
   return out;
 }
+
+/** Fields the card has written by hand (not read), on any side. */
+const handwrittenOf = results => [...new Set(Object.values(results ?? {}).flatMap(r => r?.handwritten ?? []))];
 
 /** Puts readings into the values: only where nothing is there yet. */
 function applyReadings(values, readings, source) {
@@ -442,7 +447,9 @@ function openWizard({ user, employees, onCreated, resume = null }) {
   }
 
   /** The note under a field: how this document's reading compares with the value kept. */
-  function note(field, entry, reading, here) {
+  function note(field, entry, reading, here, handwritten = []) {
+    if (!reading && field.ocr && handwritten.includes(field.ocr) && isEmpty(entry?.value))
+      return `<div class="aw-note is-warn">✍ مكتوب بخط اليد على البطاقة: انقله من الصورة</div>`;
     if (!reading) return entry?.unsure && entry.source === here ? `<div class="aw-note is-warn">⚠ القراءة غير مؤكدة، قارنها بالصورة</div>` : "";
     if (same(field, reading.value, entry?.value)) {
       if (entry?.source && entry.source !== here) return `<div class="aw-note is-ok">✓ يطابق ${escHtml(STEPS.find(s => s.id === entry.source)?.short ?? "")}</div>`;
@@ -470,7 +477,7 @@ function openWizard({ user, employees, onCreated, resume = null }) {
   }
   const duplicateOf = civilId => employees.find(e => text(e.civil_id) && text(e.civil_id) === civilId);
 
-  function fieldHtml(field, values, readings, here, scope = "") {
+  function fieldHtml(field, values, readings, here, scope = "", handwritten = []) {
     const entry = values[field.key];
     const id = `aw-${scope}${field.key}`;
     const value = entry?.value;
@@ -489,7 +496,7 @@ function openWizard({ user, employees, onCreated, resume = null }) {
       control = `<input id="${id}" class="input-field" ${attrs} type="${field.date ? "date" : "text"}" dir="${field.ltr || field.date ? "ltr" : "rtl"}" value="${escHtml(value ?? "")}" placeholder="${escHtml(field.placeholder ?? "")}" ${field.list ? `list="aw-${field.list}"` : ""}>`;
     }
     return `<div class="aw-field ${field.full ? "is-full" : ""} ${isEmpty(value) && !field.name ? "is-empty" : ""}">
-      <div class="aw-label"><label for="${id}">${field.label}</label>${tag(entry, here, field.key, scope)}</div>${control}${note(field, entry, readings?.[field.key], here)}<div class="aw-check">${checkHtml(field.key, value, scope)}</div></div>`;
+      <div class="aw-label"><label for="${id}">${field.label}</label>${tag(entry, here, field.key, scope)}</div>${control}${note(field, entry, readings?.[field.key], here, handwritten)}<div class="aw-check">${checkHtml(field.key, value, scope)}</div></div>`;
   }
 
   function slotHtml(slot, side, image, busy) {
@@ -505,7 +512,7 @@ function openWizard({ user, employees, onCreated, resume = null }) {
     const doc = state.docs[step.id];
     const readings = Object.values(doc.readings).length ? doc.readings : null;
     return `<div class="aw-pics">${step.sides.map(side => slotHtml(step.id, side, doc.images[side], doc.busy)).join("")}</div>
-      <div class="aw-fields">${step.fields.map(f => fieldHtml(f, state.values, readings, step.id)).join("")}
+      <div class="aw-fields">${step.fields.map(f => fieldHtml(f, state.values, readings, step.id, "", doc.handwritten ?? [])).join("")}
       ${step.id === "national" ? "" : nameCheckHtml(doc)}
       ${(doc.warnings ?? []).map(w => `<div class="aw-field is-full aw-note is-warn">⚠ ${escHtml(w)}</div>`).join("")}</div>`;
   }
@@ -724,7 +731,10 @@ function openWizard({ user, employees, onCreated, resume = null }) {
     // Focusing a value to review shows where it is on the card.
     overlay.querySelectorAll("[data-key]").forEach(input => input.addEventListener("focus", () => {
       const entry = valuesOf(input.dataset.scope)[input.dataset.key];
-      if (entry?.unsure) showOnCard(input.dataset.scope, input.dataset.key, input.dataset.part);
+      // A handwritten field being typed: the card zooms to it, to copy from.
+      const field = !input.dataset.scope && current().fields?.find(f => f.key === input.dataset.key);
+      const handwritten = field?.ocr && (state.docs[current().id]?.handwritten ?? []).includes(field.ocr);
+      if (entry?.unsure || handwritten) showOnCard(input.dataset.scope, input.dataset.key, input.dataset.part);
     }));
     overlay.querySelectorAll("[data-take]").forEach(b => b.addEventListener("click", () => {
       const scope = b.closest(".aw-member") ? `m${[...overlay.querySelectorAll(".aw-member")].indexOf(b.closest(".aw-member"))}-` : "";
@@ -846,6 +856,7 @@ function openWizard({ user, employees, onCreated, resume = null }) {
       holder.regions = { ...(holder.regions ?? {}), [side]: reading.regions ?? {} };
       const merged = mergeSides(Object.values(holder.results));
       holder.warnings = merged.warnings;
+      holder.handwritten = handwrittenOf(holder.results);
       holder.readings = readingsFor(fields, merged);
       holder.images[side] = { path, url, count: Object.keys(readingsFor(fields, reading.result)).length };
       holder.skipped = false;
@@ -875,6 +886,7 @@ function openWizard({ user, employees, onCreated, resume = null }) {
     const merged = Object.values(holder.results).length ? mergeSides(Object.values(holder.results)) : null;
     holder.readings = merged ? readingsFor(fields, merged) : {};
     holder.warnings = merged?.warnings ?? [];
+    holder.handwritten = handwrittenOf(holder.results);
     render();
   }
 
@@ -897,7 +909,8 @@ function openWizard({ user, employees, onCreated, resume = null }) {
       "passport_no", "passport_type", "passport_issue_date", "passport_expiry_date",
       "ministry_badge_no", "ministry_badge_issue_date", "ministry_badge_expiry",
       "airport_badge_no", "airport_badge_issue_date", "airport_badge_expiry", "airport_badge_zones",
-      "ration_card_no", "ration_center_name", "residence_card_no", "residence_card_issue_date", "residence_address"];
+      "ration_card_no", "ration_center_name", "residence_card_no", "residence_card_issue_date", "residence_address",
+      "residence_head_name", "residence_form_no"];
     plain.forEach(key => { data[key] = v(key); });
     // The national card's own copies of the birth data, as the form keeps them.
     data.civil_id_birthdate = data.birthdate;

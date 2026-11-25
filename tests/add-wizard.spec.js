@@ -382,3 +382,36 @@ test("a step shows ✓ only when all its fields are filled; visiting it is not e
   await expect(steps.nth(2)).toHaveClass(/is-done/);
   await expect(steps.nth(2).locator("i")).toHaveText("✓");
 });
+
+test("residence card: the printed serial is read, handwritten fields are flagged to copy from the image and saved", async ({ page }) => {
+  await page.evaluate(reads => Object.assign(window.imageReads, reads), {
+    "res-front.jpg": { document: "residence", fields: [], handwritten: ["head_name", "address", "form_no"],
+      warnings: ["مكتوب بخط اليد ولا يُقرأ آليًا: اسم رب الأسرة، العنوان، رقم الاستمارة. انقلها من الصورة."] },
+    "res-back.jpg": { document: "residence", fields: [f("doc_number", "1234567")], handwritten: ["issue_date"], warnings: [] },
+  });
+  await page.evaluate(() => { window.imageRegions = { "res-front.jpg": { address: [0.6, 0.6, 0.95, 0.7] } }; });
+  await page.click('[data-choice="docs"]');
+  await pick(page, "national", "front.jpg");
+  await pick(page, "national", "back.jpg", "back");
+  await page.locator(".aw-step").nth(5).click();
+  await pick(page, "residence", "res-front.jpg");
+  await pick(page, "residence", "res-back.jpg", "back");
+  await expect(page.locator('[data-key="residence_card_no"]')).toHaveValue("1234567");
+  const flagged = key => page.locator(`.aw-field:has([data-key="${key}"]) .aw-note`);
+  for (const key of ["residence_head_name", "residence_form_no", "residence_address", "residence_card_issue_date"]) {
+    await expect(flagged(key)).toContainText("بخط اليد");
+  }
+  await expect(flagged("residence_card_no")).toHaveCount(0);
+  // Typing a handwritten field zooms the card to it.
+  await page.locator('[data-key="residence_address"]').focus();
+  await expect(page.locator('.aw-thumb img[data-side="front"]')).toHaveClass(/is-zoomed/);
+  await page.fill('[data-key="residence_address"]', "محلة 000 زقاق 00 دار 0");
+  await page.fill('[data-key="residence_head_name"]', "سامر خالد عبد الله");
+  await page.fill('[data-key="residence_form_no"]', "1111");
+  await page.click("[data-save-now]");
+  await expect.poll(() => page.evaluate(() => window.calls.some(c => c.command === "cmd_create_employee"))).toBe(true);
+  const data = await page.evaluate(() => window.calls.find(c => c.command === "cmd_create_employee").args.data);
+  expect(data.residence_card_no).toBe("1234567");
+  expect(data.residence_head_name).toBe("سامر خالد عبد الله");
+  expect(data.residence_form_no).toBe("1111");
+});

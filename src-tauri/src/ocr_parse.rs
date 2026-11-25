@@ -22,6 +22,13 @@ pub struct ReadResult {
     pub document: String,
     pub fields: Vec<Field>,
     pub warnings: Vec<String>,
+    /// Fields written by hand on this card: not read (handwriting is not reliable), to be typed
+    /// from the image. Keys as in `fields`.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub handwritten: Vec<String>,
+    /// Where each handwritten field is on the image (its label's row), for `locate`.
+    #[serde(skip)]
+    pub marks: Vec<(String, [f32; 4])>,
 }
 
 /// Values the MRZ carries that are also printed: a disagreement between the two is reported.
@@ -75,6 +82,7 @@ pub fn locate(result: &ReadResult, lines: &[Line]) -> Vec<(String, [f32; 4])> {
             }?;
             Some((f.key.clone(), line.bbox))
         })
+        .chain(result.marks.iter().cloned())
         .collect()
 }
 
@@ -440,7 +448,12 @@ fn rows(lines: &[Line]) -> Vec<(Line, Vec<Line>)> {
     groups
         .into_iter()
         .map(|mut group| {
-            group.sort_by(|a, b| b.bbox[2].total_cmp(&a.bbox[2]));
+            // Arabic rows read right to left; a row with no Arabic (zone codes, a Latin name) left to right.
+            if group.iter().any(|l| l.text.chars().any(is_arabic_letter)) {
+                group.sort_by(|a, b| b.bbox[2].total_cmp(&a.bbox[2]));
+            } else {
+                group.sort_by(|a, b| a.bbox[0].total_cmp(&b.bbox[0]));
+            }
             let text = group.iter().map(|l| l.text.as_str()).collect::<Vec<_>>().join(" ");
             let confidence = group.iter().map(|l| l.confidence).fold(1f32, f32::min);
             let bbox = group.iter().fold([f32::MAX, f32::MAX, f32::MIN, f32::MIN], |b, l| {
@@ -946,6 +959,18 @@ fn parse_ration(lines: &[Line], codes: &[String], result: &mut ReadResult) {
         (Some((p, c)), None) => result.set("ration_no", p, c, "text"),
         (None, None) => {}
     }
+    // The long number printed under the QR code: digits only, longer than the card number.
+    let card_no = result.get("ration_no").map(|f| f.value.clone()).unwrap_or_default();
+    let reference = lines
+        .iter()
+        .filter_map(|l| {
+            let digits = ascii_digits(&l.text).replace(' ', "");
+            (digits.len() >= 11 && digits.chars().all(|c| c.is_ascii_digit()) && digits != card_no).then_some((digits, l.confidence))
+        })
+        .max_by(|a, b| a.1.total_cmp(&b.1));
+    if let Some((digits, c)) = reference {
+        result.set("ration_ref", digits, c, "text");
+    }
     if let Some(i) = lines.iter().position(|l| has_label(&l.text, "اسم رب الاسره")) {
         // Below the label: the Kurdish label line, then the printed name.
         let name = lines[i + 1..].iter().take(4).find(|l| {
@@ -955,6 +980,90 @@ fn parse_ration(lines: &[Line], codes: &[String], result: &mut ReadResult) {
         if let Some(line) = name {
             result.set("head_name", merge_single_letters(&arabic_only(&line.text)).join(" "), line.confidence, "text");
         }
+    }
+}
+
+// ---------------------------------------------------------------------------------------------
+// Residence card (old style): the serial is printed; the head of household, the address, the
+// form number and the date are written by hand, so they are pointed out for typing, not guessed.
+
+/// `label` anywhere in the line, with one misread letter allowed per five.
+fn mentions(text: &str, label: &str) -> bool {
+    let compact: Vec<char> = compact_arabic(text).chars().collect();
+    let label: String = normalize(label).chars().filter(|c| is_arabic_letter(*c)).collect();
+    let n = label.chars().count();
+    let allowed = n / 5;
+    compact.len() >= n.saturating_sub(allowed)
+        && (0..=compact.len().saturating_sub(n)).any(|start| {
+            let end = (start + n).min(compact.len());
+            levenshtein(&compact[start..end].iter().collect::<String>(), &label) <= allowed
+        })
+}
+
+const RESIDENCE_BACK: &[&str] = &["تنظيم الاستماره", "منظم الاستماره", "التسلسل"];
+const RESIDENCE_FRONT: &[&str] = &["مكتب معلومات", "مكتب المعلومات", "عنوان السكن"];
+
+fn is_residence_card(lines: &[Line]) -> bool {
+    lines.iter().any(|l| RESIDENCE_BACK.iter().chain(RESIDENCE_FRONT).any(|label| mentions(&l.text, label)) || has_label(&l.text, "رقم الاستماره"))
+}
+
+fn parse_residence(lines: &[Line], result: &mut ReadResult) {
+    let all_rows: Vec<Line> = rows(lines).into_iter().map(|(row, _)| row).collect();
+    let find = |labels: &[&str]| all_rows.iter().position(|r| labels.iter().any(|label| mentions(&r.text, label)));
+    let hand = |result: &mut ReadResult, key: &str, row: &Line| {
+        if !result.handwritten.iter().any(|k| k == key) {
+            result.handwritten.push(key.into());
+            result.marks.push((key.into(), row.bbox));
+        }
+    };
+
+    // Back: the printed serial, a number on its own row near «التسلسل».
+    let serial_label = find(&["التسلسل"]);
+    let digit_rows = all_rows.iter().filter_map(|r| {
+        let digits: String = ascii_digits(&r.text).chars().filter(|c| !c.is_whitespace()).collect();
+        (digits.len() >= 5 && digits.len() <= 12 && digits.chars().all(|c| c.is_ascii_digit())).then_some((digits, r))
+    });
+    let serial = match serial_label.map(|i| &all_rows[i]) {
+        Some(label) => digit_rows
+            .filter(|(_, r)| r.center_y() >= label.bbox[1] && r.center_y() <= label.bbox[3] + label.height() * 4.)
+            .min_by(|a, b| a.1.center_y().total_cmp(&b.1.center_y())),
+        None if find(RESIDENCE_BACK).is_some() => digit_rows.max_by(|a, b| a.1.confidence.total_cmp(&b.1.confidence)),
+        None => None,
+    };
+    if let Some((digits, row)) = serial {
+        result.set("doc_number", digits, row.confidence, "text");
+    }
+    if let Some(i) = find(&["تنظيم الاستماره"]) {
+        hand(result, "issue_date", &all_rows[i]);
+    }
+
+    // Front: three handwritten rows. The address label is often misread, so its row is also
+    // found between the other two.
+    // Row-leading labels: matched at the start, so «منظم الاستمارة» is not «رقم الاستمارة».
+    let leading = |label: &str| all_rows.iter().position(|r| has_label(&r.text, label));
+    let head = leading("اسم رب الاسره");
+    let form = leading("رقم الاستماره");
+    if let Some(i) = head {
+        hand(result, "head_name", &all_rows[i]);
+    }
+    let address = leading("عنوان السكن").or(match (head, form) {
+        (Some(h), Some(f)) if f == h + 2 => Some(h + 1),
+        _ => None,
+    });
+    if let Some(i) = address {
+        hand(result, "address", &all_rows[i]);
+    }
+    if let Some(i) = form {
+        hand(result, "form_no", &all_rows[i]);
+    }
+    if !result.handwritten.is_empty() {
+        let names: Vec<&str> = result.handwritten.iter().map(|k| match k.as_str() {
+            "head_name" => "اسم رب الأسرة",
+            "address" => "العنوان",
+            "form_no" => "رقم الاستمارة",
+            _ => "تاريخ تنظيم الاستمارة",
+        }).collect();
+        result.warnings.push(format!("مكتوب بخط اليد ولا يُقرأ آليًا: {}. انقلها من الصورة.", names.join("، ")));
     }
 }
 
@@ -1499,6 +1608,14 @@ pub fn parse_with_codes(raw_lines: &[Line], codes: &[String]) -> ReadResult {
         return result;
     }
     let mrz = parse_mrz(lines, &mut result);
+    if mrz.is_none() && is_residence_card(lines) {
+        parse_residence(lines, &mut result);
+        result.document = "residence".into();
+        if result.fields.is_empty() && result.handwritten.is_empty() {
+            result.warnings.push("لم يُعثر على بيانات مقروءة في الصورة".into());
+        }
+        return result;
+    }
     if mrz == Some("td3") {
         parse_passport_text(lines, &mut result);
         result.document = "passport".into();
@@ -1689,9 +1806,62 @@ mod tests {
         assert_eq!(r.get("ration_no").unwrap().value, "0100000001");
         assert_eq!(r.get("ration_no").unwrap().source, "qr");
         assert_eq!(r.get("head_name").unwrap().value, "أحمد علي حسين كاظم");
+        // The long number under the QR code is kept apart from the card number.
+        assert_eq!(r.get("ration_ref").unwrap().value, "1000000000001");
         // Without the QR code the printed number is used.
         let r = parse(&lines);
         assert_eq!(r.get("ration_no").unwrap().source, "text");
+    }
+
+    fn boxed_at(text: &str, x: f32, y: f32) -> Line { Line { text: text.into(), confidence: 0.95, bbox: [x, y, x + 40., y + 10.] } }
+
+    #[test]
+    fn rows_read_arabic_right_to_left_and_latin_left_to_right() {
+        let latin = vec![boxed_at("VIP", 200., 0.), boxed_at("S1", 0., 0.), boxed_at("T", 100., 0.)];
+        assert_eq!(rows(&latin)[0].0.text, "S1 T VIP");
+        let arabic = vec![boxed_at("حسن", 100., 0.), boxed_at("علي", 200., 0.)];
+        assert_eq!(rows(&arabic)[0].0.text, "علي حسن");
+    }
+
+    #[test]
+    fn residence_card_back_reads_the_printed_serial_only() {
+        let lines = vec![
+            line("نموذج ٣", 0.),
+            line("التسلسل", 40.),
+            line("١٢٣٤٥٦٧", 55.),
+            line("تاريخ تنظيم الاستمارة ٢٠ و", 130.),
+            line("اسم ورتبة منظم الاستمارة", 160.),
+        ];
+        let r = parse(&lines);
+        assert_eq!(r.document, "residence");
+        assert_eq!(r.get("doc_number").unwrap().value, "1234567");
+        // The handwritten date is pointed out, not guessed.
+        assert!(r.get("issue_date").is_none());
+        assert_eq!(r.handwritten, vec!["issue_date"]);
+        assert!(!r.handwritten.iter().any(|k| k == "form_no"));
+    }
+
+    #[test]
+    fn residence_card_front_points_out_handwritten_fields() {
+        let lines = vec![
+            line("وزارة الداخلية", 0.),
+            line("مكتب معلومات", 20.),
+            line("اسم رب الاسرة عصاتم ص ه اشم", 40.),
+            line("عنون السكن م ٩ ز د", 60.),
+            line("رقم الاستمارة ٥٦١", 80.),
+        ];
+        let r = parse(&lines);
+        assert_eq!(r.document, "residence");
+        assert!(r.fields.is_empty());
+        assert_eq!(r.handwritten, vec!["head_name", "address", "form_no"]);
+        assert!(r.warnings.iter().any(|w| w.contains("بخط اليد")));
+        // Each is located at its label's row, for zooming the card.
+        let at: std::collections::HashMap<_, _> = locate(&r, &lines).into_iter().collect();
+        assert_eq!(at["address"][1], 60.);
+        // A misread address label is found between the other two rows.
+        let mut misread = lines.clone();
+        misread[3].text = "وان الكن ٩ ح ز".into();
+        assert_eq!(parse(&misread).handwritten, vec!["head_name", "address", "form_no"]);
     }
 
     #[test]
