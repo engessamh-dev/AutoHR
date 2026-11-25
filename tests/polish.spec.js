@@ -222,3 +222,26 @@ test("document form will not save until the issuer, subject, number and date are
   await expect(hint).toBeHidden();
   expect(await page.evaluate(() => window.calls.some(c => c.command === "cmd_create_general_doc"))).toBe(false);
 });
+
+test("missing employee data: counted in the list, the header and the tab, outlined, and updated while typing", async ({ page }) => {
+  await page.evaluate(() => {
+    window.employeePatch = { employee_number: "1001", full_name: "سامر خالد عبد الله الجبوري", mother_name: "زينب حسن", gender: "ذكر", marital_status: "متزوج",
+      birthdate: "1985-03-14", birthplace: "بغداد", blood_type: "O+", phone: "", job_title: "مهندس", job_grade: "الثالثة",
+      appointment_date: "2010-09-01", contract_type: "ملاك", education_level: "", email: "" };
+  });
+  await page.evaluate(() => window.renderActual("employees"));
+  // Phone and education are missing; email is optional.
+  await expect(page.locator('.table-row[data-id="1"] .emp-missing-badge')).toHaveText("ناقص 2");
+  await expect(page.locator('.table-row[data-id="1"] .emp-missing-badge')).toHaveAttribute("title", "بيانات ناقصة: رقم الهاتف، التحصيل الدراسي");
+  await page.locator('.table-row[data-id="1"]').click();
+  await expect(page.locator("#emp-panel-missing .emp-missing-badge")).toHaveText("ناقص 2");
+  await expect(page.locator('.emp-tab-count[data-count-for="basic"]')).toHaveText("ناقص 2");
+  await expect(page.locator("#f-phone").locator("xpath=..")).toHaveClass(/emp-is-missing/);
+  await expect(page.locator("#f-email").locator("xpath=..")).not.toHaveClass(/emp-is-missing/);
+  await page.fill("#f-phone", "07700000000");
+  await expect(page.locator("#emp-panel-missing .emp-missing-badge")).toHaveText("ناقص 1");
+  await expect(page.locator("#f-phone").locator("xpath=..")).not.toHaveClass(/emp-is-missing/);
+  // Still counted from another tab.
+  await page.locator('.tab-btn[data-tab="documents"]').click();
+  await expect(page.locator('.emp-tab-count[data-count-for="basic"]')).toHaveText("ناقص 1");
+});

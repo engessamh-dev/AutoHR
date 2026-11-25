@@ -207,7 +207,7 @@ function renderTable({ keepVisibleRows = false } = {}) {
           : rows.map(e => `
             <tr class="table-row" data-id="${e.id}" style="cursor:pointer">
               <td class="table-cell" dir="ltr" style="text-align:right">${escHtml(e.employee_number || "—")}</td>
-              <td class="table-cell font-medium text-gray-100">${escHtml(e.full_name)}</td>
+              <td class="table-cell font-medium text-gray-100">${escHtml(e.full_name)}${missingBadge(missingFields(e), "is-inline")}</td>
               <td class="table-cell">${escHtml(e.job_title ?? "—")}</td>
               <td class="table-cell">${documentsCell(e, alertsById)}</td>
               <td class="table-cell" dir="ltr">${escHtml(e.phone ?? "—")}</td>
@@ -1270,6 +1270,61 @@ function parseJsonList(value) {
   try { const list = JSON.parse(value ?? "[]"); return Array.isArray(list) ? list : []; } catch { return []; }
 }
 
+// ── Missing data ───────────────────────────────────────────────────────────
+/** The «البيانات الأساسية» fields every employee file should have. The rest (email, parents,
+ *  start date, specialization, notes, …) are optional. Documents have their own status. */
+export const REQUIRED_FIELDS = [
+  ["employee_number", "الرقم الوظيفي"], ["full_name", "اسم الموظف"], ["mother_name", "اسم الأم"],
+  ["gender", "الجنس"], ["marital_status", "الحالة الاجتماعية"], ["birthdate", "تاريخ الولادة"],
+  ["birthplace", "محل الولادة"], ["blood_type", "فصيلة الدم"], ["phone", "رقم الهاتف"],
+  ["job_title", "العنوان الوظيفي"], ["job_grade", "الدرجة الوظيفية"], ["appointment_date", "تاريخ التعيين"],
+  ["contract_type", "نوع التوظيف"], ["education_level", "التحصيل الدراسي"],
+];
+
+/** The labels of the required fields an employee record leaves empty. */
+export function missingFields(emp) {
+  return REQUIRED_FIELDS.filter(([key]) => !String(emp?.[key] ?? "").trim()).map(([, label]) => label);
+}
+
+/** «ناقص N» with the empty fields named on hover, or nothing. */
+function missingBadge(missing, cls = "") {
+  return missing.length ? `<span class="emp-missing-badge ${cls}" title="بيانات ناقصة: ${escHtml(missing.join("، "))}">ناقص ${missing.length}</span>` : "";
+}
+
+/** The panel's values now: what is typed in the visible tab, otherwise the draft. */
+function liveMissing(panel) {
+  const values = { ..._panelDraft };
+  panel.querySelectorAll("#tab-content [id^='f-']").forEach(el => { values[el.id.slice(2)] = el.value; });
+  panel.querySelectorAll("#tab-content .name-fields[data-name-key]").forEach(group => {
+    if (REQUIRED_FIELDS.some(([key]) => key === group.dataset.nameKey)) {
+      values[group.dataset.nameKey] = [...group.querySelectorAll(".name-part")].map(input => input.value.trim()).join(" ").trim();
+    }
+  });
+  return missingFields(values);
+}
+
+/** Header badge, tab badge and the empty required fields outlined, kept in step with typing. */
+function refreshMissing() {
+  const panel = document.getElementById("emp-panel");
+  if (!panel || !_panelDraft) return;
+  const missing = liveMissing(panel);
+  const slot = panel.querySelector("#emp-panel-missing");
+  if (slot) slot.innerHTML = missingBadge(missing);
+  const badge = panel.querySelector('.emp-tab-count[data-count-for="basic"]');
+  if (badge) {
+    badge.hidden = !missing.length;
+    badge.textContent = missing.length ? `ناقص ${missing.length}` : "";
+    badge.title = missing.length ? `بيانات ناقصة: ${missing.join("، ")}` : "";
+    badge.classList.add("is-warn");
+  }
+  REQUIRED_FIELDS.forEach(([key]) => {
+    const target = panel.querySelector(`#tab-content #f-${key}`) ?? panel.querySelector(`#tab-content .name-fields[data-name-key="${key}"]`);
+    if (!target) return;
+    const value = target.matches(".name-fields") ? [...target.querySelectorAll(".name-part")].some(input => input.value.trim()) : String(target.value ?? "").trim();
+    (target.matches(".name-fields") ? target : target.closest("div")).classList.toggle("emp-is-missing", !value);
+  });
+}
+
 function updateTabCounts() {
   const panel = document.getElementById("emp-panel");
   const draft = _panelDraft;
@@ -1287,11 +1342,13 @@ function updateTabCounts() {
     })(),
   };
   panel.querySelectorAll(".emp-tab-count").forEach(badge => {
+    if (badge.dataset.countFor === "basic") return;
     const count = counts[badge.dataset.countFor];
     badge.hidden = !count;
     badge.textContent = count?.text ?? "";
     badge.classList.toggle("is-warn", Boolean(count?.warn));
   });
+  refreshMissing();
 }
 
 function closeEmployeeMenus(except = null) {
@@ -1410,6 +1467,7 @@ function renderPanel(emp) {
           ${!isNew ? `<p style="font-size:11px;color:var(--ui-text-faint)">${[emp.employee_number ? `<span dir="ltr">${escHtml(emp.employee_number)}</span>` : "", escHtml(emp.job_title ?? ""), escHtml(fixedDepartment(emp))].filter(Boolean).join(" · ")}</p>` : ""}
         </div>
         ${!isNew ? `<span class="emp-pill ${emp.is_active ? "ok" : "none"}">${emp.is_active ? "نشط" : "غير نشط"}</span>` : ""}
+        ${!isNew ? `<span id="emp-panel-missing"></span>` : ""}
       </div>
       <button id="panel-close" style="color:var(--ui-text-muted);font-size:20px;background:none;border:none;cursor:pointer">✕</button>
     </div>
@@ -1489,6 +1547,8 @@ function renderPanel(emp) {
   attachTabEvents(emp);
   updateTabCounts();
   panel.addEventListener("input", markPanelDirty);
+  panel.addEventListener("input", refreshMissing);
+  panel.addEventListener("change", refreshMissing);
   panel.addEventListener("change", markPanelDirty);
   bindNameFields(panel);
   wirePanelAddress(panel);
