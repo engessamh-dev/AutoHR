@@ -399,8 +399,63 @@ fn retry_tall_box(image: &RgbImage, b: &[[f32; 2]; 4], visual: String, confidenc
     best
 }
 
+/// The detector sometimes leaves out the last word of a line (on a busy background). When dark
+/// ink continues right after a box's left end, outside every other box, the line is read again
+/// over that ink and kept if it reads at least as well and says more.
+fn extend_into_missed_words(image: &RgbImage, b: &[[f32; 2]; 4], boxes: &[[[f32; 2]; 4]], visual: String, confidence: f32) -> ([[f32; 2]; 4], String, f32) {
+    let unchanged = (*b, visual.clone(), confidence);
+    let height = dist(b[0], b[3]);
+    // Upright lines only (the page is turned upright before this).
+    if height < 8. || (b[1][1] - b[0][1]).abs() > 0.15 * height || !visual.chars().any(is_arabic) {
+        return unchanged;
+    }
+    let left = b[0][0].min(b[3][0]);
+    let (top, bottom) = (b[0][1].min(b[1][1]), b[3][1].max(b[2][1]));
+    let (inner_top, inner_bottom) = ((top + 0.2 * height) as u32, ((bottom - 0.2 * height) as u32).min(image.height().saturating_sub(1)));
+    if inner_bottom <= inner_top {
+        return unchanged;
+    }
+    let luma = |x: u32, y: u32| { let p = image.get_pixel(x, y).0; (u32::from(p[0]) * 3 + u32::from(p[1]) * 6 + u32::from(p[2])) / 10 };
+    // Ink: clearly darker than the line's own background (its brightest tenth).
+    let mut samples: Vec<u32> = (inner_top..=inner_bottom).flat_map(|y| (left as u32..(left + 4. * height).min(image.width() as f32 - 1.) as u32).step_by(3).map(move |x| (x, y))).map(|(x, y)| luma(x, y)).collect();
+    if samples.is_empty() {
+        return unchanged;
+    }
+    samples.sort_unstable();
+    let paper = samples[samples.len() * 9 / 10];
+    let ink_below = paper.saturating_sub(90).max(40);
+    let covered = |x: f32| boxes.iter().any(|o| {
+        let (ox0, ox1) = (o[0][0].min(o[3][0]), o[1][0].max(o[2][0]));
+        let (oy0, oy1) = (o[0][1].min(o[1][1]), o[3][1].max(o[2][1]));
+        !std::ptr::eq(o, b) && x >= ox0 && x <= ox1 && (oy1.min(bottom) - oy0.max(top)) > 0.5 * height
+    });
+    let (mut x, mut last_ink, mut gap) = (left - 1., left, 0f32);
+    while x > (left - 8. * height).max(0.) && gap < 1.2 * height {
+        if covered(x) {
+            break;
+        }
+        let dark = (inner_top..=inner_bottom).filter(|y| luma(x as u32, *y) < ink_below).count();
+        if dark >= 2 { last_ink = x; gap = 0.; } else { gap += 1.; }
+        x -= 1.;
+    }
+    if left - last_ink < 0.8 * height {
+        return unchanged;
+    }
+    let new_left = (last_ink - 0.2 * height).max(0.);
+    let wider = [[new_left, b[0][1]], b[1], b[2], [new_left, b[3][1]]];
+    match recognize(&crop_line(image, &wider, REC_HEIGHT as u32)) {
+        Some((text, conf)) if conf >= 0.7 && conf >= confidence - 0.1 && text.chars().filter(|c| !c.is_whitespace()).count() > visual.chars().filter(|c| !c.is_whitespace()).count() + 1 => (wider, text, conf),
+        _ => unchanged,
+    }
+}
+
 /// Reads all text lines of a document photo or scan, turning it upright first.
 pub fn read_lines(image: &DynamicImage) -> Option<Vec<Line>> {
+    read_lines_upright(image).map(|(lines, _)| lines)
+}
+
+/// Like `read_lines`, also returning the upright image the line boxes refer to.
+pub fn read_lines_upright(image: &DynamicImage) -> Option<(Vec<Line>, RgbImage)> {
     if !available() {
         return None;
     }
@@ -429,6 +484,7 @@ pub fn read_lines(image: &DynamicImage) -> Option<Vec<Line>> {
             let crop = crop_line(&rgb, b, REC_HEIGHT as u32);
             let (visual, confidence) = recognize(&crop)?;
             let (b, visual, confidence) = retry_tall_box(&rgb, b, visual, confidence, usual_height);
+            let (b, visual, confidence) = extend_into_missed_words(&rgb, &b, &boxes, visual, confidence);
             let b = &b;
             let mut text = logical_order(&visual);
             let mut confidence = confidence;
@@ -461,7 +517,7 @@ pub fn read_lines(image: &DynamicImage) -> Option<Vec<Line>> {
         })
         .collect();
     lines.sort_by(|a, b| a.center_y().total_cmp(&b.center_y()));
-    Some(lines)
+    Some((lines, rgb))
 }
 
 /// Many filler-like characters in one line: '<' itself, or the Arabic-Indic digits the
