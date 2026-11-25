@@ -1470,6 +1470,18 @@ fn validate_document_data(data: &GeneralDocData) -> AppResult<()> {
     if data.title.chars().count() > 300 {
         return Err(AppError::Validation("Enter a valid document title".into()));
     }
+    // A document needs its issuer, subject, number and issue date; without
+    // them it is an empty row in the archive.
+    let blank = |value: Option<&str>| value.map_or(true, |v| v.trim().is_empty());
+    let missing: Vec<&str> = [
+        ("الجهة المصدرة للوثيقة", blank(Some(data.title.as_str()))),
+        ("الموضوع", blank(data.issuer.as_deref())),
+        ("العدد", blank(data.doc_count.as_deref())),
+        ("تاريخ الإصدار", blank(data.issue_date.as_deref())),
+    ].into_iter().filter(|(_, is_blank)| *is_blank).map(|(label, _)| label).collect();
+    if !missing.is_empty() {
+        return Err(AppError::Validation(format!("لا يمكن حفظ الوثيقة قبل إكمال: {}", missing.join("، "))));
+    }
     if data.employee_ids.len() > 1000 {
         return Err(AppError::Validation("Too many linked employees".into()));
     }
@@ -3283,8 +3295,8 @@ fn updating_a_general_doc_preserves_stored_hr_effect() {
     ).unwrap();
     let id = conn.last_insert_rowid();
     let data = GeneralDocData {
-        title: "Edited".into(), doc_type: None, doc_number: None, issue_date: None, issuer: None,
-        doc_count: None, margin: None, is_internal_memo: false,
+        title: "Edited".into(), doc_type: None, doc_number: None, issue_date: Some("2026-11-25".into()), issuer: Some("أمر إداري".into()),
+        doc_count: Some("230/547".into()), margin: None, is_internal_memo: false,
         hr_effect_type: None, hr_affects_promotion: false, hr_affects_allowance: false,
         hr_effect_months: 0, hr_effect_days: 0, notes: None, employee_ids: vec![],
     };
@@ -3304,4 +3316,36 @@ fn development_data_path_is_isolated() {
     assert_eq!(app_data_path(),base.join("CNSArch-Development"));
     assert_ne!(app_data_path(),base.join("CNSArch"));
     assert_eq!(crate::db::db_path(),app_data_path().join("database.db"));
+}
+
+#[cfg(test)]
+#[test]
+fn saving_a_document_requires_issuer_subject_number_and_date() {
+    let conn = Connection::open_in_memory().unwrap();
+    crate::db::initialize_test(&conn).unwrap();
+    conn.execute(
+        "INSERT INTO users(username,password,role) VALUES('docadmin',?1,'archive_admin')",
+        params![hash_password("admin-password").unwrap()],
+    ).unwrap();
+    let empty = GeneralDocData {
+        title: "  ".into(), doc_type: None, doc_number: None, issue_date: Some("2026-11-25".into()), issuer: Some(" ".into()),
+        doc_count: None, margin: None, is_internal_memo: false,
+        hr_effect_type: None, hr_affects_promotion: false, hr_affects_allowance: false,
+        hr_effect_months: 0, hr_effect_days: 0, notes: None, employee_ids: vec![],
+    };
+    for result in [create_general_doc(&conn, &empty, "docadmin"), create_outgoing_doc(&conn, &empty, "docadmin")] {
+        match result {
+            Err(AppError::Validation(message)) => {
+                assert!(message.contains("الجهة المصدرة للوثيقة") && message.contains("الموضوع") && message.contains("العدد"));
+                assert!(!message.contains("تاريخ الإصدار"));
+            }
+            other => panic!("expected a validation error, got {other:?}"),
+        }
+    }
+    let count: i64 = conn.query_row("SELECT (SELECT COUNT(*) FROM general_docs)+(SELECT COUNT(*) FROM outgoing_docs)", [], |r| r.get(0)).unwrap();
+    assert_eq!(count, 0);
+    let filled = GeneralDocData {
+        title: "مركز الوزارة".into(), issuer: Some("أمر إداري".into()), doc_count: Some("230/547".into()), ..empty
+    };
+    assert!(create_general_doc(&conn, &filled, "docadmin").is_ok());
 }

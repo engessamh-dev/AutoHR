@@ -78,6 +78,8 @@ test("empty archive offers «إضافة أول وثيقة», and the new form de
   await expect(page.locator(".doc-pending-item")).toHaveCount(0);
   await page.locator("#d-manage-attachments").click();
   await page.locator("#d-title").fill("جهة تجريبية");
+  await page.locator("#d-issuer").fill("أمر إداري");
+  await page.locator("#d-count").fill("230/547");
   await page.locator("#btn-save-doc").click();
   await page.getByRole("button", { name: "تأكيد", exact: true }).click();
   // Images ask whether to upload as-is or process first, as with any archive upload.
@@ -199,4 +201,25 @@ test("archive list hides the row delete button without «documents.delete»", as
   await page.evaluate(() => window.renderActual("general"));
   await expect(page.locator(".general-doc-row")).toHaveCount(1);
   await expect(page.locator(".doc-row-delete")).toHaveCount(0);
+});
+
+test("document form will not save until the issuer, subject, number and date are filled", async ({ page }) => {
+  await page.evaluate(() => { window.docs = []; window.plainArchive = true; });
+  await page.evaluate(() => window.renderActual("general"));
+  await page.getByRole("button", { name: "+ إضافة أول وثيقة" }).click();
+  const save = page.locator("#btn-save-doc");
+  const hint = page.locator("#d-required-hint");
+  await expect(save).toBeDisabled();
+  await expect(hint).toHaveText("لحفظ الوثيقة أكمل: الجهة المصدرة للوثيقة، الموضوع، العدد");
+  await page.locator("#d-title").fill("مركز الوزارة");
+  await page.locator("#d-issuer").fill("أمر إداري");
+  await expect(hint).toHaveText("لحفظ الوثيقة أكمل: العدد");
+  await page.locator("#d-count").fill("230/547");
+  await page.locator("#d-date").fill("");
+  await expect(hint).toHaveText("لحفظ الوثيقة أكمل: تاريخ الإصدار");
+  await expect(save).toBeDisabled();
+  await page.locator("#d-date").fill("2026-11-25");
+  await expect(save).toBeEnabled();
+  await expect(hint).toBeHidden();
+  expect(await page.evaluate(() => window.calls.some(c => c.command === "cmd_create_general_doc"))).toBe(false);
 });
