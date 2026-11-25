@@ -1,15 +1,70 @@
 import { api } from "../api.js";
 import { escHtml, formatDate, arCount, AR_NOUNS } from "../utils.js";
+import { can } from "../permissions.js";
 
 const DAY_MS = 86400000;
 
-const expiringDocuments = [
-  { field: "civil_id_expiry_date", type: "البطاقة الوطنية", maxDays: 30 },
-  { field: "passport_expiry_date", type: "جواز السفر", maxDays: 183 },
-  { field: "airport_badge_expiry", type: "باج دخول مطار بغداد", maxDays: 30 },
-  { field: "ministry_badge_expiry", type: "هوية وزارة النقل", maxDays: 30 },
-  { field: "vehicle_annual_expiry_date", type: "سنوية المركبة", maxDays: 30, tab: "vehicle" },
+/** The document types that carry an expiry date. Their reminder days live in «الإعدادات». */
+export const ALERT_DOCUMENT_TYPES = [
+  { key: "national", field: "civil_id_expiry_date", type: "البطاقة الوطنية" },
+  { key: "passport", field: "passport_expiry_date", type: "جواز السفر" },
+  { key: "airport", field: "airport_badge_expiry", type: "باج دخول مطار بغداد" },
+  { key: "ministry", field: "ministry_badge_expiry", type: "هوية وزارة النقل" },
+  { key: "vehicle", field: "vehicle_annual_expiry_date", type: "سنوية المركبة", tab: "vehicle" },
 ];
+
+/** Same defaults as the backend (services.rs DOCUMENT_ALERT_DEFAULTS), used until the saved ones load. */
+export const DEFAULT_ALERT_RULES = [
+  { key: "national", enabled: true, days: [30, 15, 7] },
+  { key: "passport", enabled: true, days: [180, 90, 7] },
+  { key: "airport", enabled: true, days: [30, 15, 7] },
+  { key: "ministry", enabled: true, days: [30, 15, 7] },
+  { key: "vehicle", enabled: true, days: [30, 15, 7] },
+];
+
+/**
+ * The automatic reminders for «نبّهني قبل N يوماً»: the first alert at N days, again halfway
+ * (when N is 14 or more), and 7 days before (when N is more than 7). Expiry is always flagged.
+ */
+export function autoReminderDays(first) {
+  const n = Math.trunc(Number(first));
+  const days = new Set([n]);
+  if (n >= 14) days.add(Math.round(n / 2));
+  if (n > 7) days.add(7);
+  return [...days].sort((a, b) => b - a);
+}
+
+export function isAutoReminders(days) {
+  if (!days?.length) return true;
+  const auto = autoReminderDays(Math.max(...days));
+  return auto.length === days.length && auto.every((day, index) => day === days[index]);
+}
+
+let cachedRules = DEFAULT_ALERT_RULES;
+
+export function currentAlertRules() { return cachedRules; }
+
+export function setCachedAlertRules(rules) {
+  if (Array.isArray(rules) && rules.length) cachedRules = rules;
+  return cachedRules;
+}
+
+/** Reads the saved reminder days; keeps the last known (or default) ones if that fails. */
+export async function loadAlertRules() {
+  try { setCachedAlertRules(await api.getDocumentAlertRules()); } catch (_) { /* keep the last known rules */ }
+  return cachedRules;
+}
+
+function ruleFor(key, rules = cachedRules) {
+  return rules.find(rule => rule.key === key) ?? DEFAULT_ALERT_RULES.find(rule => rule.key === key);
+}
+
+/** How many days before expiry a document type starts showing as «قارب على النفاذ» (-1 when off). */
+export function alertWindowDays(key, rules = cachedRules) {
+  const rule = ruleFor(key, rules);
+  if (!rule?.enabled || !rule.days?.length) return -1;
+  return Math.max(...rule.days);
+}
 
 function parseDate(dateStr) {
   if (!dateStr) return null;
@@ -27,25 +82,39 @@ function daysLeft(dateStr, today = new Date()) {
   return Math.ceil((date - todayStart) / DAY_MS);
 }
 
-export function buildDocumentAlerts(employees, today = new Date()) {
+export function buildDocumentAlerts(employees, rules = cachedRules, today = new Date()) {
   const alerts = [];
   employees.filter(e => e.is_active).forEach(employee => {
-    expiringDocuments.forEach(documentType => {
+    ALERT_DOCUMENT_TYPES.forEach(documentType => {
+      const rule = ruleFor(documentType.key, rules);
+      if (!rule?.enabled || !rule.days?.length) return;
       const days = daysLeft(employee[documentType.field], today);
-      if (days === null || days > documentType.maxDays) return;
+      if (days === null || days > Math.max(...rule.days)) return;
+      // The reminder reached: the smallest reminder day that is still ≥ the days left.
+      const reminder = days < 0 ? null : Math.min(...rule.days.filter(day => day >= days));
       alerts.push({
         employeeId: employee.id,
         employeeTab: documentType.tab ?? "documents",
         employeeName: employee.full_name,
         employeeNumber: employee.employee_number,
+        documentKey: documentType.key,
         documentName: documentType.type,
         expiryDate: employee[documentType.field],
         days,
         expired: days < 0,
+        reminder,
       });
     });
   });
   return alerts.sort((a, b) => a.days - b.days);
+}
+
+/** Identifies the reminder an alert has reached, so each one is announced only once. */
+export function alertStageKey(alert) {
+  return {
+    id: `${alert.employeeId}:${alert.documentKey}:${alert.expiryDate}`,
+    stage: alert.expired ? "expired" : `r${alert.reminder}`,
+  };
 }
 
 function remainingLabel(alert) {
@@ -84,8 +153,9 @@ function alertRows(alerts) {
 }
 
 export async function renderDocumentAlerts(container, user, ctx) {
-  const employees = await api.listEmployees();
-  const alerts = buildDocumentAlerts(employees);
+  const [employees, rules] = await Promise.all([api.listEmployees(), loadAlertRules()]);
+  const alerts = buildDocumentAlerts(employees, rules);
+  const canEditTiming = can(user, "settings.manage");
 
   const render = () => {
     const filter = ALERT_FILTERS.find(item => item.id === activeAlertFilter) ?? ALERT_FILTERS[0];
@@ -99,6 +169,7 @@ export async function renderDocumentAlerts(container, user, ctx) {
             ${ALERT_FILTERS.map(item => `<button type="button" class="filter-chip" data-alert-filter="${item.id}"
               aria-pressed="${item.id === filter.id}">${item.label}<span class="filter-chip-count">${alerts.filter(item.match).length}</span></button>`).join("")}
           </div>
+          ${canEditTiming ? `<button type="button" id="alerts-timing" class="btn-secondary text-sm px-3 py-1.5" title="تعديل عدد الأيام قبل النفاذ لكل مستمسك">مواعيد التنبيه</button>` : ""}
         </div>
         <div class="card overflow-auto">
           <table class="w-full">
@@ -119,6 +190,7 @@ export async function renderDocumentAlerts(container, user, ctx) {
       </div>`;
 
     container.querySelector("#alerts-back")?.addEventListener("click", () => ctx.navigateTo("dashboard"));
+    container.querySelector("#alerts-timing")?.addEventListener("click", () => ctx.navigateTo("settings", { tab: "alerts" }));
     container.querySelectorAll("[data-alert-filter]").forEach(button => button.addEventListener("click", () => {
       activeAlertFilter = button.dataset.alertFilter;
       render();

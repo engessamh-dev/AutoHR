@@ -875,6 +875,18 @@ async fn cmd_move_data_folder(window: Window, state: State<'_, DbState>, sess: S
         Ok(())
     }
 }
+/// Alert timing is read by everyone who can see employees (the alerts are built from them);
+/// only a settings manager may change it.
+#[tauri::command] fn cmd_get_document_alert_rules(state: State<DbState>, sess: State<SessionState>) -> Result<Vec<DocumentAlertRule>, AppError> {
+    let conn = state.conn()?;
+    authorize(&conn, &sess, "employees.view")?;
+    get_document_alert_rules(&conn)
+}
+#[tauri::command] fn cmd_set_document_alert_rules(state: State<DbState>, sess: State<SessionState>, rules: Vec<DocumentAlertRule>) -> Result<Vec<DocumentAlertRule>, AppError> {
+    let conn = state.conn()?;
+    let user = authorize(&conn, &sess, "settings.manage")?;
+    set_document_alert_rules(&conn, &user, &rules)
+}
 #[tauri::command] fn cmd_get_auto_backup_settings(state: State<DbState>, sess: State<SessionState>) -> Result<AutoBackupSettings, AppError> {
     let conn = state.conn()?;
     let user = authorize(&conn, &sess, "backups.manage")?;
@@ -1318,6 +1330,7 @@ pub fn run() {
             cmd_check_for_update, cmd_install_update,
             cmd_run_health_check, cmd_save_health_report, cmd_get_integrity_status, cmd_approve_integrity, cmd_get_support_contact, cmd_open_support_link, cmd_log_client_error, cmd_get_auto_update, cmd_set_auto_update,
             cmd_get_auto_backup_settings, cmd_set_auto_backup_settings,
+            cmd_get_document_alert_rules, cmd_set_document_alert_rules,
             cmd_run_due_auto_backups, cmd_exit_app,
             cmd_get_document_types, cmd_set_document_types,
             cmd_create_backup, cmd_restore_backup, cmd_audit_document_view, cmd_audit_document_download, cmd_download_document,
