@@ -461,7 +461,13 @@
 .sidebar-collapsed .sidebar-footer{padding:10px 8px;align-items:center}
 .sidebar-collapsed .sidebar-user{justify-content:center;padding:4px 0}
 .sidebar-collapsed .sidebar-logout{width:40px;height:36px;padding:0}
-@media (prefers-reduced-motion: reduce){.app-sidebar{transition:none}}
+/* Arrow button sitting on the line between the sidebar and the page; follows the sidebar's width. */
+.sidebar-edge-toggle{position:absolute;top:48px;inset-inline-start:calc(var(--sidebar-w, 15rem) - 13px);z-index:30;width:26px;height:26px;padding:0;border-radius:999px;display:grid;place-items:center;background:var(--autohr-sidebar);border:1px solid var(--ui-line);color:var(--ui-text-muted);box-shadow:0 2px 6px rgba(0,0,0,.22);cursor:pointer;transition:inset-inline-start .2s ease,color .15s,background .15s}
+.sidebar-edge-toggle:hover{color:var(--ui-text-strong);border-color:var(--ui-line-strong)}
+.sidebar-edge-toggle:focus-visible{outline:2px solid var(--ui-info);outline-offset:2px}
+.sidebar-edge-toggle svg{width:14px;height:14px;fill:none;stroke:currentColor;stroke-width:2.2;stroke-linecap:round;stroke-linejoin:round;transition:transform .2s ease}
+.sidebar-collapsed .sidebar-edge-toggle svg{transform:scaleX(-1)}
+@media (prefers-reduced-motion: reduce){.app-sidebar,.sidebar-edge-toggle,.sidebar-edge-toggle svg{transition:none}}
 .nav-section.hidden{display:none}
 
 /* ── Settings & About screens ──────────────────────────────────────────── */
@@ -706,8 +712,9 @@ textarea.emp-grow{min-height:0;height:auto;overflow:hidden;field-sizing:content;
 }
 .app-header { padding-block: .5rem !important; padding-inline: 1.25rem !important; }
 #screen-container { padding: 1rem 1.25rem; }
-.app-sidebar { width: 13.5rem; }
-.sidebar-collapsed .app-sidebar { width: 4rem; }
+#app-shell { --sidebar-w: 13.5rem; }
+#app-shell.sidebar-collapsed { --sidebar-w: 4rem; }
+.app-sidebar, .sidebar-collapsed .app-sidebar { width: var(--sidebar-w); }
 
 /* «حجم الواجهة»: per-machine scale applied while signed in (never on the login screen). */
 html[data-ui-scale] #app-shell { height: calc(100vh / var(--ui-scale)); }
