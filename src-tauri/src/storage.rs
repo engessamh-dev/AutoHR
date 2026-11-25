@@ -482,6 +482,11 @@ mod tests {
         add_employee(&conn, &data, 1, "قبل النسخة");
         let first = create_backup_with_progress(&conn, &user, "Backup-2026!", |_| {}).unwrap();
         assert_eq!(store_files(&backups), 1);
+        // The restore list shows it with its type and employee count, without the password.
+        let listed = crate::backup_store::list_backups(&conn);
+        assert_eq!(listed.len(), 1);
+        assert_eq!((listed[0].kind.as_str(), listed[0].employees, listed[0].old_format), ("manual", Some(1), false));
+        assert!(listed[0].path.ends_with(".cnsarchbak") && listed[0].path.contains("cnsarch_manual_"));
         // A second backup does not copy the unchanged attachment again.
         std::thread::sleep(std::time::Duration::from_millis(1100));
         create_backup_with_progress(&conn, &user, "Backup-2026!", |_| {}).unwrap();

@@ -229,7 +229,9 @@ pub(crate) fn create_snapshot(
     } else {
         pending.persist_noclobber(path).map_err(other)?;
     }
-    write_refs(&key, path, snapshot.files.iter().map(|file| file.sha256.as_str()))?;
+    let count = |sql: &str| conn.query_row(sql, [], |row| row.get::<_, i64>(0)).ok();
+    let counts = (count("SELECT COUNT(*) FROM employees"), count("SELECT COUNT(*) FROM general_docs"));
+    write_refs(&key, path, snapshot.files.iter().map(|file| file.sha256.as_str()), counts)?;
     progress(backup_progress(100, "اكتملت النسخة الاحتياطية والتحقق منها"));
     Ok(())
 }
@@ -341,8 +343,19 @@ fn refs_path(snapshot: &Path) -> PathBuf {
 
 /// Next to each backup file: the attachments it uses, encrypted with the store key, with the
 /// store id in clear so the store can be cleaned without any backup password.
-fn write_refs<'a>(key: &StoreKey, snapshot: &Path, hashes: impl Iterator<Item = &'a str>) -> AppResult<()> {
-    let list: Vec<&str> = hashes.collect();
+/// What the reference list holds: the attachments, and the employee count shown in the restore list
+/// (readable without the backup password, on the computer that holds the store key).
+#[derive(Serialize, Deserialize)]
+struct RefsData {
+    files: Vec<String>,
+    #[serde(default)]
+    employees: Option<i64>,
+    #[serde(default)]
+    documents: Option<i64>,
+}
+
+fn write_refs<'a>(key: &StoreKey, snapshot: &Path, hashes: impl Iterator<Item = &'a str>, counts: (Option<i64>, Option<i64>)) -> AppResult<()> {
+    let list = RefsData { files: hashes.map(str::to_string).collect(), employees: counts.0, documents: counts.1 };
     let mut nonce = [0u8; 12];
     OsRng.fill_bytes(&mut nonce);
     let sealed = key.cipher()
@@ -361,6 +374,11 @@ fn write_refs<'a>(key: &StoreKey, snapshot: &Path, hashes: impl Iterator<Item = 
 
 /// The store id named in a reference list, and its hashes when `key` opens it.
 fn read_refs(path: &Path, key: &StoreKey) -> Option<(String, Option<Vec<String>>)> {
+    let (id, data) = read_refs_data(path, key)?;
+    Some((id, data.map(|data| data.files)))
+}
+
+fn read_refs_data(path: &Path, key: &StoreKey) -> Option<(String, Option<RefsData>)> {
     let bytes = std::fs::read(path).ok()?;
     if bytes.len() < 8 + 16 + 12 || &bytes[..8] != REFS_MAGIC {
         return None;
@@ -372,7 +390,52 @@ fn read_refs(path: &Path, key: &StoreKey) -> Option<(String, Option<Vec<String>>
     let plain = key.cipher()
         .decrypt(Nonce::from_slice(&bytes[24..36]), Payload { msg: &bytes[36..], aad: b"refs" })
         .ok()?;
-    Some((id, Some(serde_json::from_slice(&plain).ok()?)))
+    // Lists written before the employee count was added are a plain array of hashes.
+    let data = serde_json::from_slice::<RefsData>(&plain).ok()
+        .or_else(|| serde_json::from_slice::<Vec<String>>(&plain).ok().map(|files| RefsData { files, employees: None, documents: None }))?;
+    Some((id, Some(data)))
+}
+
+// ── The restore list ────────────────────────────────────────────────────────
+
+#[derive(Debug, Clone, Serialize)]
+pub struct BackupListItem {
+    pub path: String,
+    /// daily, weekly, monthly, manual, prerestore, premove, preupdate or other.
+    pub kind: String,
+    /// Last written, local time «2026-11-26 01:39» (a daily backup is refreshed during the day).
+    pub time: String,
+    pub employees: Option<i64>,
+    pub documents: Option<i64>,
+    pub size_bytes: u64,
+    /// A backup from an earlier release: its contents are only known after the password.
+    pub old_format: bool,
+}
+
+/// Backups in the backup folder, newest first, for the restore list.
+pub(crate) fn list_backups(conn: &Connection) -> Vec<BackupListItem> {
+    let backup_root = crate::paths::backup_root();
+    let key = store_key(conn).ok();
+    let mut items: Vec<(std::time::SystemTime, BackupListItem)> = backup_files(&backup_root).into_iter().filter_map(|path| {
+        let meta = std::fs::metadata(&path).ok()?;
+        let modified = meta.modified().ok()?;
+        let kind = path.strip_prefix(&backup_root).ok()
+            .and_then(|relative| relative.components().next())
+            .and_then(|first| first.as_os_str().to_str())
+            .filter(|_| path.parent() != Some(backup_root.as_path()))
+            .map(|folder| folder.to_lowercase())
+            .filter(|folder| ["daily", "weekly", "monthly", "manual", "prerestore", "premove", "preupdate"].contains(&folder.as_str()))
+            .unwrap_or_else(|| "other".into());
+        let old_format = !has_magic(&path, SNAPSHOT_MAGIC);
+        let counts = if old_format { None } else {
+            key.as_ref().and_then(|key| read_refs_data(&refs_path(&path), key)).and_then(|(_, data)| data)
+        };
+        let (employees, documents) = counts.map(|data| (data.employees, data.documents)).unwrap_or((None, None));
+        let time = chrono::DateTime::<chrono::Local>::from(modified).format("%Y-%m-%d %H:%M").to_string();
+        Some((modified, BackupListItem { path: path.to_string_lossy().into_owned(), kind, time, employees, documents, size_bytes: meta.len(), old_format }))
+    }).collect();
+    items.sort_by(|a, b| b.0.cmp(&a.0));
+    items.into_iter().map(|(_, item)| item).collect()
 }
 
 // ── Walking the backup folder ───────────────────────────────────────────────

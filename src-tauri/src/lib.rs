@@ -1009,6 +1009,19 @@ async fn cmd_inspect_backup(state: State<'_, DbState>, sess: State<'_, SessionSt
         .await
         .map_err(|error| AppError::Other(error.to_string()))?
 }
+#[tauri::command]
+async fn cmd_list_backups(state: State<'_, DbState>, sess: State<'_, SessionState>) -> Result<Vec<backup_store::BackupListItem>, AppError> {
+    {
+        let conn = state.conn()?;
+        authorize(&conn, &sess, "backups.restore")?;
+    }
+    tauri::async_runtime::spawn_blocking(move || {
+        let conn = db::open_existing().map_err(AppError::from)?;
+        Ok(backup_store::list_backups(&conn))
+    })
+    .await
+    .map_err(|error| AppError::Other(error.to_string()))?
+}
 #[tauri::command] fn cmd_get_job_lists(state: State<DbState>, sess: State<SessionState>) -> Result<JobLists, AppError> {
     let conn = state.conn()?;
     authorize(&conn, &sess, "employees.view")?;
@@ -1487,7 +1500,7 @@ pub fn run() {
             cmd_get_document_alert_rules, cmd_set_document_alert_rules,
             cmd_run_due_auto_backups, cmd_exit_app,
             cmd_get_document_types, cmd_set_document_types,
-            cmd_inspect_backup, cmd_get_job_lists, cmd_set_job_lists,
+            cmd_inspect_backup, cmd_list_backups, cmd_get_job_lists, cmd_set_job_lists,
             cmd_create_backup, cmd_restore_backup, cmd_audit_document_view, cmd_audit_document_download, cmd_download_document,
             cmd_get_document_preview_path, cmd_read_document, cmd_print_document, cmd_print_employee_documents, cmd_save_report_xlsx,
         ])

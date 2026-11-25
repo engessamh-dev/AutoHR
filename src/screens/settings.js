@@ -76,6 +76,160 @@ function formatBytes(bytes) {
   return ltr(`${Math.max(1, Math.round(value / 1024))} KB`);
 }
 
+const BACKUP_KINDS = {
+  daily:      { label: "يومية", badge: "badge-gray" },
+  weekly:     { label: "أسبوعية", badge: "badge-amber" },
+  monthly:    { label: "شهرية", badge: "badge-amber" },
+  manual:     { label: "يدوية", badge: "badge-green" },
+  prerestore: { label: "أمان قبل الاستعادة", badge: "badge-red", note: "حُفظت تلقائيًا قبل استعادة سابقة" },
+  premove:    { label: "أمان قبل النقل", badge: "badge-red", note: "حُفظت تلقائيًا قبل نقل مجلد البيانات" },
+  preupdate:  { label: "أمان قبل التحديث", badge: "badge-red", note: "حُفظت تلقائيًا قبل تحديث البرنامج" },
+  other:      { label: "نسخة", badge: "badge-gray" },
+};
+const BACKUP_FILTERS = [
+  ["all", "الكل", () => true],
+  ["daily", "يومية", item => item.kind === "daily"],
+  ["periodic", "أسبوعية وشهرية", item => item.kind === "weekly" || item.kind === "monthly"],
+  ["manual", "يدوية", item => item.kind === "manual"],
+  ["safety", "نسخ الأمان", item => item.kind.startsWith("pre")],
+];
+
+/** «اليوم» / «أمس» / «هذا الأسبوع» / «أقدم», from a local «YYYY-MM-DD HH:MM». */
+function backupGroup(time) {
+  const day = new Date(`${time.slice(0, 10)}T00:00:00`);
+  const today = new Date(); today.setHours(0, 0, 0, 0);
+  const days = Math.round((today - day) / 86400000);
+  if (days <= 0) return "اليوم";
+  if (days === 1) return "أمس";
+  if (days < 7) return "هذا الأسبوع";
+  return "أقدم";
+}
+
+/**
+ * The restore list: backups in the backup folder, newest first and selected. Resolves with the
+ * chosen file's path, the path picked with «من ملف آخر…», or null.
+ */
+function chooseBackupToRestore(backupRoot) {
+  return new Promise(async resolve => {
+    const overlay = document.createElement("div");
+    overlay.setAttribute("dir", "rtl");
+    overlay.style.cssText = "position:fixed;inset:0;z-index:10000;background:rgba(0,0,0,.6);display:flex;align-items:center;justify-content:center;padding:20px";
+    overlay.innerHTML = `
+      <div class="card app-dialog" role="dialog" aria-modal="true" aria-labelledby="restore-pick-title" style="width:min(640px,100%);padding:18px 20px;color:var(--ui-text-strong)">
+        <div style="display:flex;justify-content:space-between;align-items:start;gap:12px">
+          <div>
+            <p id="restore-pick-title" style="font-size:16px;font-weight:700;margin:0">اختر النسخة التي تريد استعادتها</p>
+            <p style="font-size:12px;color:var(--ui-text-muted);margin:4px 0 10px">النسخ الموجودة في مجلد النسخ الاحتياطية، الأحدث أولًا. لن يتغير شيء قبل أن تؤكد.</p>
+          </div>
+          <button type="button" data-act="cancel" class="btn-secondary" style="padding:2px 10px" aria-label="إغلاق">✕</button>
+        </div>
+        <div data-role="body"><p style="font-size:13px;color:var(--ui-text-muted);padding:30px 0;text-align:center">جاري قراءة مجلد النسخ...</p></div>
+        <div style="display:flex;gap:10px;justify-content:space-between;align-items:center;margin-top:14px;border-top:1px solid var(--ui-line);padding-top:14px">
+          <div style="display:flex;gap:10px">
+            <button type="button" data-act="continue" class="btn-primary" disabled>متابعة…</button>
+            <button type="button" data-act="cancel" class="btn-secondary">إلغاء</button>
+          </div>
+          <button type="button" data-act="other" class="btn-secondary">من ملف آخر…</button>
+        </div>
+      </div>`;
+    const body = overlay.querySelector('[data-role="body"]');
+    const continueButton = overlay.querySelector('[data-act="continue"]');
+    let items = [];
+    let filter = "all";
+    let selected = null;
+    const finish = value => {
+      document.removeEventListener("keydown", onKeyDown);
+      overlay.remove();
+      resolve(value);
+    };
+    const onKeyDown = event => {
+      if (event.key === "Escape") finish(null);
+      if (event.key === "Enter" && selected) finish(selected);
+    };
+    const draw = () => {
+      if (!items.length) {
+        body.innerHTML = `<div style="text-align:center;padding:40px 10px;color:var(--ui-text-muted)">
+          <p style="font-size:15px;font-weight:700;color:var(--ui-text-strong);margin:0 0 6px">لا توجد نسخ في مجلد النسخ الاحتياطية</p>
+          <p style="font-size:13px;margin:0">${backupRoot ? `المجلد: ${escHtml(ltr(backupRoot))}<br>` : ""}إذا كانت النسخة على قرص خارجي أو في مكان آخر، اختر «من ملف آخر…».</p></div>`;
+        continueButton.disabled = true;
+        return;
+      }
+      const chips = BACKUP_FILTERS.map(([id, label, test]) => [id, label, items.filter(test).length])
+        .filter(([id, , count]) => id === "all" || count > 0)
+        .map(([id, label, count]) => `<button type="button" data-filter="${id}" class="${id === filter ? "btn-primary" : "btn-secondary"}"
+          style="padding:4px 12px;font-size:12px" aria-pressed="${id === filter}">${label} (${count})</button>`).join("");
+      const test = BACKUP_FILTERS.find(([id]) => id === filter)[2];
+      let last = "";
+      const rows = items.filter(test).map(item => {
+        const kind = BACKUP_KINDS[item.kind] ?? BACKUP_KINDS.other;
+        const group = backupGroup(item.time);
+        const head = group !== last ? `<p style="font-size:11px;font-weight:700;color:var(--ui-text-faint);margin:12px 4px 6px">${group}</p>` : "";
+        last = group;
+        const on = item.path === selected;
+        const counts = item.employees != null
+          ? `${item.employees} موظفًا${item.documents != null ? ` · ${item.documents} وثيقة` : ""}`
+          : "عدد الموظفين يظهر بعد إدخال كلمة المرور";
+        return `${head}<label data-path="${escHtml(item.path)}" title="${escHtml(item.path)}" style="display:grid;grid-template-columns:20px 1fr auto;gap:12px;align-items:center;padding:10px 12px;margin-bottom:6px;border-radius:8px;cursor:pointer;
+            border:1px solid ${on ? "var(--ui-accent)" : "var(--ui-line)"};background:${on ? "var(--ui-accent-soft)" : "var(--ui-surface)"}">
+          <input type="radio" name="restore-pick" ${on ? "checked" : ""} />
+          <div style="min-width:0">
+            <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+              <span style="font-size:14px;font-weight:700;color:var(--ui-text-strong)">${escHtml(ltr(item.time))}</span>
+              <span class="badge ${kind.badge}">${kind.label}</span>
+              ${item === items[0] ? `<span class="badge badge-green">الأحدث</span>` : ""}
+              ${item.old_format ? `<span class="badge badge-gray">إصدار سابق</span>` : ""}
+            </div>
+            <div style="font-size:12px;color:var(--ui-text-muted);margin-top:3px">${counts}${kind.note ? ` · ${kind.note}` : ""}</div>
+          </div>
+          <span style="font-size:12px;color:var(--ui-text-faint)">${escHtml(formatBytes(item.size_bytes))}</span>
+        </label>`;
+      }).join("");
+      const list = body.querySelector('[data-role="list"]');
+      const scroll = list?.scrollTop ?? 0;
+      body.innerHTML = `<div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:4px">${chips}</div>
+        <div data-role="list" style="max-height:min(400px,55vh);overflow:auto;padding-inline-end:4px">${rows}</div>`;
+      body.querySelector('[data-role="list"]').scrollTop = scroll;
+      continueButton.disabled = !selected;
+    };
+    body.addEventListener("click", event => {
+      const chip = event.target.closest("[data-filter]");
+      if (chip) {
+        filter = chip.dataset.filter;
+        // Never keep a selection that the filter hides: pick the newest one shown.
+        const test = BACKUP_FILTERS.find(([id]) => id === filter)[2];
+        if (!items.some(item => item.path === selected && test(item))) selected = items.find(test)?.path ?? null;
+        draw();
+        return;
+      }
+      const row = event.target.closest("[data-path]");
+      if (row) { selected = row.dataset.path; draw(); }
+    });
+    body.addEventListener("dblclick", event => {
+      const row = event.target.closest("[data-path]");
+      if (row) finish(row.dataset.path);
+    });
+    overlay.querySelectorAll('[data-act="cancel"]').forEach(button => button.addEventListener("click", () => finish(null)));
+    continueButton.addEventListener("click", () => selected && finish(selected));
+    overlay.querySelector('[data-act="other"]').addEventListener("click", async () => {
+      const picked = await open({ multiple: false, filters: [{ name: "نسخة CNSArch مشفرة", extensions: ["cnsarchbak", "autohrbak"] }] });
+      if (picked) finish(picked);
+    });
+    overlay.addEventListener("click", event => { if (event.target === overlay) finish(null); });
+    document.addEventListener("keydown", onKeyDown);
+    document.body.append(overlay);
+    continueButton.focus();
+    try {
+      items = await api.listBackups();
+      selected = items[0]?.path ?? null;
+    } catch (err) {
+      body.innerHTML = `<p style="font-size:13px;color:var(--ui-danger);padding:20px 0;text-align:center">${escHtml(errorText(err))}</p>`;
+      return;
+    }
+    draw();
+    if (selected) continueButton.focus();
+  });
+}
+
 function bindPasswordToggle(root, inputSelector, buttonSelector) {
   const input = root.querySelector(inputSelector);
   const button = root.querySelector(buttonSelector);
@@ -806,7 +960,7 @@ export async function renderSettings(container, user, ctx) {
   };
 
   container.querySelector("#btn-restore-backup")?.addEventListener("click", async () => {
-    const selected = await open({ multiple: false, filters: [{ name: "نسخة CNSArch مشفرة", extensions: ["cnsarchbak", "autohrbak"] }] });
+    const selected = await chooseBackupToRestore(storageStatus?.backup_root);
     if (!selected) return;
     const password = await requestBackupPassword({
       title: "استعادة نسخة احتياطية",
