@@ -78,6 +78,8 @@ test("empty archive offers «إضافة أول وثيقة», and the new form de
   await expect(page.locator(".doc-pending-item")).toHaveCount(0);
   await page.locator("#d-manage-attachments").click();
   await page.locator("#d-title").fill("جهة تجريبية");
+  await page.locator("#d-issuer").fill("أمر إداري");
+  await page.locator("#d-count").fill("230/547");
   await page.locator("#btn-save-doc").click();
   await page.getByRole("button", { name: "تأكيد", exact: true }).click();
   // Images ask whether to upload as-is or process first, as with any archive upload.
@@ -156,4 +158,68 @@ test("storage warning hides with «حسنًا» and comes back when a folder cha
   await page.evaluate(() => { window.storageStatus = { ...window.storageStatus, backup_root: "D:\\Other" }; });
   await open();
   await expect(page.getByText(warning)).toBeVisible();
+});
+
+test("archive list deletes a document from its row without opening it", async ({ page }) => {
+  await page.evaluate(() => {
+    window.plainArchive = true;
+    window.docs = [
+      { id: 1, title: "Synthetic Document", attachment_paths: ["Files/GeneralDocs/1/a.jpg"], employee_ids: [] },
+      { id: 7, title: "", attachment_paths: ["Files/GeneralDocs/7/a.jpg", "Files/GeneralDocs/7/b.jpg"], employee_ids: [] },
+    ];
+    const original = window.__TAURI_INTERNALS__.invoke;
+    window.__TAURI_INTERNALS__.invoke = async (command, args) => {
+      if (command === "cmd_delete_general_doc" || command === "cmd_delete_outgoing_doc") {
+        window.calls.push({ command, args });
+        window.docs = window.docs.filter(d => d.id !== args.id);
+        return;
+      }
+      return original(command, args);
+    };
+  });
+  await page.evaluate(() => window.renderActual("general"));
+  await expect(page.locator(".general-doc-row")).toHaveCount(2);
+  await page.locator('.doc-row-delete[data-id="7"]').click();
+  // The confirmation names the empty row and its attachments; the form never opens.
+  await expect(page.getByRole("alertdialog")).toContainText("بدون بيانات");
+  await expect(page.getByRole("alertdialog")).toContainText("مرفقان");
+  await expect(page.locator("#btn-save-doc")).toHaveCount(0);
+  await page.getByRole("button", { name: "إلغاء" }).click();
+  expect(await page.evaluate(() => window.calls.some(c => c.command === "cmd_delete_general_doc"))).toBe(false);
+  await page.locator('.doc-row-delete[data-id="7"]').click();
+  await page.getByRole("button", { name: "تأكيد", exact: true }).click();
+  await expect(page.locator(".general-doc-row")).toHaveCount(1);
+  const deleted = await page.evaluate(() => window.calls.filter(c => c.command === "cmd_delete_general_doc").map(c => c.args));
+  expect(deleted).toEqual([{ id: 7 }]);
+});
+
+test("archive list hides the row delete button without «documents.delete»", async ({ page }) => {
+  await page.evaluate(() => {
+    window.plainArchive = true;
+    window.permissionsOverride = ["documents.view", "documents.manage", "documents.upload"];
+  });
+  await page.evaluate(() => window.renderActual("general"));
+  await expect(page.locator(".general-doc-row")).toHaveCount(1);
+  await expect(page.locator(".doc-row-delete")).toHaveCount(0);
+});
+
+test("document form will not save until the issuer, subject, number and date are filled", async ({ page }) => {
+  await page.evaluate(() => { window.docs = []; window.plainArchive = true; });
+  await page.evaluate(() => window.renderActual("general"));
+  await page.getByRole("button", { name: "+ إضافة أول وثيقة" }).click();
+  const save = page.locator("#btn-save-doc");
+  const hint = page.locator("#d-required-hint");
+  await expect(save).toBeDisabled();
+  await expect(hint).toHaveText("لحفظ الوثيقة أكمل: الجهة المصدرة للوثيقة، الموضوع، العدد");
+  await page.locator("#d-title").fill("مركز الوزارة");
+  await page.locator("#d-issuer").fill("أمر إداري");
+  await expect(hint).toHaveText("لحفظ الوثيقة أكمل: العدد");
+  await page.locator("#d-count").fill("230/547");
+  await page.locator("#d-date").fill("");
+  await expect(hint).toHaveText("لحفظ الوثيقة أكمل: تاريخ الإصدار");
+  await expect(save).toBeDisabled();
+  await page.locator("#d-date").fill("2026-11-25");
+  await expect(save).toBeEnabled();
+  await expect(hint).toBeHidden();
+  expect(await page.evaluate(() => window.calls.some(c => c.command === "cmd_create_general_doc"))).toBe(false);
 });
