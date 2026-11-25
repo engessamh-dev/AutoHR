@@ -42,7 +42,7 @@ const STEPS = [
       { key: "civil_id_expiry_date", label: "تاريخ النفاذ", ocr: "expiry_date", date: true },
     ] },
   { id: "photo", title: "الصورة الشخصية", short: "الصورة", photo: true,
-    hint: "اختياري: قصّها من صورة البطاقة الوطنية أو اختر صورة، ثم حرّك الإطار وكبّره من زاويته" },
+    hint: "اختياري: اختر صورة من الحاسبة، ثم حرّك الإطار وكبّره من زاويته" },
   { id: "passport", title: "جواز السفر", short: "الجواز", sides: ["page"],
     hint: "صفحة البيانات تكفي، والشريط السفلي يُطابق المواليد والجنس",
     fields: [
@@ -196,7 +196,7 @@ function dropDraft() {
 function revokeImages(state) {
   Object.values(state.docs).forEach(d => Object.values(d.images).forEach(i => URL.revokeObjectURL(i.url)));
   state.members.forEach(m => Object.values(m.images).forEach(i => URL.revokeObjectURL(i.url)));
-  if (state.photo?.source === "file") URL.revokeObjectURL(state.photo.url);
+  if (state.photo) URL.revokeObjectURL(state.photo.url);
 }
 
 /** Called on logout: a draft belongs to the session that made it. */
@@ -700,25 +700,21 @@ function openWizard({ user, employees, onCreated, resume = null }) {
       <div class="aw-fields">${fields.map(f => fieldHtml(f, member.values, Object.keys(member.readings).length ? member.readings : null, "member", scope)).join("")}</div></div></section>`;
   }
 
-  /** The personal photo: a part of the national card's front or of a picked image, chosen with a
-   *  box the user moves (drag) and resizes (corner). Saved as the employee's photo. */
+  /** The personal photo: a picked image, cut with a box the user moves (drag) and resizes
+   *  (corner). Saved as the employee's photo. */
   function photoBody() {
-    const front = state.docs.national.images.front;
     const photo = state.photo;
     const actions = `<div class="aw-photo-actions">
-      <button type="button" class="${front ? "btn-primary" : "btn-secondary"}" data-photo-card ${front ? "" : "disabled"} title="${front ? "" : "ارفع الوجه الأمامي للبطاقة الوطنية أولًا"}">قصّ من البطاقة الوطنية</button>
-      <button type="button" class="btn-secondary" data-photo-pick>اختيار صورة من الحاسبة</button>
+      <button type="button" class="btn-primary" data-photo-pick>${photo ? "اختيار صورة أخرى" : "اختيار صورة من الحاسبة"}</button>
       ${photo ? `<button type="button" class="btn-secondary" data-photo-remove>إزالة</button>` : ""}</div>`;
-    if (!photo) {
-      return `<div class="aw-photo">${actions}<p class="aw-photo-empty">${front ? "يمكن قصّ الصورة من البطاقة الوطنية التي رفعتها، أو اختيار صورة أخرى." : "لم تُرفع البطاقة الوطنية بعد: اختر صورة من الحاسبة، أو ارجع وارفع البطاقة لتقصّ صورته منها."}</p></div>`;
-    }
+    if (!photo) return `<div class="aw-photo">${actions}<p class="aw-photo-empty">JPG · PNG · WebP</p></div>`;
     const [x0, y0, x1, y1] = photo.rect;
     return `<div class="aw-photo">${actions}
       <div class="aw-photo-work">
-        <div class="aw-crop-area"><img src="${photo.url}" alt="${photo.source === "card" ? "البطاقة الوطنية" : "الصورة المختارة"}" draggable="false">
+        <div class="aw-crop-area"><img src="${photo.url}" alt="الصورة المختارة" draggable="false">
           <div class="aw-crop" style="left:${x0 * 100}%;top:${y0 * 100}%;width:${(x1 - x0) * 100}%;height:${(y1 - y0) * 100}%" aria-label="منطقة الصورة الشخصية"><span class="aw-crop-handle" aria-hidden="true"></span></div></div>
         <div class="aw-photo-result"><div class="aw-photo-preview" style="${photoPreviewStyle(photo)}"></div>
-          <small>${photo.source === "card" ? "من البطاقة الوطنية" : "من صورة مختارة"}${photo.uploaded ? " · محفوظة" : ""}</small></div></div></div>`;
+          <small>${photo.uploaded ? "محفوظة" : "ما سيُحفظ"}</small></div></div></div>`;
   }
 
   const photoPreviewStyle = photo => {
@@ -728,22 +724,13 @@ function openWizard({ user, employees, onCreated, resume = null }) {
     return `background-image:url('${photo.url}');background-size:${100 / w}% ${100 / h}%;background-position:${pos(x0, w)}% ${pos(y0, h)}%`;
   };
 
-  function useCardPhoto() {
-    const front = state.docs.national.images.front;
-    if (!front) return;
-    const holder = state.docs.national;
-    const face = holder.face?.front ?? [0.04, 0.3, 0.3, 0.85];
-    state.photo = { source: "card", path: front.path, url: front.url, turns: holder.turns?.front ?? 0, rect: face, uploaded: false };
-    render();
-  }
-
   async function pickPhoto() {
     const selected = await open({ multiple: false, filters: [{ name: "صورة شخصية", extensions: IMAGE_EXTENSIONS }] });
     if (!selected) return;
     try {
       const bytes = await api.imagePreview(selected);
       const url = URL.createObjectURL(new Blob([new Uint8Array(bytes)], { type: "image/jpeg" }));
-      if (state.photo?.source === "file") URL.revokeObjectURL(state.photo.url);
+      if (state.photo) URL.revokeObjectURL(state.photo.url);
       state.photo = { source: "file", path: selected, url, turns: 0, rect: [0, 0, 1, 1], uploaded: false };
       render();
     } catch (error) {
@@ -933,10 +920,9 @@ function openWizard({ user, employees, onCreated, resume = null }) {
     overlay.querySelector("[data-save-now]")?.addEventListener("click", save);
     overlay.querySelectorAll("[data-go]").forEach(b => b.addEventListener("click", () => go(Number(b.dataset.go))));
     overlay.querySelectorAll("[data-pick]").forEach(b => b.addEventListener("click", () => pick(b.dataset.pick, b.dataset.side)));
-    overlay.querySelector("[data-photo-card]")?.addEventListener("click", useCardPhoto);
     overlay.querySelector("[data-photo-pick]")?.addEventListener("click", pickPhoto);
     overlay.querySelector("[data-photo-remove]")?.addEventListener("click", () => {
-      if (state.photo?.source === "file") URL.revokeObjectURL(state.photo.url);
+      if (state.photo) URL.revokeObjectURL(state.photo.url);
       state.photo = null;
       render();
     });
@@ -1112,12 +1098,6 @@ function openWizard({ user, employees, onCreated, resume = null }) {
       holder.warnings = merged.warnings;
       holder.handwritten = handwrittenOf(holder.results);
       holder.nameOk = false;
-      holder.turns = { ...(holder.turns ?? {}), [side]: reading.turns ?? 0 };
-      holder.face = { ...(holder.face ?? {}), [side]: reading.face ?? null };
-      // A photo cut from the national card follows a new front image.
-      if (slot === "national" && side === "front" && state.photo?.source === "card") {
-        state.photo = { ...state.photo, path, url, turns: reading.turns ?? 0, rect: reading.face ?? state.photo.rect, uploaded: false };
-      }
       holder.readings = readingsFor(fields, merged);
       holder.images[side] = { path, url, count: Object.keys(readingsFor(fields, reading.result)).length };
       holder.skipped = false;
@@ -1144,7 +1124,6 @@ function openWizard({ user, employees, onCreated, resume = null }) {
     delete holder.images[side];
     delete holder.results[side];
     if (holder.regions) delete holder.regions[side];
-    if (slot === "national" && side === "front" && state.photo?.source === "card") state.photo = null;
     const merged = Object.values(holder.results).length ? mergeSides(Object.values(holder.results)) : null;
     holder.readings = merged ? readingsFor(fields, merged) : {};
     holder.warnings = merged?.warnings ?? [];

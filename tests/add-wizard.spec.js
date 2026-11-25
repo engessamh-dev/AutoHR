@@ -533,44 +533,37 @@ test("a registered national number: «فتح ملفه» opens that employee and 
   await expect(page.locator(".aw-draft")).toContainText("سامر خالد عبد الله الجبوري");
 });
 
-test("personal photo: cut from the national card with a movable box, or picked; saved as the employee's photo", async ({ page }) => {
-  await page.evaluate(() => { window.imageTurns = { "front.jpg": 1 }; window.imageFaces = { "front.jpg": [0.1, 0.3, 0.3, 0.8] }; });
+test("personal photo: picked from the computer, cut with a movable box, and saved as the employee's photo", async ({ page }) => {
   await page.click('[data-choice="docs"]');
   await pick(page, "national", "front.jpg");
   await pick(page, "national", "back.jpg", "back");
   await page.click("[data-next]");
   await expect(page.locator(".aw-content-title b")).toHaveText("الصورة الشخصية");
-  await page.getByRole("button", { name: "قصّ من البطاقة الوطنية" }).click();
+  await expect(page.getByRole("button", { name: "قصّ من البطاقة الوطنية" })).toHaveCount(0);
+  await page.evaluate(() => { window.openQueue = ["portrait.jpg"]; });
+  await page.getByRole("button", { name: "اختيار صورة من الحاسبة" }).click();
   const box = page.locator(".aw-crop");
-  await expect(box).toHaveAttribute("style", /left:\s*10%/);
-  // Dragging moves the box; the corner resizes it.
+  await expect(box).toHaveAttribute("style", /left:\s*0%/);
+  // The corner shrinks the box; dragging moves it.
   const area = await page.locator(".aw-crop-area").boundingBox();
-  const b = await box.boundingBox();
-  await page.mouse.move(b.x + b.width / 2, b.y + b.height / 2);
-  await page.mouse.down();
-  await page.mouse.move(b.x + b.width / 2 + area.width * 0.1, b.y + b.height / 2, { steps: 4 });
-  await page.mouse.up();
   const handle = await page.locator(".aw-crop-handle").boundingBox();
   await page.mouse.move(handle.x + handle.width / 2, handle.y + handle.height / 2);
   await page.mouse.down();
-  await page.mouse.move(handle.x + handle.width / 2 + area.width * 0.05, handle.y + handle.height / 2, { steps: 4 });
+  await page.mouse.move(handle.x + handle.width / 2 - area.width * 0.5, handle.y + handle.height / 2 - area.height * 0.4, { steps: 4 });
+  await page.mouse.up();
+  const b = await box.boundingBox();
+  await page.mouse.move(b.x + b.width / 2, b.y + b.height / 2);
+  await page.mouse.down();
+  await page.mouse.move(b.x + b.width / 2 + area.width * 0.2, b.y + b.height / 2 + area.height * 0.1, { steps: 4 });
   await page.mouse.up();
   await expect(page.locator(".aw-step").nth(1)).toHaveClass(/is-current/);
   await page.click("[data-save-now]");
   await expect.poll(() => page.evaluate(() => window.calls.some(c => c.command === "cmd_upload_employee_photo_crop"))).toBe(true);
   const crop = await page.evaluate(() => window.calls.find(c => c.command === "cmd_upload_employee_photo_crop").args);
-  expect(crop.sourcePath).toBe("front.jpg");
-  expect(crop.turns).toBe(1);
+  expect(crop).toMatchObject({ sourcePath: "portrait.jpg", turns: 0 });
   expect(crop.rect[0]).toBeCloseTo(0.2, 1);
-  expect(crop.rect[2]).toBeCloseTo(0.45, 1);
-  expect(crop.rect[1]).toBeCloseTo(0.3, 2);
-  await expect(page.locator(".aw-photo-result small")).toContainText("محفوظة");
-  // Another picked image replaces it, uploaded on the next save.
-  await page.evaluate(() => { window.openQueue = ["portrait.jpg"]; });
-  await page.getByRole("button", { name: "اختيار صورة من الحاسبة" }).click();
-  await expect(page.locator(".aw-photo-result small")).toHaveText("من صورة مختارة");
-  await page.click("[data-save-now]");
-  await expect.poll(() => page.evaluate(() => window.calls.filter(c => c.command === "cmd_upload_employee_photo_crop").length)).toBe(2);
-  const picked = await page.evaluate(() => window.calls.filter(c => c.command === "cmd_upload_employee_photo_crop")[1].args);
-  expect(picked).toMatchObject({ sourcePath: "portrait.jpg", turns: 0, rect: [0, 0, 1, 1] });
+  expect(crop.rect[1]).toBeCloseTo(0.1, 1);
+  expect(crop.rect[2]).toBeCloseTo(0.7, 1);
+  expect(crop.rect[3]).toBeCloseTo(0.7, 1);
+  await expect(page.locator(".aw-photo-result small")).toHaveText("محفوظة");
 });

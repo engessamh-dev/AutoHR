@@ -904,7 +904,7 @@ html[data-ui-scale] #app-shell { height: calc(100vh / var(--ui-scale)); }
 .aw-crop-area{position:relative;display:inline-block;line-height:0;border-radius:8px;overflow:hidden;user-select:none;touch-action:none}
 .aw-photo-work .aw-crop-area img{display:block;width:auto;height:auto;max-width:min(620px,100%);max-height:58vh;min-width:0;opacity:1;object-fit:fill;border-radius:0}
 .aw-crop{position:absolute;border:2px solid var(--ui-accent);box-shadow:0 0 0 9999px rgba(0,0,0,.35);cursor:move;background:transparent}
-.aw-crop-handle{position:absolute;right:-7px;bottom:-7px;width:14px;height:14px;border-radius:3px;background:var(--ui-accent);cursor:nwse-resize}
+.aw-crop-handle{position:absolute;right:0;bottom:0;width:16px;height:16px;border-radius:3px;background:var(--ui-accent);cursor:nwse-resize}
 .aw-photo-result{display:flex;flex-direction:column;align-items:center;gap:6px}
 .aw-photo-preview{width:132px;height:170px;border-radius:8px;border:1px solid var(--ui-line-strong);background-repeat:no-repeat;background-color:var(--ui-sunken)}
 .aw-photo-result small{font-size:11.5px;color:var(--ui-text-muted)}
