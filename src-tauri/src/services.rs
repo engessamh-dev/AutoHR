@@ -2149,13 +2149,14 @@ pub struct DocumentAlertRule {
     pub days: Vec<u32>,
 }
 
-/// The document types the alerts cover, with their default reminder days.
+/// The document types the alerts cover, with their default reminder days. Each follows the
+/// automatic pattern the settings screen uses: the first alert, halfway, then 7 days before.
 pub const DOCUMENT_ALERT_DEFAULTS: [(&str, &[u32]); 5] = [
-    ("national", &[30, 7]),
-    ("passport", &[180, 90, 30]),
-    ("airport", &[30, 7]),
-    ("ministry", &[30, 7]),
-    ("vehicle", &[30, 7]),
+    ("national", &[30, 15, 7]),
+    ("passport", &[180, 90, 7]),
+    ("airport", &[30, 15, 7]),
+    ("ministry", &[30, 15, 7]),
+    ("vehicle", &[30, 15, 7]),
 ];
 pub const DOCUMENT_ALERT_MAX_DAYS: u32 = 730;
 pub const DOCUMENT_ALERT_MAX_REMINDERS: usize = 6;
@@ -2245,7 +2246,7 @@ mod document_alert_rule_tests {
         let conn = conn_with_admin();
         let rules = get_document_alert_rules(&conn).unwrap();
         assert_eq!(rules, default_document_alert_rules());
-        assert_eq!(rules.iter().find(|r| r.key == "passport").unwrap().days, vec![180, 90, 30]);
+        assert_eq!(rules.iter().find(|r| r.key == "passport").unwrap().days, vec![180, 90, 7]);
     }
 
     #[test]

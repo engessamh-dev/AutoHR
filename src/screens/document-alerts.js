@@ -15,12 +15,30 @@ export const ALERT_DOCUMENT_TYPES = [
 
 /** Same defaults as the backend (services.rs DOCUMENT_ALERT_DEFAULTS), used until the saved ones load. */
 export const DEFAULT_ALERT_RULES = [
-  { key: "national", enabled: true, days: [30, 7] },
-  { key: "passport", enabled: true, days: [180, 90, 30] },
-  { key: "airport", enabled: true, days: [30, 7] },
-  { key: "ministry", enabled: true, days: [30, 7] },
-  { key: "vehicle", enabled: true, days: [30, 7] },
+  { key: "national", enabled: true, days: [30, 15, 7] },
+  { key: "passport", enabled: true, days: [180, 90, 7] },
+  { key: "airport", enabled: true, days: [30, 15, 7] },
+  { key: "ministry", enabled: true, days: [30, 15, 7] },
+  { key: "vehicle", enabled: true, days: [30, 15, 7] },
 ];
+
+/**
+ * The automatic reminders for «نبّهني قبل N يوماً»: the first alert at N days, again halfway
+ * (when N is 14 or more), and 7 days before (when N is more than 7). Expiry is always flagged.
+ */
+export function autoReminderDays(first) {
+  const n = Math.trunc(Number(first));
+  const days = new Set([n]);
+  if (n >= 14) days.add(Math.round(n / 2));
+  if (n > 7) days.add(7);
+  return [...days].sort((a, b) => b - a);
+}
+
+export function isAutoReminders(days) {
+  if (!days?.length) return true;
+  const auto = autoReminderDays(Math.max(...days));
+  return auto.length === days.length && auto.every((day, index) => day === days[index]);
+}
 
 let cachedRules = DEFAULT_ALERT_RULES;
 

@@ -1,95 +1,119 @@
 /**
- * «تنبيهات المستمسكات» tab of «الإعدادات»: for each document type with an expiry date,
- * the days before expiry on which it is flagged. The largest day is when the document first
- * appears in the alerts; each smaller one is a further reminder (a Windows notification).
+ * «تنبيهات المستمسكات» tab of «الإعدادات». One sentence per document: «نبّهني قبل [N] يوماً
+ * من النفاذ». The reminders after that are automatic (halfway, then 7 days before, then the
+ * expiry day) and drawn on a small timeline; «تخصيص التذكيرات» opens the manual list.
  */
 import { api } from "../api.js";
 import { escHtml, showToast, arCount } from "../utils.js";
-import "../styles/alert-settings.css";
-import { ALERT_DOCUMENT_TYPES, DEFAULT_ALERT_RULES, loadAlertRules, setCachedAlertRules } from "./document-alerts.js";
+import {
+  ALERT_DOCUMENT_TYPES, DEFAULT_ALERT_RULES, autoReminderDays, isAutoReminders,
+  loadAlertRules, setCachedAlertRules,
+} from "./document-alerts.js";
 
 const MAX_DAYS = 730;
 const MAX_REMINDERS = 6;
-// Quick picks offered under each document; typing any other number works too.
-const QUICK_DAYS = [180, 90, 60, 30, 14, 7];
 
 const clone = rules => rules.map(rule => ({ ...rule, days: [...rule.days] }));
 const sameRules = (a, b) => JSON.stringify(a) === JSON.stringify(b);
+const firstDay = rule => (rule.days.length ? Math.max(...rule.days) : 30);
 
-function dayLabel(days) {
-  return days === 1 ? "قبل يوم واحد" : days === 2 ? "قبل يومين" : `قبل ${arCount(days, "day")}`;
+function before(days) {
+  return days === 1 ? "قبل يوم" : days === 2 ? "قبل يومين" : `قبل ${arCount(days, "day")}`;
 }
 
-function ruleRowHtml(rule) {
+/**
+ * Start on the right, expiry on the left (time runs right to left in RTL). The points are
+ * evenly spaced, not to scale, so «قبل 7 أيام» never sits on top of «يوم النفاذ».
+ */
+function timelineHtml(rule) {
+  const points = [...rule.days].sort((a, b) => b - a);
+  const at = index => `${(index / points.length) * 100}%`;
+  return `
+    <div class="alert-timeline" aria-hidden="true">
+      <div class="alert-timeline-track"></div>
+      ${points.map((day, index) => `<span class="alert-timeline-point${index === 0 ? " is-first" : ""}" style="inset-inline-start:${at(index)}">
+        <span class="alert-timeline-dot"></span><span class="alert-timeline-label">${index === 0 ? "أول تنبيه" : before(day)}</span>
+      </span>`).join("")}
+      <span class="alert-timeline-point is-expiry" style="inset-inline-start:100%">
+        <span class="alert-timeline-dot"></span><span class="alert-timeline-label">يوم النفاذ</span>
+      </span>
+    </div>`;
+}
+
+function reminderSentence(rule) {
+  const later = [...rule.days].sort((a, b) => b - a).slice(1);
+  if (!later.length) return "ثم تنبيه يوم النفاذ.";
+  return `ثم تذكير ${later.map(before).join(" و")}، وتنبيه يوم النفاذ.`;
+}
+
+function customHtml(rule) {
+  const full = rule.days.length >= MAX_REMINDERS;
+  return `
+    <div class="alert-custom">
+      ${rule.days.map(day => `<span class="alert-day-chip">${before(day)}
+        <button type="button" class="alert-day-remove" data-day="${day}" title="حذف هذا التذكير" aria-label="حذف تذكير ${before(day)}"
+          ${rule.days.length === 1 ? "disabled" : ""}>×</button></span>`).join("")}
+      <span class="alert-day-add">
+        <input type="number" class="input-field alert-day-input" min="1" max="${MAX_DAYS}" inputmode="numeric"
+          placeholder="عدد الأيام" aria-label="تذكير إضافي: عدد الأيام قبل النفاذ" ${full ? "disabled" : ""} />
+        <button type="button" class="btn-secondary alert-day-add-btn" ${full ? "disabled" : ""}>+ تذكير</button>
+      </span>
+    </div>`;
+}
+
+function ruleRowHtml(rule, open) {
   const type = ALERT_DOCUMENT_TYPES.find(item => item.key === rule.key);
-  const first = rule.days.length ? Math.max(...rule.days) : null;
-  const summary = !rule.enabled
-    ? "التنبيه متوقف لهذا المستمسك"
-    : first === null
-      ? "أضف موعداً واحداً على الأقل"
-      : `يظهر في التنبيهات ${dayLabel(first)} من تاريخ النفاذ${rule.days.length > 1 ? ` ثم يُذكَّر به ${["", "مرة أخرى", "مرتين أخريين"][rule.days.length - 1] ?? `${rule.days.length - 1} مرات أخرى`}` : ""}.`;
-  const quick = QUICK_DAYS.filter(day => !rule.days.includes(day));
+  const auto = isAutoReminders(rule.days);
   return `
     <div class="alert-rule${rule.enabled ? "" : " is-off"}" data-rule="${escHtml(rule.key)}">
-      <label class="alert-rule-head">
-        <input type="checkbox" class="alert-rule-enabled" ${rule.enabled ? "checked" : ""} />
-        <span class="alert-rule-name">${escHtml(type?.type ?? rule.key)}</span>
-      </label>
-      <p class="alert-rule-summary">${summary}</p>
-      <div class="alert-rule-days" ${rule.enabled ? "" : "aria-disabled=\"true\""}>
-        ${rule.days.map(day => `<span class="alert-day-chip">${dayLabel(day)}
-          <button type="button" class="alert-day-remove" data-day="${day}" title="حذف هذا الموعد" aria-label="حذف موعد ${dayLabel(day)}" ${rule.enabled ? "" : "disabled"}>×</button>
-        </span>`).join("")}
-        <span class="alert-day-add">
-          <input type="number" class="input-field alert-day-input" min="1" max="${MAX_DAYS}" step="1" inputmode="numeric"
-            placeholder="عدد الأيام" aria-label="عدد الأيام قبل النفاذ" ${rule.enabled && rule.days.length < MAX_REMINDERS ? "" : "disabled"} />
-          <button type="button" class="btn-secondary alert-day-add-btn" ${rule.enabled && rule.days.length < MAX_REMINDERS ? "" : "disabled"}>إضافة موعد</button>
-        </span>
+      <div class="alert-rule-line">
+        <label class="alert-rule-head">
+          <input type="checkbox" class="alert-rule-enabled" aria-label="تنبيه ${escHtml(type?.type ?? rule.key)}" ${rule.enabled ? "checked" : ""} />
+          <span class="alert-rule-name">${escHtml(type?.type ?? rule.key)}</span>
+        </label>
+        ${rule.enabled ? `<span class="alert-rule-sentence">نبّهني قبل
+          <input type="number" class="input-field alert-first-days" min="1" max="${MAX_DAYS}" inputmode="numeric"
+            value="${firstDay(rule)}" aria-label="عدد الأيام قبل النفاذ" />
+          يوماً من النفاذ</span>` : `<span class="alert-rule-off">لا تنبيه لهذا المستمسك</span>`}
       </div>
-      ${rule.enabled && quick.length && rule.days.length < MAX_REMINDERS ? `<div class="alert-day-quick">
-        <span>إضافة سريعة:</span>
-        ${quick.map(day => `<button type="button" class="alert-day-quick-btn" data-day="${day}">${arCount(day, "day")}</button>`).join("")}
-      </div>` : ""}
+      ${rule.enabled ? `
+        ${timelineHtml(rule)}
+        <div class="alert-rule-foot">
+          <span>${reminderSentence(rule)}</span>
+          <button type="button" class="alert-link alert-customize" aria-expanded="${open}">${open ? "إخفاء التخصيص" : "تخصيص التذكيرات"}</button>
+          ${auto ? "" : `<button type="button" class="alert-link alert-auto">رجوع للتلقائي</button>`}
+        </div>
+        ${open ? customHtml(rule) : ""}` : ""}
     </div>`;
 }
 
 export async function renderAlertSettings(panel) {
   let saved = clone(await loadAlertRules());
   let draft = clone(saved);
+  const openCustom = new Set();
+  let error = "";
 
-  const render = () => {
+  const render = (focusKey = null) => {
     panel.innerHTML = `
       <section class="card settings-block alert-settings">
         <div class="settings-block-head">
           <p class="settings-block-title">مواعيد تنبيه المستمسكات</p>
-          <p class="settings-block-help">لكل مستمسك له تاريخ نفاذ، حدّد قبل كم يوماً يُنبَّه عليه. أكبر عدد هو موعد ظهوره أول مرة في «تنبيهات المستمسكات»، وكل موعد أصغر تذكير إضافي يظهر كإشعار في Windows. يمكن إيقاف التنبيه لأي مستمسك.</p>
+          <p class="settings-block-help">حدّد لكل مستمسك قبل كم يوماً من نفاذه تريد أن يظهر في «تنبيهات المستمسكات». التذكيرات بعده تلقائية، ويمكن تخصيصها.</p>
         </div>
-        <div class="alert-rules">${draft.map(ruleRowHtml).join("")}</div>
-        <p class="alert-settings-error hidden" role="alert"></p>
+        <div class="alert-rules">${draft.map(rule => ruleRowHtml(rule, openCustom.has(rule.key))).join("")}</div>
+        <p class="alert-settings-error${error ? "" : " hidden"}" role="alert">${escHtml(error)}</p>
         <div class="settings-block-foot">
           <button id="btn-save-alert-rules" type="button" class="btn-primary" ${sameRules(draft, saved) ? "disabled" : ""}>حفظ مواعيد التنبيه</button>
-          <button id="btn-reset-alert-rules" type="button" class="btn-secondary" ${sameRules(draft, DEFAULT_ALERT_RULES) ? "disabled" : ""}>استعادة المواعيد الافتراضية</button>
+          <button id="btn-reset-alert-rules" type="button" class="btn-secondary" ${sameRules(draft, DEFAULT_ALERT_RULES) ? "disabled" : ""}>استعادة الافتراضي</button>
         </div>
       </section>`;
     bind();
+    if (focusKey) panel.querySelector(`[data-rule="${focusKey}"] .alert-day-input`)?.focus();
   };
 
-  const showError = message => {
-    const box = panel.querySelector(".alert-settings-error");
-    box.textContent = message;
-    box.classList.toggle("hidden", !message);
-  };
-
-  const addDay = (rule, raw) => {
+  const validDay = raw => {
     const day = Number(String(raw).trim());
-    if (!Number.isInteger(day) || day < 1 || day > MAX_DAYS) {
-      showError(`اكتب عدد أيام صحيحاً بين 1 و ${MAX_DAYS}.`);
-      return false;
-    }
-    if (rule.days.includes(day)) { showError("هذا الموعد موجود مسبقاً."); return false; }
-    if (rule.days.length >= MAX_REMINDERS) { showError(`الحد الأقصى ${MAX_REMINDERS} مواعيد لكل مستمسك.`); return false; }
-    rule.days = [...rule.days, day].sort((a, b) => b - a);
-    return true;
+    return Number.isInteger(day) && day >= 1 && day <= MAX_DAYS ? day : null;
   };
 
   const bind = () => {
@@ -97,6 +121,30 @@ export async function renderAlertSettings(panel) {
       const rule = draft.find(item => item.key === row.dataset.rule);
       row.querySelector(".alert-rule-enabled").addEventListener("change", event => {
         rule.enabled = event.target.checked;
+        if (rule.enabled && !rule.days.length) rule.days = autoReminderDays(30);
+        error = "";
+        render();
+      });
+
+      // The main number: automatic reminders follow it; custom ones smaller than it are kept.
+      const first = row.querySelector(".alert-first-days");
+      first?.addEventListener("change", () => {
+        const day = validDay(first.value);
+        if (day === null) { error = `اكتب عدد أيام بين 1 و ${MAX_DAYS}.`; render(); return; }
+        error = "";
+        rule.days = isAutoReminders(rule.days)
+          ? autoReminderDays(day)
+          : [day, ...rule.days.filter(d => d < day)].slice(0, MAX_REMINDERS);
+        render();
+      });
+      first?.addEventListener("keydown", event => { if (event.key === "Enter") first.dispatchEvent(new Event("change")); });
+
+      row.querySelector(".alert-customize")?.addEventListener("click", () => {
+        openCustom.has(rule.key) ? openCustom.delete(rule.key) : openCustom.add(rule.key);
+        render();
+      });
+      row.querySelector(".alert-auto")?.addEventListener("click", () => {
+        rule.days = autoReminderDays(firstDay(rule));
         render();
       });
       row.querySelectorAll(".alert-day-remove").forEach(button => button.addEventListener("click", () => {
@@ -104,35 +152,35 @@ export async function renderAlertSettings(panel) {
         render();
       }));
       const input = row.querySelector(".alert-day-input");
-      const add = () => { if (addDay(rule, input.value)) render(); else input.focus(); };
-      row.querySelector(".alert-day-add-btn").addEventListener("click", add);
-      input.addEventListener("keydown", event => { if (event.key === "Enter") { event.preventDefault(); add(); } });
-      row.querySelectorAll(".alert-day-quick-btn").forEach(button => button.addEventListener("click", () => {
-        if (addDay(rule, button.dataset.day)) render();
-      }));
+      const add = () => {
+        const day = validDay(input.value);
+        if (day === null) error = `اكتب عدد أيام بين 1 و ${MAX_DAYS}.`;
+        else if (rule.days.includes(day)) error = "هذا التذكير موجود مسبقاً.";
+        else { error = ""; rule.days = [...rule.days, day].sort((a, b) => b - a); }
+        render(rule.key);
+      };
+      row.querySelector(".alert-day-add-btn")?.addEventListener("click", add);
+      input?.addEventListener("keydown", event => { if (event.key === "Enter") { event.preventDefault(); add(); } });
     });
 
     panel.querySelector("#btn-reset-alert-rules").addEventListener("click", () => {
       draft = clone(DEFAULT_ALERT_RULES);
+      openCustom.clear();
+      error = "";
       render();
     });
 
     panel.querySelector("#btn-save-alert-rules").addEventListener("click", async event => {
-      const empty = draft.find(rule => rule.enabled && !rule.days.length);
-      if (empty) {
-        const name = ALERT_DOCUMENT_TYPES.find(item => item.key === empty.key)?.type ?? empty.key;
-        showError(`«${name}»: أضف موعداً واحداً على الأقل أو أوقف التنبيه له.`);
-        return;
-      }
       event.currentTarget.disabled = true;
       try {
         saved = clone(setCachedAlertRules(await api.setDocumentAlertRules(draft)));
         draft = clone(saved);
+        error = "";
         render();
         showToast("تم حفظ مواعيد التنبيه");
       } catch (err) {
-        event.currentTarget.disabled = false;
-        showError(err?.message ?? String(err));
+        error = err?.message ?? String(err);
+        render();
       }
     });
   };

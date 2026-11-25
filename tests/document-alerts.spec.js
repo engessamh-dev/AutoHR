@@ -7,11 +7,11 @@ test.beforeEach(async ({ page }) => {
   await page.waitForFunction(() => window.ready);
   await page.evaluate(() => {
     window.alertRules = [
-      { key: "national", enabled: true, days: [30, 7] },
-      { key: "passport", enabled: true, days: [180, 90, 30] },
-      { key: "airport", enabled: true, days: [30, 7] },
-      { key: "ministry", enabled: true, days: [30, 7] },
-      { key: "vehicle", enabled: true, days: [30, 7] },
+      { key: "national", enabled: true, days: [30, 15, 7] },
+      { key: "passport", enabled: true, days: [180, 90, 7] },
+      { key: "airport", enabled: true, days: [30, 15, 7] },
+      { key: "ministry", enabled: true, days: [30, 15, 7] },
+      { key: "vehicle", enabled: true, days: [30, 15, 7] },
     ];
     const original = window.__TAURI_INTERNALS__.invoke;
     window.__TAURI_INTERNALS__.invoke = async (command, args) => {
@@ -48,38 +48,54 @@ test("alerts follow the reminder days, and a switched-off type is left out", asy
   expect(result).toEqual([{ key: "national", reminder: 60, expired: false }]);
 });
 
-test("settings tab adds, removes and saves reminder days", async ({ page }) => {
+test("automatic reminders: first alert, halfway, 7 days before", async ({ page }) => {
+  const result = await page.evaluate(async () => {
+    const { autoReminderDays, isAutoReminders } = await import("/src/screens/document-alerts.js");
+    return { d60: autoReminderDays(60), d180: autoReminderDays(180), d10: autoReminderDays(10), d5: autoReminderDays(5),
+      auto: isAutoReminders([30, 15, 7]), custom: isAutoReminders([30, 7]) };
+  });
+  expect(result).toEqual({ d60: [60, 30, 7], d180: [180, 90, 7], d10: [10, 7], d5: [5], auto: true, custom: false });
+});
+
+test("settings: one number per document, reminders follow it, custom list on demand", async ({ page }) => {
   await page.evaluate(() => window.renderActual("settings"));
   await page.locator('[data-settings-tab="alerts"]').click();
   const national = page.locator('.alert-rule[data-rule="national"]');
-  await expect(national.locator(".alert-day-chip")).toHaveCount(2);
   const save = page.locator("#btn-save-alert-rules");
+  await expect(national.locator(".alert-first-days")).toHaveValue("30");
+  await expect(national.locator(".alert-custom")).toHaveCount(0);
   await expect(save).toBeDisabled();
 
-  await national.locator(".alert-day-input").fill("60");
-  await national.locator(".alert-day-add-btn").click();
-  await expect(national.locator(".alert-day-chip")).toHaveCount(3);
-  await expect(national.locator(".alert-day-chip").first()).toContainText("60");
-  await national.locator('.alert-day-remove[data-day="7"]').click();
-  await expect(national.locator(".alert-day-chip")).toHaveCount(2);
+  // Changing the one number moves the automatic reminders with it.
+  await national.locator(".alert-first-days").fill("60");
+  await national.locator(".alert-first-days").press("Enter");
+  await expect(national.locator(".alert-timeline-label")).toHaveText(["أول تنبيه", "قبل 30 يوماً", "قبل 7 أيام", "يوم النفاذ"]);
+  await expect(national.locator(".alert-auto")).toHaveCount(0);
 
-  // Out-of-range input is refused with a message.
+  // Custom reminders are behind «تخصيص التذكيرات».
+  await national.locator(".alert-customize").click();
+  await national.locator(".alert-day-input").fill("3");
+  await national.locator(".alert-day-add-btn").click();
+  await national.locator('.alert-day-remove[data-day="30"]').click();
+  await expect(national.locator(".alert-auto")).toBeVisible();
   await national.locator(".alert-day-input").fill("999");
   await national.locator(".alert-day-add-btn").click();
   await expect(page.locator(".alert-settings-error")).toBeVisible();
 
   await page.locator('.alert-rule[data-rule="vehicle"] .alert-rule-enabled').uncheck();
-  await expect(save).toBeEnabled();
+  await expect(page.locator('.alert-rule[data-rule="vehicle"] .alert-first-days')).toHaveCount(0);
   await save.click();
   await expect(save).toBeDisabled();
   const saved = await page.evaluate(() => window.savedRules);
-  expect(saved.find(r => r.key === "national").days).toEqual([60, 30]);
+  expect(saved.find(r => r.key === "national").days).toEqual([60, 7, 3]);
   expect(saved.find(r => r.key === "vehicle").enabled).toBe(false);
 
-  // Back to the defaults.
+  // «رجوع للتلقائي» and «استعادة الافتراضي».
+  await national.locator(".alert-auto").click();
+  await expect(national.locator(".alert-timeline-label")).toHaveCount(4);
   await page.locator("#btn-reset-alert-rules").click();
+  await expect(national.locator(".alert-first-days")).toHaveValue("30");
   await expect(page.locator('.alert-rule[data-rule="vehicle"] .alert-rule-enabled')).toBeChecked();
-  await expect(national.locator(".alert-day-chip")).toHaveCount(2);
 });
 
 test("employee documents tab shows «ينتهي خلال» from the saved reminder days", async ({ page }) => {
