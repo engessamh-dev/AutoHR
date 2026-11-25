@@ -430,6 +430,8 @@ export async function renderDocuments(container, user, ctx) {
     const archiveDocs = currentDocs();
     const filteredDocs = archiveDocs.filter(matchesGeneralSearch);
     const filteredAttachmentPaths = filteredDocs.flatMap(doc => generalDocAttachments(doc));
+    const canDeleteRows = can(user, "documents.delete");
+    const columnCount = canDeleteRows ? 10 : 9;
     const advancedFilterCount = [
       generalNotesSearch,
       generalFileFilter !== "all",
@@ -538,10 +540,11 @@ export async function renderDocuments(container, user, ctx) {
               <th class="table-header">مذكرة داخلية</th>
               <th class="table-header">الموظفون المرتبطون</th>
               <th class="table-header">المرفقات</th>
+              ${canDeleteRows ? `<th class="table-header" style="width:1%"><span class="sr-only">حذف</span></th>` : ""}
             </tr></thead>
             <tbody>
               ${archiveDocs.length === 0
-                ? `<tr><td colspan="9" class="table-cell"><div class="doc-empty">
+                ? `<tr><td colspan="${columnCount}" class="table-cell"><div class="doc-empty">
                     <span class="doc-empty-icon"><svg aria-hidden="true" viewBox="0 0 24 24"><path d="M3 6.5A1.5 1.5 0 0 1 4.5 5H9l2 2.5h8.5A1.5 1.5 0 0 1 21 9v9.5a1.5 1.5 0 0 1-1.5 1.5h-15A1.5 1.5 0 0 1 3 18.5z"/><path d="M12 11v6M9 14h6"/></svg></span>
                     <p class="doc-empty-title">لا توجد وثائق في ${escHtml(archiveName())} بعد</p>
                     ${can(user, "documents.manage")
@@ -550,7 +553,7 @@ export async function renderDocuments(container, user, ctx) {
                       : `<p class="doc-empty-text">ستظهر الوثائق هنا عند إضافتها.</p>`}
                   </div></td></tr>`
                 : filteredDocs.length === 0
-                  ? `<tr><td colspan="9" class="table-cell text-center text-gray-500 py-8">لا توجد نتائج مطابقة</td></tr>`
+                  ? `<tr><td colspan="${columnCount}" class="table-cell text-center text-gray-500 py-8">لا توجد نتائج مطابقة</td></tr>`
                   : filteredDocs.map(d => `
                   <tr class="table-row general-doc-row" data-id="${d.id}" title="اضغط لتعديل الوثيقة">
                     <td class="table-cell font-medium text-gray-100">${escHtml(d.title || "—")}</td>
@@ -576,6 +579,12 @@ export async function renderDocuments(container, user, ctx) {
                         </span>
                       </button>
                     </td>
+                    ${canDeleteRows ? `<td class="table-cell" style="padding-inline:4px">
+                      <button type="button" class="att-icon-btn doc-row-delete" data-id="${d.id}"
+                        title="حذف الوثيقة" aria-label="حذف الوثيقة">
+                        <svg aria-hidden="true" viewBox="0 0 24 24"><path d="M4 7h16M9 7V4.5h6V7M6.5 7l1 12.5h9l1-12.5M10 11v5.5M14 11v5.5"/></svg>
+                      </button>
+                    </td>` : ""}
                   </tr>`).join("")}
             </tbody>
           </table>
@@ -693,7 +702,34 @@ export async function renderDocuments(container, user, ctx) {
       btn.addEventListener("click", () => openAttachmentManager(parseInt(btn.dataset.id, 10)));
     });
 
+    el.querySelectorAll(".doc-row-delete").forEach(btn => {
+      btn.addEventListener("click", event => {
+        event.stopPropagation();
+        deleteDocFromList(parseInt(btn.dataset.id, 10));
+      });
+    });
+
     restoreFocus();
+  }
+
+  // Delete straight from the archive list, without opening the document form.
+  // The backend re-checks "documents.delete" and writes the audit log entry.
+  async function deleteDocFromList(docId) {
+    const doc = currentDocs().find(item => item.id === docId);
+    if (!doc) return;
+    const label = [doc.title, doc.doc_number, doc.doc_count].map(v => String(v ?? "").trim()).filter(Boolean).join(" — ");
+    const attachmentCount = generalDocAttachments(doc).length;
+    const what = label ? `الوثيقة «${label}»` : "هذه الوثيقة (بدون بيانات)";
+    const files = attachmentCount ? ` ومرفقاتها (${arCount(attachmentCount, "attachment")})` : "";
+    if (!(await confirmAction(`تأكيد حذف ${what}${files} من ${archiveName()}؟ لا يمكن التراجع عن هذا الإجراء.`))) return;
+    try {
+      await deleteCurrentDoc(docId);
+      await refreshCurrentDocs();
+      showToast("تم حذف الوثيقة");
+      renderGeneral();
+    } catch (err) {
+      showToast(err?.message ?? "تعذر حذف الوثيقة", "error");
+    }
   }
 
   function attachmentKind(path) {
@@ -989,14 +1025,14 @@ export async function renderDocuments(container, user, ctx) {
           <p class="section-title">${isEdit ? "تعديل وثيقة" : "إضافة وثيقة جديدة"}</p>
           <div class="doc-form-grid">
             <div>
-              <label for="d-title" style="display:block;font-size:11px;color:var(--ui-text-faint);margin-bottom:4px">الجهة المصدرة للوثيقة</label>
-              <input id="d-title" class="input-field" placeholder="الجهة المصدرة للوثيقة" value="${escHtml(doc?.title ?? "")}" />
+              <label for="d-title" style="display:block;font-size:11px;color:var(--ui-text-faint);margin-bottom:4px">الجهة المصدرة للوثيقة <span class="doc-required" aria-hidden="true">*</span></label>
+              <input id="d-title" class="input-field" required aria-required="true" value="${escHtml(doc?.title ?? "")}" />
             </div>
             <div>
-              <label for="d-issuer" style="display:block;font-size:11px;color:var(--ui-text-faint);margin-bottom:4px">الموضوع</label>
+              <label for="d-issuer" style="display:block;font-size:11px;color:var(--ui-text-faint);margin-bottom:4px">الموضوع <span class="doc-required" aria-hidden="true">*</span></label>
               <div style="display:grid;grid-template-columns:1fr auto auto;gap:8px;align-items:center">
                 <div style="position:relative;min-width:0">
-                  <input id="d-issuer" class="input-field" value="${escHtml(doc?.issuer ?? "")}" autocomplete="off" />
+                  <input id="d-issuer" class="input-field" required aria-required="true" value="${escHtml(doc?.issuer ?? "")}" autocomplete="off" />
                   <div id="d-subject-menu" class="hidden" style="position:absolute;z-index:50;top:calc(100% + 6px);left:0;right:0;max-height:220px;overflow:auto;background:var(--ui-surface);border:1px solid var(--ui-line-strong);border-radius:8px;box-shadow:0 12px 28px rgba(0,0,0,.35)">
                     ${documentTypes.map(type => `<button type="button" class="d-subject-option" data-value="${escHtml(type)}" style="display:block;width:100%;text-align:right;padding:10px 12px;border:0;border-bottom:1px solid var(--ui-line);background:transparent;color:var(--ui-text-strong);cursor:pointer">${escHtml(type)}</button>`).join("")}
                   </div>
@@ -1016,12 +1052,12 @@ export async function renderDocuments(container, user, ctx) {
             </div>
             <div class="doc-form-pair">
               <div>
-                <label for="d-date" style="display:block;font-size:11px;color:var(--ui-text-faint);margin-bottom:4px">تاريخ الإصدار</label>
-                <input id="d-date" class="input-field" type="date" value="${escHtml(doc?.issue_date ?? (isEdit ? "" : todayIso()))}" />
+                <label for="d-date" style="display:block;font-size:11px;color:var(--ui-text-faint);margin-bottom:4px">تاريخ الإصدار <span class="doc-required" aria-hidden="true">*</span></label>
+                <input id="d-date" class="input-field" type="date" required aria-required="true" value="${escHtml(doc?.issue_date ?? (isEdit ? "" : todayIso()))}" />
               </div>
               <div>
-                <label for="d-count" style="display:block;font-size:11px;color:var(--ui-text-faint);margin-bottom:4px">العدد</label>
-                <input id="d-count" class="input-field" value="${escHtml(doc?.doc_count ?? "")}" />
+                <label for="d-count" style="display:block;font-size:11px;color:var(--ui-text-faint);margin-bottom:4px">العدد <span class="doc-required" aria-hidden="true">*</span></label>
+                <input id="d-count" class="input-field" required aria-required="true" value="${escHtml(doc?.doc_count ?? "")}" />
               </div>
             </div>
             <div>
@@ -1102,6 +1138,7 @@ export async function renderDocuments(container, user, ctx) {
               <span id="d-scan-progress-label" style="font-size:11px;color:var(--ui-info)">جاري بدء المسح الضوئي...</span>
             </div>
           </div>
+          <p id="d-required-hint" class="doc-required-hint" role="status" hidden></p>
           <div class="flex gap-3 items-center">
             <button id="btn-save-doc" class="btn-primary flex-1">حفظ</button>
             <button id="btn-cancel-doc" class="btn-secondary">إلغاء</button>
@@ -1146,6 +1183,7 @@ export async function renderDocuments(container, user, ctx) {
         button.addEventListener("mousedown", event => event.preventDefault());
         button.addEventListener("click", () => {
           subjectInput.value = button.dataset.value || "";
+          subjectInput.dispatchEvent(new Event("input", { bubbles: true }));
           formDirty = true;
           hideSubjectMenu();
         });
@@ -1215,7 +1253,41 @@ export async function renderDocuments(container, user, ctx) {
     const initialDocData = JSON.stringify(collectDocData());
     const hasUnsavedDocChanges = () =>
       can(user, "documents.manage") && (formDirty || pendingAttachments.length > 0 || JSON.stringify(collectDocData()) !== initialDocData);
+    // The fields a document cannot be saved without. The date starts as today,
+    // so it only blocks saving when someone clears it.
+    const requiredDocFields = [
+      ["#d-title", "الجهة المصدرة للوثيقة"],
+      ["#d-issuer", "الموضوع"],
+      ["#d-count", "العدد"],
+      ["#d-date", "تاريخ الإصدار"],
+    ];
+    const missingDocFields = () => requiredDocFields.filter(([selector]) => {
+      const field = el.querySelector(selector);
+      return field && !field.value.trim();
+    });
+    const updateRequiredState = () => {
+      const saveButton = el.querySelector("#btn-save-doc");
+      const hint = el.querySelector("#d-required-hint");
+      if (!saveButton || !hint) return;
+      const missing = missingDocFields();
+      requiredDocFields.forEach(([selector]) => {
+        const field = el.querySelector(selector);
+        if (field) field.toggleAttribute("aria-invalid", missing.some(([s]) => s === selector) && field.dataset.touched === "1");
+      });
+      saveButton.disabled = missing.length > 0;
+      saveButton.title = missing.length ? "أكمل الحقول المطلوبة أولاً" : "";
+      hint.hidden = missing.length === 0;
+      hint.textContent = missing.length ? `لحفظ الوثيقة أكمل: ${missing.map(([, label]) => label).join("، ")}` : "";
+    };
     const saveDoc = async (skipConfirm = false) => {
+      const missing = missingDocFields();
+      if (missing.length) {
+        missing.forEach(([selector]) => { const field = el.querySelector(selector); if (field) field.dataset.touched = "1"; });
+        updateRequiredState();
+        showToast(`لا يمكن حفظ الوثيقة قبل إكمال: ${missing.map(([, label]) => label).join("، ")}`, "error");
+        el.querySelector(missing[0][0])?.focus();
+        return false;
+      }
       if (!skipConfirm && !(await confirmAction(isEdit ? "تأكيد حفظ تعديلات الوثيقة؟" : "تأكيد إضافة الوثيقة؟"))) return false;
       try {
         const data = collectDocData();
@@ -1250,9 +1322,16 @@ export async function renderDocuments(container, user, ctx) {
       if (event.target === event.currentTarget) closeDocForm();
     });
     el.querySelectorAll("#doc-form-card input,#doc-form-card select,#doc-form-card textarea").forEach(field => {
-      field.addEventListener("input", () => { formDirty = true; });
-      field.addEventListener("change", () => { formDirty = true; });
+      field.addEventListener("input", () => { formDirty = true; updateRequiredState(); });
+      field.addEventListener("change", () => { formDirty = true; updateRequiredState(); });
     });
+    requiredDocFields.forEach(([selector]) => {
+      el.querySelector(selector)?.addEventListener("blur", event => {
+        event.currentTarget.dataset.touched = "1";
+        updateRequiredState();
+      });
+    });
+    updateRequiredState();
 
     const hasEmployeesCheckbox = el.querySelector("#d-has-employees");
     const employeeLinking = el.querySelector("#d-employee-linking");
