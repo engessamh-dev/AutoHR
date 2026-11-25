@@ -362,11 +362,11 @@ function printReport(rows, fields, { company, filterText }) {
   doc.write(`<!doctype html><html lang="ar" dir="rtl"><head><meta charset="UTF-8"><title>تقرير الموظفين</title>
     <style>
       body{font-family:Arial,sans-serif;margin:0;color:#111827}
-      .report-head{display:flex;align-items:center;gap:12px;margin:0 0 6px}
-      .report-head img{width:24mm;height:auto}
-      .report-head h1{font-size:17px;margin:0 0 2px}
+      .report-head{display:flex;flex-direction:column;align-items:center;text-align:center;gap:4px;margin:0 0 8px}
+      .report-head img{width:26mm;height:auto}
+      .report-head h1{font-size:17px;margin:2px 0 0}
       .report-head p{font-size:11px;margin:0;color:#374151}
-      .meta{display:flex;gap:18px;font-size:10px;color:#374151;margin:0 0 8px;flex-wrap:wrap}
+      .meta{display:flex;justify-content:center;gap:18px;font-size:10px;color:#374151;margin:0 0 8px;flex-wrap:wrap}
       .part{font-size:10px;color:#374151;margin:0 0 4px}
       table{width:100%;border-collapse:collapse;font-size:${fontPx}px}
       th,td{border:1px solid #d1d5db;padding:3px 4px;vertical-align:top;overflow-wrap:anywhere}
@@ -379,7 +379,7 @@ function printReport(rows, fields, { company, filterText }) {
       @page{size:A4 landscape;margin:9mm 8mm 12mm;@bottom-center{content:"صفحة " counter(page) " من " counter(pages);font:9px Arial,sans-serif;color:#6b7280}}
     </style></head><body>
     <header class="report-head"><img src="${escHtml(new URL(COMPANY_LOGO.print, location.href).href)}" alt="${escHtml(COMPANY_LOGO.alt)}" />
-      <div><h1>تقرير الموظفين</h1><p>${escHtml(text(company?.company_name))}${unit ? ` — ${escHtml(unit)}` : ""}</p></div></header>
+      <h1>تقرير الموظفين</h1><p>${escHtml(text(company?.company_name))}${unit ? ` — ${escHtml(unit)}` : ""}</p></header>
     <div class="meta"><span>تاريخ الطباعة: ${escHtml(formatDate(localIsoDate()))}</span><span>عدد الموظفين: ${rows.length}</span>${filterText ? `<span>${escHtml(filterText)}</span>` : ""}</div>
     ${pages.map(table).join("")}</body></html>`);
   doc.close();
