@@ -585,6 +585,10 @@
 #emp-table-wrap th,#emp-table-wrap td{white-space:nowrap}
 .emp-doc-cell{display:inline-flex;align-items:center;gap:6px;font-size:12px;color:var(--ui-text-strong);white-space:nowrap}
 .emp-doc-cell.is-ok,.emp-doc-cell.is-none{color:var(--ui-text-faint)}
+.emp-doc-col{min-width:150px;white-space:nowrap}
+.emp-doc-tag{font-weight:600}.emp-doc-tag.warn{color:#f59e0b}.emp-doc-tag.bad{color:#ef4444}
+.emp-doc-sep{color:var(--ui-text-faint)}
+:root[data-theme="light"] .emp-doc-tag.warn{color:#b45309}:root[data-theme="light"] .emp-doc-tag.bad{color:#dc2626}
 .emp-fixed{position:relative}
 .emp-fixed .input-field{background:var(--ui-sunken);color:var(--ui-text-muted);border-style:dashed;cursor:default;padding-left:30px}
 .emp-fixed .input-field:focus{box-shadow:none;border-color:var(--ui-line)}
