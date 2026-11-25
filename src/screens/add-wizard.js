@@ -359,17 +359,36 @@ function openWizard({ user, employees, onCreated, resume = null }) {
   const filledCount = () => Object.values(state.values).filter(v => v.source && !isEmpty(v.value)).length
     + state.members.reduce((n, m) => n + Object.values(m.values).filter(v => v.source && !isEmpty(v.value)).length, 0);
 
+  /** How far a step is filled: its own fields with a value (not those another document filled). */
+  function stepFill(s) {
+    if (s.id === "family") {
+      const named = state.members.filter(m => !isEmpty(m.values.name?.value)).length;
+      return { filled: named, total: state.members.length };
+    }
+    const fields = s.id === "summary" ? MANUAL : s.fields ?? [];
+    const own = fields.filter(f => {
+      const entry = state.values[f.key];
+      if (isEmpty(entry?.value)) return false;
+      return s.id === "summary" || !entry.source || entry.edited || entry.source === s.id || !STEPS.some(o => o.id === entry.source && o.id !== s.id);
+    });
+    return { filled: own.length, total: fields.length };
+  }
+
+  /** The side list: ✓ only when every field of the step is filled; otherwise how many are. */
   function stepperHtml() {
     return `<nav class="aw-stepper" aria-label="خطوات الإضافة"><p class="aw-stepper-title">المستمسكات بالترتيب</p>
       ${STEPS.map((s, i) => {
         const doc = state.docs[s.id];
-        const done = i < state.step || (doc && Object.keys(doc.images).length && i !== state.step);
-        const skipped = doc?.skipped && !Object.keys(doc.images).length && i < state.step;
-        const cls = i === state.step ? "is-current" : skipped ? "is-skipped" : done ? "is-done" : "";
-        const count = doc ? Object.keys(doc.readings).length : s.id === "family" ? state.members.length : 0;
-        const note = i === state.step ? "" : skipped ? "تُخطّي" : done && count ? (s.id === "family" ? `${count} أفراد` : `${count} حقول`) : s.required ? "إلزامي" : "";
-        return `<button type="button" class="aw-step ${cls}" data-go="${i}">
-          <i>${skipped ? "–" : done && i !== state.step ? "✓" : i + 1}</i><span>${s.title}</span><small>${note}</small></button>`;
+        const { filled, total } = stepFill(s);
+        const complete = total > 0 && filled === total;
+        const skipped = doc?.skipped && !Object.keys(doc.images).length && !filled;
+        const current = i === state.step;
+        const cls = current ? "is-current" : complete ? "is-done" : filled ? "is-partial" : skipped ? "is-skipped" : "";
+        const note = s.id === "family"
+          ? (state.members.length ? `${state.members.length} أفراد` : "")
+          : complete ? "مكتمل" : filled ? `${filled} من ${total}` : skipped ? "تُخطّي" : s.required ? "إلزامي" : "";
+        return `<button type="button" class="aw-step ${cls}" data-go="${i}" title="${complete ? "كل حقول هذا المستمسك مملوءة" : filled ? `مُلئ ${filled} من ${total} حقول` : ""}">
+          <i>${complete && !current ? "✓" : skipped && !current ? "–" : i + 1}</i><span>${s.title}</span><small>${note}</small></button>`;
       }).join("")}
       <div class="aw-progress">الخطوة ${state.step + 1} من ${STEPS.length}<div class="aw-bar"><i style="width:${(state.step + 1) / STEPS.length * 100}%"></i></div></div>
       <div class="aw-progress">مُلئ من المستمسكات: <b>${filledCount()}</b> حقلًا</div></nav>`;

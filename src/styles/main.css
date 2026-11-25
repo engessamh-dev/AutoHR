@@ -840,6 +840,7 @@ html[data-ui-scale] #app-shell { height: calc(100vh / var(--ui-scale)); }
 .aw-step i{font-style:normal;display:grid;place-items:center;width:20px;height:20px;border-radius:50%;font-size:11px;border:1px solid var(--ui-line);background:var(--ui-sunken);flex-shrink:0}
 .aw-step small{margin-inline-start:auto;font-size:10px;color:var(--ui-text-faint);white-space:nowrap}
 .aw-step.is-done{color:var(--ui-text)}.aw-step.is-done i{background:var(--ui-ok-bg);border-color:var(--ui-ok-line);color:var(--ui-ok)}.aw-step.is-done small{color:var(--ui-ok)}
+.aw-step.is-partial{color:var(--ui-text)}.aw-step.is-partial i{border-color:var(--ui-warn-line);color:var(--ui-warn);background:var(--ui-warn-bg)}.aw-step.is-partial small{color:var(--ui-warn)}
 .aw-step.is-skipped{color:var(--ui-text-faint)}.aw-step.is-skipped i{border-style:dashed}
 .aw-step.is-current{background:var(--ui-accent-soft);color:var(--ui-accent);font-weight:700}.aw-step.is-current i{background:var(--ui-accent);color:var(--ui-on-accent);border-color:var(--ui-accent)}
 .aw-progress{margin:12px 6px 0;font-size:11px;color:var(--ui-text-faint)}.aw-progress b{color:var(--ui-info)}

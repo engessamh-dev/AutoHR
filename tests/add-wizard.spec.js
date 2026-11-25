@@ -301,3 +301,28 @@ test("the side list opens any step at any time, before the national card too", a
   await pick(page, "national", "front.jpg");
   await expect(page.locator("[data-save-now]")).toBeEnabled();
 });
+
+test("a step shows ✓ only when all its fields are filled; visiting it is not enough", async ({ page }) => {
+  await page.evaluate(() => {
+    const f = (key, value) => ({ key, value, confidence: 0.95, source: "text" });
+    window.imageReads["mot-full.jpg"] = { document: "ministry_badge", warnings: [], fields: [f("department", "قسم هندسة الصيانة"), f("job_title", "مهندس أقدم"), f("doc_number", "200300400"), f("issue_date", "2023-01-15"), f("expiry_date", "2028-01-14")] };
+  });
+  await page.click('[data-choice="docs"]');
+  const steps = page.locator(".aw-step");
+  for (const i of [1, 2, 3, 4]) await steps.nth(i).click();
+  for (const i of [0, 1, 2, 3]) {
+    await expect(steps.nth(i)).not.toHaveClass(/is-done/);
+    await expect(steps.nth(i).locator("i")).not.toHaveText("✓");
+  }
+  await steps.nth(0).click();
+  await pick(page, "national", "front.jpg");
+  await steps.nth(2).click();
+  await pick(page, "ministry", "mot-full.jpg");
+  await steps.nth(4).click();
+  // National: some fields only (front side) → a count, no ✓.
+  await expect(steps.nth(0)).toHaveClass(/is-partial/);
+  await expect(steps.nth(0).locator("small")).toContainText("من 11");
+  // Ministry: every field read → ✓.
+  await expect(steps.nth(2)).toHaveClass(/is-done/);
+  await expect(steps.nth(2).locator("i")).toHaveText("✓");
+});
