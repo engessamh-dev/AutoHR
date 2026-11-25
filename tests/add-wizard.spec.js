@@ -309,7 +309,10 @@ test("ministry ID: the Arabic side fills department and job and its name is chec
   await page.click('[data-pick="ministry"][data-side="back"]');
   await expect(page.locator(".aw-thumb-cap", { hasText: "الوجه الإنكليزي" })).toContainText("يُحفظ مرفقًا");
   expect(await page.evaluate(() => window.calls.some(c => c.command === "cmd_read_image_fields" && c.args.sourcePath === "mot-en.jpg"))).toBe(false);
-  await expect(page.locator('[data-key="department"]')).toHaveValue("قسم هندسة الصيانة");
+  // The department is the one set in Settings; the ID's is only compared with it.
+  await expect(page.locator('[data-fixed="department"]')).toHaveValue("Test");
+  await expect(page.locator('[data-fixed="department"]')).toHaveAttribute("readonly", "");
+  await expect(page.locator(".aw-field:has([data-fixed]) .aw-note")).toContainText("الهوية تكتب «قسم هندسة الصيانة»، والقسم المثبّت في الإعدادات «Test»");
   await expect(page.locator('[data-key="job_title"]')).toHaveValue("مهندس أقدم");
   await expect(page.locator(".aw-note.is-ok", { hasText: "يطابق البطاقة الوطنية" })).toBeVisible();
   await page.evaluate(() => { window.openQueue = ["mot-other.jpg"]; });
@@ -318,6 +321,7 @@ test("ministry ID: the Arabic side fills department and job and its name is chec
   await page.locator(".aw-other").getByRole("button", { name: "هو للموظف نفسه" }).click();
   await page.click("[data-save-now]");
   await expect.poll(() => page.evaluate(() => window.calls.filter(c => c.command === "cmd_upload_ministry_badge_attachment").map(c => [c.args.side, c.args.sourcePath]))).toEqual([["front", "mot-other.jpg"], ["back", "mot-en.jpg"]]);
+  expect(await page.evaluate(() => window.calls.find(c => c.command === "cmd_create_employee").args.data.department)).toBe("Test");
 });
 
 test("another person's document: red warning with replace or confirm; a misread letter only asks to compare", async ({ page }) => {

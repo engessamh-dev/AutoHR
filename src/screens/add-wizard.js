@@ -60,7 +60,7 @@ const STEPS = [
     hint: "تُقرأ البيانات من الوجه العربي: القسم والعنوان الوظيفي ورقم الهوية ونفاذها، ويُطابَق الاسم مع البطاقة الوطنية. الوجه الإنكليزي يُحفظ مرفقًا فقط",
     fields: [
       { key: "job_title", label: "العنوان الوظيفي", ocr: "job_title" },
-      { key: "department", label: "القسم", ocr: "department", list: "departments" },
+      { key: "department", label: "القسم", ocr: "department", fixed: true },
       { key: "ministry_badge_no", label: "رقم الهوية", ocr: "doc_number", ltr: true },
       { key: "ministry_badge_issue_date", label: "تاريخ الإصدار", ocr: "issue_date", date: true },
       { key: "ministry_badge_expiry", label: "تاريخ النفاذ", ocr: "expiry_date", date: true },
@@ -99,7 +99,6 @@ const MANUAL = [
   { key: "phone", label: "رقم الهاتف", ltr: true, placeholder: "07xx xxx xxxx" },
   { key: "email", label: "البريد الإلكتروني", ltr: true },
   { key: "hire_date", label: "تاريخ التعيين", date: true },
-  { key: "department", label: "القسم", list: "departments" },
   { key: "job_title", label: "العنوان الوظيفي" },
   { key: "marital_status", label: "الحالة الاجتماعية", options: MARITAL },
 ];
@@ -180,8 +179,19 @@ function nameDistance(a, b) {
 const handwrittenOf = results => [...new Set(Object.values(results ?? {}).flatMap(r => r?.handwritten ?? []))];
 
 /** Puts readings into the values: only where nothing is there yet. */
+/** Values set in Settings, not per employee: a reading of them is only compared. */
+const FIXED = ["department"];
+
+/** «قسم اتصالات الطيران» and «اتصالات الطيران» are the same department. */
+const sameDepartment = (a, b) => {
+  const norm = v => text(v).replace(/^قسم\s+/, "").replace(/[أإآ]/g, "ا").replace(/ة/g, "ه").replace(/[ىی]/g, "ي").replace(/\s+/g, "");
+  const [x, y] = [norm(a), norm(b)];
+  return !!x && !!y && (x === y || x.includes(y) || y.includes(x));
+};
+
 function applyReadings(values, readings, source) {
   for (const [key, reading] of Object.entries(readings)) {
+    if (FIXED.includes(key)) continue;
     if (isEmpty(values[key]?.value)) values[key] = { value: reading.value, source, edited: false, unsure: reading.unsure };
   }
 }
@@ -268,8 +278,13 @@ function openWizard({ user, employees, onCreated, resume = null }) {
     members: [],
     saving: false,
   };
-  const departments = [...new Set(employees.map(e => text(e.department)).filter(Boolean))].sort((a, b) => a.localeCompare(b, "ar"));
   const cities = citySuggestions(employees);
+  // The department is the one set in Settings, for every employee.
+  let department = "";
+  api.getCompanyConfig().then(config => {
+    department = text(config?.department_name);
+    if (overlay.isConnected) render();
+  }).catch(() => {});
   const overlay = document.createElement("div");
   overlay.className = "aw-overlay";
   document.body.append(overlay);
@@ -544,6 +559,7 @@ function openWizard({ user, employees, onCreated, resume = null }) {
     }
     const fields = s.id === "summary" ? MANUAL : s.fields ?? [];
     const own = fields.filter(f => {
+      if (f.fixed) return !!department || !!state.docs[s.id]?.readings?.[f.key];
       const entry = state.values[f.key];
       if (isEmpty(entry?.value)) return false;
       return s.id === "summary" || !entry.source || entry.edited || entry.source === s.id || !STEPS.some(o => o.id === entry.source && o.id !== s.id);
@@ -628,6 +644,16 @@ function openWizard({ user, employees, onCreated, resume = null }) {
     const value = entry?.value;
     const attrs = `data-key="${field.key}" data-scope="${scope}"`;
     let control;
+    if (field.fixed) {
+      const reading = readings?.[field.key]?.value;
+      const check = !reading ? ""
+        : !department ? `<div class="aw-note is-warn">⚠ لم يُضبط القسم في الإعدادات، فسيُحفظ ما قُرئ من الهوية «${escHtml(reading)}»</div>`
+        : sameDepartment(reading, department) ? `<div class="aw-note is-ok">✓ يطابق القسم المثبّت في الإعدادات</div>`
+        : `<div class="aw-note is-warn">⚠ الهوية تكتب «${escHtml(reading)}»، والقسم المثبّت في الإعدادات «${escHtml(department)}». تأكد أن الهوية لهذا الموظف.</div>`;
+      return `<div class="aw-field ${field.full ? "is-full" : ""}">
+        <div class="aw-label"><label for="${id}">${field.label}</label><span class="aw-src">من الإعدادات</span></div>
+        <input id="${id}" class="input-field" data-fixed="${field.key}" value="${escHtml(department || reading || "")}" placeholder="يُضبط من الإعدادات" readonly>${check}</div>`;
+    }
     if (field.address) {
       control = addressHtml(`${scope}${field.key}`, asAddress(value), { cities });
     } else if (field.name) {
@@ -829,7 +855,7 @@ function openWizard({ user, employees, onCreated, resume = null }) {
         <div class="aw-fields is-three">${MANUAL.map(f => fieldHtml(f, state.values, null, "summary")).join("")}</div></div>
       <div class="aw-sum-grid">
         ${card("البيانات الشخصية", [["الاسم", v("full_name")], ["الأم", v("mother_name")], ["الولادة", [v("birthdate"), v("birthplace")].filter(Boolean).join(" · ")], ["الجنس والدم", [v("gender"), v("blood_type")].filter(Boolean).join(" · ")]])}
-        ${card("الوظيفة", [["القسم", v("department")], ["العنوان الوظيفي", v("job_title")], ["صلاحيات الباج", v("airport_badge_zones").replaceAll(",", " · ")]])}
+        ${card("الوظيفة", [["القسم", departmentValue() ?? ""], ["العنوان الوظيفي", v("job_title")], ["صلاحيات الباج", v("airport_badge_zones").replaceAll(",", " · ")]])}
         ${card("الأسرة", state.members.map((m, i) => [RELATIONS.find(r => r[0] === m.relation)?.[1] ?? `فرد ${i + 1}`, joinNameParts(m.values.name?.value)]))}
         ${card("البطاقة الوطنية", [["الرقم", v("civil_id")]], expiry("civil_id_expiry_date"))}
         ${card("جواز السفر", [["الرقم", v("passport_no")]], expiry("passport_expiry_date"))}
@@ -911,8 +937,7 @@ function openWizard({ user, employees, onCreated, resume = null }) {
             ${!step.required && !last ? `<button type="button" class="btn-secondary" data-skip>تخطٍّ</button>` : ""}
             ${state.step > 0 ? `<button type="button" class="btn-secondary" data-back>رجوع</button>` : ""}
             <span class="aw-hint">${escHtml(gateHint())}</span>
-          </div></div></div>
-      <datalist id="aw-departments">${departments.map(d => `<option value="${escHtml(d)}">`).join("")}</datalist></div>`;
+          </div></div></div></div>`;
     const content = overlay.querySelector(".aw-content-body");
     if (content) content.scrollTop = scroll;
     bind();
@@ -1178,6 +1203,9 @@ function openWizard({ user, employees, onCreated, resume = null }) {
   }
 
   // ── Saving ────────────────────────────────────────────────────────────
+  /** Settings' department; without one, the department read from the ministry ID. */
+  const departmentValue = () => department || text(state.docs.ministry?.readings?.department?.value) || null;
+
   function payload() {
     const v = key => {
       const value = state.values[key]?.value;
@@ -1199,6 +1227,7 @@ function openWizard({ user, employees, onCreated, resume = null }) {
       "ration_card_no", "ration_center_name", "residence_card_no", "residence_card_issue_date", "residence_address",
       "residence_head_name", "residence_form_no", "residence_card_issuer"];
     plain.forEach(key => { data[key] = v(key); });
+    data.department = departmentValue();
     const address = v("residence_address");
     data.residence_address = address ? composeResidence(asAddress(address)) || null : null;
     data.residence_address_parts = address && !addressIsEmpty(asAddress(address)) ? JSON.stringify(asAddress(address)) : null;

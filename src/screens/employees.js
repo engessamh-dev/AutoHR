@@ -158,7 +158,7 @@ function filtered() {
   return byStatus.filter(e =>
     e.full_name?.toLowerCase().includes(_filter) ||
     String(e.employee_number ?? "").toLowerCase().includes(_filter) ||
-    e.department?.toLowerCase().includes(_filter) ||
+    fixedDepartment(e).toLowerCase().includes(_filter) ||
     e.civil_id?.includes(_filter) ||
     e.phone?.includes(_filter) ||
     e.job_title?.toLowerCase().includes(_filter)
@@ -194,7 +194,7 @@ function renderTable({ keepVisibleRows = false } = {}) {
             <tr class="table-row" data-id="${e.id}" style="cursor:pointer">
               <td class="table-cell font-medium text-gray-100">${escHtml(e.full_name)}</td>
               <td class="table-cell">${escHtml(e.job_title ?? "—")}</td>
-              <td class="table-cell">${escHtml(e.department ?? "—")}</td>
+              <td class="table-cell">${escHtml(fixedDepartment(e) || "—")}</td>
               <td class="table-cell" dir="ltr">${escHtml(e.phone ?? "—")}</td>
               <td class="table-cell">
                 <span class="badge ${e.is_active ? "badge-green" : "badge-gray"}">
@@ -487,6 +487,11 @@ function addZonesFromInput(input) {
   input.value = "";
   if (!box || !added.length) return;
   setZones(box, zoneCodes([box.querySelector("input[type=hidden]").value, ...added].join(",")));
+}
+
+/** Every employee is in the department set in Settings; an older record's own value only without one. */
+function fixedDepartment(emp) {
+  return (_companyConfig?.department_name ?? "").trim() || emp?.department || "";
 }
 
 function fixedCompanyField(label, id, value) {
@@ -1214,7 +1219,7 @@ function tabContent(tab, emp) {
         ${field("العنوان الوظيفي", "job_title", emp)}
         ${field("الدرجة الوظيفية", "job_grade", emp)}
         ${field("تاريخ التعيين", "appointment_date", emp, {date:true})}
-        ${fixedCompanyField("القسم", "department", _companyConfig?.department_name ?? emp?.department ?? "")}
+        ${fixedCompanyField("القسم", "department", fixedDepartment(emp))}
         ${fixedCompanyField("الشعبة / الوحدة", "division", _companyConfig?.division_name ?? emp?.division ?? "")}
         ${field("تاريخ المباشرة", "hire_date", emp, {date:true})}
         ${field("نوع التوظيف", "contract_type", emp, {type:"select", options:[["","—"],["ملاك","ملاك"],["عقد","عقد"],["تنسيب","تنسيب"],["تكليف","تكليف"],["اجر يومي","اجر يومي"]]})}
@@ -1419,7 +1424,7 @@ function renderPanel(emp) {
         <div id="emp-panel-photo">${headerPhotoHtml(draft)}</div>
         <div style="min-width:0">
           <h3 style="font-weight:700;font-size:15px">${isNew ? "إضافة موظف جديد" : escHtml(emp.full_name)}</h3>
-          ${!isNew ? `<p style="font-size:11px;color:var(--ui-text-faint)">${escHtml(emp.job_title??"")} ${emp.department ? "· "+escHtml(emp.department) : ""}</p>` : ""}
+          ${!isNew ? `<p style="font-size:11px;color:var(--ui-text-faint)">${escHtml(emp.job_title??"")} ${fixedDepartment(emp) ? "· "+escHtml(fixedDepartment(emp)) : ""}</p>` : ""}
         </div>
         ${!isNew ? `<span class="emp-pill ${emp.is_active ? "ok" : "none"}">${emp.is_active ? "نشط" : "غير نشط"}</span>` : ""}
       </div>
@@ -1538,7 +1543,7 @@ function renderPanel(emp) {
       contract_type:         g("contract_type"),
       work_schedule:         g("work_schedule"),
       work_type_notes:       g("work_type_notes"),
-      department:            _companyConfig?.department_name ?? g("department"),
+      department:            fixedDepartment(_panelDraft),
       division:              _companyConfig?.division_name ?? g("division"),
       phone:                 g("phone"),
       email:                 g("email"),

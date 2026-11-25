@@ -1244,6 +1244,15 @@ pub fn get_employee(conn: &Connection, id: i64) -> AppResult<Employee> {
 
 /// Rebuilds the employee's combined names from their parts (see names.rs) and returns the
 /// data to save plus the `name_parts` JSON to store beside it.
+/// Every employee is in the department set in Settings: when one is set there, it is the
+/// employee's department, whatever the screen sent (a department read from an ID is only a check).
+fn fix_department(conn: &Connection, d: &mut EmployeeData) {
+    let fixed: Option<String> = conn.query_row("SELECT department_name FROM company_config WHERE id=1", [], |r| r.get(0)).ok().flatten();
+    if let Some(name) = fixed.map(|n| n.trim().to_string()).filter(|n| !n.is_empty()) {
+        d.department = Some(name);
+    }
+}
+
 fn resolve_employee_names(conn: &Connection, id: Option<i64>, d: &EmployeeData) -> AppResult<(EmployeeData, String)> {
     let stored = match id {
         Some(id) => conn.query_row("SELECT name_parts FROM employees WHERE id=?1", params![id], |r| r.get::<_, Option<String>>(0))
@@ -1269,7 +1278,8 @@ fn resolve_employee_names(conn: &Connection, id: Option<i64>, d: &EmployeeData) 
 
 pub fn create_employee(conn: &Connection, d: &EmployeeData, username: &str) -> AppResult<Employee> {
     assert_permission(conn, username, "employees.create")?;
-    let (d, name_parts) = resolve_employee_names(conn, None, d)?;
+    let (mut d, name_parts) = resolve_employee_names(conn, None, d)?;
+    fix_department(conn, &mut d);
     let d = &d;
     validate_employee_data(d)?;
     conn.execute("INSERT INTO employees(employee_number,full_name,mother_name,father_birthplace,mother_birthplace,
@@ -1325,7 +1335,8 @@ fn address_parts(d: &EmployeeData) -> Option<String> {
 
 pub fn update_employee(conn: &Connection, id: i64, d: &EmployeeData, username: &str) -> AppResult<Employee> {
     assert_permission(conn, username, "employees.edit")?;
-    let (d, name_parts) = resolve_employee_names(conn, Some(id), d)?;
+    let (mut d, name_parts) = resolve_employee_names(conn, Some(id), d)?;
+    fix_department(conn, &mut d);
     let d = &d;
     validate_employee_data(d)?;
     conn.execute("UPDATE employees SET employee_number=?1,full_name=?2,mother_name=?3,father_birthplace=?4,
