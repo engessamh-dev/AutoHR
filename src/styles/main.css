@@ -574,10 +574,21 @@
 /* ── Employee panel: collapsible sections, status chips, unified attachment tiles ── */
 #tab-content{--emp-ok:#22c55e;--emp-warn:#f59e0b;--emp-bad:#ef4444}
 .emp-grid{display:grid;grid-template-columns:1fr 1fr;gap:10px 12px}
-.emp-chips{position:sticky;top:-16px;z-index:3;display:flex;flex-wrap:wrap;gap:6px;margin:-16px -20px 10px;padding:10px 20px;background:var(--ui-sunken);border-bottom:1px solid var(--ui-line)}
-.emp-chip{display:inline-flex;align-items:center;gap:6px;padding:4px 10px;border:1px solid var(--ui-line);border-radius:999px;background:var(--ui-surface-2);color:var(--ui-text-strong);font-size:12px;cursor:pointer}
-.emp-chip:hover,.emp-chip:focus-visible{border-color:var(--ui-accent);outline:none}
 .emp-dot{width:8px;height:8px;border-radius:50%;flex-shrink:0;background:#4b5563}
+/* One line per employee, also when the panel narrows the list (it scrolls sideways). */
+#emp-table-wrap th,#emp-table-wrap td{white-space:nowrap}
+.emp-doc-cell{display:inline-flex;align-items:center;gap:6px;font-size:12px;color:var(--ui-text-strong);white-space:nowrap}
+.emp-doc-cell.is-ok,.emp-doc-cell.is-none{color:var(--ui-text-faint)}
+.emp-fixed{position:relative}
+.emp-fixed .input-field{background:var(--ui-sunken);color:var(--ui-text-muted);border-style:dashed;cursor:default;padding-left:30px}
+.emp-fixed .input-field:focus{box-shadow:none;border-color:var(--ui-line)}
+.emp-fixed svg{position:absolute;left:10px;top:50%;width:14px;height:14px;transform:translateY(-50%);fill:none;stroke:var(--ui-text-faint);stroke-width:2;stroke-linecap:round;pointer-events:none}
+textarea.emp-grow{min-height:0;height:auto;overflow:hidden;field-sizing:content;max-height:240px}
+/* A wide employee panel (big screens) takes three fields per row. */
+@container (min-width:700px){
+  #tab-content .emp-grid{grid-template-columns:repeat(3,minmax(0,1fr))}
+  #tab-content .emp-grid>[style*="span 2"]{grid-column:1 / -1!important}
+}
 .emp-dot.ok{background:#22c55e}.emp-dot.warn{background:#f59e0b}.emp-dot.bad{background:#ef4444}
 .emp-pill{display:inline-flex;align-items:center;white-space:nowrap;font-size:11px;line-height:1.5;padding:0 8px;border-radius:999px;border:1px solid var(--ui-line);color:var(--ui-text-muted);background:var(--ui-sunken)}
 .emp-pill.ok{color:var(--ui-ok);border-color:var(--ui-ok-line);background:var(--ui-ok-bg)}

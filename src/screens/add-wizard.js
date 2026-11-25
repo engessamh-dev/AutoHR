@@ -16,10 +16,10 @@ import { showToast, escHtml, AIRPORT_ZONES } from "../utils.js";
 import { addressHtml, wireAddress, readAddress, composeResidence, citySuggestions, loadAddressPlaces, addressIsEmpty } from "../address-field.js";
 import { joinNameParts } from "./name-fields.js";
 import { mergeSides } from "./id-reader.js";
+import { alertWindowDays, documentStatus } from "./document-alerts.js";
 
 const IMAGE_EXTENSIONS = ["jpg", "jpeg", "png", "webp"];
 const NAME4 = [["first", "الاسم"], ["father", "الأب"], ["grandfather", "الجد"], ["surname", "اللقب"]];
-const NAME2 = [["first", "الاسم"], ["father", "الأب"]];
 const LATIN = [["given", "Given names"], ["surname", "Surname"]];
 const GENDERS = ["ذكر", "أنثى"];
 const BLOOD = ["A+", "A-", "B+", "B-", "AB+", "AB-", "O+", "O-"];
@@ -31,7 +31,7 @@ const STEPS = [
     hint: "ارفع الوجهين، وتظهر البيانات المقروءة بجانبهما مباشرة",
     fields: [
       { key: "full_name", label: "اسم الموظف الرباعي واللقب", name: NAME4, full: true },
-      { key: "mother_name", label: "اسم الأم", name: NAME2, ocrName: { first: "mother_first", father: "mother_father" }, full: true },
+      { key: "mother_name", label: "اسم الأم", name: NAME4, ocrName: { first: "mother_first", father: "mother_father" }, full: true },
       { key: "gender", label: "الجنس", ocr: "gender", options: GENDERS },
       { key: "birthdate", label: "تاريخ الولادة", ocr: "birthdate", date: true },
       { key: "birthplace", label: "محل الولادة", ocr: "birthplace" },
@@ -47,38 +47,13 @@ const STEPS = [
   { id: "passport", title: "جواز السفر", short: "الجواز", sides: ["page"],
     hint: "صفحة البيانات تكفي، والشريط السفلي يُطابق المواليد والجنس",
     fields: [
-      { key: "passport_name", label: "الاسم بالإنجليزية", name: LATIN, ocrName: { given: "latin_given", surname: "latin_surname" }, latin: true, full: true },
-      { key: "passport_no", label: "رقم الجواز", ocr: "passport_no", ltr: true },
-      { key: "passport_type", label: "نوع الجواز", ocr: "passport_type", options: ["P", "D", "S"], ltr: true },
+      { key: "passport_name", label: "الاسم حسب الجواز", name: LATIN, ocrName: { given: "latin_given", surname: "latin_surname" }, latin: true, full: true },
+      { key: "passport_no", label: "رقم جواز السفر", ocr: "passport_no", ltr: true },
+      { key: "passport_type", label: "نوع جواز السفر", ocr: "passport_type", options: ["P", "D", "S"], ltr: true },
       { key: "passport_issue_date", label: "تاريخ الإصدار", ocr: "issue_date", date: true },
       { key: "passport_expiry_date", label: "تاريخ النفاذ", ocr: "expiry_date", date: true },
       { key: "birthdate", label: "تاريخ الولادة", ocr: "birthdate", date: true },
       { key: "gender", label: "الجنس", ocr: "gender", options: GENDERS },
-    ] },
-  { id: "ministry", title: "هوية وزارة النقل", short: "هوية الوزارة", sides: ["front", "back"],
-    sideLabels: { front: "الوجه العربي", back: "الوجه الإنكليزي" }, keepOnly: ["back"],
-    hint: "تُقرأ البيانات من الوجه العربي: القسم والعنوان الوظيفي ورقم الهوية ونفاذها، ويُطابَق الاسم مع البطاقة الوطنية. الوجه الإنكليزي يُحفظ مرفقًا فقط",
-    fields: [
-      { key: "job_title", label: "العنوان الوظيفي", ocr: "job_title" },
-      { key: "department", label: "القسم", ocr: "department", fixed: true },
-      { key: "ministry_badge_no", label: "رقم الهوية", ocr: "doc_number", ltr: true },
-      { key: "ministry_badge_issue_date", label: "تاريخ الإصدار", ocr: "issue_date", date: true },
-      { key: "ministry_badge_expiry", label: "تاريخ النفاذ", ocr: "expiry_date", date: true },
-    ] },
-  { id: "airport", title: "باج مطار بغداد", short: "باج المطار", sides: ["front", "back"],
-    hint: "الحروف أسفل الباج هي صلاحيات حامله",
-    fields: [
-      { key: "job_title", label: "العنوان الوظيفي", ocr: "job_title" },
-      { key: "airport_badge_no", label: "رقم الباج", ocr: "doc_number", ltr: true },
-      { key: "airport_badge_issue_date", label: "تاريخ الإصدار", ocr: "issue_date", date: true },
-      { key: "airport_badge_expiry", label: "تاريخ النفاذ", ocr: "expiry_date", date: true },
-      { key: "airport_badge_zones", label: "صلاحيات الباج", ocr: "zones", chips: true, full: true },
-    ] },
-  { id: "ration", title: "البطاقة التموينية", short: "التموينية", sides: ["page"],
-    hint: "رقم البطاقة يُقرأ من رمز QR",
-    fields: [
-      { key: "ration_card_no", label: "رقم البطاقة التموينية", ocr: "ration_no", ltr: true },
-      { key: "ration_center_name", label: "اسم رب الأسرة", ocr: "head_name" },
     ] },
   { id: "residence", title: "بطاقة السكن", short: "السكن", sides: ["front", "back"],
     hint: "البطاقة القديمة: يُقرأ رقمها المطبوع فقط، والباقي بخط اليد فانقله من الصورة",
@@ -90,21 +65,50 @@ const STEPS = [
       { key: "residence_form_no", label: "رقم الاستمارة", ocr: "form_no", ltr: true },
       { key: "residence_address", label: "عنوان السكن", ocr: "address", address: true, full: true },
     ] },
+  { id: "ration", title: "البطاقة التموينية الإلكترونية", short: "التموينية", sides: ["page"],
+    hint: "رقم البطاقة يُقرأ من رمز QR",
+    fields: [
+      { key: "ration_card_no", label: "رقم البطاقة التموينية", ocr: "ration_no", ltr: true },
+      { key: "ration_center_name", label: "اسم رب الأسرة", ocr: "head_name" },
+    ] },
+  { id: "airport", title: "باج دخول مطار بغداد", short: "باج المطار", sides: ["front", "back"],
+    hint: "الحروف أسفل الباج هي صلاحيات حامله",
+    fields: [
+      { key: "job_title", label: "العنوان الوظيفي", ocr: "job_title" },
+      { key: "airport_badge_no", label: "رقم الباج", ocr: "doc_number", ltr: true },
+      { key: "airport_badge_issue_date", label: "تاريخ الإصدار", ocr: "issue_date", date: true },
+      { key: "airport_badge_expiry", label: "تاريخ النفاذ", ocr: "expiry_date", date: true },
+      { key: "airport_badge_zones", label: "صلاحيات الباج", ocr: "zones", chips: true, full: true },
+    ] },
+  { id: "ministry", title: "هوية وزارة النقل", short: "هوية الوزارة", sides: ["front", "back"],
+    sideLabels: { front: "الوجه العربي", back: "الوجه الإنكليزي" }, keepOnly: ["back"],
+    hint: "تُقرأ البيانات من الوجه العربي: القسم والعنوان الوظيفي ورقم الهوية ونفاذها، ويُطابَق الاسم مع البطاقة الوطنية. الوجه الإنكليزي يُحفظ مرفقًا فقط",
+    fields: [
+      { key: "job_title", label: "العنوان الوظيفي", ocr: "job_title" },
+      { key: "department", label: "القسم", ocr: "department", fixed: true },
+      { key: "ministry_badge_no", label: "رقم الهوية", ocr: "doc_number", ltr: true },
+      { key: "ministry_badge_issue_date", label: "تاريخ الإصدار", ocr: "issue_date", date: true },
+      { key: "ministry_badge_expiry", label: "تاريخ النفاذ", ocr: "expiry_date", date: true },
+    ] },
   { id: "family", title: "أفراد الأسرة", short: "الأسرة",
     hint: "ارفع بطاقة كل فرد. للأبناء يُنقل الأب والجد واللقب من الموظف" },
   { id: "summary", title: "الملخص والحفظ", short: "الملخص",
     hint: "أكمل ما لا يوجد في أي مستمسك، ثم احفظ" },
 ];
+// The reminder settings of each document (see «إعدادات التنبيهات»).
+const ALERT_KEYS = { national: "national", passport: "passport", ministry: "ministry", airport: "airport" };
 const MANUAL = [
+  { key: "employee_number", label: "الرقم الوظيفي", ltr: true },
   { key: "phone", label: "رقم الهاتف", ltr: true, placeholder: "07xx xxx xxxx" },
   { key: "email", label: "البريد الإلكتروني", ltr: true },
-  { key: "hire_date", label: "تاريخ التعيين", date: true },
+  { key: "appointment_date", label: "تاريخ التعيين", date: true },
+  { key: "hire_date", label: "تاريخ المباشرة (اختياري)", date: true, optional: true },
   { key: "job_title", label: "العنوان الوظيفي" },
   { key: "marital_status", label: "الحالة الاجتماعية", options: MARITAL },
 ];
 const MEMBER_FIELDS = [
   { key: "name", label: "الاسم الرباعي واللقب", name: NAME4, full: true },
-  { key: "mother_name", label: "اسم الأم", name: NAME2, ocrName: { first: "mother_first", father: "mother_father" }, full: true, spouseOnly: true },
+  { key: "mother_name", label: "اسم الأم", name: NAME4, ocrName: { first: "mother_first", father: "mother_father" }, full: true, spouseOnly: true },
   { key: "gender", label: "الجنس", ocr: "gender", options: GENDERS },
   { key: "birthdate", label: "تاريخ الولادة", ocr: "birthdate", date: true },
   { key: "civil_id", label: "الرقم الوطني", ocr: "national_no", ltr: true },
@@ -557,7 +561,7 @@ function openWizard({ user, employees, onCreated, resume = null }) {
       const named = state.members.filter(m => !isEmpty(m.values.name?.value)).length;
       return { filled: named, total: state.members.length };
     }
-    const fields = s.id === "summary" ? MANUAL : s.fields ?? [];
+    const fields = s.id === "summary" ? MANUAL.filter(f => !f.optional) : s.fields ?? [];
     const own = fields.filter(f => {
       if (f.fixed) return !!department || !!state.docs[s.id]?.readings?.[f.key];
       const entry = state.values[f.key];
@@ -841,14 +845,21 @@ function openWizard({ user, employees, onCreated, resume = null }) {
   }
 
   function summaryBody() {
-    const missing = MANUAL.filter(f => isEmpty(state.values[f.key]?.value));
+    const missing = MANUAL.filter(f => !f.optional && isEmpty(state.values[f.key]?.value));
     const card = (title, rows, status = "") => `<div class="aw-sum-card"><h4>${title}${status}</h4>${rows.filter(([, v]) => v).map(([k, v]) => `<div><span>${k}</span><span>${escHtml(v)}</span></div>`).join("") || `<div><span>لم يُرفع</span><span></span></div>`}</div>`;
     const v = key => shown({ name: ["full_name", "mother_name", "passport_name"].includes(key) ? NAME4 : null, latin: key === "passport_name" }, state.values[key]?.value);
-    const expiry = key => {
-      const date = text(state.values[key]?.value);
-      if (!date) return "";
-      const days = Math.round((new Date(date) - new Date()) / 86400000);
-      return days < 0 ? `<span class="emp-pill bad">منتهٍ</span>` : days <= 60 ? `<span class="emp-pill warn">ينتهي بعد ${days} يومًا</span>` : `<span class="emp-pill ok">حتى ${date.slice(0, 4)}</span>`;
+    // The same status, wording and day count as the documents tab of the employee file.
+    const status = id => {
+      const step = STEPS.find(st => st.id === id);
+      const expiryField = step.fields.find(f => f.date && /expiry/.test(f.key));
+      const result = documentStatus({
+        values: step.fields.map(f => shown(f, state.values[f.key]?.value)),
+        expiry: expiryField ? text(state.values[expiryField.key]?.value) : null,
+        maxDays: ALERT_KEYS[id] ? alertWindowDays(ALERT_KEYS[id]) : -1,
+        attached: Object.keys(state.docs[id].images).length,
+        expected: step.sides.length,
+      });
+      return result.tone === "none" && result.label === "لا توجد بيانات" ? "" : `<span class="emp-pill ${result.tone}">${result.label}</span>`;
     };
     return `<div class="aw-summary">
       <div class="aw-manual ${missing.length ? "" : "is-done"}"><p>${missing.length ? `تبقّت ${missing.length} حقول لا توجد في المستمسكات التي رفعتها` : "كل الحقول مكتملة"}</p>
@@ -857,12 +868,12 @@ function openWizard({ user, employees, onCreated, resume = null }) {
         ${card("البيانات الشخصية", [["الاسم", v("full_name")], ["الأم", v("mother_name")], ["الولادة", [v("birthdate"), v("birthplace")].filter(Boolean).join(" · ")], ["الجنس والدم", [v("gender"), v("blood_type")].filter(Boolean).join(" · ")]])}
         ${card("الوظيفة", [["القسم", departmentValue() ?? ""], ["العنوان الوظيفي", v("job_title")], ["صلاحيات الباج", v("airport_badge_zones").replaceAll(",", " · ")]])}
         ${card("الأسرة", state.members.map((m, i) => [RELATIONS.find(r => r[0] === m.relation)?.[1] ?? `فرد ${i + 1}`, joinNameParts(m.values.name?.value)]))}
-        ${card("البطاقة الوطنية", [["الرقم", v("civil_id")]], expiry("civil_id_expiry_date"))}
-        ${card("جواز السفر", [["الرقم", v("passport_no")]], expiry("passport_expiry_date"))}
-        ${card("هوية الوزارة", [["الرقم", v("ministry_badge_no")]], expiry("ministry_badge_expiry"))}
-        ${card("باج المطار", [["الرقم", v("airport_badge_no")]], expiry("airport_badge_expiry"))}
-        ${card("التموينية", [["الرقم", v("ration_card_no")]])}
-        ${card("بطاقة السكن", [["الرقم", v("residence_card_no")]])}
+        ${card("البطاقة الوطنية", [["الرقم", v("civil_id")]], status("national"))}
+        ${card("جواز السفر", [["الرقم", v("passport_no")]], status("passport"))}
+        ${card("بطاقة السكن", [["الرقم", v("residence_card_no")]], status("residence"))}
+        ${card("البطاقة التموينية الإلكترونية", [["الرقم", v("ration_card_no")]], status("ration"))}
+        ${card("باج دخول مطار بغداد", [["الرقم", v("airport_badge_no")]], status("airport"))}
+        ${card("هوية وزارة النقل", [["الرقم", v("ministry_badge_no")]], status("ministry"))}
       </div></div>`;
   }
 
@@ -1219,7 +1230,7 @@ function openWizard({ user, employees, onCreated, resume = null }) {
       name_parts: Object.fromEntries(Object.entries(names).filter(([, parts]) => parts).map(([key, parts]) => [key, { ...parts, review: false }])),
       is_active: 1,
     };
-    const plain = ["gender", "birthdate", "birthplace", "blood_type", "marital_status", "job_title", "department", "hire_date", "phone", "email",
+    const plain = ["employee_number", "gender", "birthdate", "birthplace", "blood_type", "marital_status", "job_title", "department", "appointment_date", "hire_date", "phone", "email",
       "civil_id", "civil_id_issuer", "civil_id_issue_date", "civil_id_expiry_date", "civil_id_family_number",
       "passport_no", "passport_type", "passport_issue_date", "passport_expiry_date",
       "ministry_badge_no", "ministry_badge_issue_date", "ministry_badge_expiry",

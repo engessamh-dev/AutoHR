@@ -52,7 +52,7 @@ const fieldGroups = [
   {
     title: "البطاقة الوطنية",
     fields: [
-      ["civil_id", "رقم البطاقة الوطنية"],
+      ["civil_id", "الرقم الوطني"],
       ["civil_id_issuer", "جهة إصدار البطاقة الوطنية"],
       ["civil_id_issue_date", "تاريخ إصدار البطاقة الوطنية", "date"],
       ["civil_id_expiry_date", "تاريخ نفاذ البطاقة الوطنية", "date"],

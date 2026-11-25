@@ -13,7 +13,7 @@ import { openNameReview } from "./name-review.js";
 import { employeeNameFields, recordNameFields, bindNameFields, readNameFields, readNameGroup, applyNames, joinNameParts } from "./name-fields.js";
 import { readDocumentFields } from "./id-reader.js";
 import { openAddEmployee } from "./add-wizard.js";
-import { alertWindowDays, loadAlertRules } from "./document-alerts.js";
+import { alertWindowDays, loadAlertRules, documentStatus, buildDocumentAlerts } from "./document-alerts.js";
 
 let _employees = [];
 let _filter = "";
@@ -24,7 +24,6 @@ let _visibleRows = TABLE_STEP;
 let _activeTab = "basic";
 let _panelDraft = null;
 let _panelDirty = false;
-let _skipNextSaveConfirmation = false;
 // Save keeps the panel open; these make one save close it, or continue with an upload.
 let _closeAfterSave = false;
 let _afterSave = null;
@@ -102,7 +101,7 @@ export async function renderEmployees(container, user, ctx) {
       <div id="emp-table-wrap" class="card overflow-auto flex-1"></div>
     </div>
     <div id="emp-overlay" style="display:none;position:fixed;inset:0;z-index:40;background:rgba(0,0,0,0.38)"></div>
-    <div id="emp-panel" style="position:fixed;top:0;bottom:0;right:0;width:min(580px,100vw);z-index:50;
+    <div id="emp-panel" style="position:fixed;top:0;bottom:0;right:0;width:min(100vw,max(580px,40vw));container-type:inline-size;z-index:50;
       background:var(--ui-surface);border-left:1px solid var(--ui-line);box-shadow:-8px 0 32px rgba(0,0,0,0.5);
       display:flex;flex-direction:column;transform:translateX(calc(100% + 40px));transition:transform 0.3s ease"></div>`;
 
@@ -165,12 +164,26 @@ function filtered() {
   );
 }
 
+/** The list's «المستمسكات» column: what has expired or is close to expiry, by the reminder settings. */
+function documentsCell(employee, alertsById) {
+  if (!employee.is_active) return `<span class="emp-doc-cell is-none">—</span>`;
+  const alerts = alertsById.get(employee.id) ?? [];
+  const expired = alerts.filter(a => a.expired).length;
+  const soon = alerts.length - expired;
+  if (!alerts.length) return `<span class="emp-doc-cell is-ok"><span class="emp-dot ok" aria-hidden="true"></span>سليمة</span>`;
+  const parts = [expired && `${expired} منتهٍ`, soon && `${soon} قارب`].filter(Boolean).join(" · ");
+  const names = alerts.map(a => `${a.documentName}: ${a.expired ? "منتهٍ" : "قارب على النفاذ"} (${formatDate(a.expiryDate)})`).join("\n");
+  return `<span class="emp-doc-cell" title="${escHtml(names)}"><span class="emp-dot ${expired ? "bad" : "warn"}" aria-hidden="true"></span>${parts}</span>`;
+}
+
 function renderTable({ keepVisibleRows = false } = {}) {
   const wrap = document.getElementById("emp-table-wrap");
   if (!wrap) return;
   if (!keepVisibleRows) _visibleRows = TABLE_STEP;
   const matching = filtered();
   const rows = matching.slice(0, _visibleRows);
+  const alertsById = new Map();
+  buildDocumentAlerts(rows).forEach(alert => alertsById.set(alert.employeeId, [...(alertsById.get(alert.employeeId) ?? []), alert]));
   const hiddenCount = matching.length - rows.length;
   const countEl = document.getElementById("emp-count");
   if (countEl) countEl.textContent = `${matching.length} / ${_employees.length}`;
@@ -181,20 +194,22 @@ function renderTable({ keepVisibleRows = false } = {}) {
   wrap.innerHTML = `
     <table class="w-full">
       <thead><tr>
+        <th class="table-header">الرقم الوظيفي</th>
         <th class="table-header">الاسم الرباعي</th>
         <th class="table-header">العنوان الوظيفي</th>
-        <th class="table-header">القسم</th>
+        <th class="table-header">المستمسكات</th>
         <th class="table-header">الهاتف</th>
         <th class="table-header">الحالة</th>
       </tr></thead>
       <tbody>
         ${rows.length === 0
-          ? `<tr><td colspan="5" class="table-cell text-center text-gray-500 py-10">${emptyMessage}</td></tr>`
+          ? `<tr><td colspan="6" class="table-cell text-center text-gray-500 py-10">${emptyMessage}</td></tr>`
           : rows.map(e => `
             <tr class="table-row" data-id="${e.id}" style="cursor:pointer">
+              <td class="table-cell" dir="ltr" style="text-align:right">${escHtml(e.employee_number || "—")}</td>
               <td class="table-cell font-medium text-gray-100">${escHtml(e.full_name)}</td>
               <td class="table-cell">${escHtml(e.job_title ?? "—")}</td>
-              <td class="table-cell">${escHtml(fixedDepartment(e) || "—")}</td>
+              <td class="table-cell">${documentsCell(e, alertsById)}</td>
               <td class="table-cell" dir="ltr">${escHtml(e.phone ?? "—")}</td>
               <td class="table-cell">
                 <span class="badge ${e.is_active ? "badge-green" : "badge-gray"}">
@@ -291,7 +306,6 @@ async function closePanel(force = false) {
     const choice = await confirmSaveChanges();
     if (choice === "cancel") return;
     if (choice === "save") {
-      _skipNextSaveConfirmation = true;
       _closeAfterSave = true;
       document.getElementById("panel-save")?.click();
       return;
@@ -412,7 +426,7 @@ function field(label, id, emp, opts = {}) {
   if (opts.type === "textarea") {
     return `<div style="${opts.span ? 'grid-column:span 2' : ''}">
       <p style="font-size:11px;color:var(--ui-text-faint);text-transform:uppercase;letter-spacing:.05em;margin-bottom:4px">${label}</p>
-      <textarea id="f-${id}" class="input-field" style="height:70px;resize:none">${val}</textarea></div>`;
+      <textarea id="f-${id}" class="input-field${opts.grow ? " emp-grow" : ""}" rows="1" style="${opts.grow ? "" : "height:70px;"}resize:none">${val}</textarea></div>`;
   }
   return `<div style="${opts.span ? 'grid-column:span 2' : ''}">
     <p style="font-size:11px;color:var(--ui-text-faint);text-transform:uppercase;letter-spacing:.05em;margin-bottom:4px">${label}</p>
@@ -494,10 +508,14 @@ function fixedDepartment(emp) {
   return (_companyConfig?.department_name ?? "").trim() || emp?.department || "";
 }
 
+/** A value set once for the whole company (Settings): shown faded with a lock, not typed here. */
 function fixedCompanyField(label, id, value) {
   return `<div>
     <p style="font-size:11px;color:var(--ui-text-faint);text-transform:uppercase;letter-spacing:.05em;margin-bottom:4px">${label}</p>
-    <input id="f-${id}" class="input-field" type="text" value="${escHtml(value ?? "")}" readonly />
+    <div class="emp-fixed" title="يُغيَّر من «الإعدادات ← الجهة والشعار»">
+      <input id="f-${id}" class="input-field" type="text" value="${escHtml(value ?? "")}" readonly tabindex="-1" aria-readonly="true" />
+      <svg aria-hidden="true" viewBox="0 0 24 24"><rect x="5" y="11" width="14" height="9" rx="2"/><path d="M8 11V8a4 4 0 0 1 8 0v3"/></svg>
+    </div>
   </div>`;
 }
 
@@ -736,24 +754,6 @@ function daysUntil(dateStr) {
   return Math.round((date - today) / 86400000);
 }
 
-// Arabic number agreement: يومين، 3–10 أيام، 11+ يوماً
-function arabicDays(count) {
-  if (count === 1) return "يوم واحد";
-  if (count === 2) return "يومين";
-  const tens = count % 100;
-  return tens >= 3 && tens <= 10 ? `${count} أيام` : `${count} يوماً`;
-}
-
-function documentStatus({ values, expiry, maxDays, attached, expected }) {
-  const days = daysUntil(expiry);
-  if (days !== null && days < 0) return { tone: "bad", label: "منتهٍ" };
-  if (days !== null && days <= maxDays) return { tone: "warn", label: days === 0 ? "ينتهي اليوم" : days === 1 ? "ينتهي غداً" : `ينتهي خلال ${arabicDays(days)}` };
-  const hasData = values.some(value => String(value ?? "").trim());
-  if (!hasData && attached === 0) return { tone: "none", label: "لا توجد بيانات" };
-  if (attached < expected) return { tone: "none", label: "مرفق ناقص" };
-  return { tone: "ok", label: "مكتمل" };
-}
-
 function documentSections(emp) {
   const hasId = Boolean(emp?.id);
   const sided = (type, prefix) => [
@@ -766,7 +766,7 @@ function documentSections(emp) {
       key: "national", title: "البطاقة الوطنية", expiry: "civil_id_expiry_date", maxDays: alertWindowDays("national"),
       keys: ["civil_id", "civil_id_issuer", "civil_id_issue_date", "civil_id_expiry_date", "civil_id_family_number"],
       fields: [
-        field("رقم البطاقة الوطنية", "civil_id", emp, {ltr:true, span:true}),
+        field("الرقم الوطني", "civil_id", emp, {ltr:true, span:true}),
         field("جهة الإصدار", "civil_id_issuer", emp),
         field("تاريخ الإصدار", "civil_id_issue_date", emp, {date:true}),
         field("تاريخ النفاذ", "civil_id_expiry_date", emp, {date:true}),
@@ -813,7 +813,7 @@ function documentSections(emp) {
       key: "airport", title: "باج دخول مطار بغداد", expiry: "airport_badge_expiry", maxDays: alertWindowDays("airport"),
       keys: ["airport_badge_no", "airport_badge_issue_date", "airport_badge_expiry"],
       fields: [
-        field("رقم الهوية", "airport_badge_no", emp, {ltr:true, span:true}),
+        field("رقم الباج", "airport_badge_no", emp, {ltr:true, span:true}),
         field("تاريخ الإصدار", "airport_badge_issue_date", emp, {date:true}),
         field("تاريخ النفاذ", "airport_badge_expiry", emp, {date:true}),
         zonesField("صلاحيات الباج", "airport_badge_zones", emp),
@@ -846,8 +846,6 @@ function documentSections(emp) {
 function documentsTabHtml(emp) {
   const isNew = !emp?.id;
   const sections = documentSections(emp);
-  const chips = sections.map(section => `<button type="button" class="emp-chip" data-jump="${section.key}" title="${section.status.label}">
-      <span class="emp-dot ${section.status.tone}" aria-hidden="true"></span>${section.title}</button>`).join("");
   const body = sections.map(section => {
     const expiryValue = section.expiry ? emp?.[section.expiry] : "";
     const meta = `${expiryValue ? `<span>النفاذ: ${formatDate(expiryValue)}</span>` : ""}<span>المرفقات ${section.attached}/${section.expected}</span>`;
@@ -858,8 +856,7 @@ function documentsTabHtml(emp) {
       status: section.status, meta, open: isNew || ["bad", "warn"].includes(section.status.tone),
     });
   }).join("");
-  return `<div class="emp-chips">${chips}</div>
-    <div class="emp-sec-tools"><button type="button" class="emp-link" data-sections-all="open">فتح الكل</button><button type="button" class="emp-link" data-sections-all="close">طيّ الكل</button></div>
+  return `    <div class="emp-sec-tools"><button type="button" class="emp-link" data-sections-all="open">فتح الكل</button><button type="button" class="emp-link" data-sections-all="close">طيّ الكل</button></div>
     ${body}`;
 }
 
@@ -914,7 +911,7 @@ const printableDocumentDefinitions = [
     id: "national",
     title: "البطاقة الوطنية",
     fields: [
-      ["رقم البطاقة الوطنية", "civil_id"],
+      ["الرقم الوطني", "civil_id"],
       ["جهة الإصدار", "civil_id_issuer"],
       ["تاريخ الإصدار", "civil_id_issue_date"],
       ["تاريخ النفاذ", "civil_id_expiry_date"],
@@ -955,7 +952,7 @@ const printableDocumentDefinitions = [
     fields: [
       ["رقم بطاقة السكن", "residence_card_no"],
       ["تاريخ الإصدار", "residence_card_issue_date"],
-      ["عنوان السكن الحالي", "residence_address"],
+      ["عنوان السكن", "residence_address"],
     ],
     attachments: [
       ["الوجه الأمامي", "residence_card_front_path", "residence_card_front_full_path"],
@@ -977,7 +974,7 @@ const printableDocumentDefinitions = [
     fields: [
       ["تاريخ الإصدار", "airport_badge_issue_date"],
       ["تاريخ النفاذ", "airport_badge_expiry"],
-      ["رقم الهوية", "airport_badge_no"],
+      ["رقم الباج", "airport_badge_no"],
     ],
     attachments: [
       ["الوجه الأمامي", "airport_badge_front_path", "airport_badge_front_full_path"],
@@ -1030,12 +1027,12 @@ function parseFamilyMembers(emp) {
 }
 
 function spouseSectionConfig(emp) {
-  if (!["متزوج", "أرمل", "ارمل"].includes(emp?.marital_status)) return null;
+  if (!["متزوج", "أرمل", "ارمل", "مطلق"].includes(emp?.marital_status)) return null;
   if (emp?.gender === "ذكر") {
-    return { title: "معلومات الزوجات", itemLabel: "زوجة", addLabel: "إضافة زوجة", emptyLabel: "لا توجد زوجات مسجلات", max: 4, defaultGender: "أنثى" };
+    return { title: "الزوجات", itemLabel: "زوجة", addLabel: "إضافة زوجة", emptyLabel: "لا توجد زوجات مسجلات", max: 4, defaultGender: "أنثى" };
   }
   if (emp?.gender === "أنثى") {
-    return { title: "معلومات الزوج", itemLabel: "زوج", addLabel: "إضافة زوج", emptyLabel: "لا يوجد زوج مسجل", max: 1, defaultGender: "ذكر" };
+    return { title: "الزوج", itemLabel: "زوج", addLabel: "إضافة زوج", emptyLabel: "لا يوجد زوج مسجل", max: 1, defaultGender: "ذكر" };
   }
   return null;
 }
@@ -1187,7 +1184,7 @@ function openDocumentsPrintDialog(emp) {
 
 // ── Tabs ────────────────────────────────────────────────────────────────────
 const TABS = [
-  { id: "basic",       label: "المعلومات الوظيفية" },
+  { id: "basic",       label: "البيانات الأساسية" },
   { id: "documents",   label: "المستمسكات" },
   { id: "family",      label: "أفراد الأسرة" },
   { id: "vehicle",     label: "المركبات" },
@@ -1202,8 +1199,8 @@ function tabContent(tab, emp) {
         ${employeeNameFields("اسم الأم", "mother_name", emp)}
         ${field("الجنس", "gender", emp, {type:"select", options:[["","—"],["ذكر","ذكر"],["أنثى","أنثى"]]})}
         ${field("الحالة الاجتماعية", "marital_status", emp, {type:"select", options:[["","—"],["أعزب","أعزب"],["متزوج","متزوج"],["مطلق","مطلق"],["أرمل","أرمل"]]})}
-        ${field("تاريخ ولادة الموظف", "birthdate", emp, {date:true})}
-        ${field("محل ولادة الموظف", "birthplace", emp)}
+        ${field("تاريخ الولادة", "birthdate", emp, {date:true})}
+        ${field("محل الولادة", "birthplace", emp)}
         ${field("فصيلة الدم", "blood_type", emp, {type:"select", options:[["","—"],["A+","A+"],["A-","A-"],["B+","B+"],["B-","B-"],["AB+","AB+"],["AB-","AB-"],["O+","O+"],["O-","O-"]]})}
         ${field("رقم الهاتف", "phone", emp, {ltr:true})}
         ${field("البريد الإلكتروني", "email", emp, {ltr:true, span:true})}
@@ -1215,6 +1212,7 @@ function tabContent(tab, emp) {
         ${field("محل ولادة الأم", "mother_birthplace", emp)}
       </div>`;
       const employment = `<div class="emp-grid">
+        ${field("الرقم الوظيفي", "employee_number", emp, {ltr:true})}
         ${fixedCompanyField("مكان العمل", "workplace", _companyConfig?.company_name ?? emp?.workplace ?? "")}
         ${field("العنوان الوظيفي", "job_title", emp)}
         ${field("الدرجة الوظيفية", "job_grade", emp)}
@@ -1224,7 +1222,7 @@ function tabContent(tab, emp) {
         ${field("تاريخ المباشرة", "hire_date", emp, {date:true})}
         ${field("نوع التوظيف", "contract_type", emp, {type:"select", options:[["","—"],["ملاك","ملاك"],["عقد","عقد"],["تنسيب","تنسيب"],["تكليف","تكليف"],["اجر يومي","اجر يومي"]]})}
         ${field("نظام العمل", "work_schedule", emp, {type:"select", options:[["","—"],["صباحي","صباحي"],["مناوب مسائي","مناوب مسائي"]]})}
-        ${field("ملاحظات نوع التوظيف", "work_type_notes", emp, {type:"textarea", span:true})}
+        ${field("ملاحظات نوع التوظيف", "work_type_notes", emp, {type:"textarea", span:true, grow:true})}
       </div>`;
       const education = `<div class="emp-grid">
         ${field("التحصيل الدراسي", "education_level", emp, {type:"select", options:[["","—"],["ابتدائية","ابتدائية"],["متوسطة","متوسطة"],["إعدادية","إعدادية"],["دبلوم","دبلوم"],["بكالوريوس","بكالوريوس"],["ماجستير","ماجستير"],["دكتوراه","دكتوراه"]]})}
@@ -1232,7 +1230,7 @@ function tabContent(tab, emp) {
         ${field("سنة التخرج", "graduation_year", emp, {ltr:true})}
       </div>`;
       const extra = `<div class="emp-grid">
-        ${field("ملاحظات", "notes", emp, {type:"textarea", span:true})}
+        ${field("ملاحظات", "notes", emp, {type:"textarea", span:true, grow:true})}
         <div style="grid-column:span 2;display:flex;align-items:center;gap:8px">
           <input id="f-is_active" type="checkbox" style="width:16px;height:16px;accent-color:var(--ui-accent)"
                  ${(!emp || emp.is_active) ? "checked" : ""} />
@@ -1252,7 +1250,7 @@ function tabContent(tab, emp) {
     case "family": return `
       <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
         ${spouseSectionHtml(emp)}
-        ${sectionTitle("أفراد العائلة")}
+        ${sectionTitle("الأبناء وبقية الأسرة")}
         <div style="grid-column:span 2">
           <div id="family-list"></div>
           <button id="btn-add-member" class="btn-secondary text-sm mt-2">+ إضافة فرد</button>
@@ -1324,7 +1322,6 @@ async function saveThenUpload(button) {
   }
   if (!selector) return;
   if (!(await confirmAction("يُحفظ الموظف أولاً ثم يُرفع الملف. متابعة؟"))) return;
-  _skipNextSaveConfirmation = true;
   _afterSave = () => {
     const next = document.querySelector(`#emp-panel ${selector}`);
     next?.closest(".emp-row")?.classList.remove("collapsed");
@@ -1379,20 +1376,6 @@ function handlePanelUiClick(event) {
   const head = target.closest(".emp-sec-head");
   if (head) { const section = head.closest(".emp-sec"); setSectionOpen(section, !section.classList.contains("open")); return; }
 
-  const jump = target.closest("[data-jump]");
-  if (jump) {
-    const section = document.getElementById(`emp-sec-${jump.dataset.jump}`);
-    if (!section) return;
-    setSectionOpen(section, true);
-    const content = document.getElementById("tab-content");
-    const chipsHeight = content.querySelector(".emp-chips")?.offsetHeight ?? 0;
-    const offset = section.getBoundingClientRect().top - content.getBoundingClientRect().top;
-    content.scrollTo({ top: content.scrollTop + offset - chipsHeight - 8, behavior: "smooth" });
-    section.classList.add("is-flash");
-    setTimeout(() => section.classList.remove("is-flash"), 900);
-    return;
-  }
-
   const all = target.closest("[data-sections-all]");
   if (all) {
     document.querySelectorAll("#tab-content .emp-sec").forEach(section => setSectionOpen(section, all.dataset.sectionsAll === "open"));
@@ -1424,7 +1407,7 @@ function renderPanel(emp) {
         <div id="emp-panel-photo">${headerPhotoHtml(draft)}</div>
         <div style="min-width:0">
           <h3 style="font-weight:700;font-size:15px">${isNew ? "إضافة موظف جديد" : escHtml(emp.full_name)}</h3>
-          ${!isNew ? `<p style="font-size:11px;color:var(--ui-text-faint)">${escHtml(emp.job_title??"")} ${fixedDepartment(emp) ? "· "+escHtml(fixedDepartment(emp)) : ""}</p>` : ""}
+          ${!isNew ? `<p style="font-size:11px;color:var(--ui-text-faint)">${[emp.employee_number ? `<span dir="ltr">${escHtml(emp.employee_number)}</span>` : "", escHtml(emp.job_title ?? ""), escHtml(fixedDepartment(emp))].filter(Boolean).join(" · ")}</p>` : ""}
         </div>
         ${!isNew ? `<span class="emp-pill ${emp.is_active ? "ok" : "none"}">${emp.is_active ? "نشط" : "غير نشط"}</span>` : ""}
       </div>
@@ -1603,14 +1586,11 @@ function renderPanel(emp) {
       is_active:             g("is_active") === 0 ? 0 : 1,
     };
 
-    const skipConfirmation = _skipNextSaveConfirmation;
-    _skipNextSaveConfirmation = false;
     const closeAfter = _closeAfterSave;
     const afterSave = _afterSave;
     _closeAfterSave = false;
     _afterSave = null;
     if (!data.full_name) { showToast("الاسم الكامل مطلوب", "error"); return; }
-    if (!skipConfirmation && !(await confirmAction(isNew ? "تأكيد إضافة الموظف؟" : "تأكيد حفظ تعديلات الموظف؟"))) return;
     try {
       let saved;
       if (isNew) {
@@ -2009,7 +1989,7 @@ function spouseRowHtml(spouse = {}, index = Date.now(), config = { itemLabel: "�
       removeClass: "btn-remove-spouse",
     })}
     <div style="grid-column:span 2">
-      <p style="font-size:10px;color:var(--ui-text-faint);margin-bottom:3px">رقم البطاقة الموحدة</p>
+      <p style="font-size:10px;color:var(--ui-text-faint);margin-bottom:3px">الرقم الوطني</p>
       <input class="input-field sp-civil" dir="ltr" value="${escHtml(spouse.civil_id??"")}"/>
     </div>
     ${recordNameFields("الاسم", "name", spouse)}
@@ -2178,7 +2158,7 @@ function familyRowHtml(m = {}, i = Date.now()) {
       </select>
     </div>
     <div>
-      <p style="font-size:10px;color:var(--ui-text-faint);margin-bottom:3px">رقم البطاقة الموحدة</p>
+      <p style="font-size:10px;color:var(--ui-text-faint);margin-bottom:3px">الرقم الوطني</p>
       <input class="input-field fm-civil" dir="ltr" value="${escHtml(m.civil_id??"")}"/>
     </div>
     ${recordNameFields("الاسم", "name", m)}
@@ -2477,12 +2457,12 @@ function ocrRows(result, target) {
     ? passport
       ? [["passport_no", "رقم جواز السفر", "passport_no", { ltr: true }], ["passport_type", "نوع جواز السفر", "passport_type", { ltr: true }],
          ["passport_issue_date", "تاريخ إصدار الجواز", "issue_date", { date: true }], ["passport_expiry_date", "تاريخ نفاذ الجواز", "expiry_date", { date: true }],
-         ["civil_id", "رقم البطاقة الوطنية", "national_no", { ltr: true }], ["birthdate", "تاريخ الولادة", "birthdate", { date: true }]]
-      : [["civil_id", "رقم البطاقة الوطنية", "national_no", { ltr: true }], ["civil_id_issuer", "جهة الإصدار", "issuer"],
+         ["civil_id", "الرقم الوطني", "national_no", { ltr: true }], ["birthdate", "تاريخ الولادة", "birthdate", { date: true }]]
+      : [["civil_id", "الرقم الوطني", "national_no", { ltr: true }], ["civil_id_issuer", "جهة الإصدار", "issuer"],
          ["civil_id_issue_date", "تاريخ الإصدار", "issue_date", { date: true }], ["civil_id_expiry_date", "تاريخ النفاذ", "expiry_date", { date: true }],
          ["civil_id_family_number", "الرقم العائلي", "family_no", { ltr: true }],
          ["birthplace", "محل الولادة", "birthplace"], ["birthdate", "تاريخ الولادة", "birthdate", { date: true }]]
-    : [["civil_id", "رقم البطاقة الوطنية", "national_no", { ltr: true }], ["issuer", "جهة الإصدار", "issuer"],
+    : [["civil_id", "الرقم الوطني", "national_no", { ltr: true }], ["issuer", "جهة الإصدار", "issuer"],
        ["issue_date", "تاريخ الإصدار", "issue_date", { date: true }], ["expiry_date", "تاريخ النفاذ", "expiry_date", { date: true }],
        ["birthplace", "محل الولادة", "birthplace"], ["birthdate", "تاريخ الولادة", "birthdate", { date: true }]];
   fields.forEach(([id, label, key, opts]) => add(`field:${id}`, label, key, record?.[id], opts));

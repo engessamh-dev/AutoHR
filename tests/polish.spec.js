@@ -139,7 +139,6 @@ test("employee panel: «اعتماد التقسيم» confirms the split name in
   await expect(full.locator(".name-review-badge")).toBeHidden();
   await expect(full.locator(".name-review-accept")).toBeHidden();
   await page.locator("#panel-save").click();
-  await page.getByRole("button", { name: "تأكيد", exact: true }).click();
   await expect.poll(() => page.evaluate(() => window.calls.some(c => c.command === "cmd_update_employee"))).toBe(true);
   const data = await page.evaluate(() => window.calls.find(c => c.command === "cmd_update_employee").args.data);
   expect(data.name_parts.full_name.review).toBe(false);

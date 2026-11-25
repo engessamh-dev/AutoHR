@@ -221,7 +221,8 @@ export function formatDate(iso) {
   const d = match
     ? new Date(Number(match[1]), Number(match[2]) - 1, Number(match[3]))
     : new Date(iso);
-  return isNaN(d) ? iso : d.toLocaleDateString();
+  // Latin digits everywhere, like the date fields and the other numbers of the program.
+  return isNaN(d) ? iso : d.toLocaleDateString(undefined, { numberingSystem: "latn" });
 }
 
 export function todayISO() {
