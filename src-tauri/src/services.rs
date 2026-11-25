@@ -2139,6 +2139,160 @@ pub fn set_auto_update(conn: &Connection, username: &str, enabled: bool) -> AppR
     Ok(enabled)
 }
 
+/// «مواعيد تنبيه المستمسكات»: for each document type with an expiry date, how many days
+/// before expiry it is flagged. The largest value is when it first shows in the alerts;
+/// each smaller value is a further reminder. A type can also be switched off.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct DocumentAlertRule {
+    pub key: String,
+    pub enabled: bool,
+    pub days: Vec<u32>,
+}
+
+/// The document types the alerts cover, with their default reminder days.
+pub const DOCUMENT_ALERT_DEFAULTS: [(&str, &[u32]); 5] = [
+    ("national", &[30, 7]),
+    ("passport", &[180, 90, 30]),
+    ("airport", &[30, 7]),
+    ("ministry", &[30, 7]),
+    ("vehicle", &[30, 7]),
+];
+pub const DOCUMENT_ALERT_MAX_DAYS: u32 = 730;
+pub const DOCUMENT_ALERT_MAX_REMINDERS: usize = 6;
+const DOCUMENT_ALERT_SETTING: &str = "document_alert_rules";
+
+fn default_document_alert_rules() -> Vec<DocumentAlertRule> {
+    DOCUMENT_ALERT_DEFAULTS.iter()
+        .map(|(key, days)| DocumentAlertRule { key: (*key).into(), enabled: true, days: days.to_vec() })
+        .collect()
+}
+
+/// Sorted largest first, without repeats, each 1..=730 days, at most six.
+fn normalize_alert_days(days: &[u32]) -> AppResult<Vec<u32>> {
+    let mut days = days.to_vec();
+    if days.iter().any(|day| *day == 0 || *day > DOCUMENT_ALERT_MAX_DAYS) {
+        return Err(AppError::Validation(format!("موعد التنبيه يجب أن يكون بين 1 و {DOCUMENT_ALERT_MAX_DAYS} يوماً")));
+    }
+    days.sort_unstable_by(|a, b| b.cmp(a));
+    days.dedup();
+    if days.len() > DOCUMENT_ALERT_MAX_REMINDERS {
+        return Err(AppError::Validation(format!("الحد الأقصى {DOCUMENT_ALERT_MAX_REMINDERS} مواعيد تنبيه لكل مستمسك")));
+    }
+    Ok(days)
+}
+
+/// Stored rules merged over the defaults: unknown types are dropped, missing ones get their
+/// default, and a damaged stored value falls back to the defaults rather than failing.
+pub fn get_document_alert_rules(conn: &Connection) -> AppResult<Vec<DocumentAlertRule>> {
+    let stored: Vec<DocumentAlertRule> = get_setting(conn, DOCUMENT_ALERT_SETTING)?
+        .and_then(|value| serde_json::from_str(&value).ok())
+        .unwrap_or_default();
+    Ok(default_document_alert_rules().into_iter().map(|default| {
+        stored.iter()
+            .find(|rule| rule.key == default.key)
+            .and_then(|rule| normalize_alert_days(&rule.days).ok()
+                .filter(|days| !days.is_empty() || !rule.enabled)
+                .map(|days| DocumentAlertRule { key: default.key.clone(), enabled: rule.enabled, days }))
+            .unwrap_or(default)
+    }).collect())
+}
+
+pub fn set_document_alert_rules(conn: &Connection, username: &str, rules: &[DocumentAlertRule]) -> AppResult<Vec<DocumentAlertRule>> {
+    assert_permission(conn, username, "settings.manage")?;
+    let mut saved = Vec::new();
+    for (key, _) in DOCUMENT_ALERT_DEFAULTS.iter() {
+        let mut matching = rules.iter().filter(|rule| rule.key == *key);
+        let rule = matching.next()
+            .ok_or_else(|| AppError::Validation(format!("نوع المستمسك مفقود: {key}")))?;
+        if matching.next().is_some() {
+            return Err(AppError::Validation(format!("نوع المستمسك مكرر: {key}")));
+        }
+        let days = normalize_alert_days(&rule.days)?;
+        if rule.enabled && days.is_empty() {
+            return Err(AppError::Validation("أضف موعد تنبيه واحداً على الأقل أو أوقف التنبيه لهذا المستمسك".into()));
+        }
+        saved.push(DocumentAlertRule { key: (*key).into(), enabled: rule.enabled, days });
+    }
+    if let Some(unknown) = rules.iter().find(|rule| !DOCUMENT_ALERT_DEFAULTS.iter().any(|(key, _)| *key == rule.key)) {
+        return Err(AppError::Validation(format!("نوع مستمسك غير معروف: {}", unknown.key)));
+    }
+    let json = serde_json::to_string(&saved).map_err(|error| AppError::Other(error.to_string()))?;
+    set_setting(conn, DOCUMENT_ALERT_SETTING, &json)?;
+    log_activity(conn, username, "UPDATE_DOCUMENT_ALERT_SETTINGS", Some("settings"), None, None, Some(&json));
+    Ok(saved)
+}
+
+#[cfg(test)]
+mod document_alert_rule_tests {
+    use super::*;
+
+    fn conn_with_admin() -> Connection {
+        let conn = Connection::open_in_memory().unwrap();
+        crate::db::initialize_test(&conn).unwrap();
+        conn.execute("INSERT INTO users(username,password,role) VALUES('alertadmin','unused','system_admin')", []).unwrap();
+        conn.execute("INSERT INTO users(username,password,role) VALUES('alertviewer','unused','viewer')", []).unwrap();
+        conn
+    }
+
+    fn rules_with(key: &str, enabled: bool, days: &[u32]) -> Vec<DocumentAlertRule> {
+        default_document_alert_rules().into_iter()
+            .map(|rule| if rule.key == key { DocumentAlertRule { key: rule.key, enabled, days: days.to_vec() } } else { rule })
+            .collect()
+    }
+
+    #[test]
+    fn defaults_cover_every_type_when_nothing_is_saved() {
+        let conn = conn_with_admin();
+        let rules = get_document_alert_rules(&conn).unwrap();
+        assert_eq!(rules, default_document_alert_rules());
+        assert_eq!(rules.iter().find(|r| r.key == "passport").unwrap().days, vec![180, 90, 30]);
+    }
+
+    #[test]
+    fn saved_days_are_sorted_deduplicated_and_read_back() {
+        let conn = conn_with_admin();
+        let saved = set_document_alert_rules(&conn, "alertadmin", &rules_with("national", true, &[7, 60, 30, 60])).unwrap();
+        assert_eq!(saved.iter().find(|r| r.key == "national").unwrap().days, vec![60, 30, 7]);
+        assert_eq!(get_document_alert_rules(&conn).unwrap(), saved);
+    }
+
+    #[test]
+    fn a_type_can_be_switched_off() {
+        let conn = conn_with_admin();
+        set_document_alert_rules(&conn, "alertadmin", &rules_with("vehicle", false, &[])).unwrap();
+        let vehicle = get_document_alert_rules(&conn).unwrap().into_iter().find(|r| r.key == "vehicle").unwrap();
+        assert!(!vehicle.enabled);
+    }
+
+    #[test]
+    fn invalid_rules_are_rejected() {
+        let conn = conn_with_admin();
+        assert!(set_document_alert_rules(&conn, "alertadmin", &rules_with("national", true, &[0])).is_err());
+        assert!(set_document_alert_rules(&conn, "alertadmin", &rules_with("national", true, &[731])).is_err());
+        assert!(set_document_alert_rules(&conn, "alertadmin", &rules_with("national", true, &[])).is_err());
+        assert!(set_document_alert_rules(&conn, "alertadmin", &rules_with("national", true, &[1, 2, 3, 4, 5, 6, 7])).is_err());
+        let mut unknown = default_document_alert_rules();
+        unknown.push(DocumentAlertRule { key: "ration".into(), enabled: true, days: vec![30] });
+        assert!(set_document_alert_rules(&conn, "alertadmin", &unknown).is_err());
+        let mut missing = default_document_alert_rules();
+        missing.pop();
+        assert!(set_document_alert_rules(&conn, "alertadmin", &missing).is_err());
+    }
+
+    #[test]
+    fn only_settings_managers_can_save() {
+        let conn = conn_with_admin();
+        assert!(set_document_alert_rules(&conn, "alertviewer", &default_document_alert_rules()).is_err());
+    }
+
+    #[test]
+    fn damaged_stored_value_falls_back_to_defaults() {
+        let conn = conn_with_admin();
+        set_setting(&conn, DOCUMENT_ALERT_SETTING, "not json").unwrap();
+        assert_eq!(get_document_alert_rules(&conn).unwrap(), default_document_alert_rules());
+    }
+}
+
 fn setting_bool(conn: &Connection, key: &str) -> AppResult<bool> {
     Ok(matches!(get_setting(conn, key)?.as_deref(), Some("1") | Some("true")))
 }

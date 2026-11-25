@@ -12,6 +12,7 @@ import { openNameReview } from "./name-review.js";
 import { employeeNameFields, recordNameFields, bindNameFields, readNameFields, readNameGroup, applyNames, joinNameParts } from "./name-fields.js";
 import { readDocumentFields } from "./id-reader.js";
 import { openAddEmployee } from "./add-wizard.js";
+import { alertWindowDays, loadAlertRules } from "./document-alerts.js";
 
 let _employees = [];
 let _filter = "";
@@ -72,6 +73,8 @@ export async function renderEmployees(container, user, ctx) {
   const [employees, companyConfig] = await Promise.all([
     api.listEmployees(),
     api.getCompanyConfig().catch(() => null),
+    // The «قارب على النفاذ» status of each document follows the reminder days in the settings.
+    loadAlertRules(),
   ]);
   _employees = employees;
   _companyConfig = companyConfig;
@@ -712,7 +715,7 @@ function documentSections(emp) {
   const sidedCount = prefix => [emp?.[`${prefix}_front_path`], emp?.[`${prefix}_back_path`]].filter(Boolean).length;
   const sections = [
     {
-      key: "national", title: "البطاقة الوطنية", expiry: "civil_id_expiry_date", maxDays: 30,
+      key: "national", title: "البطاقة الوطنية", expiry: "civil_id_expiry_date", maxDays: alertWindowDays("national"),
       keys: ["civil_id", "civil_id_issuer", "civil_id_issue_date", "civil_id_expiry_date", "civil_id_family_number"],
       fields: [
         field("رقم البطاقة الوطنية", "civil_id", emp, {ltr:true, span:true}),
@@ -724,7 +727,7 @@ function documentSections(emp) {
       tiles: sided("national", "civil_id"), attached: sidedCount("civil_id"), expected: 2,
     },
     {
-      key: "passport", title: "جواز السفر", expiry: "passport_expiry_date", maxDays: 183,
+      key: "passport", title: "جواز السفر", expiry: "passport_expiry_date", maxDays: alertWindowDays("passport"),
       keys: ["passport_no", "passport_type", "passport_name", "passport_issue_date", "passport_expiry_date"],
       fields: [
         field("رقم جواز السفر", "passport_no", emp, {ltr:true}),
@@ -756,7 +759,7 @@ function documentSections(emp) {
       tiles: [rationCardTile(emp)], attached: firstJsonPath(emp?.ration_card_attachment_paths) ? 1 : 0, expected: 1,
     },
     {
-      key: "airport", title: "باج دخول مطار بغداد", expiry: "airport_badge_expiry", maxDays: 30,
+      key: "airport", title: "باج دخول مطار بغداد", expiry: "airport_badge_expiry", maxDays: alertWindowDays("airport"),
       keys: ["airport_badge_no", "airport_badge_issue_date", "airport_badge_expiry"],
       fields: [
         field("رقم الهوية", "airport_badge_no", emp, {ltr:true, span:true}),
@@ -767,7 +770,7 @@ function documentSections(emp) {
       tiles: sided("airport", "airport_badge"), attached: sidedCount("airport_badge"), expected: 2,
     },
     {
-      key: "ministry", title: "هوية وزارة النقل", expiry: "ministry_badge_expiry", maxDays: 30,
+      key: "ministry", title: "هوية وزارة النقل", expiry: "ministry_badge_expiry", maxDays: alertWindowDays("ministry"),
       keys: ["ministry_badge_no", "ministry_badge_issue_date", "ministry_badge_expiry"],
       fields: [
         field("رقم الهوية", "ministry_badge_no", emp, {ltr:true, span:true}),
@@ -2197,7 +2200,7 @@ function renderVehicleList(emp) {
 function vehicleRowHtml(vehicle = {}, index = Date.now()) {
   const existing = typeof index === "number" && index < 100;
   const rowKey = existing ? `row:vehicle:${index}` : "";
-  const status = documentStatus({ values: [vehicle.annual_no], expiry: vehicle.expiry_date, maxDays: 30, attached: 0, expected: 0 });
+  const status = documentStatus({ values: [vehicle.annual_no], expiry: vehicle.expiry_date, maxDays: alertWindowDays("vehicle"), attached: 0, expected: 0 });
   const annual = vehicle.expiry_date
     ? `<span class="emp-pill ${status.tone}">السنوية: ${["bad", "warn"].includes(status.tone) ? status.label : formatDate(vehicle.expiry_date)}</span>`
     : "";

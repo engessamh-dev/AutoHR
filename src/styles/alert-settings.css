@@ -1,0 +1,23 @@
+/* «الإعدادات ← تنبيهات المستمسكات» (src/screens/alert-settings.js) */
+.alert-settings{max-width:50rem}
+.alert-rules{display:grid;gap:10px}
+.alert-rule{display:grid;gap:8px;padding:12px 14px;border:1px solid var(--ui-line);border-radius:10px;background:color-mix(in srgb, var(--ui-accent) 5%, transparent);transition:border-color .15s,background .15s}
+.alert-rule:has(.alert-rule-enabled:checked){border-color:var(--ui-line-strong)}
+.alert-rule.is-off{background:transparent;opacity:.75}
+.alert-rule-head{display:flex;align-items:center;gap:10px;cursor:pointer;width:fit-content}
+.alert-rule-head input{width:16px;height:16px;accent-color:var(--ui-accent)}
+.alert-rule-name{font-size:14px;font-weight:600;color:var(--ui-text-strong)}
+.alert-rule-summary{margin:0;font-size:12px;color:var(--ui-text-muted)}
+.alert-rule-days{display:flex;flex-wrap:wrap;align-items:center;gap:8px}
+.alert-day-chip{display:inline-flex;align-items:center;gap:6px;padding:4px 6px 4px 12px;border-radius:999px;border:1px solid var(--ui-accent);background:var(--ui-accent-soft);color:var(--ui-text-strong);font-size:13px}
+.alert-rule.is-off .alert-day-chip{border-color:var(--ui-line-strong);background:transparent;color:var(--ui-text-muted)}
+.alert-day-remove{display:inline-grid;place-items:center;width:20px;height:20px;border:none;border-radius:999px;background:transparent;color:inherit;font-size:15px;line-height:1;cursor:pointer}
+.alert-day-remove:hover:not(:disabled){background:var(--ui-accent-hover)}
+.alert-day-remove:disabled{cursor:default;opacity:.5}
+.alert-day-add{display:inline-flex;align-items:center;gap:6px}
+.alert-day-add .alert-day-input{width:7.5rem;padding-block:5px}
+.alert-day-add .alert-day-add-btn{padding:5px 12px;font-size:13px}
+.alert-day-quick{display:flex;flex-wrap:wrap;align-items:center;gap:6px;font-size:12px;color:var(--ui-text-faint)}
+.alert-day-quick-btn{padding:2px 10px;border-radius:999px;border:1px dashed var(--ui-line-strong);background:transparent;color:var(--ui-text);font-size:12px;cursor:pointer}
+.alert-day-quick-btn:hover{background:var(--ui-accent-hover);border-style:solid}
+.alert-settings-error{margin:0;font-size:13px;color:var(--ui-danger, #ef4444)}
