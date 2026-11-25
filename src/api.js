@@ -34,6 +34,9 @@ export const api = {
   // turned upright by `turns` quarter turns, then cut to `rect` (fractions of the upright image).
   uploadEmployeePhotoCrop: (empId, path, turns, rect) => invoke("cmd_upload_employee_photo_crop", { employeeId: empId, sourcePath: path, turns, rect }),
   imagePreview: (path) => invoke("cmd_image_preview", { sourcePath: path }),
+  // Districts / sub-districts added by users where the bundled list of Iraqi places lacks one.
+  listAddressPlaces: () => invoke("cmd_list_address_places"),
+  addAddressPlace: (place) => invoke("cmd_add_address_place", { place }),
   uploadNationalCardAttachment: (empId, side, path) => uploadWithScanner("cmd_upload_national_card_attachment", { employeeId: empId, side, sourcePath: path }),
   deleteNationalCardAttachment: (empId, side) => invoke("cmd_delete_national_card_attachment", { employeeId: empId, side }),
   uploadFamilyNationalCardAttachment: (empId, memberIndex, side, path) => uploadWithScanner("cmd_upload_family_national_card_attachment", { employeeId: empId, memberIndex, side, sourcePath: path }),

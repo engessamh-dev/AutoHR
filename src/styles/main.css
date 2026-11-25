@@ -782,6 +782,20 @@ html[data-ui-scale] #app-shell { height: calc(100vh / var(--ui-scale)); }
 .emp-address{display:grid;grid-template-columns:repeat(3,1fr);gap:8px}
 .emp-address label{display:flex;flex-direction:column}
 .emp-address-note{margin-top:4px;font-size:11px;color:var(--ui-warn)}
+/* Residence address: places (linked lists), then م / ز / د or one free line. */
+.addr{display:flex;flex-direction:column;gap:8px}
+.addr-row{display:grid;gap:8px}
+.addr-place{grid-template-columns:repeat(4,minmax(0,1fr))}
+.addr-mzd{grid-template-columns:repeat(3,minmax(0,1fr))}
+.addr-cell{display:flex;flex-direction:column;min-width:0}
+.addr-cell>span{display:block;font-size:10px;color:var(--ui-text-faint);margin-bottom:2px}
+.addr-cell select:disabled,.addr-cell input:disabled{opacity:.55;cursor:not-allowed}
+.addr-mzd.is-off{opacity:.5}
+.addr-other-toggle{display:flex;align-items:center;gap:6px;font-size:12px;cursor:pointer;width:fit-content}
+.addr-other-toggle small{color:var(--ui-text-faint)}
+.addr-add{display:flex;gap:6px;align-items:center;padding:8px;border:1px dashed var(--ui-line-strong);border-radius:8px}
+.addr-add input{flex:1}
+@media (max-width:720px){.addr-place{grid-template-columns:repeat(2,minmax(0,1fr))}}
 .emp-zones{display:flex;flex-wrap:wrap;align-items:center;gap:6px;min-height:38px;height:auto;padding:4px 8px;cursor:text}
 .emp-zone-list{display:contents}
 .emp-zone-chip{display:inline-flex;align-items:center;gap:4px;padding:2px 4px 2px 10px;border:1px solid var(--ui-accent);border-radius:999px;background:var(--ui-accent-soft);color:var(--ui-text-strong);font-size:12px;font-weight:600;letter-spacing:.03em}

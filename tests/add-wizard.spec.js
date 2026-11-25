@@ -457,18 +457,40 @@ test("residence card: the printed serial is read, handwritten fields are flagged
   await pick(page, "residence", "res-front.jpg");
   await pick(page, "residence", "res-back.jpg", "back");
   await expect(page.locator('[data-key="residence_card_no"]')).toHaveValue("1234567");
-  const flagged = key => page.locator(`.aw-field:has([data-key="${key}"]) .aw-note`);
+  const flagged = key => page.locator(`.aw-field:has([data-key="${key}"], [data-address="${key}"]) .aw-note`);
   for (const key of ["residence_card_issuer", "residence_head_name", "residence_form_no", "residence_address", "residence_card_issue_date"]) {
     await expect(flagged(key)).toContainText("بخط اليد");
   }
   await expect(flagged("residence_card_no")).toHaveCount(0);
   // Typing a handwritten field zooms the card to it.
-  await page.locator('[data-key="residence_address"][data-part="m"]').focus();
+  const address = page.locator('[data-address="residence_address"]');
+  await address.locator('[data-addr="m"]').focus();
   await expect(page.locator('.aw-thumb img[data-side="front"]')).toHaveClass(/is-zoomed/);
-  await expect(page.locator('.aw-field:has([data-key="residence_address"]) .aw-name span')).toHaveText(["م", "ز", "د"]);
-  await page.fill('[data-key="residence_address"][data-part="m"]', "000");
-  await page.fill('[data-key="residence_address"][data-part="z"]', "11");
-  await page.fill('[data-key="residence_address"][data-part="d"]', "2");
+  await expect(address.locator(".addr-mzd .addr-cell > span")).toHaveText(["م", "ز", "د"]);
+  // المحافظة → القضاء → الناحية: each list waits for the one before it.
+  await expect(address.locator('[data-addr="district"]')).toBeDisabled();
+  await address.locator('[data-addr="gov"]').selectOption("بغداد");
+  await expect(address.locator('[data-addr="sub"]')).toBeDisabled();
+  await address.locator('[data-addr="district"]').selectOption("الكرخ");
+  // A sub-district missing from the list is added under its district.
+  await address.locator('[data-addr="sub"]').selectOption("__add__");
+  await address.locator("[data-addr-new]").fill("ناحية تجريبية");
+  await address.locator("[data-addr-save]").click();
+  await expect(address.locator('[data-addr="sub"]')).toHaveValue("ناحية تجريبية");
+  expect(await page.evaluate(() => window.addedPlaces)).toEqual([{ governorate: "بغداد", district: "الكرخ", subdistrict: "ناحية تجريبية" }]);
+  await address.locator('[data-addr="city"]').fill("حي تجريبي");
+  // «تنسيق عنوان آخر» turns م / ز / د off for a free line, and back.
+  await address.locator('[data-addr="m"]').fill("9");
+  await address.locator('[data-addr="useOther"]').check();
+  await expect(address.locator('[data-addr="m"]')).toBeDisabled();
+  await expect(address.locator('[data-addr="m"]')).toHaveValue("");
+  await address.locator('[data-addr="other"]').fill("قرب المدرسة");
+  await address.locator('[data-addr="useOther"]').uncheck();
+  await expect(address.locator('[data-addr="other"]')).toHaveCount(0);
+  await expect(address.locator('[data-addr="m"]')).toBeEnabled();
+  await address.locator('[data-addr="m"]').fill("000");
+  await address.locator('[data-addr="z"]').fill("11");
+  await address.locator('[data-addr="d"]').fill("2");
   await page.fill('[data-key="residence_head_name"]', "سامر خالد عبد الله");
   await page.fill('[data-key="residence_form_no"]', "1111");
   await page.fill('[data-key="residence_card_issuer"]', "مكتب 00");
@@ -482,7 +504,8 @@ test("residence card: the printed serial is read, handwritten fields are flagged
   expect(data.residence_head_name).toBe("سامر خالد عبد الله");
   expect(data.residence_form_no).toBe("1111");
   expect(data.residence_card_issuer).toBe("مكتب 00");
-  expect(data.residence_address).toBe("م 000 ز 11 د 2");
+  expect(data.residence_address).toBe("بغداد / الكرخ / ناحية تجريبية / حي تجريبي، م 000 ز 11 د 2");
+  expect(JSON.parse(data.residence_address_parts)).toMatchObject({ gov: "بغداد", district: "الكرخ", sub: "ناحية تجريبية", city: "حي تجريبي", m: "000", z: "11", d: "2", useOther: "" });
 });
 
 test("a registered national number blocks a second record: go back, open the file, or add the documents to it", async ({ page }) => {

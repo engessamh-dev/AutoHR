@@ -6,7 +6,8 @@ import { bindAttachmentScannerButtons } from "../attachments/integration.js";
 import { zoomToolbarHtml, mountZoomViewer } from "../attachments/zoom-viewer.js";
 import { convertFileSrc } from "@tauri-apps/api/core";
 import { open, save } from "@tauri-apps/plugin-dialog";
-import { showToast, formatDate, escHtml, debounce, confirmAction, confirmSaveChanges, AIRPORT_ZONES, ADDRESS_PARTS, composeAddress, parseAddress } from "../utils.js";
+import { showToast, formatDate, escHtml, debounce, confirmAction, confirmSaveChanges, AIRPORT_ZONES } from "../utils.js";
+import { addressHtml, wireAddress, readAddress, composeResidence, citySuggestions, loadAddressPlaces, addressIsEmpty } from "../address-field.js";
 import { can } from "../permissions.js";
 import { openNameReview } from "./name-review.js";
 import { employeeNameFields, recordNameFields, bindNameFields, readNameFields, readNameGroup, applyNames, joinNameParts } from "./name-fields.js";
@@ -223,11 +224,20 @@ function renderTable({ keepVisibleRows = false } = {}) {
 function openPanel(emp, tab = "basic", sectionState = new Map()) {
   _activeTab = TABS.some(t => t.id === tab) ? tab : "basic";
   _panelDraft = emp ? { ...emp } : { is_active: 1, spouses: "[]", family_members: "[]", vehicles: "[]" };
+  const draftNow = _panelDraft;
   // One birth date and place: older records may hold them only in the national card's copy.
   _panelDraft.birthdate ||= _panelDraft.civil_id_birthdate ?? null;
   _panelDraft.birthplace ||= _panelDraft.civil_id_birthplace ?? null;
   _panelDirty = false;
   _sectionState = sectionState;
+  // Places users added: the residence lists show them once they arrive.
+  loadAddressPlaces().then(() => {
+    const box = document.querySelector("#emp-panel [data-address]");
+    if (_panelDraft !== draftNow || !box) return;
+    const fresh = document.createElement("div");
+    fresh.innerHTML = addressHtml(box.dataset.address, panelAddress(), { cities: citySuggestions(_employees) });
+    box.replaceWith(fresh.firstElementChild);
+  });
   document.getElementById("emp-panel").style.transform = "translateX(0)";
   document.getElementById("emp-overlay").style.display = "block";
   markSelectedRow(emp?.id ?? null);
@@ -410,18 +420,30 @@ function field(label, id, emp, opts = {}) {
            dir="${opts.ltr ? 'ltr' : 'rtl'}" value="${opts.date ? (emp?.[id] ?? '') : val}" /></div>`;
 }
 
-/** The residence address as the card writes it: محلة (م), زقاق (ز), دار (د). Kept as one string;
- *  one written another way is put whole in م, with a note to split it. */
-function addressField(label, id, emp) {
-  // Parts already typed in this panel (another tab was shown since) win over the kept string.
-  const typed = ADDRESS_PARTS.some(([key]) => emp && `${id}_${key}` in emp);
-  const parts = typed ? Object.fromEntries(ADDRESS_PARTS.map(([key]) => [key, emp[`${id}_${key}`] ?? ""])) : parseAddress(emp?.[id]);
+/** The residence address: المحافظة / القضاء / الناحية / المدينة, then م / ز / د or one free line.
+ *  Kept as parts (`residence_address_parts`) and as the composed line (`residence_address`). */
+const panelAddress = () => readAddress(_panelDraft?.residence_address_parts, _panelDraft?.residence_address);
+function addressField(label, id) {
+  const parts = panelAddress();
+  const legacy = !_panelDraft?.residence_address_parts && parts.useOther && parts.other;
   const cap = "font-size:11px;color:var(--ui-text-faint);margin-bottom:4px";
   return `<div style="grid-column:span 2">
     <p style="${cap};text-transform:uppercase;letter-spacing:.05em">${label}</p>
-    <div class="emp-address">${ADDRESS_PARTS.map(([key, mark]) => `<label><span style="${cap}">${mark}</span>
-      <input id="f-${id}_${key}" class="input-field" value="${escHtml(parts[key])}" aria-label="${label}: ${mark}" /></label>`).join("")}</div>
-    ${parts.loose ? `<p class="emp-address-note">⚠ العنوان محفوظ بصيغة قديمة، فوُضع كله في «م»: وزّعه على م وز ود.</p>` : ""}</div>`;
+    ${addressHtml(id, parts, { cities: citySuggestions(_employees) })}
+    ${legacy ? `<p class="emp-address-note">⚠ العنوان محفوظ بصيغة قديمة، فوُضع في «تنسيق عنوان آخر»: اختر المحافظة والقضاء ووزّعه على م وز ود إن أمكن.</p>` : ""}</div>`;
+}
+
+/** Keeps what the address field holds in the panel's draft. */
+function wirePanelAddress(panel) {
+  wireAddress(panel, {
+    get: () => ({ parts: panelAddress(), cities: citySuggestions(_employees) }),
+    set: (_key, parts) => {
+      if (!_panelDraft) return;
+      _panelDraft.residence_address_parts = addressIsEmpty(parts) ? null : JSON.stringify(parts);
+      _panelDraft.residence_address = composeResidence(parts) || null;
+      markPanelDirty();
+    },
+  });
 }
 
 /** Comma-separated codes ("S1,T,VIP") → unique upper-case codes. */
@@ -769,7 +791,7 @@ function documentSections(emp) {
         field("مكتب المعلومات", "residence_card_issuer", emp),
         field("اسم رب الأسرة", "residence_head_name", emp),
         field("رقم الاستمارة", "residence_form_no", emp, {ltr:true}),
-        addressField("عنوان السكن", "residence_address", emp),
+        addressField("عنوان السكن", "residence_address"),
       ],
       tiles: sided("residence", "residence_card"), attached: sidedCount("residence_card"), expected: 2,
     },
@@ -1481,6 +1503,7 @@ function renderPanel(emp) {
   panel.addEventListener("input", markPanelDirty);
   panel.addEventListener("change", markPanelDirty);
   bindNameFields(panel);
+  wirePanelAddress(panel);
 
   panel.querySelector("#panel-close").addEventListener("click",  () => closePanel());
   panel.querySelector("#panel-cancel").addEventListener("click", () => closePanel());
@@ -1534,10 +1557,8 @@ function renderPanel(emp) {
       residence_card_issue_date:g("residence_card_issue_date"),
       residence_head_name:   g("residence_head_name"),
       residence_form_no:     g("residence_form_no"),
-      // The three parts when the residence section was shown; otherwise the address as kept.
-      residence_address:     _panelDraft && ADDRESS_PARTS.some(([key]) => `residence_address_${key}` in _panelDraft)
-        ? composeAddress(Object.fromEntries(ADDRESS_PARTS.map(([key]) => [key, g(`residence_address_${key}`)]))) || null
-        : g("residence_address"),
+      residence_address:     g("residence_address"),
+      residence_address_parts: g("residence_address_parts"),
       ration_card_no:        g("ration_card_no"),
       ration_center_name:    g("ration_center_name"),
       // Preserve legacy ration-card values that are no longer editable in the form.

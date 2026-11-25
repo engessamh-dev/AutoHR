@@ -142,20 +142,27 @@ test("residence card: the printed serial fills the card number", async ({ page }
   // The handwritten fields are kept in the file too.
   await expect(page.locator("#f-residence_card_issuer")).toHaveValue("مكتب 00");
   await expect(page.locator("#f-residence_form_no")).toHaveValue("1111");
-  // The address is shown as م / ز / د and saved as one string.
-  await expect(page.locator("#f-residence_address_m")).toHaveValue("100");
-  await expect(page.locator("#f-residence_address_z")).toHaveValue("2");
-  await expect(page.locator("#f-residence_address_d")).toHaveValue("3");
-  await page.fill("#f-residence_address_z", "22");
+  // An older one-line address is split into م / ز / د, and saved as parts and as one line.
+  const address = page.locator('[data-address="residence_address"]');
+  await expect(address.locator('[data-addr="m"]')).toHaveValue("100");
+  await expect(address.locator('[data-addr="z"]')).toHaveValue("2");
+  await expect(address.locator('[data-addr="d"]')).toHaveValue("3");
+  await address.locator('[data-addr="z"]').fill("22");
+  await address.locator('[data-addr="gov"]').selectOption("البصرة");
   await page.click("#panel-save");
   await page.getByRole("button", { name: "تأكيد", exact: true }).click();
-  await expect.poll(() => page.evaluate(() => window.calls.find(c => c.command === "cmd_update_employee")?.args.data.residence_address)).toBe("م 100 ز 22 د 3");
+  await expect.poll(() => page.evaluate(() => window.calls.find(c => c.command === "cmd_update_employee")?.args.data.residence_address)).toBe("البصرة، م 100 ز 22 د 3");
+  const parts = await page.evaluate(() => JSON.parse(window.calls.find(c => c.command === "cmd_update_employee").args.data.residence_address_parts));
+  expect(parts).toMatchObject({ gov: "البصرة", m: "100", z: "22", d: "3" });
 });
 
-test("residence address written another way is kept whole in م, with a note", async ({ page }) => {
+test("residence address written another way is kept whole as «تنسيق عنوان آخر», with a note", async ({ page }) => {
   await page.evaluate(() => { window.employeePatch = { residence_address: "بغداد - حي تجريبي" }; });
   await openDocuments(page);
-  await expect(page.locator("#f-residence_address_m")).toHaveValue("بغداد - حي تجريبي");
+  const address = page.locator('[data-address="residence_address"]');
+  await expect(address.locator('[data-addr="useOther"]')).toBeChecked();
+  await expect(address.locator('[data-addr="other"]')).toHaveValue("بغداد - حي تجريبي");
+  await expect(address.locator('[data-addr="m"]')).toBeDisabled();
   await expect(page.locator(".emp-address-note")).toContainText("بصيغة قديمة");
 });
 

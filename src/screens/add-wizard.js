@@ -12,7 +12,8 @@
  */
 import { api } from "../api.js";
 import { open } from "@tauri-apps/plugin-dialog";
-import { showToast, escHtml, AIRPORT_ZONES, ADDRESS_PARTS, composeAddress } from "../utils.js";
+import { showToast, escHtml, AIRPORT_ZONES } from "../utils.js";
+import { addressHtml, wireAddress, readAddress, composeResidence, citySuggestions, loadAddressPlaces, addressIsEmpty } from "../address-field.js";
 import { joinNameParts } from "./name-fields.js";
 import { mergeSides } from "./id-reader.js";
 
@@ -86,8 +87,7 @@ const STEPS = [
       { key: "residence_card_issuer", label: "مكتب المعلومات", ocr: "info_office" },
       { key: "residence_head_name", label: "اسم رب الأسرة", ocr: "head_name" },
       { key: "residence_form_no", label: "رقم الاستمارة", ocr: "form_no", ltr: true },
-      { key: "residence_address", label: "عنوان السكن", ocr: "address", name: ADDRESS_PARTS, address: true,
-        ocrName: { m: "address", z: "address", d: "address" }, full: true },
+      { key: "residence_address", label: "عنوان السكن", ocr: "address", address: true, full: true },
     ] },
   { id: "family", title: "أفراد الأسرة", short: "الأسرة",
     hint: "ارفع بطاقة كل فرد. للأبناء يُنقل الأب والجد واللقب من الموظف" },
@@ -128,8 +128,9 @@ const UPLOAD = {
 };
 
 const text = value => String(value ?? "").trim();
-const isEmpty = value => value == null || (typeof value === "object" ? !Object.values(value).some(v => text(v)) : !text(value));
-const shown = (field, value) => field.address ? composeAddress(value) : field.name ? joinNameParts(value, field.latin) : text(value);
+const isEmpty = value => value == null || (typeof value === "object" ? (value.useOther !== undefined ? addressIsEmpty(value) : !Object.values(value).some(v => text(v))) : !text(value));
+const asAddress = value => typeof value === "object" && value ? value : readAddress(null, value);
+const shown = (field, value) => field.address ? composeResidence(asAddress(value)) : field.name ? joinNameParts(value, field.latin) : text(value);
 const same = (field, a, b) => shown(field, a).replace(/\s+/g, " ") === shown(field, b).replace(/\s+/g, " ");
 
 /** Values of one person: key -> { value, source, edited, unsure }. */
@@ -151,7 +152,8 @@ function readingsFor(fields, result) {
       if (any) out[field.key] = { value: parts, unsure };
     } else if (field.ocr) {
       const f = get(field.ocr);
-      if (f?.value) out[field.key] = { value: field.chips ? f.value.split(/[,\s]+/).filter(Boolean).join(",") : f.value, unsure: f.confidence < 0.8 };
+      if (f?.value && field.address) out[field.key] = { value: readAddress(null, f.value), unsure: f.confidence < 0.8 };
+      else if (f?.value) out[field.key] = { value: field.chips ? f.value.split(/[,\s]+/).filter(Boolean).join(",") : f.value, unsure: f.confidence < 0.8 };
     }
   }
   return out;
@@ -263,9 +265,29 @@ function openWizard({ user, employees, onCreated, resume = null }) {
     saving: false,
   };
   const departments = [...new Set(employees.map(e => text(e.department)).filter(Boolean))].sort((a, b) => a.localeCompare(b, "ar"));
+  const cities = citySuggestions(employees);
   const overlay = document.createElement("div");
   overlay.className = "aw-overlay";
   document.body.append(overlay);
+  // The address field draws itself again on each change of its lists; what it holds is kept here.
+  wireAddress(overlay, {
+    get: key => ({ parts: asAddress(state.values[key]?.value), cities }),
+    set: (key, parts) => {
+      const before = state.values[key] ?? {};
+      state.values[key] = { ...before, value: parts, edited: !!before.source || !!before.edited, unsure: false, source: before.source ?? null };
+      const box = overlay.querySelector(`[data-address="${key}"]`)?.closest(".aw-field");
+      box?.querySelector(".aw-tag")?.replaceWith(htmlToNode(tag(state.values[key], current().id, key, "")));
+      box?.classList.toggle("is-empty", isEmpty(parts));
+      refreshGate();
+    },
+  });
+  // Typing the address (handwritten on the card) zooms the card to it, to copy from.
+  overlay.addEventListener("focusin", event => {
+    const box = event.target.closest?.("[data-address]");
+    if (box && event.target.matches("[data-addr]") && !box.dataset.address.startsWith("m")) showOnCard("", box.dataset.address);
+  });
+  // Places added by users: the lists show them once they arrive.
+  loadAddressPlaces().then(() => { if (overlay.isConnected && current().fields?.some(f => f.address)) render(); });
   let unlistenDrop = null;
   // `keep`: what was entered stays as a draft (in memory) to continue later.
   const close = (keep = false) => {
@@ -348,6 +370,7 @@ function openWizard({ user, employees, onCreated, resume = null }) {
 
   async function attachTo(twin, chosen) {
     const update = { ...twin, ...chosen };
+    if ("residence_address" in chosen) update.residence_address_parts = payload().data.residence_address_parts;
     if ("birthdate" in chosen) update.civil_id_birthdate = chosen.birthdate;
     if ("birthplace" in chosen) update.civil_id_birthplace = chosen.birthplace;
     if ("full_name" in chosen || "mother_name" in chosen || "passport_name" in chosen) {
@@ -601,7 +624,9 @@ function openWizard({ user, employees, onCreated, resume = null }) {
     const value = entry?.value;
     const attrs = `data-key="${field.key}" data-scope="${scope}"`;
     let control;
-    if (field.name) {
+    if (field.address) {
+      control = addressHtml(`${scope}${field.key}`, asAddress(value), { cities });
+    } else if (field.name) {
       control = `<div class="aw-name" style="--parts:${field.name.length}">${field.name.map(([part, label]) => `<label><span>${label}</span>
         <input class="input-field" ${attrs} data-part="${part}" dir="${field.latin ? "ltr" : "rtl"}" value="${escHtml(value?.[part] ?? "")}"></label>`).join("")}</div>`;
     } else if (field.options) {
@@ -1153,7 +1178,9 @@ function openWizard({ user, employees, onCreated, resume = null }) {
       "ration_card_no", "ration_center_name", "residence_card_no", "residence_card_issue_date", "residence_address",
       "residence_head_name", "residence_form_no", "residence_card_issuer"];
     plain.forEach(key => { data[key] = v(key); });
-    data.residence_address = composeAddress(v("residence_address")) || null;
+    const address = v("residence_address");
+    data.residence_address = address ? composeResidence(asAddress(address)) || null : null;
+    data.residence_address_parts = address && !addressIsEmpty(asAddress(address)) ? JSON.stringify(asAddress(address)) : null;
     // The national card's own copies of the birth data, as the form keeps them.
     data.civil_id_birthdate = data.birthdate;
     data.civil_id_birthplace = data.birthplace;
