@@ -3,7 +3,7 @@
 //! * **Attachment store.** Every attachment is copied once into `<backups>/Store/<id>/ab/<sha256>.blob`,
 //!   encrypted with a random store key and named by the SHA-256 of its content. Backups share it:
 //!   a photo that has not changed is never copied again.
-//! * **Backup file (format 3, "snapshot").** A small `.autohrbak` file: the database (compressed)
+//! * **Backup file (format 3, "snapshot").** A small `.cnsarchbak` file (`.autohrbak` before 1.0.7): the database (compressed)
 //!   and the list of attachments it needs, encrypted with the backup's password. It also carries
 //!   the store key, so the password alone opens it on another computer, as long as the `Store`
 //!   folder is next to it (the whole backup folder is copied).
@@ -389,8 +389,18 @@ fn walk_files(dir: &Path, out: &mut Vec<PathBuf>) {
     }
 }
 
+/// Extension of the backups written now. Files from earlier releases end in `.autohrbak`;
+/// they are still listed, kept by the keep rule, and restorable.
+pub(crate) const BACKUP_EXTENSION: &str = "cnsarchbak";
+pub(crate) const OLD_BACKUP_EXTENSION: &str = "autohrbak";
+
+pub(crate) fn is_backup_extension(path: &Path) -> bool {
+    path.extension().and_then(|e| e.to_str())
+        .is_some_and(|e| e.eq_ignore_ascii_case(BACKUP_EXTENSION) || e.eq_ignore_ascii_case(OLD_BACKUP_EXTENSION))
+}
+
 fn is_backup_file(path: &Path) -> bool {
-    path.extension().and_then(|e| e.to_str()).is_some_and(|e| e.eq_ignore_ascii_case("autohrbak"))
+    is_backup_extension(path)
 }
 
 fn has_magic(path: &Path, magic: &[u8; 9]) -> bool {
@@ -456,7 +466,7 @@ fn date_in_name(name: &str) -> Option<(NaiveDate, String)> {
     Some((start.1, name[start.0 + 10..].to_string()))
 }
 
-/// Automatic backups: today's format (`cnsarch_daily_2026-11-25.autohrbak`) and the files of
+/// Automatic backups: today's format (`cnsarch_daily_2026-11-25.cnsarchbak`) and the files of
 /// earlier releases (`cnsarch_daily|weekly|monthly_2026-11-25_141203.autohrbak`, several a day).
 pub(crate) fn automatic_backups(backup_root: &Path) -> Vec<AutoBackup> {
     let mut found = Vec::new();
@@ -635,7 +645,7 @@ pub(crate) fn run_due_automatic_backups(conn: &Connection, in_session: bool, pro
     let backup_root = crate::paths::backup_root();
     services::ensure_backup_layout(conn)?;
     let path = backup_root.join("Daily").join(today.format("%Y").to_string())
-        .join(format!("cnsarch_daily_{}.autohrbak", today.format("%Y-%m-%d")));
+        .join(format!("cnsarch_daily_{}.{BACKUP_EXTENSION}", today.format("%Y-%m-%d")));
     create_snapshot(conn, &password, &path, true, progress)?;
     services::set_setting(conn, "auto_backup_last_daily", &today.format("%Y-%m-%d").to_string())?;
     services::set_setting(conn, "auto_backup_last_daily_path", &path.to_string_lossy())?;

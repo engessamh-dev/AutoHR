@@ -269,7 +269,7 @@ fn days_since(timestamp: &str) -> Option<i64> {
     Some((chrono::Local::now().naive_local() - parsed).num_days())
 }
 
-/// Counts the backup files (.autohrbak) under the backup folder and finds the newest one.
+/// Counts the backup files (.cnsarchbak, and .autohrbak from earlier releases) under the backup folder and finds the newest one.
 /// The folder holds Manual, PreUpdate, Daily, Weekly and Monthly, each split by year.
 fn scan_backup_files(root: &Path) -> (usize, Option<chrono::DateTime<chrono::Local>>) {
     fn walk(dir: &Path, depth: usize, count: &mut usize, newest: &mut Option<std::time::SystemTime>) {
@@ -278,7 +278,7 @@ fn scan_backup_files(root: &Path) -> (usize, Option<chrono::DateTime<chrono::Loc
             let path = entry.path();
             if path.is_dir() {
                 if depth < 4 { walk(&path, depth + 1, count, newest); }
-            } else if path.extension().and_then(|e| e.to_str()).is_some_and(|e| e.eq_ignore_ascii_case("autohrbak")) {
+            } else if crate::backup_store::is_backup_extension(&path) {
                 *count += 1;
                 if let Ok(modified) = entry.metadata().and_then(|m| m.modified()) {
                     if newest.is_none_or(|n| modified > n) { *newest = Some(modified); }

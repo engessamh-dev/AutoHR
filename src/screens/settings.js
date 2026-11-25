@@ -806,7 +806,7 @@ export async function renderSettings(container, user, ctx) {
   };
 
   container.querySelector("#btn-restore-backup")?.addEventListener("click", async () => {
-    const selected = await open({ multiple: false, filters: [{ name: "Encrypted CNSArch Backup", extensions: ["autohrbak"] }] });
+    const selected = await open({ multiple: false, filters: [{ name: "نسخة CNSArch مشفرة", extensions: ["cnsarchbak", "autohrbak"] }] });
     if (!selected) return;
     const password = await requestBackupPassword({
       title: "استعادة نسخة احتياطية",

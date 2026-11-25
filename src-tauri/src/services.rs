@@ -3074,9 +3074,9 @@ pub(crate) fn create_backup_at(
     let now = chrono::Local::now();
     let dir = backup_path(conn).join(category).join(now.format("%Y").to_string());
     std::fs::create_dir_all(&dir).map_err(|e| AppError::Other(e.to_string()))?;
-    let stem = format!("autohr_{}_{}", category.to_lowercase(), now.format("%Y-%m-%d_%H%M%S"));
+    let stem = format!("cnsarch_{}_{}", category.to_lowercase(), now.format("%Y-%m-%d_%H%M%S"));
     // Two backups in the same second (a restore right after another) get distinct names.
-    let path = (1..).map(|n| if n == 1 { dir.join(format!("{stem}.autohrbak")) } else { dir.join(format!("{stem}_{n}.autohrbak")) })
+    let path = (1..).map(|n| if n == 1 { dir.join(format!("{stem}.{}", crate::backup_store::BACKUP_EXTENSION)) } else { dir.join(format!("{stem}_{n}.{}", crate::backup_store::BACKUP_EXTENSION)) })
         .find(|candidate| !candidate.exists())
         .expect("a free name");
     crate::backup_store::create_snapshot(conn, password, &path, false, progress)?;
@@ -3397,8 +3397,8 @@ where
     assert_permission(conn, user, "backups.restore")?;
     let source = Path::new(source_path);
     progress(backup_progress(2, "جاري تجهيز عملية الاستعادة..."));
-    let result = if source.extension().and_then(|e| e.to_str()).is_none_or(|e| !e.eq_ignore_ascii_case("autohrbak")) {
-        Err(AppError::Validation("اختر ملف نسخة احتياطية بامتداد .autohrbak".into()))
+    let result = if !crate::backup_store::is_backup_extension(source) {
+        Err(AppError::Validation("اختر ملف نسخة احتياطية بامتداد .cnsarchbak (أو .autohrbak للنسخ القديمة)".into()))
     } else {
         restore_inner(conn, user, source, password, &mut progress)
     };

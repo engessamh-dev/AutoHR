@@ -142,7 +142,7 @@ pub fn export_backup_to(
     }
     paths::ensure_writable(folder)?;
     let stamp = chrono::Local::now().format("%Y-%m-%d_%H%M%S");
-    let path = folder.join(format!("autohr_export_{stamp}.autohrbak"));
+    let path = folder.join(format!("cnsarch_export_{stamp}.{}", crate::backup_store::BACKUP_EXTENSION));
     if path.exists() {
         return Err(AppError::Validation("يوجد ملف بنفس الاسم في المجلد المختار. أعد المحاولة بعد ثانية.".into()));
     }
@@ -382,7 +382,7 @@ mod tests {
         assert!(data.join(DATABASE_FILE).is_file());
         let safety: Vec<_> = list_files(&backups.join("PreMove")).unwrap();
         // The backup file and its list of attachments (for cleaning the store).
-        assert_eq!(safety.iter().filter(|p| p.extension().is_some_and(|e| e == "autohrbak")).count(), 1);
+        assert_eq!(safety.iter().filter(|p| p.extension().is_some_and(|e| e == "cnsarchbak")).count(), 1);
         paths::set_current(None);
         assert_eq!(
             paths::resolve_startup().unwrap(),
