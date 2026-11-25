@@ -938,6 +938,10 @@ html[data-ui-scale] #app-shell { height: calc(100vh / var(--ui-scale)); }
 /* Leaving the wizard with unsaved entries. */
 .aw-ask{position:absolute;inset:0;z-index:96;display:grid;place-items:center;background:rgba(0,0,0,.55)}
 .aw-ask-box{width:min(460px,92vw);padding:18px 20px;border-radius:12px;border:1px solid var(--ui-line);background:var(--ui-surface);box-shadow:0 20px 50px rgba(0,0,0,.45)}
+.aw-attach{width:min(620px,94vw)}
+.aw-diffs{display:flex;flex-direction:column;gap:6px;max-height:46vh;overflow:auto;margin:0 0 14px}
+.aw-diff{display:grid;grid-template-columns:auto 150px 1fr;gap:8px;align-items:center;padding:6px 8px;border:1px solid var(--ui-line);border-radius:8px;font-size:12.5px;cursor:pointer}
+.aw-diff span{color:var(--ui-text-muted)}
 .aw-ask-box h3{margin:0 0 6px;font-size:16px}
 .aw-ask-box p{margin:0 0 14px;font-size:13px;color:var(--ui-text-muted);line-height:1.7}
 .aw-ask-actions{display:flex;flex-wrap:wrap;gap:8px}

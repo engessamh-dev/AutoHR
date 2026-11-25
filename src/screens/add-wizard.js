@@ -12,7 +12,7 @@
  */
 import { api } from "../api.js";
 import { open } from "@tauri-apps/plugin-dialog";
-import { showToast, escHtml, confirmAction, AIRPORT_ZONES } from "../utils.js";
+import { showToast, escHtml, AIRPORT_ZONES } from "../utils.js";
 import { joinNameParts } from "./name-fields.js";
 import { mergeSides } from "./id-reader.js";
 
@@ -277,6 +277,102 @@ function openWizard({ user, employees, onCreated, resume = null }) {
     }
   };
 
+  /** The national number is already registered: no second record. Open that employee, add what
+   *  was uploaded here to their record (choosing which differing fields to update), or go back. */
+  function askRegistered(twin) {
+    if (overlay.querySelector(".aw-ask")) return;
+    const ask = htmlToNode(`<div class="aw-ask" role="alertdialog" aria-modal="true" aria-label="الموظف مسجّل مسبقًا">
+      <div class="aw-ask-box"><h3>هذا الموظف مسجّل مسبقًا: ${escHtml(twin.full_name ?? "")}</h3>
+        <p>الرقم الوطني ${escHtml(text(twin.civil_id))} مسجّل له، ولا يُنشأ موظف ثانٍ بالرقم نفسه. إن كان الرقم خطأ قراءة فارجع وصحّحه.</p>
+        <div class="aw-ask-actions">
+          <button type="button" class="btn-primary" data-ask="attach">إضافة المستمسكات إلى ملفه</button>
+          <button type="button" class="btn-secondary" data-ask="open">فتح ملفه</button>
+          <button type="button" class="btn-secondary" data-ask="back">إلغاء</button>
+        </div></div></div>`);
+    overlay.appendChild(ask);
+    ask.addEventListener("click", event => {
+      const choice = event.target.closest("[data-ask]")?.dataset.ask ?? (event.target === ask ? "back" : null);
+      if (!choice) return;
+      ask.remove();
+      if (choice === "attach") askAttach(twin);
+      else if (choice === "open") { close(true); onCreated(twin); }
+      else { go(0); overlay.querySelector('[data-key="civil_id"]')?.focus(); }
+    });
+    ask.querySelector('[data-ask="attach"]').focus();
+  }
+
+  /** Labels of the employee's fields, for the list of differences. */
+  function fieldLabel(key) {
+    if (key === "full_name") return "الاسم الرباعي واللقب";
+    if (key === "mother_name") return "اسم الأم";
+    if (key === "passport_name") return "الاسم في الجواز";
+    const step = STEPS.find(st => st.fields?.some(f => f.key === key));
+    const field = step?.fields.find(f => f.key === key) ?? MANUAL.find(f => f.key === key);
+    if (!field) return null;
+    return step && step.id !== "national" ? `${field.label} (${step.short})` : field.label;
+  }
+
+  /** The uploaded documents go to the registered employee; the fields that differ are listed, and
+   *  only the ticked ones replace what the record has. Fields the record lacks are ticked. */
+  function askAttach(twin) {
+    const { data } = payload();
+    const skip = new Set(["name_parts", "is_active", "spouses", "family_members", "civil_id_birthdate", "civil_id_birthplace"]);
+    const diffs = Object.entries(data)
+      .filter(([key, value]) => !skip.has(key) && !isEmpty(value) && fieldLabel(key) && text(twin[key]) !== text(value))
+      .map(([key, value]) => ({ key, value, old: text(twin[key]) }));
+    const ask = htmlToNode(`<div class="aw-ask" role="alertdialog" aria-modal="true" aria-label="إضافة المستمسكات إلى ملفه">
+      <div class="aw-ask-box aw-attach"><h3>إضافة المستمسكات إلى ملف ${escHtml(twin.full_name ?? "")}</h3>
+        <p>تُضاف الصور المرفوعة هنا إلى ملفه. ${diffs.length ? "اختر الحقول التي تُحدَّث بقيم هذه المستمسكات:" : "لا تختلف الحقول عمّا في ملفه."}</p>
+        ${diffs.length ? `<div class="aw-diffs">${diffs.map(d => `<label class="aw-diff"><input type="checkbox" data-diff="${d.key}" ${d.old ? "" : "checked"}>
+          <b>${escHtml(fieldLabel(d.key))}</b><span>${d.old ? `في ملفه «<bdi>${escHtml(d.old)}</bdi>» ← ` : "فارغ في ملفه ← "}«<bdi>${escHtml(text(d.value))}</bdi>»</span></label>`).join("")}</div>` : ""}
+        <div class="aw-ask-actions">
+          <button type="button" class="btn-primary" data-ask="apply">إضافة${diffs.length ? " وتحديث المحدَّد" : ""}</button>
+          <button type="button" class="btn-secondary" data-ask="back">رجوع</button>
+        </div></div></div>`);
+    overlay.appendChild(ask);
+    ask.addEventListener("click", event => {
+      const choice = event.target.closest("[data-ask]")?.dataset.ask ?? (event.target === ask ? "back" : null);
+      if (!choice) return;
+      if (choice === "back") { ask.remove(); return; }
+      const chosen = Object.fromEntries([...ask.querySelectorAll("[data-diff]:checked")].map(b => [b.dataset.diff, data[b.dataset.diff]]));
+      ask.remove();
+      attachTo(twin, chosen);
+    });
+    ask.querySelector('[data-ask="apply"]').focus();
+  }
+
+  async function attachTo(twin, chosen) {
+    const update = { ...twin, ...chosen };
+    if ("birthdate" in chosen) update.civil_id_birthdate = chosen.birthdate;
+    if ("birthplace" in chosen) update.civil_id_birthplace = chosen.birthplace;
+    if ("full_name" in chosen || "mother_name" in chosen || "passport_name" in chosen) {
+      const parts = payload().data.name_parts;
+      const kept = (() => { try { return typeof twin.name_parts === "string" ? JSON.parse(twin.name_parts) : twin.name_parts ?? {}; } catch { return {}; } })() ?? {};
+      update.name_parts = { ...kept, ...Object.fromEntries(Object.keys(chosen).filter(k => parts[k]).map(k => [k, parts[k]])) };
+    }
+    state.saving = true;
+    render();
+    let saved;
+    try {
+      saved = Object.keys(chosen).length ? await api.updateEmployee(twin.id, update) : twin;
+    } catch (error) {
+      state.saving = false;
+      render();
+      showToast(error?.message ?? String(error || "تعذّر تحديث الموظف"), "error");
+      return;
+    }
+    // Only the documents: the family's cards stay with the record's own family list.
+    const failed = [];
+    for (const upload of pendingUploads(twin.id, [], [])) {
+      try { await upload.task(); upload.image.uploaded = true; } catch { failed.push(upload.label); }
+    }
+    state.saving = false;
+    state.employee = saved;
+    dropDraft();
+    showToast(failed.length ? `أُضيفت المستمسكات إلى ملف ${twin.full_name ?? ""}، لكن تعذّر رفع: ${failed.join("، ")}` : `أُضيفت المستمسكات إلى ملف ${twin.full_name ?? ""}`, failed.length ? "error" : "info");
+    close(false);
+  }
+
   /** Leaving with entries asks what to do with them: save the employee, keep a draft, or discard. */
   function askClose() {
     if (!unsaved()) return close(false);
@@ -480,7 +576,7 @@ function openWizard({ user, employees, onCreated, resume = null }) {
     if (key === "civil_id") {
       if (!/^\d{12}$/.test(v)) return `<div class="aw-note is-warn">⚠ الرقم الوطني 12 رقمًا، والمكتوب ${v.replace(/\D/g, "").length} أرقام</div>`;
       const same = !scope && duplicateOf(v);
-      if (same) return `<div class="aw-note is-error">⚠ يوجد موظف مسجّل بهذا الرقم الوطني: ${escHtml(same.full_name ?? "")}</div>`;
+      if (same) return `<div class="aw-note is-error">⚠ هذا الموظف مسجّل مسبقًا: ${escHtml(same.full_name ?? "")}</div>`;
     }
     if (key === "civil_id_family_number") {
       const digits = v.replace(/\D/g, "").length;
@@ -1027,8 +1123,9 @@ function openWizard({ user, employees, onCreated, resume = null }) {
   async function save() {
     if (!nationalDone()) { go(0); showToast(`أكمل البطاقة الوطنية أولًا: ${nationalMissing().join("، ")}`, "error"); return false; }
     if (!state.employee) {
+      // A national number belongs to one person: the employee is already registered.
       const twin = duplicateOf(text(state.values.civil_id?.value));
-      if (twin && !(await confirmAction(`يوجد موظف مسجّل بنفس الرقم الوطني: ${twin.full_name ?? ""}. حفظ موظف جديد رغم ذلك؟`))) return false;
+      if (twin) { askRegistered(twin); return false; }
     }
     const { data, spouses, family } = payload();
     state.saving = true;

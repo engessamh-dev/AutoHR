@@ -225,7 +225,7 @@ test("national and family numbers are checked, and a registered national number 
   await page.fill('[data-key="civil_id"]', "1990000");
   await expect(civil.locator(".aw-check")).toContainText("12 رقمًا");
   await page.fill('[data-key="civil_id"]', "199000000001");
-  await expect(civil.locator(".aw-note.is-error")).toContainText("يوجد موظف مسجّل");
+  await expect(civil.locator(".aw-note.is-error")).toContainText("هذا الموظف مسجّل مسبقًا");
   const family = page.locator(".aw-field", { has: page.locator('[data-key="civil_id_family_number"]') });
   await page.fill('[data-key="civil_id_family_number"]', "12AB");
   await expect(family.locator(".aw-check")).toContainText("غير معتادة");
@@ -472,4 +472,52 @@ test("residence card: the printed serial is read, handwritten fields are flagged
   expect(data.residence_card_no).toBe("1234567");
   expect(data.residence_head_name).toBe("سامر خالد عبد الله");
   expect(data.residence_form_no).toBe("1111");
+});
+
+test("a registered national number blocks a second record: go back, open the file, or add the documents to it", async ({ page }) => {
+  await page.keyboard.press("Escape");
+  await page.evaluate(async () => { window.employeePatch = { civil_id: "199000000001", birthdate: null, gender: "ذكر" }; await window.renderActual("employees"); });
+  await page.click("#btn-add-emp");
+  await page.click('[data-choice="docs"]');
+  await pick(page, "national", "front.jpg");
+  await pick(page, "national", "back.jpg", "back");
+  const dialog = page.getByRole("alertdialog", { name: "الموظف مسجّل مسبقًا" });
+  // «إلغاء» goes back to the national number, to fix a misread.
+  await page.click("[data-save-now]");
+  await expect(dialog).toContainText("هذا الموظف مسجّل مسبقًا: Synthetic Employee");
+  await dialog.getByRole("button", { name: "إلغاء" }).click();
+  await expect(dialog).toHaveCount(0);
+  await expect(page.locator('[data-key="civil_id"]')).toBeFocused();
+  // Adding the documents lists the differing fields; only the ticked ones are updated.
+  await page.click("[data-save-now]");
+  await dialog.getByRole("button", { name: "إضافة المستمسكات إلى ملفه" }).click();
+  const attach = page.getByRole("alertdialog", { name: "إضافة المستمسكات إلى ملفه" });
+  await expect(attach.locator('[data-diff="full_name"]')).not.toBeChecked();
+  await expect(attach.locator('[data-diff="birthdate"]')).toBeChecked();
+  await expect(attach.locator('[data-diff="gender"]')).toHaveCount(0);
+  await attach.getByRole("button", { name: /إضافة وتحديث المحدَّد/ }).click();
+  await expect(page.locator(".aw-overlay")).toHaveCount(0);
+  const calls = await page.evaluate(() => window.calls.map(c => ({ command: c.command, args: c.args })));
+  expect(calls.some(c => c.command === "cmd_create_employee")).toBe(false);
+  const update = calls.find(c => c.command === "cmd_update_employee");
+  expect(update.args.data.full_name).toBe("Synthetic Employee");
+  expect(update.args.data.birthdate).toBe("1985-03-14");
+  expect(calls.filter(c => c.command.startsWith("cmd_upload_") && c.args.employeeId === 1).length).toBe(2);
+});
+
+test("a registered national number: «فتح ملفه» opens that employee and keeps the entries as a draft", async ({ page }) => {
+  await page.keyboard.press("Escape");
+  await page.evaluate(async () => { window.employeePatch = { civil_id: "199000000001" }; await window.renderActual("employees"); });
+  await page.click("#btn-add-emp");
+  await page.click('[data-choice="docs"]');
+  await pick(page, "national", "front.jpg");
+  await pick(page, "national", "back.jpg", "back");
+  await page.click("[data-save-now]");
+  await page.getByRole("alertdialog", { name: "الموظف مسجّل مسبقًا" }).getByRole("button", { name: "فتح ملفه" }).click();
+  await expect(page.locator(".aw-overlay")).toHaveCount(0);
+  await expect(page.locator("#panel-save")).toBeVisible();
+  expect(await page.evaluate(() => window.calls.some(c => c.command === "cmd_create_employee" || c.command === "cmd_update_employee"))).toBe(false);
+  await page.click("#panel-close").catch(() => page.keyboard.press("Escape"));
+  await page.click("#btn-add-emp");
+  await expect(page.locator(".aw-draft")).toContainText("سامر خالد عبد الله الجبوري");
 });
