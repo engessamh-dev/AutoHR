@@ -86,11 +86,13 @@ test("an enlarged image closes with the × button, Esc, or a click outside it", 
   await viewer.getByRole("button", { name: "إغلاق الصورة" }).click();
   await expect(viewer).toHaveCount(0);
   await page.locator(".aw-thumb img").first().click();
+  await expect(viewer).toBeVisible();
   await page.keyboard.press("Escape");
   await expect(viewer).toHaveCount(0);
   // Esc closed only the image, not the wizard.
   await expect(page.locator(".aw-overlay")).toBeVisible();
   await page.locator(".aw-thumb img").first().click();
+  await expect(viewer).toBeVisible();
   await viewer.click({ position: { x: 5, y: 5 } });
   await expect(viewer).toHaveCount(0);
 });
@@ -135,4 +137,31 @@ test("the back can be chosen while the front is still being read", async ({ page
   await expect(page.locator('[data-key="full_name"][data-part="first"]')).toHaveValue("سامر");
   await expect(page.locator('[data-key="birthdate"]')).toHaveValue("1985-03-14");
   await expect(page.locator(".aw-thumb")).toHaveCount(2);
+});
+
+test("the thumbnail itself zooms with the wheel without opening or scrolling, and resets on double-click", async ({ page }) => {
+  await page.click('[data-choice="docs"]');
+  await pick(page, "national", "front.jpg");
+  const thumb = page.locator(".aw-thumb img").first();
+  const scale = () => thumb.evaluate(el => new DOMMatrix(getComputedStyle(el).transform === "none" ? undefined : getComputedStyle(el).transform).a);
+  const scrollTops = () => page.evaluate(() => [...document.querySelectorAll(".aw-overlay *")].filter(e => e.scrollTop > 0).length + window.scrollY);
+  const before = await scrollTops();
+  const box = await thumb.boundingBox();
+  await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
+  await page.mouse.wheel(0, -300);
+  await expect(thumb).toHaveClass(/is-zoomed/);
+  await expect.poll(scale).toBeGreaterThan(1);
+  expect(await scrollTops()).toBe(before);
+  await expect(page.locator(".aw-viewer")).toHaveCount(0);
+  // Dragging moves it without opening the enlarged view.
+  await page.mouse.down();
+  await page.mouse.move(box.x + box.width / 2 + 30, box.y + box.height / 2, { steps: 4 });
+  await page.mouse.up();
+  await expect(page.locator(".aw-viewer")).toHaveCount(0);
+  await thumb.dblclick();
+  await expect.poll(scale).toBe(1);
+  await expect(page.locator(".aw-viewer")).toHaveCount(0);
+  // A plain click still enlarges it.
+  await thumb.click();
+  await expect(page.locator(".aw-viewer")).toBeVisible();
 });
