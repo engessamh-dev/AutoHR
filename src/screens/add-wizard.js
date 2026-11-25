@@ -509,6 +509,15 @@ function openWizard({ user, employees, onCreated, resume = null }) {
       </div></div>`;
   }
 
+  /** Saving is possible from any step once there is a name, and no image is still being read. */
+  function canSaveNow() {
+    const reading = [...Object.values(state.docs), ...state.members].some(h => Object.keys(h.busy ?? {}).length);
+    return !state.saving && !reading && !isEmpty(state.values.full_name?.value);
+  }
+
+  /** Documents with no image yet: named after saving, to add later. */
+  const missingDocs = () => STEPS.filter(s => s.sides && !Object.keys(state.docs[s.id].images).length).map(s => s.title);
+
   function render() {
     const step = current();
     const body = step.id === "family" ? familyBody() : step.id === "summary" ? summaryBody() : docBody(step);
@@ -517,7 +526,9 @@ function openWizard({ user, employees, onCreated, resume = null }) {
     const blocked = step.required && isEmpty(state.values.full_name?.value);
     const scroll = overlay.querySelector(".aw-content-body")?.scrollTop ?? 0;
     overlay.innerHTML = `<div class="aw-box" dir="rtl" role="dialog" aria-modal="true" aria-label="إضافة موظف من المستمسكات">
-      <div class="aw-head"><h2>إضافة موظف من المستمسكات</h2><span class="aw-sub">مستمسك واحد في كل خطوة</span><button type="button" class="aw-close" aria-label="إغلاق">✕</button></div>
+      <div class="aw-head"><h2>إضافة موظف من المستمسكات</h2><span class="aw-sub">مستمسك واحد في كل خطوة</span>
+        <button type="button" class="btn-primary aw-head-save" data-save-now ${canSaveNow() ? "" : "disabled"} title="${isEmpty(state.values.full_name?.value) ? "يُفعَّل بعد إدخال اسم الموظف" : "يحفظ الموظف الآن بما أُدخل، والمستمسكات الباقية تُضاف لاحقًا"}">${state.saving ? "جارٍ الحفظ…" : "حفظ الموظف"}</button>
+        <button type="button" class="aw-close" aria-label="إغلاق">✕</button></div>
       <div class="aw-main">${stepperHtml()}
         <div class="aw-content"><div class="aw-content-title"><b>${step.title}</b><span>${step.hint}</span></div>
           <div class="aw-content-body ${step.sides ? "" : "is-single"}">${body}</div>
@@ -564,6 +575,7 @@ function openWizard({ user, employees, onCreated, resume = null }) {
       go(state.step + 1);
     });
     overlay.querySelector("[data-save]")?.addEventListener("click", save);
+    overlay.querySelector("[data-save-now]")?.addEventListener("click", save);
     overlay.querySelectorAll("[data-go]").forEach(b => b.addEventListener("click", () => go(Number(b.dataset.go))));
     overlay.querySelectorAll("[data-pick]").forEach(b => b.addEventListener("click", () => pick(b.dataset.pick, b.dataset.side)));
     overlay.querySelectorAll("[data-scan]").forEach(b => b.addEventListener("click", () => scan(b.dataset.scan, b.dataset.side)));
@@ -596,6 +608,8 @@ function openWizard({ user, employees, onCreated, resume = null }) {
         field?.classList.toggle("is-empty", isEmpty(values[key].value) && !input.dataset.part);
         const next = overlay.querySelector("[data-next]");
         if (next && current().required) next.disabled = isEmpty(state.values.full_name?.value);
+        const saveNow = overlay.querySelector("[data-save-now]");
+        if (saveNow) saveNow.disabled = !canSaveNow();
         if (input.dataset.scope && key === "name") inheritChildNames();
       };
       input.addEventListener(input.tagName === "SELECT" ? "change" : "input", update);
@@ -839,8 +853,10 @@ function openWizard({ user, employees, onCreated, resume = null }) {
         await run(`بطاقة الفرد ${index + 1}`, () => api.wizardUpload("cmd_upload_family_national_card_attachment", { employeeId: employee.id, memberIndex: index, side, sourcePath: image.path }));
       }
     }
+    const missing = missingDocs();
     await close(false);
     if (failed.length) showToast(`حُفظ الموظف، لكن تعذّر رفع: ${failed.join("، ")}. ارفعها من تبويب «المستمسكات».`, "error");
+    else if (missing.length) showToast(`حُفظ الموظف. لم تُرفع بعد: ${missing.join("، ")}. أضفها متى توفرت من تبويب «المستمسكات» في ملفه.`);
     else showToast("حُفظ الموظف ومستمسكاته");
     onCreated(employee);
   }

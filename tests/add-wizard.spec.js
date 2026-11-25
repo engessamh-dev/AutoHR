@@ -242,3 +242,21 @@ test("closing the wizard keeps a draft to continue or delete", async ({ page }) 
   await page.click("#btn-add-emp");
   await expect(page.locator(".aw-draft")).toHaveCount(0);
 });
+
+test("the employee can be saved from any step once there is a name; missing documents are named", async ({ page }) => {
+  // The harness has no toast area: add one to read the message after saving.
+  await page.evaluate(() => document.body.insertAdjacentHTML("beforeend", '<div id="toast" class="opacity-0"><span id="toast-msg"></span></div>'));
+  await page.click('[data-choice="docs"]');
+  const saveNow = page.locator("[data-save-now]");
+  await expect(saveNow).toBeDisabled();
+  await pick(page, "national", "front.jpg");
+  await pick(page, "national", "back.jpg", "back");
+  await expect(saveNow).toBeEnabled();
+  await saveNow.click();
+  await expect.poll(() => page.evaluate(() => window.calls.some(c => c.command === "cmd_create_employee"))).toBe(true);
+  const data = await page.evaluate(() => window.calls.find(c => c.command === "cmd_create_employee").args.data);
+  expect(data.full_name).toBe("سامر خالد عبد الله الجبوري");
+  expect(data.civil_id_birthdate).toBe("1985-03-14");
+  await expect(page.locator(".aw-overlay")).toHaveCount(0);
+  await expect(page.locator("#toast-msg")).toContainText("لم تُرفع بعد: جواز السفر، هوية وزارة النقل");
+});
