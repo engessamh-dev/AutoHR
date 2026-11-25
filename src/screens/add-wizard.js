@@ -194,7 +194,7 @@ function openWizard({ employees, onCreated }) {
   const state = {
     step: 0,
     values: model(),
-    docs: Object.fromEntries(STEPS.filter(s => s.sides).map(s => [s.id, { images: {}, results: {}, readings: {}, skipped: false, busy: null }])),
+    docs: Object.fromEntries(STEPS.filter(s => s.sides).map(s => [s.id, { images: {}, results: {}, readings: {}, skipped: false, busy: {} }])),
     members: [],
     saving: false,
   };
@@ -219,14 +219,65 @@ function openWizard({ employees, onCreated }) {
     if (!overlay.querySelector(".aw-busy")) { event.stopPropagation(); close(); }
   };
 
-  /** Full-size view of a document image: closes with ×, Esc, or a click outside the image. */
+  /** Full-size view of a document image: mouse wheel zooms at the pointer, dragging moves the
+   *  enlarged image, double-click resets; closes with ×, Esc, or a click outside the image. */
   function openViewer(img) {
     overlay.querySelector(".aw-viewer")?.remove();
     const viewer = htmlToNode(`<div class="aw-viewer" role="dialog" aria-modal="true" aria-label="${img.alt}">
-      <button type="button" class="aw-viewer-close" aria-label="إغلاق الصورة" title="إغلاق الصورة (Esc)">×</button>
-      <img src="${img.src}" alt="${img.alt}">
+      <div class="aw-viewer-tools">
+        <button type="button" data-zoom="in" aria-label="تكبير" title="تكبير (عجلة الماوس)">+</button>
+        <button type="button" data-zoom="out" aria-label="تصغير" title="تصغير">−</button>
+        <button type="button" data-zoom="reset" aria-label="الحجم الأصلي" title="الحجم الأصلي (نقر مزدوج)">⤢</button>
+        <button type="button" class="aw-viewer-close" aria-label="إغلاق الصورة" title="إغلاق الصورة (Esc)">×</button>
+      </div>
+      <img src="${img.src}" alt="${img.alt}" draggable="false">
     </div>`);
-    viewer.addEventListener("click", event => { if (event.target.tagName !== "IMG") viewer.remove(); });
+    const picture = viewer.querySelector("img");
+    let scale = 1, x = 0, y = 0, drag = null, dragged = false;
+    const apply = () => {
+      picture.style.transform = `translate(${x}px, ${y}px) scale(${scale})`;
+      picture.classList.toggle("is-zoomed", scale > 1);
+    };
+    const zoomAt = (factor, cx, cy) => {
+      const next = Math.min(8, Math.max(1, scale * factor));
+      if (next === 1) { scale = 1; x = 0; y = 0; return apply(); }
+      // Keep the point under the pointer in place.
+      const rect = picture.getBoundingClientRect();
+      const ox = cx - (rect.left + rect.width / 2), oy = cy - (rect.top + rect.height / 2);
+      x -= ox * (next / scale - 1);
+      y -= oy * (next / scale - 1);
+      scale = next;
+      apply();
+    };
+    const centre = () => { const r = picture.getBoundingClientRect(); return [r.left + r.width / 2, r.top + r.height / 2]; };
+    viewer.addEventListener("wheel", event => { event.preventDefault(); zoomAt(event.deltaY < 0 ? 1.2 : 1 / 1.2, event.clientX, event.clientY); }, { passive: false });
+    picture.addEventListener("dblclick", () => { scale = 1; x = 0; y = 0; apply(); });
+    picture.addEventListener("pointerdown", event => {
+      if (scale === 1) return;
+      drag = { px: event.clientX, py: event.clientY, x, y };
+      dragged = false;
+      picture.setPointerCapture(event.pointerId);
+      picture.classList.add("is-dragging");
+    });
+    picture.addEventListener("pointermove", event => {
+      if (!drag) return;
+      x = drag.x + event.clientX - drag.px;
+      y = drag.y + event.clientY - drag.py;
+      dragged ||= Math.abs(event.clientX - drag.px) + Math.abs(event.clientY - drag.py) > 3;
+      apply();
+    });
+    const endDrag = () => { drag = null; picture.classList.remove("is-dragging"); };
+    picture.addEventListener("pointerup", endDrag);
+    picture.addEventListener("pointercancel", endDrag);
+    viewer.querySelectorAll("[data-zoom]").forEach(b => b.addEventListener("click", () => {
+      if (b.dataset.zoom === "reset") { scale = 1; x = 0; y = 0; return apply(); }
+      zoomAt(b.dataset.zoom === "in" ? 1.4 : 1 / 1.4, ...centre());
+    }));
+    viewer.querySelector(".aw-viewer-close").addEventListener("click", () => viewer.remove());
+    viewer.addEventListener("click", event => {
+      if (event.target === viewer && !dragged) viewer.remove();
+      dragged = false;
+    });
     overlay.appendChild(viewer);
     viewer.querySelector(".aw-viewer-close").focus();
   }
@@ -307,7 +358,7 @@ function openWizard({ employees, onCreated }) {
   }
 
   function slotHtml(slot, side, image, busy) {
-    if (busy === side) return `<div class="aw-pic is-busy"><div class="aw-drop"><span class="aw-spinner" aria-hidden="true"></span><b>جارٍ قراءة ${SIDE_LABEL[side]}…</b></div></div>`;
+    if (busy?.[side]) return `<div class="aw-pic is-busy"><div class="aw-drop"><span class="aw-spinner" aria-hidden="true"></span><b>جارٍ قراءة ${SIDE_LABEL[side]}…</b></div></div>`;
     if (image) return `<div class="aw-pic"><div class="aw-thumb"><img src="${image.url}" alt="${SIDE_LABEL[side]}"><span class="aw-thumb-cap">${SIDE_LABEL[side]}<em>${image.count ? `✓ قُرئ ${image.count}` : "لم يُقرأ شيء"}</em></span></div>
       <div class="aw-pic-actions"><button type="button" class="btn-secondary" data-pick="${slot}" data-side="${side}">استبدال</button><button type="button" class="btn-secondary" data-remove="${slot}" data-side="${side}">إزالة</button></div></div>`;
     return `<div class="aw-pic"><div class="aw-drop" data-slot="${slot}" data-side="${side}"><b>${SIDE_LABEL[side]}</b>
@@ -477,7 +528,7 @@ function openWizard({ employees, onCreated }) {
       render();
     }));
     overlay.querySelectorAll("[data-member-add]").forEach(b => b.addEventListener("click", () => {
-      const member = { relation: "spouse", values: {}, images: {}, results: {}, readings: {}, busy: null };
+      const member = { relation: "spouse", values: {}, images: {}, results: {}, readings: {}, busy: {} };
       state.members.push(member);
       deriveMarital();
       render();
@@ -543,7 +594,8 @@ function openWizard({ employees, onCreated }) {
 
   async function useImage(slot, side, path) {
     const { holder, values, fields, source } = slotTarget(slot);
-    holder.busy = side;
+    // Each side reads on its own: the other side can be chosen while this one is read.
+    holder.busy[side] = true;
     render();
     try {
       const reading = await api.readImageFields(path);
@@ -568,7 +620,7 @@ function openWizard({ employees, onCreated }) {
     } catch (error) {
       showToast(error?.message ?? String(error || "تعذّرت قراءة الصورة"), "error");
     } finally {
-      holder.busy = null;
+      delete holder.busy[side];
       render();
     }
   }

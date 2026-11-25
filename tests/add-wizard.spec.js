@@ -94,3 +94,45 @@ test("an enlarged image closes with the × button, Esc, or a click outside it", 
   await viewer.click({ position: { x: 5, y: 5 } });
   await expect(viewer).toHaveCount(0);
 });
+
+test("the enlarged image zooms with the mouse wheel and moves by dragging", async ({ page }) => {
+  await page.click('[data-choice="docs"]');
+  await pick(page, "national", "front.jpg");
+  await page.locator(".aw-thumb img").first().click();
+  const picture = page.locator(".aw-viewer img");
+  const box = await picture.boundingBox();
+  await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
+  await page.mouse.wheel(0, -300);
+  await expect(picture).toHaveClass(/is-zoomed/);
+  const scale = () => picture.evaluate(el => new DOMMatrix(getComputedStyle(el).transform).a);
+  await expect.poll(scale).toBeGreaterThan(1);
+  const before = await picture.evaluate(el => new DOMMatrix(getComputedStyle(el).transform).e);
+  await page.mouse.down();
+  await page.mouse.move(box.x + box.width / 2 + 80, box.y + box.height / 2, { steps: 5 });
+  await page.mouse.up();
+  await expect.poll(() => picture.evaluate(el => new DOMMatrix(getComputedStyle(el).transform).e)).toBeGreaterThan(before + 50);
+  // A drag ending outside the image does not close the viewer; double-click resets.
+  await expect(page.locator(".aw-viewer")).toBeVisible();
+  await picture.dblclick();
+  await expect.poll(scale).toBe(1);
+});
+
+test("the back can be chosen while the front is still being read", async ({ page }) => {
+  await page.evaluate(() => {
+    window.holdReads = {};
+    window.holdReads["front.jpg"] = new Promise(resolve => { window.releaseFront = resolve; });
+  });
+  await page.click('[data-choice="docs"]');
+  await page.evaluate(() => { window.openQueue = ["front.jpg"]; });
+  await page.click('[data-pick="national"][data-side="front"]');
+  await expect(page.locator(".aw-pic.is-busy")).toHaveCount(1);
+  await pick(page, "national", "back.jpg", "back");
+  // The front is still being read while the back is done.
+  await expect(page.locator(".aw-pic.is-busy")).toHaveCount(1);
+  await expect(page.locator('[data-key="birthdate"]')).toHaveValue("1985-03-14");
+  await page.evaluate(() => window.releaseFront());
+  await expect(page.locator(".aw-pic.is-busy")).toHaveCount(0);
+  await expect(page.locator('[data-key="full_name"][data-part="first"]')).toHaveValue("سامر");
+  await expect(page.locator('[data-key="birthdate"]')).toHaveValue("1985-03-14");
+  await expect(page.locator(".aw-thumb")).toHaveCount(2);
+});

@@ -856,10 +856,14 @@ html[data-ui-scale] #app-shell { height: calc(100vh / var(--ui-scale)); }
 .aw-drop-actions button,.aw-pic-actions button{font-size:12px;padding:5px 10px}
 .aw-thumb{position:relative;height:clamp(120px,21vh,200px);border-radius:8px;overflow:hidden;background:var(--ui-sunken);display:grid;place-items:center}
 .aw-thumb img{max-width:100%;max-height:100%;object-fit:contain;cursor:zoom-in}
-.aw-viewer{position:fixed;inset:0;z-index:95;display:grid;place-items:center;padding:56px 24px 24px;background:rgba(0,0,0,.88);cursor:zoom-out}
-.aw-viewer img{max-width:100%;max-height:100%;object-fit:contain;border-radius:8px;cursor:default}
-.aw-viewer-close{position:absolute;top:12px;inset-inline-end:16px;width:40px;height:40px;border-radius:50%;border:1px solid rgba(255,255,255,.35);background:rgba(255,255,255,.12);color:#fff;font-size:26px;line-height:1;cursor:pointer}
-.aw-viewer-close:hover,.aw-viewer-close:focus-visible{background:rgba(255,255,255,.25);outline:2px solid #38bdf8;outline-offset:2px}
+.aw-viewer{position:fixed;inset:0;z-index:95;display:grid;place-items:center;padding:64px 24px 24px;background:rgba(0,0,0,.88);overflow:hidden;cursor:zoom-out}
+.aw-viewer img{max-width:100%;max-height:100%;object-fit:contain;border-radius:8px;cursor:zoom-in;transform-origin:center;user-select:none;touch-action:none;transition:transform .08s ease-out}
+.aw-viewer img.is-zoomed{cursor:grab}
+.aw-viewer img.is-dragging{cursor:grabbing;transition:none}
+.aw-viewer-tools{position:absolute;top:12px;inset-inline-end:16px;z-index:1;display:flex;gap:8px}
+.aw-viewer-tools button{width:40px;height:40px;border-radius:50%;border:1px solid rgba(255,255,255,.35);background:rgba(255,255,255,.12);color:#fff;font-size:22px;line-height:1;cursor:pointer}
+.aw-viewer-tools .aw-viewer-close{font-size:26px}
+.aw-viewer-tools button:hover,.aw-viewer-tools button:focus-visible{background:rgba(255,255,255,.25);outline:2px solid #38bdf8;outline-offset:2px}
 .aw-thumb-cap{position:absolute;bottom:0;inset-inline:0;display:flex;justify-content:space-between;padding:3px 8px;font-size:11px;background:rgba(0,0,0,.6);color:#e5e7eb}
 .aw-thumb-cap em{font-style:normal;color:#86efac}
 .aw-pic-actions{display:flex;gap:6px;margin-top:6px}
