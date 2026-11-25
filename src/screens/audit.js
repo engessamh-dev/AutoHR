@@ -25,6 +25,8 @@ const actionDetails = {
   PRINT_DOCUMENT: "تمت طباعة الوثيقة",
   VIEW_DOCUMENT: "تمت معاينة الوثيقة",
   DOWNLOAD_DOCUMENT: "تم تحميل الوثيقة إلى الحاسبة",
+  EXPORT_REPORT: "تم تصدير تقرير الموظفين إلى Excel",
+  PRINT_REPORT: "تمت طباعة تقرير الموظفين",
   SCAN_DOCUMENT: "تم مسح الوثيقة ضوئياً",
   REORDER_DOCUMENT_ATTACHMENT: "تم تغيير ترتيب مرفقات الوثيقة",
   CREATE_USER: "تم إنشاء مستخدم جديد",

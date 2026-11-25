@@ -146,7 +146,8 @@ export const api = {
   setDocumentTypes: (types)  => invoke("cmd_set_document_types", { types }),
 
   printEmployeeDocuments: (employeeId, documentNames) => invoke("cmd_print_employee_documents", { employeeId, documentNames }),
-  saveReportXlsx: (destinationPath, headers, rows) => invoke("cmd_save_report_xlsx", { destinationPath, headers, rows }),
+  saveReportXlsx: (destinationPath, headers, rows, dateColumns) => invoke("cmd_save_report_xlsx", { destinationPath, headers, rows, dateColumns }),
+  auditReportPrint: (employeeCount, headers) => invoke("cmd_audit_report_print", { employeeCount, headers }),
   auditDocumentView: (employeeId, documentName) => invoke("cmd_audit_document_view", { employeeId, documentName }),
   auditDocumentDownload: (employeeId, documentName) => invoke("cmd_audit_document_download", { employeeId, documentName }),
   downloadDocument: (relativePath, destinationPath) => invoke("cmd_download_document", { relativePath, destinationPath }),

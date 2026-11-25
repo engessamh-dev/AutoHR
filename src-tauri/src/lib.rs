@@ -174,12 +174,28 @@ fn xlsx_cell(row: usize, col: usize, value: &str, style: Option<u8>) -> String {
     )
 }
 
-fn build_report_xlsx(headers: &[String], rows: &[Vec<String>]) -> AppResult<Vec<u8>> {
+/// Excel's day number for a `YYYY-MM-DD` date (days since 1899-12-30), or None for anything else.
+fn excel_date_serial(value: &str) -> Option<i64> {
+    let date = chrono::NaiveDate::parse_from_str(value.trim(), "%Y-%m-%d").ok()?;
+    let base = chrono::NaiveDate::from_ymd_opt(1899, 12, 30)?;
+    Some((date - base).num_days())
+}
+
+/// A column wide enough for its longest value (in characters), within limits.
+fn report_column_width(header: &str, rows: &[Vec<String>], col: usize) -> usize {
+    let longest = rows.iter().filter_map(|row| row.get(col)).map(|v| v.chars().count()).max().unwrap_or(0);
+    (longest.max(header.chars().count()) + 3).clamp(8, 60)
+}
+
+/// The report workbook. Columns listed in `date_columns` hold `YYYY-MM-DD` dates: those become
+/// real Excel dates shown as 2026/12/7 (so they sort and calculate); any other text stays text.
+/// Empty values are left as empty cells.
+fn build_report_xlsx(headers: &[String], rows: &[Vec<String>], date_columns: &[usize]) -> AppResult<Vec<u8>> {
     if headers.is_empty() {
-        return Err(AppError::Validation("Select at least one report field".into()));
+        return Err(AppError::Validation("اختر عموداً واحداً على الأقل".into()));
     }
     if headers.len() > 16_384 || rows.len() > 1_048_575 {
-        return Err(AppError::Validation("The report is too large for Excel".into()));
+        return Err(AppError::Validation("التقرير أكبر مما يتسع له ملف Excel".into()));
     }
 
     let mut sheet_rows = String::new();
@@ -195,32 +211,46 @@ fn build_report_xlsx(headers: &[String], rows: &[Vec<String>]) -> AppResult<Vec<
         sheet_rows.push_str(&format!("<row r=\"{excel_row}\" spans=\"1:{}\">", headers.len()));
         for col_index in 0..headers.len() {
             let value = row.get(col_index).map(String::as_str).unwrap_or("");
-            sheet_rows.push_str(&xlsx_cell(excel_row, col_index + 1, value, None));
+            if value.trim().is_empty() { continue; }
+            match excel_date_serial(value).filter(|_| date_columns.contains(&col_index)) {
+                Some(serial) => sheet_rows.push_str(&format!(
+                    "<c r=\"{}{excel_row}\" s=\"2\"><v>{serial}</v></c>", excel_column_name(col_index + 1))),
+                None => sheet_rows.push_str(&xlsx_cell(excel_row, col_index + 1, value, None)),
+            }
         }
         sheet_rows.push_str("</row>");
     }
 
-    let dimension = format!("A1:{}{}", excel_column_name(headers.len()), rows.len() + 1);
-    let cols = (1..=headers.len())
-        .map(|index| format!("<col min=\"{index}\" max=\"{index}\" width=\"24\" customWidth=\"1\"/>"))
+    let last_column = excel_column_name(headers.len());
+    let dimension = format!("A1:{last_column}{}", rows.len() + 1);
+    let cols = headers.iter().enumerate()
+        .map(|(index, header)| format!("<col min=\"{0}\" max=\"{0}\" width=\"{1}\" customWidth=\"1\"/>", index + 1, report_column_width(header, rows, index)))
         .collect::<String>();
+    // Landscape, as wide as one page, with the heading row repeated on every printed page.
     let sheet = format!(
         r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">
+<sheetPr><pageSetUpPr fitToPage="1"/></sheetPr>
 <dimension ref="{dimension}"/>
 <sheetViews><sheetView workbookViewId="0" rightToLeft="1"><pane ySplit="1" topLeftCell="A2" activePane="bottomLeft" state="frozen"/></sheetView></sheetViews>
 <sheetFormatPr defaultRowHeight="18"/>
 <cols>{cols}</cols>
 <sheetData>{sheet_rows}</sheetData>
-<pageMargins left="0.7" right="0.7" top="0.75" bottom="0.75" header="0.3" footer="0.3"/>
+<autoFilter ref="{dimension}"/>
+<pageMargins left="0.4" right="0.4" top="0.5" bottom="0.5" header="0.3" footer="0.3"/>
+<pageSetup paperSize="9" orientation="landscape" fitToWidth="1" fitToHeight="0"/>
 </worksheet>"#
     );
+    let defined_names = format!(
+        "<definedNames><definedName name=\"_xlnm._FilterDatabase\" localSheetId=\"0\" hidden=\"1\">'تقرير الموظفين'!$A$1:${last_column}${0}</definedName><definedName name=\"_xlnm.Print_Titles\" localSheetId=\"0\">'تقرير الموظفين'!$1:$1</definedName></definedNames>",
+        rows.len() + 1);
 
-    let workbook = r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+    let workbook = format!(r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">
 <bookViews><workbookView/></bookViews>
 <sheets><sheet name="تقرير الموظفين" sheetId="1" r:id="rId1"/></sheets>
-</workbook>"#;
+{defined_names}
+</workbook>"#);
     let workbook_rels = r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
 <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet1.xml"/>
@@ -240,11 +270,12 @@ fn build_report_xlsx(headers: &[String], rows: &[Vec<String>]) -> AppResult<Vec<
 </Types>"#;
     let styles = r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <styleSheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">
+<numFmts count="1"><numFmt numFmtId="164" formatCode="yyyy/m/d"/></numFmts>
 <fonts count="2"><font><sz val="11"/><name val="Arial"/></font><font><b/><sz val="11"/><name val="Arial"/></font></fonts>
 <fills count="2"><fill><patternFill patternType="none"/></fill><fill><patternFill patternType="gray125"/></fill></fills>
 <borders count="1"><border><left/><right/><top/><bottom/><diagonal/></border></borders>
 <cellStyleXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" borderId="0"/></cellStyleXfs>
-<cellXfs count="2"><xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0" applyAlignment="1"><alignment horizontal="right" readingOrder="2"/></xf><xf numFmtId="0" fontId="1" fillId="0" borderId="0" xfId="0" applyFont="1" applyAlignment="1"><alignment horizontal="right" readingOrder="2"/></xf></cellXfs>
+<cellXfs count="3"><xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0" applyAlignment="1"><alignment horizontal="right" readingOrder="2"/></xf><xf numFmtId="0" fontId="1" fillId="0" borderId="0" xfId="0" applyFont="1" applyAlignment="1"><alignment horizontal="right" readingOrder="2"/></xf><xf numFmtId="164" fontId="0" fillId="0" borderId="0" xfId="0" applyNumberFormat="1" applyAlignment="1"><alignment horizontal="right"/></xf></cellXfs>
 <cellStyles count="1"><cellStyle name="Normal" xfId="0" builtinId="0"/></cellStyles>
 </styleSheet>"#;
 
@@ -256,7 +287,7 @@ fn build_report_xlsx(headers: &[String], rows: &[Vec<String>]) -> AppResult<Vec<
         for (name, content) in [
             ("[Content_Types].xml", content_types),
             ("_rels/.rels", root_rels),
-            ("xl/workbook.xml", workbook),
+            ("xl/workbook.xml", workbook.as_str()),
             ("xl/_rels/workbook.xml.rels", workbook_rels),
             ("xl/styles.xml", styles),
             ("xl/worksheets/sheet1.xml", sheet.as_str()),
@@ -1017,11 +1048,31 @@ async fn cmd_restore_backup(window: Window, state: State<'_, DbState>, sess: Sta
     let conn = state.conn()?; let user = authorize(&conn, &sess, "documents.print")?;
     log_activity(&conn, &user, "PRINT_DOCUMENT", Some("employee"), Some(employee_id), Some(&document_names.join(", ")), None); Ok(())
 }
-#[tauri::command] fn cmd_save_report_xlsx(state: State<DbState>, sess: State<SessionState>, destination_path: String, headers: Vec<String>, rows: Vec<Vec<String>>) -> Result<(), AppError> {
+/// Saves the employees report as Excel and records it in the system log (who, how many
+/// employees and columns, which file): the report carries personal data.
+#[tauri::command] fn cmd_save_report_xlsx(state: State<DbState>, sess: State<SessionState>, destination_path: String, headers: Vec<String>, rows: Vec<Vec<String>>, date_columns: Option<Vec<usize>>) -> Result<(), AppError> {
     let conn = state.conn()?;
-    authorize(&conn, &sess, "employees.view")?;
-    let workbook = build_report_xlsx(&headers, &rows)?;
-    std::fs::write(destination_path, workbook).map_err(|e| AppError::Other(e.to_string()))
+    let user = authorize(&conn, &sess, "employees.view")?;
+    let workbook = build_report_xlsx(&headers, &rows, &date_columns.unwrap_or_default())?;
+    std::fs::write(&destination_path, workbook).map_err(|e| AppError::Other(e.to_string()))?;
+    let file = std::path::Path::new(&destination_path).file_name().map(|n| n.to_string_lossy().to_string());
+    log_activity(&conn, &user, "EXPORT_REPORT", Some("report"), None, file.as_deref(),
+        Some(&report_log_details(rows.len(), &headers)));
+    Ok(())
+}
+
+/// Records a printed employees report in the system log.
+#[tauri::command] fn cmd_audit_report_print(state: State<DbState>, sess: State<SessionState>, employee_count: usize, headers: Vec<String>) -> Result<(), AppError> {
+    let conn = state.conn()?;
+    let user = authorize(&conn, &sess, "employees.view")?;
+    log_activity(&conn, &user, "PRINT_REPORT", Some("report"), None, Some("تقرير الموظفين"),
+        Some(&report_log_details(employee_count, &headers)));
+    Ok(())
+}
+
+/// «14 موظفاً، 7 أعمدة: الرقم الوظيفي، الاسم …» for the system log.
+fn report_log_details(employees: usize, headers: &[String]) -> String {
+    format!("{employees} موظفاً، {} أعمدة: {}", headers.len(), headers.join("، "))
 }
 
 
@@ -1351,7 +1402,7 @@ pub fn run() {
             cmd_run_due_auto_backups, cmd_exit_app,
             cmd_get_document_types, cmd_set_document_types,
             cmd_create_backup, cmd_restore_backup, cmd_audit_document_view, cmd_audit_document_download, cmd_download_document,
-            cmd_get_document_preview_path, cmd_read_document, cmd_print_document, cmd_print_employee_documents, cmd_save_report_xlsx,
+            cmd_get_document_preview_path, cmd_read_document, cmd_print_document, cmd_print_employee_documents, cmd_save_report_xlsx, cmd_audit_report_print,
         ])
         .run(tauri::generate_context!())
         .expect("error while running application");
@@ -1397,6 +1448,7 @@ mod report_export_tests {
         let bytes = build_report_xlsx(
             &["الاسم الرباعي".to_string(), "الهاتف".to_string()],
             &[vec!["سيف ناظم كريم".to_string(), "07700000001".to_string()]],
+            &[],
         ).unwrap();
         let cursor = std::io::Cursor::new(bytes);
         let mut archive = zip::ZipArchive::new(cursor).unwrap();
@@ -1405,5 +1457,36 @@ mod report_export_tests {
         archive.by_name("xl/worksheets/sheet1.xml").unwrap().read_to_string(&mut sheet).unwrap();
         assert!(sheet.contains("rightToLeft=\"1\""));
         assert!(sheet.contains("الاسم الرباعي"));
+    }
+
+    #[test]
+    fn report_xlsx_writes_real_dates_and_leaves_empty_cells_empty() {
+        let bytes = build_report_xlsx(
+            &["الاسم".to_string(), "تاريخ النفاذ".to_string(), "الهاتف".to_string()],
+            &[vec!["سيف".to_string(), "2026-12-07".to_string(), "".to_string()],
+              vec!["مريم".to_string(), "2026-12-07، 2027-01-02".to_string(), "07700000001".to_string()]],
+            &[1],
+        ).unwrap();
+        let mut archive = zip::ZipArchive::new(std::io::Cursor::new(bytes)).unwrap();
+        let mut sheet = String::new();
+        archive.by_name("xl/worksheets/sheet1.xml").unwrap().read_to_string(&mut sheet).unwrap();
+        // 2026-12-07 is day 46363 in Excel, shown with the yyyy/m/d style.
+        assert!(sheet.contains(r#"<c r="B2" s="2"><v>46363</v></c>"#));
+        // Two dates in one cell stay text; the empty phone has no cell; the phone keeps its 0.
+        assert!(sheet.contains("2026-12-07، 2027-01-02"));
+        assert!(!sheet.contains(r#"r="C2""#));
+        assert!(sheet.contains("07700000001"));
+        assert!(sheet.contains("<autoFilter"));
+        let mut styles = String::new();
+        archive.by_name("xl/styles.xml").unwrap().read_to_string(&mut styles).unwrap();
+        assert!(styles.contains(r#"formatCode="yyyy/m/d""#));
+        let mut workbook = String::new();
+        archive.by_name("xl/workbook.xml").unwrap().read_to_string(&mut workbook).unwrap();
+        assert!(workbook.contains("_xlnm.Print_Titles"));
+    }
+
+    #[test]
+    fn report_log_details_name_the_count_and_columns() {
+        assert_eq!(report_log_details(14, &["الاسم".to_string(), "الهاتف".to_string()]), "14 موظفاً، 2 أعمدة: الاسم، الهاتف");
     }
 }
