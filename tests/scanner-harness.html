@@ -10,6 +10,7 @@ import { renderDocuments } from "../src/screens/documents.js";
 import { renderAbout } from "../src/screens/about.js";
 import { renderSettings } from "../src/screens/settings.js";
 import { renderSupport } from "../src/screens/support.js";
+import { showWhatsNewIfUpdated, markWhatsNewSeen } from "../src/whats-new.js";
 const canvas=document.createElement("canvas");canvas.width=640;canvas.height=480;
 const ctx=canvas.getContext("2d");ctx.fillStyle="#334155";ctx.fillRect(0,0,640,480);ctx.fillStyle="#fff";ctx.fillRect(100,70,440,340);ctx.fillStyle="#111";ctx.font="24px sans-serif";ctx.fillText("SYNTHETIC DOCUMENT",125,130);
 const bytes=Array.from(new Uint8Array(await (await fetch(canvas.toDataURL("image/jpeg"))).arrayBuffer()));
@@ -50,6 +51,7 @@ window.__TAURI_INTERNALS__={convertFileSrc:()=>canvas.toDataURL("image/jpeg"),in
   if(command==="cmd_get_support_contact")return {whatsapp:"+964 000 000 0000",email:"support@example.invalid"};
   if(command==="cmd_run_health_check"){if(window.healthDelay)await new Promise(r=>setTimeout(r,window.healthDelay));return window.healthReport;}
   if(command==="cmd_log_client_error")return;
+  if(command==="cmd_get_release_notes"){if(window.releaseNotesError)throw window.releaseNotesError;return window.releaseNotes ?? "";}
   if(command==="cmd_get_auto_update")return window.autoUpdate ?? true;
   if(command==="cmd_set_auto_update"){window.autoUpdate=args.enabled;return args.enabled;}
   if(command==="cmd_save_health_report")return args.destinationPath;
@@ -70,5 +72,6 @@ window.renderActual=async screen=>{
   else if(screen==="support")await renderSupport(root,user,{navigateTo:(target,options)=>{window.navigated={target,options};}});
   else await renderDocuments(root,user,window.plainArchive?{archiveTab:screen}:{archiveTab:screen,initialManageAttachmentDocId:1,manageAttachmentDocId:1});
 };
+window.whatsNew={showWhatsNewIfUpdated,markWhatsNewSeen};
 window.ready=true;
 </script></body></html>

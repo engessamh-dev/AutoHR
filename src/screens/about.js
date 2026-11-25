@@ -6,6 +6,7 @@ import { escHtml }   from "../utils.js";
 import { COMPANY_LOGO } from "../branding.js";
 import { can }       from "../permissions.js";
 import { APP_VERSION } from "../version.js";
+import { openWhatsNew } from "../whats-new.js";
 
 export async function renderAbout(container, user, ctx) {
   let companyConfig = null;
@@ -24,9 +25,11 @@ export async function renderAbout(container, user, ctx) {
           <div><dt>الإصدار</dt><dd><span dir="ltr">${escHtml(APP_VERSION)}</span></dd></div>
           <div><dt>المطوّر</dt><dd dir="ltr">Eng. Essam Hassan</dd></div>
         </dl>
+        <button type="button" id="btn-whats-new" class="btn-secondary text-sm px-3 py-1.5 mt-4">ما الجديد في هذا الإصدار</button>
         ${canOpenSettings ? `<button type="button" id="btn-open-settings" class="btn-secondary text-sm px-3 py-1.5 mt-4">إعدادات النظام</button>` : ""}
       </div>
     </div>`;
 
+  container.querySelector("#btn-whats-new").addEventListener("click", () => openWhatsNew());
   container.querySelector("#btn-open-settings")?.addEventListener("click", () => ctx?.navigateTo?.("settings"));
 }

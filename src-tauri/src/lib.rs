@@ -1059,6 +1059,46 @@ fn update_error(error: tauri_plugin_updater::Error) -> AppError {
     AppError::Validation(update_error_message(&error).into())
 }
 
+/// The public repository whose GitHub releases carry the installers and the «ما الجديد» notes.
+const RELEASES_REPO: &str = "engessamh-dev/CNSArch-releases";
+
+/// True for a plain version number such as 1.1.0 (the only text put into the notes URL).
+fn is_plain_version(version: &str) -> bool {
+    !version.is_empty() && version.len() <= 20
+        && version.chars().all(|c| c.is_ascii_digit() || c == '.')
+        && !version.starts_with('.') && !version.ends_with('.')
+}
+
+/// «ما الجديد»: the description written on GitHub for release v<version> (the current version
+/// when none is given). Read only from the fixed releases repository; shown as plain text.
+#[tauri::command]
+async fn cmd_get_release_notes(app: AppHandle, version: Option<String>) -> Result<String, AppError> {
+    let version = version.unwrap_or_else(|| app.package_info().version.to_string());
+    if !is_plain_version(&version) {
+        return Err(AppError::Validation("رقم إصدار غير صالح".into()));
+    }
+    let url = format!("https://api.github.com/repos/{RELEASES_REPO}/releases/tags/v{version}");
+    if rustls::crypto::CryptoProvider::get_default().is_none() {
+        let _ = rustls::crypto::ring::default_provider().install_default();
+    }
+    let fetch = async {
+        let client = reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(8))
+            .user_agent("CNSArch-app")
+            .build()?;
+        let response = client.get(&url).header("Accept", "application/vnd.github+json").send().await?;
+        if response.status() == reqwest::StatusCode::NOT_FOUND {
+            return Ok(String::new());
+        }
+        let release: serde_json::Value = response.error_for_status()?.json().await?;
+        Ok::<_, reqwest::Error>(release.get("body").and_then(|b| b.as_str()).unwrap_or_default().chars().take(20_000).collect())
+    };
+    fetch.await.map_err(|error| {
+        errlog::record_backend("update", &format!("release notes: {error}"));
+        AppError::Validation("تعذر جلب ملاحظات الإصدار من الإنترنت.".into())
+    })
+}
+
 #[tauri::command]
 async fn cmd_check_for_update(app: AppHandle, state: State<'_, DbState>, sess: State<'_, SessionState>) -> Result<UpdateInfo, AppError> {
     {
@@ -1327,7 +1367,7 @@ pub fn run() {
             cmd_get_storage_path, cmd_get_backup_path, cmd_open_managed_folder,
             cmd_get_startup_status, cmd_check_setup_folders, cmd_complete_setup, cmd_retry_data_folder,
             cmd_get_storage_status, cmd_change_backup_folder, cmd_export_backup_to, cmd_move_data_folder,
-            cmd_check_for_update, cmd_install_update,
+            cmd_check_for_update, cmd_install_update, cmd_get_release_notes,
             cmd_run_health_check, cmd_save_health_report, cmd_get_integrity_status, cmd_approve_integrity, cmd_get_support_contact, cmd_open_support_link, cmd_log_client_error, cmd_get_auto_update, cmd_set_auto_update,
             cmd_get_auto_backup_settings, cmd_set_auto_backup_settings,
             cmd_get_document_alert_rules, cmd_set_document_alert_rules,
@@ -1343,6 +1383,15 @@ pub fn run() {
 #[cfg(test)]
 mod report_export_tests {
     use super::*;
+
+    #[test]
+    fn release_notes_use_only_plain_versions_from_the_shipped_releases_repo() {
+        assert!(is_plain_version("1.1.0"));
+        for bad in ["", "1.1.0/../x", "v1.1.0", "1.1.0?a=b", ".1", "1."] { assert!(!is_plain_version(bad), "{bad}"); }
+        let config: serde_json::Value = serde_json::from_str(include_str!("../tauri.conf.json")).unwrap();
+        let endpoint = config["plugins"]["updater"]["endpoints"][0].as_str().unwrap();
+        assert!(endpoint.starts_with(&format!("https://github.com/{RELEASES_REPO}/releases/")));
+    }
 
     #[test]
     fn update_errors_explain_their_cause() {

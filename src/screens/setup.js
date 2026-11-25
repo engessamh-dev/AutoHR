@@ -6,6 +6,7 @@
  *   creates a new empty database; the user reconnects the disk and retries, or points
  *   to the folder that already holds the data.
  */
+import { markWhatsNewSeen } from "../whats-new.js";
 import { api } from "../api.js";
 import { escHtml } from "../utils.js";
 import { open } from "@tauri-apps/plugin-dialog";
@@ -35,6 +36,8 @@ export async function runStartupGate() {
     return; // Older backend without the gate: nothing to do.
   }
   if (status.state === "ready") return;
+  // A brand-new installation has nothing "new" to announce.
+  if (status.state === "needs_setup") markWhatsNewSeen();
 
   const screen = document.getElementById("setup-screen");
   const login = document.getElementById("login-screen");

@@ -114,6 +114,7 @@ export const api = {
   // Application updates (administrators only; checked in Rust)
   checkForUpdate: () => invoke("cmd_check_for_update"),
   installUpdate: (password) => invoke("cmd_install_update", { password }),
+  getReleaseNotes: (version) => invoke("cmd_get_release_notes", { version: version ?? null }),
   getAutoUpdate: () => invoke("cmd_get_auto_update"),
   setAutoUpdate: (enabled) => invoke("cmd_set_auto_update", { enabled }),
 
