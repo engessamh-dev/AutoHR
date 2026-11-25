@@ -26,7 +26,8 @@ export function showToast(msg, type = "info") {
 }
 
 let _confirmActive = null;
-export function confirmAction(message = "هل أنت متأكد من تنفيذ هذا الإجراء؟") {
+// options: { title, confirmLabel, danger } — a deletion says what it deletes on a red button.
+export function confirmAction(message = "هل أنت متأكد من تنفيذ هذا الإجراء؟", options = {}) {
   if (_confirmActive) return _confirmActive;
 
   _confirmActive = new Promise(resolve => {
@@ -40,14 +41,12 @@ export function confirmAction(message = "هل أنت متأكد من تنفيذ 
     const dialog = document.createElement("div");
     dialog.setAttribute("role", "alertdialog");
     dialog.setAttribute("aria-modal", "true");
-    dialog.style.cssText = `
-      width:min(420px,100%);background:var(--ui-surface);border:1px solid var(--ui-line);
-      border-radius:8px;box-shadow:0 18px 60px rgba(0,0,0,.45);
-      padding:18px;color:var(--ui-text-strong);
-    `;
+    // Same card as the program's other dialogs, in both themes.
+    dialog.className = "card app-dialog";
+    dialog.style.cssText = "width:min(420px,100%);padding:20px;color:var(--ui-text-strong)";
 
     const title = document.createElement("p");
-    title.textContent = "تأكيد الإجراء";
+    title.textContent = options.title ?? "تأكيد الإجراء";
     title.style.cssText = "font-size:16px;font-weight:700;margin:0 0 10px";
 
     const body = document.createElement("p");
@@ -59,8 +58,8 @@ export function confirmAction(message = "هل أنت متأكد من تنفيذ 
 
     const ok = document.createElement("button");
     ok.type = "button";
-    ok.className = "btn-primary";
-    ok.textContent = "تأكيد";
+    ok.className = options.danger ? "btn-danger-solid" : "btn-primary";
+    ok.textContent = options.confirmLabel ?? "تأكيد";
     ok.style.cssText = "min-width:96px";
 
     const cancel = document.createElement("button");
@@ -113,11 +112,8 @@ export function confirmSaveChanges(message = "توجد تغييرات غير م�
     const dialog = document.createElement("div");
     dialog.setAttribute("role", "alertdialog");
     dialog.setAttribute("aria-modal", "true");
-    dialog.style.cssText = `
-      width:min(460px,100%);background:var(--ui-surface);border:1px solid var(--ui-line);
-      border-radius:8px;box-shadow:0 18px 60px rgba(0,0,0,.45);
-      padding:18px;color:var(--ui-text-strong);
-    `;
+    dialog.className = "card app-dialog";
+    dialog.style.cssText = "width:min(460px,100%);padding:20px;color:var(--ui-text-strong)";
 
     const title = document.createElement("p");
     title.textContent = "تغييرات غير محفوظة";

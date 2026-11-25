@@ -65,6 +65,8 @@ export const ACTIONS = {
   DELETE_USER: A("حذف مستخدم", "المستخدمون"),
   CHANGE_USER_ROLE: A("تغيير صلاحية مستخدم", "المستخدمون"),
   RESET_USER_PASSWORD: A("إعادة تعيين كلمة مرور", "المستخدمون"),
+  DISABLE_USER: A("إيقاف حساب مستخدم", "المستخدمون"),
+  ENABLE_USER: A("إعادة تشغيل حساب مستخدم", "المستخدمون"),
 
   CHANGE_SETTING: A("تغيير الإعدادات", "الإعدادات"),
   UPLOAD_COMPANY_LOGO: A("تغيير شعار الجهة", "الإعدادات"),

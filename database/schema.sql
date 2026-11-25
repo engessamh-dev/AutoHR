@@ -9,7 +9,9 @@ CREATE TABLE IF NOT EXISTS users (
   password   TEXT NOT NULL,
   role       TEXT NOT NULL DEFAULT 'viewer' CHECK(role IN ('system_admin','archive_admin','archive_officer','viewer')),
   must_change_password INTEGER NOT NULL DEFAULT 0 CHECK(must_change_password IN (0,1)),
-  created_at TEXT DEFAULT (datetime('now'))
+  created_at TEXT DEFAULT (datetime('now')),
+  -- Added in schema v8: an account stopped by an admin (cannot sign in).
+  disabled INTEGER NOT NULL DEFAULT 0 CHECK(disabled IN (0,1))
 );
 
 CREATE TABLE IF NOT EXISTS company_config (
