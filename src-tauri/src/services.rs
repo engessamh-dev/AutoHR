@@ -83,6 +83,9 @@ pub struct Employee {
     pub workplace: Option<String>,
     pub job_title: Option<String>,
     pub job_grade: Option<String>,
+    /// «رقم المرحلة» within the grade (1–11 in the civil-service scale), from the settings list.
+    #[serde(default)]
+    pub job_step: Option<String>,
     pub hire_date: Option<String>,
     pub appointment_date: Option<String>,
     pub contract_type: Option<String>,
@@ -190,6 +193,9 @@ pub struct EmployeeData {
     pub workplace: Option<String>,
     pub job_title: Option<String>,
     pub job_grade: Option<String>,
+    /// «رقم المرحلة» within the grade (1–11 in the civil-service scale), from the settings list.
+    #[serde(default)]
+    pub job_step: Option<String>,
     pub hire_date: Option<String>,
     pub appointment_date: Option<String>,
     pub contract_type: Option<String>,
@@ -981,7 +987,7 @@ const EMP_COLS: &str = "id,employee_number,photo_path,full_name,mother_name,fath
   airport_badge_issue_date,airport_badge_front_path,airport_badge_back_path,
   ministry_badge_issue_date,ministry_badge_front_path,ministry_badge_back_path,
   vehicle_color,vehicle_manufacture_year,vehicle_type,vehicle_annual_issue_date,vehicle_annual_expiry_date,vehicles,spouses,
-  appointment_date,father_birthdate,mother_birthdate,name_parts,airport_badge_zones,residence_address_parts";
+  appointment_date,father_birthdate,mother_birthdate,name_parts,airport_badge_zones,residence_address_parts,job_step";
 
 fn map_emp(r: &rusqlite::Row) -> rusqlite::Result<Employee> {
     Ok(Employee {
@@ -1037,6 +1043,7 @@ fn map_emp(r: &rusqlite::Row) -> rusqlite::Result<Employee> {
         name_parts:r.get::<_, Option<String>>(88)?.and_then(|value| serde_json::from_str(&value).ok()),
         airport_badge_zones:r.get(89)?,
         residence_address_parts:r.get(90)?,
+        job_step:r.get(91)?,
         residence_card_front_full_path:None,
         residence_card_back_full_path:None,
         airport_badge_front_full_path:None,
@@ -1502,7 +1509,8 @@ pub fn create_employee(conn: &Connection, d: &EmployeeData, username: &str) -> A
       d.vehicle_annual_issue_date,d.vehicle_annual_expiry_date,d.vehicles.as_deref().unwrap_or("[]"),
       d.spouses.as_deref().unwrap_or("[]"),d.appointment_date,d.father_birthdate,d.mother_birthdate,d.airport_badge_zones])?;
     let id = conn.last_insert_rowid();
-    conn.execute("UPDATE employees SET name_parts=?1, residence_address_parts=?2 WHERE id=?3", params![name_parts, address_parts(d), id])?;
+    conn.execute("UPDATE employees SET name_parts=?1, residence_address_parts=?2, job_step=?3 WHERE id=?4",
+        params![name_parts, address_parts(d), d.job_step.as_deref().map(str::trim).filter(|v| !v.is_empty()), id])?;
     replace_employee_repeating_data(conn, id, d)?;
     log_activity(conn, username, "CREATE_EMPLOYEE", Some("employee"), Some(id), Some(d.full_name.trim()), None);
     get_employee(conn, id)
@@ -1561,7 +1569,8 @@ pub fn update_employee(conn: &Connection, id: i64, d: &EmployeeData, username: &
       d.airport_badge_issue_date,d.ministry_badge_issue_date,d.vehicle_color,d.vehicle_manufacture_year,d.vehicle_type,
       d.vehicle_annual_issue_date,d.vehicle_annual_expiry_date,d.vehicles.as_deref().unwrap_or("[]"),
       d.spouses.as_deref().unwrap_or("[]"),d.appointment_date,d.father_birthdate,d.mother_birthdate,d.airport_badge_zones,id])?;
-    conn.execute("UPDATE employees SET name_parts=?1, residence_address_parts=?2 WHERE id=?3", params![name_parts, address_parts(d), id])?;
+    conn.execute("UPDATE employees SET name_parts=?1, residence_address_parts=?2, job_step=?3 WHERE id=?4",
+        params![name_parts, address_parts(d), d.job_step.as_deref().map(str::trim).filter(|v| !v.is_empty()), id])?;
     replace_employee_repeating_data(conn, id, d)?;
     let after = get_employee(conn, id)?;
     let changes = changes_details(&before, &serde_json::to_value(&after).unwrap_or_default(), EMPLOYEE_AUDIT_SKIP);
@@ -3380,7 +3389,7 @@ fn put_back_backup_settings(conn: &Connection, kept: &[(String, String)]) -> App
     Ok(())
 }
 
-pub fn restore_backup_with_progress<F>(conn: &mut Connection, user: &str, source_path: &str, password: &str, mut progress: F) -> AppResult<()>
+pub fn restore_backup_with_progress<F>(conn: &mut Connection, user: &str, source_path: &str, password: &str, mut progress: F) -> AppResult<String>
 where
     F: FnMut(BackupProgress),
 {
@@ -3401,7 +3410,8 @@ where
     result
 }
 
-fn restore_inner(conn: &mut Connection, user: &str, source: &Path, password: &str, progress: &mut dyn FnMut(BackupProgress)) -> AppResult<()> {
+/// Returns where the safety copy taken just before the restore was saved.
+fn restore_inner(conn: &mut Connection, user: &str, source: &Path, password: &str, progress: &mut dyn FnMut(BackupProgress)) -> AppResult<String> {
     progress(backup_progress(6, "جاري فحص ملف النسخة الاحتياطية..."));
     if !source.is_file() {
         return Err(AppError::Validation("تعذرت قراءة ملف النسخة الاحتياطية".into()));
@@ -3414,7 +3424,7 @@ fn restore_inner(conn: &mut Connection, user: &str, source: &Path, password: &st
         let mapped = 45 + (((step.percent as u16) * 18) / 100) as u8;
         progress(backup_progress(mapped.min(63), "جاري إنشاء نسخة أمان قبل الاستعادة..."));
     };
-    create_backup_at(conn, user, password, "PreRestore", &mut backup_progress_mapper)?;
+    let safety_copy = create_backup_at(conn, user, password, "PreRestore", &mut backup_progress_mapper)?;
     // Kept after the safety copy, so that its own entry is not lost.
     let audit: Vec<AuditSnapshotRow> = read_audit_rows(conn)?;
     let kept_settings = backup_settings_to_keep(conn)?;
@@ -3478,7 +3488,7 @@ fn restore_inner(conn: &mut Connection, user: &str, source: &Path, password: &st
     std::fs::remove_file(&rollback_database).ok();
     std::fs::remove_file(&restore_marker).ok();
     progress(backup_progress(100, "اكتملت استعادة النسخة الاحتياطية"));
-    Ok(())
+    Ok(safety_copy)
 }
 
 pub(crate) fn stored_document_path(conn: &Connection, relative_path: &str) -> AppResult<std::path::PathBuf> {
@@ -3552,6 +3562,124 @@ pub fn download_document(conn: &Connection, user: &str, relative_path: &str, des
     std::fs::copy(&source, destination).map_err(|e| AppError::Other(e.to_string()))?;
     log_activity(conn, user, "DOWNLOAD_DOCUMENT", Some("document"), None, name.to_str(), Some(&destination.to_string_lossy()));
     Ok(destination.to_string_lossy().into_owned())
+}
+
+// ── Job grades and steps («الدرجة الوظيفية» و«رقم المرحلة») ─────────────────
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct JobLists {
+    pub grades: Vec<String>,
+    pub steps: Vec<String>,
+}
+
+/// The civil-service grades (قانون رواتب موظفي الدولة) as a starting list; the settings can change it.
+fn default_job_grades() -> Vec<String> {
+    ["الدرجة العليا (أ)", "الدرجة العليا (ب)", "الدرجة الأولى", "الدرجة الثانية", "الدرجة الثالثة", "الدرجة الرابعة",
+     "الدرجة الخامسة", "الدرجة السادسة", "الدرجة السابعة", "الدرجة الثامنة", "الدرجة التاسعة", "الدرجة العاشرة"]
+        .iter().map(|v| v.to_string()).collect()
+}
+
+fn default_job_steps() -> Vec<String> {
+    (1..=11).map(|n| n.to_string()).collect()
+}
+
+fn normalize_list(values: &[String]) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    for value in values {
+        let value = value.split_whitespace().collect::<Vec<_>>().join(" ");
+        if !value.is_empty() && !out.contains(&value) {
+            out.push(value);
+        }
+    }
+    out
+}
+
+/// The lists offered in the employee file. Until they are saved once, the grades are the standard
+/// list plus any grade already typed in an employee record, so nothing existing disappears.
+pub fn get_job_lists(conn: &Connection) -> AppResult<JobLists> {
+    let read = |key: &str| -> AppResult<Option<Vec<String>>> {
+        Ok(get_setting(conn, key)?.and_then(|json| serde_json::from_str::<Vec<String>>(&json).ok()).map(|v| normalize_list(&v)).filter(|v| !v.is_empty()))
+    };
+    let grades = match read("job_grades")? {
+        Some(saved) => saved,
+        None => {
+            let mut grades = default_job_grades();
+            let mut stmt = conn.prepare("SELECT DISTINCT TRIM(job_grade) FROM employees WHERE TRIM(IFNULL(job_grade,''))<>'' ORDER BY 1")?;
+            let typed: Vec<String> = stmt.query_map([], |r| r.get(0))?.collect::<rusqlite::Result<_>>()?;
+            grades.extend(typed);
+            normalize_list(&grades)
+        }
+    };
+    Ok(JobLists { grades, steps: read("job_steps")?.unwrap_or_else(default_job_steps) })
+}
+
+pub fn set_job_lists(conn: &Connection, user: &str, lists: &JobLists) -> AppResult<JobLists> {
+    assert_permission(conn, user, "settings.manage")?;
+    let grades = normalize_list(&lists.grades);
+    let steps = normalize_list(&lists.steps);
+    if grades.is_empty() || steps.is_empty() {
+        return Err(AppError::Validation("أضف درجة واحدة ومرحلة واحدة على الأقل".into()));
+    }
+    if grades.len() > 60 || steps.len() > 60 || grades.iter().chain(&steps).any(|v| v.chars().count() > 60) {
+        return Err(AppError::Validation("القائمة طويلة جدًا (الحد 60 عنصرًا، وكل عنصر 60 حرفًا)".into()));
+    }
+    set_setting(conn, "job_grades", &serde_json::to_string(&grades).map_err(|e| AppError::Other(e.to_string()))?)?;
+    set_setting(conn, "job_steps", &serde_json::to_string(&steps).map_err(|e| AppError::Other(e.to_string()))?)?;
+    log_activity(conn, user, "CHANGE_SETTING", Some("settings"), None, Some("job_lists"),
+        Some(&format!("{} grades, {} steps", grades.len(), steps.len())));
+    Ok(JobLists { grades, steps })
+}
+
+// ── What a backup holds (shown before a restore) ────────────────────────────
+
+#[derive(Debug, Clone, Serialize)]
+pub struct BackupSummary {
+    /// «نسخة يومية»، «نسخة يدوية»، «نسخة كاملة»...
+    pub kind: String,
+    /// The last recorded change in the backup's log (local time), roughly when it was made.
+    pub last_change: Option<String>,
+    pub file_time: Option<String>,
+    pub employees: i64,
+    pub archive_documents: i64,
+    pub users: i64,
+    pub attachments: i64,
+    pub size_bytes: u64,
+}
+
+/// Opens and fully checks a backup without changing anything, and says what it holds.
+/// The caller checks `backups.restore` first.
+pub fn inspect_backup(source_path: &str, password: &str) -> AppResult<BackupSummary> {
+    let source = Path::new(source_path);
+    let kind = backup_kind(source)?;
+    let staging = tempfile::tempdir_in(crate::paths::data_root()).map_err(|e| AppError::Other(e.to_string()))?;
+    stage_backup(source, password, staging.path())?;
+    let db = Connection::open_with_flags(staging.path().join("database.db"), rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)?;
+    let count = |sql: &str| db.query_row(sql, [], |r| r.get::<_, i64>(0)).unwrap_or(0);
+    let mut files = Vec::new();
+    collect_relative_file_paths(&staging.path().join("Data"), Path::new(""), &mut files).ok();
+    let name = source.file_name().and_then(|n| n.to_str()).unwrap_or_default().to_lowercase();
+    let label = match kind {
+        BackupKind::FullExport => "نسخة كاملة (ملف واحد)",
+        _ if name.contains("_daily_") => "نسخة تلقائية يومية",
+        _ if name.contains("_weekly_") || name.contains("_monthly_") => "نسخة تلقائية",
+        _ if name.contains("_prerestore_") => "نسخة أمان قبل استعادة",
+        _ if name.contains("_premove_") => "نسخة أمان قبل نقل المجلد",
+        _ if name.contains("_preupdate_") => "نسخة أمان قبل تحديث",
+        _ if name.contains("_export_") => "نسخة مصدّرة",
+        _ => "نسخة يدوية",
+    };
+    let metadata = std::fs::metadata(source).ok();
+    Ok(BackupSummary {
+        kind: label.into(),
+        last_change: db.query_row("SELECT datetime(MAX(created_at),'localtime') FROM activity_log", [], |r| r.get(0)).ok().flatten(),
+        file_time: metadata.as_ref().and_then(|m| m.modified().ok())
+            .map(|time| chrono::DateTime::<chrono::Local>::from(time).format("%Y-%m-%d %H:%M").to_string()),
+        employees: count("SELECT COUNT(*) FROM employees"),
+        archive_documents: count("SELECT COUNT(*) FROM general_docs"),
+        users: count("SELECT COUNT(*) FROM users"),
+        attachments: files.len() as i64,
+        size_bytes: metadata.map(|m| m.len()).unwrap_or(0),
+    })
 }
 
 pub fn get_document_types(conn: &Connection) -> AppResult<Vec<String>> {

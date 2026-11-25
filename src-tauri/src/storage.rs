@@ -36,7 +36,7 @@ pub fn storage_status() -> StorageStatus {
         warnings.push("مجلد النسخ الاحتياطية غير متاح حاليًا (قرص غير موصول أو مجلد شبكة غير متصل). العمل مستمر، لكن النسخ التلقائي لن يعمل حتى يعود المجلد أو تختار مجلدًا آخر.".into());
     }
     if legacy_location {
-        warnings.push("البيانات محفوظة في الموقع القديم داخل قرص النظام (AppData). يمكنك نقلها إلى قرص آخر من زر «نقل مجلد البيانات».".into());
+        warnings.push("البيانات محفوظة في الموقع القديم داخل قرص النظام (AppData). يمكنك نقلها إلى قرص آخر من زر «نقل المجلد…» في الإعدادات ← مجلد البيانات.".into());
     }
     if let Ok(mut pair) = paths::validate_pair(&current.data_root, &current.backup_root) {
         warnings.append(&mut pair);
@@ -284,7 +284,7 @@ pub fn relocate_data(
     let updated = AppPaths { data_root: new_root.to_path_buf(), backup_root };
     paths::write_config(&updated)?;
     // The caller writes the audit entry into the NEW database once it is open.
-    progress(backup_progress(100, "تم نقل البيانات والتحقق منها. الموقع القديم بقي كما هو ولم يُحذف."));
+    progress(backup_progress(100, "تم نقل البيانات والتحقق منها. بقيت نسخة غير مشفرة في الموقع القديم: احذفها بنفسك بعد التأكد من أن كل شيء يعمل."));
     Ok((updated, safety))
 }
 

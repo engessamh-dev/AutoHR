@@ -29,6 +29,8 @@ let _closeAfterSave = false;
 let _afterSave = null;
 let _currentUser = null;
 let _companyConfig = null;
+// The job grade and step picklists, edited in «الإعدادات ← الدرجات والمراحل».
+let _jobLists = { grades: [], steps: [] };
 const DOCUMENT_EXTENSIONS = ["jpg", "jpeg", "png", "webp", "pdf", "doc", "docx", "xls", "xlsx", "ppt", "pptx"];
 
 async function downloadEmployeeAttachment(path) {
@@ -73,6 +75,7 @@ export async function renderEmployees(container, user, ctx) {
   const [employees, companyConfig] = await Promise.all([
     api.listEmployees(),
     api.getCompanyConfig().catch(() => null),
+    api.getJobLists().then(lists => { _jobLists = lists; }).catch(() => {}),
     // The «قارب على النفاذ» status of each document follows the reminder days in the settings.
     loadAlertRules(),
   ]);
@@ -436,6 +439,18 @@ function field(label, id, emp, opts = {}) {
     <p style="font-size:11px;color:var(--ui-text-faint);text-transform:uppercase;letter-spacing:.05em;margin-bottom:4px">${label}</p>
     <input id="f-${id}" class="input-field" type="${opts.date ? 'date' : 'text'}"
            dir="${opts.ltr ? 'ltr' : 'rtl'}" value="${opts.date ? (emp?.[id] ?? '') : val}" /></div>`;
+}
+
+/** A picklist from Settings. A value saved before the list existed (or since removed) stays selectable. */
+function listField(label, id, emp, items) {
+  const current = emp?.[id] ?? "";
+  const values = current && !items.includes(current) ? [current, ...items] : items;
+  return `<div>
+    <p style="font-size:11px;color:var(--ui-text-faint);text-transform:uppercase;letter-spacing:.05em;margin-bottom:4px">${label}</p>
+    <select id="f-${id}" class="input-field">
+      <option value="" ${current ? "" : "selected"}>—</option>
+      ${values.map(value => `<option value="${escHtml(value)}" ${value === current ? "selected" : ""}>${escHtml(value)}${items.includes(value) ? "" : " (ليست في القائمة)"}</option>`).join("")}
+    </select></div>`;
 }
 
 /** The residence address: المحافظة / القضاء / الناحية / المدينة, then م / ز / د or one free line.
@@ -1219,7 +1234,8 @@ function tabContent(tab, emp) {
         ${field("الرقم الوظيفي", "employee_number", emp, {ltr:true})}
         ${fixedCompanyField("مكان العمل", "workplace", _companyConfig?.company_name ?? emp?.workplace ?? "")}
         ${field("العنوان الوظيفي", "job_title", emp)}
-        ${field("الدرجة الوظيفية", "job_grade", emp)}
+        ${listField("الدرجة الوظيفية", "job_grade", emp, _jobLists.grades)}
+        ${listField("المرحلة", "job_step", emp, _jobLists.steps)}
         ${field("تاريخ التعيين", "appointment_date", emp, {date:true})}
         ${fixedCompanyField("القسم", "department", fixedDepartment(emp))}
         ${fixedCompanyField("الشعبة / الوحدة", "division", _companyConfig?.division_name ?? emp?.division ?? "")}
@@ -1588,6 +1604,7 @@ function renderPanel(emp) {
       workplace:             _companyConfig?.company_name ?? g("workplace"),
       job_title:             g("job_title"),
       job_grade:             g("job_grade"),
+      job_step:              g("job_step"),
       appointment_date:      g("appointment_date"),
       hire_date:             g("hire_date"),
       contract_type:         g("contract_type"),

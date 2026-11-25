@@ -142,7 +142,13 @@ export const api = {
   setDocumentAlertRules: (rules) => invoke("cmd_set_document_alert_rules", { rules }),
   getAutoBackupSettings: () => invoke("cmd_get_auto_backup_settings"),
   setAutoBackupSettings: (data) => invoke("cmd_set_auto_backup_settings", { data }),
-  runDueAutoBackups: () => invoke("cmd_run_due_auto_backups"),
+  // inSession: the quiet check while someone works (waits for the chosen interval); otherwise sign-out/close.
+  runDueAutoBackups: (inSession = false) => invoke("cmd_run_due_auto_backups", { inSession }),
+  // Opens and checks a backup before a restore; says its date and what it holds.
+  inspectBackup: (path, password) => invoke("cmd_inspect_backup", { sourcePath: path, password }),
+  // «الدرجة الوظيفية» and «رقم المرحلة» lists (read: employees.view; save: settings.manage)
+  getJobLists: () => invoke("cmd_get_job_lists"),
+  setJobLists: (lists) => invoke("cmd_set_job_lists", { lists }),
   exitApp: () => invoke("cmd_exit_app"),
   createBackup: (password)       => invoke("cmd_create_backup", { password }),
   restoreBackup: (path, password)  => invoke("cmd_restore_backup", { sourcePath: path, password }),

@@ -323,3 +323,17 @@ export function parseAddress(value) {
   }
   return out;
 }
+
+// ── Long operations (backup, export, restore, folder move, update) ─────────
+// Closing or signing out while one of these runs can cut it off, so main.js asks first.
+const _busyTasks = new Map();
+let _busyNext = 0;
+export function beginBusyTask(label) {
+  const id = ++_busyNext;
+  _busyTasks.set(id, label);
+  return () => _busyTasks.delete(id);
+}
+export function busyTaskLabel() {
+  const labels = [..._busyTasks.values()];
+  return labels.length ? labels[labels.length - 1] : null;
+}
