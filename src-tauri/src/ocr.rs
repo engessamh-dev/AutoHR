@@ -401,6 +401,11 @@ fn retry_tall_box(image: &RgbImage, b: &[[f32; 2]; 4], visual: String, confidenc
 
 /// Reads all text lines of a document photo or scan, turning it upright first.
 pub fn read_lines(image: &DynamicImage) -> Option<Vec<Line>> {
+    read_lines_upright(image).map(|(lines, _)| lines)
+}
+
+/// Like `read_lines`, also returning the upright image the line boxes refer to.
+pub fn read_lines_upright(image: &DynamicImage) -> Option<(Vec<Line>, RgbImage)> {
     if !available() {
         return None;
     }
@@ -461,7 +466,7 @@ pub fn read_lines(image: &DynamicImage) -> Option<Vec<Line>> {
         })
         .collect();
     lines.sort_by(|a, b| a.center_y().total_cmp(&b.center_y()));
-    Some(lines)
+    Some((lines, rgb))
 }
 
 /// Many filler-like characters in one line: '<' itself, or the Arabic-Indic digits the

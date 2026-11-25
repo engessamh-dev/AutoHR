@@ -165,3 +165,80 @@ test("the thumbnail itself zooms with the wheel without opening or scrolling, an
   await thumb.click();
   await expect(page.locator(".aw-viewer")).toBeVisible();
 });
+
+// Review tools: confirming an unsure value, showing it on the card, number checks, drafts.
+
+async function readUnsureFront(page) {
+  await page.evaluate(() => {
+    window.imageReads["unsure.jpg"] = { document: "national_front", warnings: [], fields: [
+      { key: "first", value: "سامر", confidence: 0.95, source: "text" }, { key: "surname", value: "الجبوري", confidence: 0.95, source: "text" },
+      { key: "mother_first", value: "سعاد", confidence: 0.6, source: "text" }, { key: "mother_father", value: "حسن", confidence: 0.95, source: "text" },
+    ] };
+    window.imageRegions = { "unsure.jpg": { mother_first: [0.5, 0.6, 0.9, 0.7] } };
+  });
+  await page.click('[data-choice="docs"]');
+  await pick(page, "national", "unsure.jpg");
+}
+
+test("an unsure reading is confirmed with «صحيح», which clears the flag and the warning", async ({ page }) => {
+  await readUnsureFront(page);
+  const mother = page.locator(".aw-field", { has: page.locator('[data-key="mother_name"]') });
+  await expect(mother.locator(".aw-src")).toHaveText("راجِع");
+  await expect(mother.locator(".aw-note.is-warn")).toBeVisible();
+  await mother.getByRole("button", { name: "✓ صحيح" }).click();
+  await expect(mother.locator(".aw-src")).not.toHaveText("راجِع");
+  await expect(mother.locator(".aw-note.is-warn")).toHaveCount(0);
+  await expect(mother.getByRole("button", { name: "✓ صحيح" })).toHaveCount(0);
+  await expect(page.locator('[data-key="mother_name"][data-part="first"]')).toHaveValue("سعاد");
+});
+
+test("focusing an unsure value zooms the card image to where it was read", async ({ page }) => {
+  await readUnsureFront(page);
+  const thumb = page.locator('.aw-thumb img[data-side="front"]');
+  await page.locator('[data-key="mother_name"][data-part="first"]').focus();
+  await expect(thumb).toHaveClass(/is-zoomed/);
+  const matrix = () => thumb.evaluate(el => { const m = new DOMMatrix(getComputedStyle(el).transform); return { a: m.a, e: m.e, f: m.f }; });
+  await expect.poll(async () => (await matrix()).a).toBeGreaterThan(1.4);
+  // The region is right of and below the centre: the image moves left and up.
+  const m = await matrix();
+  expect(m.e).toBeLessThan(0);
+  expect(m.f).toBeLessThan(0);
+});
+
+test("national and family numbers are checked, and a registered national number is flagged", async ({ page }) => {
+  await page.keyboard.press("Escape");
+  await page.evaluate(async () => { window.employeePatch = { civil_id: "199000000001" }; await window.renderActual("employees"); });
+  await page.click("#btn-add-emp");
+  await page.click('[data-choice="docs"]');
+  const civil = page.locator(".aw-field", { has: page.locator('[data-key="civil_id"]') });
+  await page.fill('[data-key="civil_id"]', "1990000");
+  await expect(civil.locator(".aw-check")).toContainText("12 رقمًا");
+  await page.fill('[data-key="civil_id"]', "199000000001");
+  await expect(civil.locator(".aw-note.is-error")).toContainText("يوجد موظف مسجّل");
+  const family = page.locator(".aw-field", { has: page.locator('[data-key="civil_id_family_number"]') });
+  await page.fill('[data-key="civil_id_family_number"]', "12AB");
+  await expect(family.locator(".aw-check")).toContainText("غير معتادة");
+  await page.fill('[data-key="civil_id_family_number"]', "1500B2C9876543210");
+  await expect(family.locator(".aw-check")).toBeEmpty();
+});
+
+test("closing the wizard keeps a draft to continue or delete", async ({ page }) => {
+  await page.click('[data-choice="docs"]');
+  await pick(page, "national", "front.jpg");
+  await page.locator(".aw-close").click();
+  await expect(page.locator(".aw-overlay")).toHaveCount(0);
+  await page.click("#btn-add-emp");
+  const banner = page.locator(".aw-draft");
+  await expect(banner).toContainText("سامر خالد عبد الله الجبوري");
+  await banner.getByRole("button", { name: "متابعتها" }).click();
+  await expect(page.locator('[data-key="full_name"][data-part="first"]')).toHaveValue("سامر");
+  await expect(page.locator(".aw-thumb")).toHaveCount(1);
+  // Saving ends the draft; here: close again, then delete it.
+  await page.locator(".aw-close").click();
+  await page.click("#btn-add-emp");
+  await banner.getByRole("button", { name: "حذفها" }).click();
+  await expect(banner).toHaveCount(0);
+  await page.keyboard.press("Escape");
+  await page.click("#btn-add-emp");
+  await expect(page.locator(".aw-draft")).toHaveCount(0);
+});

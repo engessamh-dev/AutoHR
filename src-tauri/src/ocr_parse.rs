@@ -24,6 +24,9 @@ pub struct ReadResult {
     pub warnings: Vec<String>,
 }
 
+/// Values the MRZ carries that are also printed: a disagreement between the two is reported.
+const MRZ_CHECKED: &[(&str, &str)] = &[("birthdate", "تاريخ الولادة"), ("expiry_date", "تاريخ النفاذ"), ("gender", "الجنس"), ("national_no", "الرقم الوطني")];
+
 impl ReadResult {
     fn get(&self, key: &str) -> Option<&Field> { self.fields.iter().find(|f| f.key == key) }
 
@@ -33,8 +36,16 @@ impl ReadResult {
             return;
         }
         match self.fields.iter_mut().find(|f| f.key == key) {
-            // An MRZ or QR value that passed its check wins over printed text.
-            Some(existing) if existing.source != "text" && existing.confidence >= confidence => {}
+            // An MRZ or QR value that passed its check wins over printed text; printed text that
+            // says otherwise is named, so the card can be looked at.
+            Some(existing) if existing.source != "text" && existing.confidence >= confidence => {
+                if source == "text" && existing.source == "mrz" && existing.value != value {
+                    if let Some(label) = MRZ_CHECKED.iter().find(|(k, _)| *k == key).map(|(_, l)| *l) {
+                        let (printed, strip) = (value.clone(), existing.value.clone());
+                        self.warnings.push(format!("{label} المطبوع «{printed}» يختلف عن الشريط السفلي «{strip}»: اعتمدنا الشريط السفلي، قارنه بالبطاقة."));
+                    }
+                }
+            }
             Some(existing) => *existing = Field { key: key.into(), value, confidence, source },
             None => self.fields.push(Field { key: key.into(), value, confidence, source }),
         }
@@ -46,6 +57,27 @@ impl ReadResult {
 
 /// Arabic normalisation for matching labels: hamza forms, ta marbuta, alef maqsura, Persian
 /// letters the recogniser may pick, diacritics and tatweel.
+/// Where on the image each printed value was read: (key, line box). Values from the MRZ or a QR
+/// code are not located. A date or number is matched by its digits, a name by its words.
+pub fn locate(result: &ReadResult, lines: &[Line]) -> Vec<(String, [f32; 4])> {
+    let digits = |t: &str| ascii_digits(t).chars().filter(char::is_ascii_digit).collect::<String>();
+    result
+        .fields
+        .iter()
+        .filter(|f| f.source == "text")
+        .filter_map(|f| {
+            let wanted_digits = digits(&f.value);
+            let line = if wanted_digits.len() >= 4 {
+                lines.iter().find(|l| digits(&l.text).contains(&wanted_digits))
+            } else {
+                let words: Vec<String> = f.value.split(|c: char| c.is_whitespace() || c == '-').filter(|w| !w.is_empty()).map(normalize).collect();
+                (!words.is_empty()).then(|| lines.iter().find(|l| { let t = normalize(&l.text); words.iter().all(|w| t.contains(w.as_str())) })).flatten()
+            }?;
+            Some((f.key.clone(), line.bbox))
+        })
+        .collect()
+}
+
 /// The reader's mark for a thin separator between letters (`ocr::SEPARATOR`).
 const SEP: char = '\u{2010}';
 
@@ -1932,5 +1964,28 @@ mod tests {
         assert!(mother.confidence < 0.8, "guessed by position: offered for review");
         assert_eq!(r.get("mother_father").unwrap().value, "ناصر");
         assert_eq!(r.get("surname").unwrap().value, "الساعدي");
+    }
+
+    #[test]
+    fn printed_birth_date_that_disagrees_with_the_mrz_is_reported() {
+        let (l1, l2) = td1();
+        let lines = vec![line("تاريخ الولادة رۆژی لەدایک بوون 1990/01/07", 0.), line(&l1, 200.), line(&l2, 215.)];
+        let r = parse(&lines);
+        assert_eq!(r.get("birthdate").unwrap().value, "1990-01-01");
+        assert_eq!(r.get("birthdate").unwrap().source, "mrz");
+        assert!(r.warnings.iter().any(|w| w.contains("تاريخ الولادة") && w.contains("1990-01-07")), "{:?}", r.warnings);
+        // Agreeing values give no warning.
+        let lines = vec![line("تاريخ الولادة رۆژی لەدایک بوون 1990/01/01", 0.), line(&l1, 200.), line(&l2, 215.)];
+        assert!(parse(&lines).warnings.is_empty());
+    }
+
+    #[test]
+    fn printed_values_are_located_on_their_lines() {
+        let lines = vec![line("الاسم ناو كريم", 0.), line("الاب باوك سالم", 20.), line("100000000001", 40.)];
+        let r = parse(&lines);
+        let at: std::collections::HashMap<_, _> = locate(&r, &lines).into_iter().collect();
+        assert_eq!(at["first"][1], 0.);
+        assert_eq!(at["father"][1], 20.);
+        assert_eq!(at["national_no"][1], 40.);
     }
 }

@@ -6,6 +6,7 @@ import { applyBranding, showToast, confirmAction, escHtml } from "./utils.js";
 import { renderDashboard }  from "./screens/dashboard.js";
 import { buildDocumentAlerts, renderDocumentAlerts } from "./screens/document-alerts.js";
 import { renderEmployees }  from "./screens/employees.js";
+import { clearAddEmployeeDraft } from "./screens/add-wizard.js";
 import { renderReports }    from "./screens/reports.js";
 import { renderDocuments }  from "./screens/documents.js";
 import { renderUsers }     from "./screens/users.js";
@@ -596,6 +597,7 @@ async function doLogout() {
     try { await api.logout(); } catch (_) { /* non-fatal */ }
   }
   currentUser = null;
+  clearAddEmployeeDraft();
   applyUiScale(100);
   document.getElementById("app-shell").classList.add("hidden");
   document.getElementById("password-change-screen").classList.add("hidden");

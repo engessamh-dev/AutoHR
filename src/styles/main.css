@@ -917,3 +917,12 @@ html[data-ui-scale] #app-shell { height: calc(100vh / var(--ui-scale)); }
   .aw-content-body,.aw-member-body{grid-template-columns:1fr}
   .aw-choice-grid,.aw-sum-grid,.aw-fields.is-three{grid-template-columns:1fr}
 }
+/* Wizard review tools: confirm an unsure reading, identity number checks, draft banner. */
+.aw-tag{display:inline-flex;align-items:center;gap:6px}
+.aw-confirm{font-size:10px;line-height:1.7;padding:0 8px;border-radius:999px;border:1px solid var(--ui-ok-line);background:var(--ui-ok-bg);color:var(--ui-ok);cursor:pointer;white-space:nowrap}
+.aw-confirm:hover,.aw-confirm:focus-visible{filter:brightness(1.15);outline:2px solid var(--ui-ok-line);outline-offset:1px}
+.aw-note.is-error{color:var(--ui-danger);font-weight:600}
+.aw-thumb img.is-focused{outline:3px solid #fbbf24;outline-offset:-3px}
+.aw-draft{display:flex;align-items:center;gap:10px;margin:14px 18px 0;padding:10px 14px;border-radius:10px;border:1px solid var(--ui-info-line);background:var(--ui-info-bg)}
+.aw-draft>div{flex:1;display:flex;flex-direction:column;gap:2px}
+.aw-draft span{font-size:12px;color:var(--ui-text-faint)}

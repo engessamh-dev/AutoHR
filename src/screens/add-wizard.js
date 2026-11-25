@@ -158,6 +158,27 @@ function applyReadings(values, readings, source) {
   }
 }
 
+/**
+ * An unfinished wizard, kept in memory when the wizard is closed before saving, to continue
+ * later. Never written to disk (it holds identity data and card images); it ends with the
+ * session: logging out, closing the app, or saving the employee.
+ */
+let draft = null;
+
+function dropDraft() {
+  if (!draft) return;
+  revokeImages(draft.state);
+  draft = null;
+}
+
+function revokeImages(state) {
+  Object.values(state.docs).forEach(d => Object.values(d.images).forEach(i => URL.revokeObjectURL(i.url)));
+  state.members.forEach(m => Object.values(m.images).forEach(i => URL.revokeObjectURL(i.url)));
+}
+
+/** Called on logout: a draft belongs to the session that made it. */
+export function clearAddEmployeeDraft() { dropDraft(); }
+
 export function openAddEmployee({ user, employees = [], onManual, onCreated }) {
   const canWizard = can => user?.permissions?.includes(can);
   if (!canWizard("documents.upload")) { onManual(); return; }
@@ -186,12 +207,32 @@ export function openAddEmployee({ user, employees = [], onManual, onCreated }) {
   overlay.querySelector(".aw-close").addEventListener("click", close);
   overlay.addEventListener("click", event => { if (event.target === overlay) close(); });
   overlay.querySelector('[data-choice="manual"]').addEventListener("click", () => { close(); onManual(); });
-  overlay.querySelector('[data-choice="docs"]').addEventListener("click", () => { close(); openWizard({ employees, onCreated }); });
-  overlay.querySelector('[data-choice="docs"]').focus();
+  overlay.querySelector('[data-choice="docs"]').addEventListener("click", () => { close(); openWizard({ user, employees, onCreated }); });
+  // An unfinished wizard of this user: continue it or throw it away.
+  if (draft && draft.owner !== user?.username) dropDraft();
+  if (draft) {
+    const name = joinNameParts(draft.state.values.full_name?.value) || "بدون اسم بعد";
+    const time = draft.savedAt.toLocaleTimeString("ar-IQ", { hour: "2-digit", minute: "2-digit" });
+    const banner = document.createElement("div");
+    banner.className = "aw-draft";
+    banner.innerHTML = `<div><b>لديك إضافة لم تكتمل</b><span>${escHtml(name)} · أُغلقت الساعة ${escHtml(time)}</span></div>
+      <button type="button" class="btn-primary" data-draft="resume">متابعتها</button>
+      <button type="button" class="btn-secondary" data-draft="drop">حذفها</button>`;
+    overlay.querySelector(".aw-choice-grid").before(banner);
+    banner.querySelector('[data-draft="resume"]').addEventListener("click", () => {
+      const resume = draft.state;
+      draft = null;
+      close();
+      openWizard({ user, employees, onCreated, resume });
+    });
+    banner.querySelector('[data-draft="drop"]').addEventListener("click", () => { dropDraft(); banner.remove(); });
+    banner.querySelector('[data-draft="resume"]').focus();
+  }
+  if (!draft) overlay.querySelector('[data-choice="docs"]').focus();
 }
 
-function openWizard({ employees, onCreated }) {
-  const state = {
+function openWizard({ user, employees, onCreated, resume = null }) {
+  const state = resume ? { ...resume, saving: false } : {
     step: 0,
     values: model(),
     docs: Object.fromEntries(STEPS.filter(s => s.sides).map(s => [s.id, { images: {}, results: {}, readings: {}, skipped: false, busy: {} }])),
@@ -203,13 +244,18 @@ function openWizard({ employees, onCreated }) {
   overlay.className = "aw-overlay";
   document.body.append(overlay);
   let unlistenDrop = null;
-  const close = async (ask = true) => {
-    if (ask && hasWork() && !(await confirmAction("إغلاق المعالج؟ لن يُحفظ شيء مما أدخلته."))) return;
+  // Closing before saving keeps what was entered as a draft (in memory) to continue later.
+  const close = async (keep = true) => {
     overlay.remove();
     document.removeEventListener("keydown", onKey, true);
     unlistenDrop?.();
-    Object.values(state.docs).forEach(d => Object.values(d.images).forEach(i => URL.revokeObjectURL(i.url)));
-    state.members.forEach(m => Object.values(m.images).forEach(i => URL.revokeObjectURL(i.url)));
+    if (keep && hasWork()) {
+      dropDraft();
+      draft = { owner: user?.username, savedAt: new Date(), state };
+      showToast("حُفظ ما أدخلته كمسودة: تجدها عند «إضافة موظف» حتى تسجيل الخروج");
+    } else {
+      revokeImages(state);
+    }
   };
   const hasWork = () => Object.values(state.docs).some(d => Object.keys(d.images).length) || Object.keys(state.values).length > 0;
   const onKey = event => {
@@ -260,7 +306,18 @@ function openWizard({ employees, onCreated }) {
     picture.addEventListener("pointerup", endDrag);
     picture.addEventListener("pointercancel", endDrag);
     const zoomBy = factor => { const r = picture.getBoundingClientRect(); zoomAt(factor, r.left + r.width / 2, r.top + r.height / 2); };
-    return { reset, zoomBy, moved: () => { const was = dragged; dragged = false; return was; } };
+    /** Fills the area with a region of the image, given as fractions [x0, y0, x1, y1]. */
+    const focusRect = ([x0, y0, x1, y1]) => {
+      const pw = picture.offsetWidth, ph = picture.offsetHeight;
+      const rw = Math.max((x1 - x0) * pw, 1), rh = Math.max((y1 - y0) * ph, 1);
+      scale = Math.min(5, Math.max(1.5, Math.min(area.clientWidth / rw, area.clientHeight / rh) * 0.85));
+      x = -((x0 + x1) / 2 - 0.5) * pw * scale;
+      y = -((y0 + y1) / 2 - 0.5) * ph * scale;
+      apply();
+      picture.classList.add("is-focused");
+      setTimeout(() => picture.classList.remove("is-focused"), 900);
+    };
+    return { reset, zoomBy, focusRect, moved: () => { const was = dragged; dragged = false; return was; } };
   }
 
   /** Full-size view of a document image, with the same zoom; closes with ×, Esc, or a click
@@ -298,6 +355,7 @@ function openWizard({ employees, onCreated }) {
   })).then(unlisten => { unlistenDrop = unlisten; }).catch(() => {});
 
   const current = () => STEPS[state.step];
+  const zoomers = new Map();
   const filledCount = () => Object.values(state.values).filter(v => v.source && !isEmpty(v.value)).length
     + state.members.reduce((n, m) => n + Object.values(m.values).filter(v => v.source && !isEmpty(v.value)).length, 0);
 
@@ -318,7 +376,15 @@ function openWizard({ employees, onCreated }) {
   }
   const canReach = i => i <= state.step || !isEmpty(state.values.full_name?.value);
 
-  function tag(entry, here) {
+  /** The source tag of a field, inside a wrapper the input handler can replace. An unsure reading
+   *  gets «صحيح» beside it: the user confirms it against the image without retyping it. */
+  function tag(entry, here, key = "", scope = "") {
+    const confirm = entry?.unsure && !entry.edited && !isEmpty(entry.value)
+      ? `<button type="button" class="aw-confirm" data-confirm="${key}" data-scope="${scope}" title="قارنت القيمة بالصورة وهي صحيحة">✓ صحيح</button>` : "";
+    return `<span class="aw-tag">${tagLabel(entry, here)}${confirm}</span>`;
+  }
+
+  function tagLabel(entry, here) {
     if (!entry || isEmpty(entry.value)) return `<span class="aw-src is-manual">يدوي</span>`;
     if (entry.edited) return `<span class="aw-src is-edited">معدّل يدويًا</span>`;
     if (entry.source === "employee" || entry.source === "spouse") return `<span class="aw-src is-inherited">${entry.source === "employee" ? "من الموظف" : "من الزوجة"}</span>`;
@@ -333,12 +399,29 @@ function openWizard({ employees, onCreated }) {
     if (!reading) return entry?.unsure && entry.source === here ? `<div class="aw-note is-warn">⚠ القراءة غير مؤكدة، قارنها بالصورة</div>` : "";
     if (same(field, reading.value, entry?.value)) {
       if (entry?.source && entry.source !== here) return `<div class="aw-note is-ok">✓ يطابق ${escHtml(STEPS.find(s => s.id === entry.source)?.short ?? "")}</div>`;
-      return reading.unsure ? `<div class="aw-note is-warn">⚠ القراءة غير مؤكدة، قارنها بالصورة</div>` : "";
+      return entry?.unsure ? `<div class="aw-note is-warn">⚠ القراءة غير مؤكدة، قارنها بالصورة</div>` : "";
     }
     const where = entry?.edited ? "قيمتك" : `في ${escHtml(STEPS.find(s => s.id === entry?.source)?.short ?? "القيمة الحالية")}`;
     return `<div class="aw-note is-warn">⚠ هذا المستمسك يكتب «${escHtml(shown(field, reading.value))}»، و${where} «${escHtml(shown(field, entry?.value))}».
       <button type="button" class="aw-link" data-take="${field.key}">اعتماد «${escHtml(shown(field, reading.value))}»</button></div>`;
   }
+
+  /** Format checks on identity numbers, and an employee already registered with the national number. */
+  function checkHtml(key, value, scope = "") {
+    const v = text(value);
+    if (!v) return "";
+    if (key === "civil_id") {
+      if (!/^\d{12}$/.test(v)) return `<div class="aw-note is-warn">⚠ الرقم الوطني 12 رقمًا، والمكتوب ${v.replace(/\D/g, "").length} أرقام</div>`;
+      const same = !scope && duplicateOf(v);
+      if (same) return `<div class="aw-note is-error">⚠ يوجد موظف مسجّل بهذا الرقم الوطني: ${escHtml(same.full_name ?? "")}</div>`;
+    }
+    if (key === "civil_id_family_number") {
+      const digits = v.replace(/\D/g, "").length;
+      if (!/^[0-9A-Z]{14,22}$/.test(v) || digits < 10) return `<div class="aw-note is-warn">⚠ صيغة الرقم العائلي غير معتادة: أرقام مع حرف أو حرفين لاتينيين (14 إلى 22 خانة)</div>`;
+    }
+    return "";
+  }
+  const duplicateOf = civilId => employees.find(e => text(e.civil_id) && text(e.civil_id) === civilId);
 
   function fieldHtml(field, values, readings, here, scope = "") {
     const entry = values[field.key];
@@ -359,12 +442,12 @@ function openWizard({ employees, onCreated }) {
       control = `<input id="${id}" class="input-field" ${attrs} type="${field.date ? "date" : "text"}" dir="${field.ltr || field.date ? "ltr" : "rtl"}" value="${escHtml(value ?? "")}" placeholder="${escHtml(field.placeholder ?? "")}" ${field.list ? `list="aw-${field.list}"` : ""}>`;
     }
     return `<div class="aw-field ${field.full ? "is-full" : ""} ${isEmpty(value) && !field.name ? "is-empty" : ""}">
-      <div class="aw-label"><label for="${id}">${field.label}</label>${tag(entry, here)}</div>${control}${note(field, entry, readings?.[field.key], here)}</div>`;
+      <div class="aw-label"><label for="${id}">${field.label}</label>${tag(entry, here, field.key, scope)}</div>${control}${note(field, entry, readings?.[field.key], here)}<div class="aw-check">${checkHtml(field.key, value, scope)}</div></div>`;
   }
 
   function slotHtml(slot, side, image, busy) {
     if (busy?.[side]) return `<div class="aw-pic is-busy"><div class="aw-drop"><span class="aw-spinner" aria-hidden="true"></span><b>جارٍ قراءة ${SIDE_LABEL[side]}…</b></div></div>`;
-    if (image) return `<div class="aw-pic"><div class="aw-thumb"><img src="${image.url}" alt="${SIDE_LABEL[side]}"><span class="aw-thumb-cap">${SIDE_LABEL[side]}<em>${image.count ? `✓ قُرئ ${image.count}` : "لم يُقرأ شيء"}</em></span></div>
+    if (image) return `<div class="aw-pic"><div class="aw-thumb"><img src="${image.url}" alt="${SIDE_LABEL[side]}" data-slot="${slot}" data-side="${side}"><span class="aw-thumb-cap">${SIDE_LABEL[side]}<em>${image.count ? `✓ قُرئ ${image.count}` : "لم يُقرأ شيء"}</em></span></div>
       <div class="aw-pic-actions"><button type="button" class="btn-secondary" data-pick="${slot}" data-side="${side}">استبدال</button><button type="button" class="btn-secondary" data-remove="${slot}" data-side="${side}">إزالة</button></div></div>`;
     return `<div class="aw-pic"><div class="aw-drop" data-slot="${slot}" data-side="${side}"><b>${SIDE_LABEL[side]}</b>
       <div class="aw-drop-actions"><button type="button" class="btn-primary" data-pick="${slot}" data-side="${side}">اختيار صورة من الحاسبة</button><button type="button" class="btn-secondary" data-scan="${slot}" data-side="${side}">مسح بالماسح</button></div>
@@ -457,6 +540,20 @@ function openWizard({ employees, onCreated }) {
     return state.members[index].values;
   }
 
+  /** Zooms the card thumbnail to where a field's value was read. */
+  function showOnCard(scope, key, part) {
+    const slot = scope ? `member:${Number(scope.slice(1, -1))}` : current().id;
+    const { holder, fields } = slotTarget(slot);
+    const field = fields.find(f => f.key === key);
+    if (!field || !holder?.regions) return;
+    const ocrKeys = field.name ? [ (field.ocrName ?? {})[part] ?? part ] : [field.ocr];
+    for (const [side, regions] of Object.entries(holder.regions)) {
+      const region = ocrKeys.map(k => regions?.[k]).find(Boolean);
+      const zoom = zoomers.get(`${slot}|${side}`);
+      if (region && zoom) { zoom.focusRect(region); return; }
+    }
+  }
+
   function bind() {
     overlay.querySelector(".aw-close").addEventListener("click", () => close());
     overlay.querySelector("[data-next]")?.addEventListener("click", () => go(state.step + 1));
@@ -472,9 +569,11 @@ function openWizard({ employees, onCreated }) {
     overlay.querySelectorAll("[data-scan]").forEach(b => b.addEventListener("click", () => scan(b.dataset.scan, b.dataset.side)));
     overlay.querySelectorAll("[data-remove]").forEach(b => b.addEventListener("click", () => removeImage(b.dataset.remove, b.dataset.side)));
     // On the thumbnail itself: wheel zooms, drag moves, double-click resets; a plain click enlarges.
+    zoomers.clear();
     overlay.querySelectorAll(".aw-thumb img").forEach(img => {
       img.draggable = false;
       const zoom = attachZoom(img.closest(".aw-thumb"), img);
+      zoomers.set(`${img.dataset.slot}|${img.dataset.side}`, zoom);
       // Wait a moment so a double-click (reset) does not also open the enlarged view.
       let pending = null;
       img.addEventListener("click", () => { if (!zoom.moved()) { clearTimeout(pending); pending = setTimeout(() => openViewer(img), 260); } });
@@ -491,7 +590,9 @@ function openWizard({ employees, onCreated }) {
         values[key] = { ...before, value, edited: !!before.source || before.edited, unsure: false, source: before.source ?? null };
         if (!before.source && !before.edited) values[key].edited = false;
         const field = input.closest(".aw-field");
-        field?.querySelector(".aw-src")?.replaceWith(htmlToNode(tag(values[key], current().id)));
+        field?.querySelector(".aw-tag")?.replaceWith(htmlToNode(tag(values[key], current().id, key, input.dataset.scope)));
+        const check = field?.querySelector(".aw-check");
+        if (check) check.innerHTML = checkHtml(key, values[key].value, input.dataset.scope);
         field?.classList.toggle("is-empty", isEmpty(values[key].value) && !input.dataset.part);
         const next = overlay.querySelector("[data-next]");
         if (next && current().required) next.disabled = isEmpty(state.values.full_name?.value);
@@ -499,6 +600,16 @@ function openWizard({ employees, onCreated }) {
       };
       input.addEventListener(input.tagName === "SELECT" ? "change" : "input", update);
     });
+    overlay.querySelectorAll("[data-confirm]").forEach(b => b.addEventListener("click", () => {
+      const entry = valuesOf(b.dataset.scope)[b.dataset.confirm];
+      if (entry) entry.unsure = false;
+      render();
+    }));
+    // Focusing a value to review shows where it is on the card.
+    overlay.querySelectorAll("[data-key]").forEach(input => input.addEventListener("focus", () => {
+      const entry = valuesOf(input.dataset.scope)[input.dataset.key];
+      if (entry?.unsure) showOnCard(input.dataset.scope, input.dataset.key, input.dataset.part);
+    }));
     overlay.querySelectorAll("[data-take]").forEach(b => b.addEventListener("click", () => {
       const scope = b.closest(".aw-member") ? `m${[...overlay.querySelectorAll(".aw-member")].indexOf(b.closest(".aw-member"))}-` : "";
       const values = valuesOf(b.closest(".aw-member") ? scope : "");
@@ -616,6 +727,7 @@ function openWizard({ employees, onCreated }) {
       if (old) URL.revokeObjectURL(old.url);
       const url = URL.createObjectURL(new Blob([new Uint8Array(reading.preview)], { type: "image/jpeg" }));
       holder.results[side] = reading.result;
+      holder.regions = { ...(holder.regions ?? {}), [side]: reading.regions ?? {} };
       const merged = mergeSides(Object.values(holder.results));
       holder.warnings = merged.warnings;
       holder.readings = readingsFor(fields, merged);
@@ -643,6 +755,7 @@ function openWizard({ employees, onCreated }) {
     URL.revokeObjectURL(holder.images[side]?.url);
     delete holder.images[side];
     delete holder.results[side];
+    if (holder.regions) delete holder.regions[side];
     const merged = Object.values(holder.results).length ? mergeSides(Object.values(holder.results)) : null;
     holder.readings = merged ? readingsFor(fields, merged) : {};
     holder.warnings = merged?.warnings ?? [];
@@ -694,6 +807,8 @@ function openWizard({ employees, onCreated }) {
 
   async function save() {
     if (isEmpty(state.values.full_name?.value)) { go(0); return; }
+    const twin = duplicateOf(text(state.values.civil_id?.value));
+    if (twin && !(await confirmAction(`يوجد موظف مسجّل بنفس الرقم الوطني: ${twin.full_name ?? ""}. حفظ موظف جديد رغم ذلك؟`))) return;
     const { data, spouses, family } = payload();
     state.saving = true;
     render();
