@@ -747,11 +747,14 @@ function documentSections(emp) {
     },
     {
       key: "residence", title: "بطاقة السكن",
-      // The old card's other fields are handwritten and cannot be read; the address is kept.
-      keys: ["residence_card_no", "residence_card_issue_date", "residence_address"],
+      // The old card's other fields are handwritten and cannot be read: they are typed.
+      keys: ["residence_card_no", "residence_card_issue_date", "residence_card_issuer", "residence_head_name", "residence_form_no", "residence_address"],
       fields: [
         field("رقم بطاقة السكن", "residence_card_no", emp, {ltr:true}),
         field("تاريخ الإصدار", "residence_card_issue_date", emp, {date:true}),
+        field("مكتب المعلومات", "residence_card_issuer", emp),
+        field("اسم رب الأسرة", "residence_head_name", emp),
+        field("رقم الاستمارة", "residence_form_no", emp, {ltr:true}),
         field("عنوان السكن الحالي", "residence_address", emp, {span:true}),
       ],
       tiles: sided("residence", "residence_card"), attached: sidedCount("residence_card"), expected: 2,

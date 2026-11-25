@@ -81,6 +81,7 @@ const STEPS = [
     fields: [
       { key: "residence_card_no", label: "رقم بطاقة السكن", ocr: "doc_number", ltr: true },
       { key: "residence_card_issue_date", label: "تاريخ الإصدار", ocr: "issue_date", date: true },
+      { key: "residence_card_issuer", label: "مكتب المعلومات", ocr: "info_office" },
       { key: "residence_head_name", label: "اسم رب الأسرة", ocr: "head_name" },
       { key: "residence_form_no", label: "رقم الاستمارة", ocr: "form_no", ltr: true },
       { key: "residence_address", label: "العنوان", ocr: "address", full: true },
@@ -548,6 +549,7 @@ function openWizard({ user, employees, onCreated, resume = null }) {
   function tagLabel(entry, here) {
     if (!entry || isEmpty(entry.value)) return `<span class="aw-src is-manual">يدوي</span>`;
     if (entry.edited) return `<span class="aw-src is-edited">معدّل يدويًا</span>`;
+    if (!entry.source) return `<span class="aw-src is-manual">يدوي</span>`;
     if (entry.source === "employee" || entry.source === "spouse") return `<span class="aw-src is-inherited">${entry.source === "employee" ? "من الموظف" : "من الزوجة"}</span>`;
     if (entry.source === "derived") return `<span class="aw-src is-inherited">مستنتج</span>`;
     if (entry.unsure) return `<span class="aw-src is-warn">راجِع</span>`;
@@ -625,7 +627,7 @@ function openWizard({ user, employees, onCreated, resume = null }) {
     return `<div class="aw-pics">${step.sides.map(side => slotHtml(step.id, side, doc.images[side], doc.busy)).join("")}</div>
       <div class="aw-fields">${step.fields.map(f => fieldHtml(f, state.values, readings, step.id, "", doc.handwritten ?? [])).join("")}
       ${step.id === "national" ? "" : nameCheckHtml(doc, step)}
-      ${(doc.warnings ?? []).map(w => `<div class="aw-field is-full aw-note is-warn">⚠ ${escHtml(w)}</div>`).join("")}</div>`;
+      ${(doc.warnings ?? []).filter(w => !(doc.handwritten?.length && w.startsWith("مكتوب بخط اليد"))).map(w => `<div class="aw-field is-full aw-note is-warn">⚠ ${escHtml(w)}</div>`).join("")}</div>`;
   }
 
   /** A document that prints the employee's name (first, father, grandfather): compared with the
@@ -1064,7 +1066,7 @@ function openWizard({ user, employees, onCreated, resume = null }) {
       "ministry_badge_no", "ministry_badge_issue_date", "ministry_badge_expiry",
       "airport_badge_no", "airport_badge_issue_date", "airport_badge_expiry", "airport_badge_zones",
       "ration_card_no", "ration_center_name", "residence_card_no", "residence_card_issue_date", "residence_address",
-      "residence_head_name", "residence_form_no"];
+      "residence_head_name", "residence_form_no", "residence_card_issuer"];
     plain.forEach(key => { data[key] = v(key); });
     // The national card's own copies of the birth data, as the form keeps them.
     data.civil_id_birthdate = data.birthdate;

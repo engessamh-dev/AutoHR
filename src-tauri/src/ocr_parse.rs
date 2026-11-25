@@ -1029,6 +1029,9 @@ fn parse_residence(lines: &[Line], result: &mut ReadResult) {
     // found between the other two.
     // Row-leading labels: matched at the start, so «منظم الاستمارة» is not «رقم الاستمارة».
     let leading = |label: &str| all_rows.iter().position(|r| has_label(&r.text, label));
+    if let Some(i) = all_rows.iter().position(|r| ["مكتب معلومات", "مكتب المعلومات"].iter().any(|l| has_label(&r.text, l)) && !mentions(&r.text, "المركزي")) {
+        hand(result, "info_office", &all_rows[i]);
+    }
     let head = leading("اسم رب الاسره");
     let form = leading("رقم الاستماره");
     if let Some(i) = head {
@@ -1046,6 +1049,7 @@ fn parse_residence(lines: &[Line], result: &mut ReadResult) {
     }
     if !result.handwritten.is_empty() {
         let names: Vec<&str> = result.handwritten.iter().map(|k| match k.as_str() {
+            "info_office" => "مكتب المعلومات",
             "head_name" => "اسم رب الأسرة",
             "address" => "العنوان",
             "form_no" => "رقم الاستمارة",
@@ -1836,7 +1840,8 @@ mod tests {
     #[test]
     fn residence_card_front_points_out_handwritten_fields() {
         let lines = vec![
-            line("وزارة الداخلية", 0.),
+            line("وزارة الداخلية", -20.),
+            line("مديرية مكتب المعلومات المركزي", 0.),
             line("مكتب معلومات", 20.),
             line("اسم رب الاسرة عصاتم ص ه اشم", 40.),
             line("عنون السكن م ٩ ز د", 60.),
@@ -1845,15 +1850,16 @@ mod tests {
         let r = parse(&lines);
         assert_eq!(r.document, "residence");
         assert!(r.fields.is_empty());
-        assert_eq!(r.handwritten, vec!["head_name", "address", "form_no"]);
+        assert_eq!(r.handwritten, vec!["info_office", "head_name", "address", "form_no"]);
         assert!(r.warnings.iter().any(|w| w.contains("بخط اليد")));
         // Each is located at its label's row, for zooming the card.
         let at: std::collections::HashMap<_, _> = locate(&r, &lines).into_iter().collect();
         assert_eq!(at["address"][1], 60.);
+        assert_eq!(at["info_office"][1], 20.);
         // A misread address label is found between the other two rows.
         let mut misread = lines.clone();
-        misread[3].text = "وان الكن ٩ ح ز".into();
-        assert_eq!(parse(&misread).handwritten, vec!["head_name", "address", "form_no"]);
+        misread[4].text = "وان الكن ٩ ح ز".into();
+        assert_eq!(parse(&misread).handwritten, vec!["info_office", "head_name", "address", "form_no"]);
     }
 
     #[test]

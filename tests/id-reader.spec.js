@@ -130,7 +130,7 @@ test("badge: number and dates fill the badge section", async ({ page }) => {
 
 test("residence card: the printed serial fills the card number", async ({ page }) => {
   await page.evaluate(() => {
-    window.employeePatch = { residence_card_back_path: "Files/Employees/1/Documents/Residence/back.jpg", residence_card_back_full_path: "synthetic" };
+    window.employeePatch = { residence_card_back_path: "Files/Employees/1/Documents/Residence/back.jpg", residence_card_back_full_path: "synthetic", residence_card_issuer: "مكتب 00", residence_form_no: "1111" };
     window.readResult = { document: "other", warnings: [], fields: [{ key: "doc_number", value: "1000001", confidence: 0.6, source: "text" }] };
   });
   await openDocuments(page);
@@ -139,6 +139,9 @@ test("residence card: the printed serial fills the card number", async ({ page }
   await tile.getByRole("menuitem", { name: "قراءة البيانات" }).click();
   await page.getByRole("dialog", { name: /قراءة البيانات/ }).getByRole("button", { name: "اعتماد المحدَّد" }).click();
   await expect(page.locator("#f-residence_card_no")).toHaveValue("1000001");
+  // The handwritten fields are kept in the file too.
+  await expect(page.locator("#f-residence_card_issuer")).toHaveValue("مكتب 00");
+  await expect(page.locator("#f-residence_form_no")).toHaveValue("1111");
 });
 
 test("ration card: number from the QR code and the head of household", async ({ page }) => {
