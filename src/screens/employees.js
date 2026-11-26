@@ -6,7 +6,7 @@ import { bindAttachmentScannerButtons } from "../attachments/integration.js";
 import { zoomToolbarHtml, mountZoomViewer } from "../attachments/zoom-viewer.js";
 import { convertFileSrc } from "@tauri-apps/api/core";
 import { open, save } from "@tauri-apps/plugin-dialog";
-import { showToast, formatDate, escHtml, debounce, confirmAction, confirmSaveChanges, AIRPORT_ZONES } from "../utils.js";
+import { showToast, formatDate, escHtml, debounce, confirmAction, confirmSaveChanges, AIRPORT_ZONES, errorText } from "../utils.js";
 import { addressHtml, wireAddress, readAddress, composeResidence, citySuggestions, loadAddressPlaces, addressIsEmpty } from "../address-field.js";
 import { can } from "../permissions.js";
 import { openNameReview } from "./name-review.js";
@@ -335,6 +335,22 @@ async function closePanel(force = false) {
   _panelDirty = false;
 }
 
+/** The preview paths of a row's two attachments (not saved; the form needs them to show the images). */
+function rowFullPaths(row, prefix) {
+  const camel = prefix.replace(/_(\w)/g, (_, c) => c.toUpperCase());
+  return {
+    [`${prefix}_front_full_path`]: row.dataset[`${camel}FrontFullPath`] || null,
+    [`${prefix}_back_full_path`]: row.dataset[`${camel}BackFullPath`] || null,
+  };
+}
+
+/** data-… attributes holding a row's attachment paths, read back by collectVisiblePanelFields. */
+function rowPathAttrs(record, prefix) {
+  const attr = prefix.replace(/_/g, "-");
+  return ["front", "back"].map(side =>
+    `data-${attr}-${side}-path="${escHtml(record?.[`${prefix}_${side}_path`] ?? "")}" data-${attr}-${side}-full-path="${escHtml(record?.[`${prefix}_${side}_full_path`] ?? "")}"`).join(" ");
+}
+
 function markPanelDirty() {
   _panelDirty = true;
   document.getElementById("panel-dirty")?.removeAttribute("hidden");
@@ -367,6 +383,7 @@ function collectVisiblePanelFields(panel) {
         blood_type:  row.querySelector(".fm-blood")?.value || "",
         national_card_front_path: row.dataset.nationalCardFrontPath || "",
         national_card_back_path:  row.dataset.nationalCardBackPath || "",
+        ...rowFullPaths(row, "national_card"),
       }, readNameFields(row)));
     });
     _panelDraft.family_members = JSON.stringify(arr);
@@ -391,9 +408,12 @@ function collectVisiblePanelFields(panel) {
         marriage_date: row.querySelector(".sp-marriage")?.value || "",
         national_card_front_path: row.dataset.nationalCardFrontPath || "",
         national_card_back_path:  row.dataset.nationalCardBackPath || "",
+        ...rowFullPaths(row, "national_card"),
       }, readNameFields(row)));
     });
-    _panelDraft.spouses = JSON.stringify(spouses.slice(0, spouseConfig?.max ?? 4));
+    // All rows are kept, even more than the section allows now (the gender was changed):
+    // saving is refused until the extra ones are removed by hand, never dropped silently.
+    _panelDraft.spouses = JSON.stringify(spouses);
     const firstSpouse = spouses[0] ?? {};
     _panelDraft.spouse_name = firstSpouse.name || null;
     _panelDraft.spouse_mother_name = firstSpouse.mother_name || null;
@@ -420,6 +440,7 @@ function collectVisiblePanelFields(panel) {
         model_year:     row.querySelector(".vehicle-model-year")?.value?.trim() || "",
         annual_front_path: row.dataset.annualFrontPath || "",
         annual_back_path:  row.dataset.annualBackPath || "",
+        ...rowFullPaths(row, "annual"),
       });
     });
     _panelDraft.vehicles = JSON.stringify(vehicles);
@@ -531,7 +552,7 @@ async function manageJobList(id) {
         _jobLists = await api.setJobLists({ ..._jobLists, [meta.key]: items });
         showToast("تم حفظ القائمة");
         finish(true);
-      } catch (err) { showToast(err?.message ?? String(err), "error"); }
+      } catch (err) { showToast(errorText(err), "error"); }
     });
     document.addEventListener("keydown", onKey);
     draw();
@@ -837,7 +858,7 @@ function bindHeaderPhoto(emp) {
       await api.uploadEmployeePhoto(emp.id, selected);
       showToast("تم رفع الصورة الشخصية");
       await refreshDocumentAttachments(emp.id);
-    } catch (err) { showToast(err?.message ?? String(err || "خطأ في رفع الصورة"), "error"); }
+    } catch (err) { showToast(errorText(err, "خطأ في رفع الصورة"), "error"); }
   });
 }
 
@@ -989,8 +1010,18 @@ function personSummary({ name, gender, birthdate }) {
 }
 
 function vehicleSummary({ brand, type, color, plate }) {
-  // Isolate the plate so "11 Z12345" keeps its order inside the Arabic summary.
-  return [[brand, type, color].filter(Boolean).join(" ") || "مركبة بدون بيانات", plate && `\u2068${plate}\u2069`].filter(Boolean).join(" · ");
+  // The plate first, so a narrow panel cuts the description and not the plate; isolated so
+  // "11 Z12345" keeps its order inside the Arabic summary.
+  const description = [brand, type, color].filter(Boolean).join(" ");
+  return [plate && `\u2068${plate}\u2069`, description || (plate ? "" : "مركبة بدون بيانات")].filter(Boolean).join(" · ");
+}
+
+/** «البطاقة: منتهٍ» / «البطاقة: ينتهي خلال 12 يوماً» for a spouse or family member's national
+ *  card, with the national card's reminder days from the settings. Nothing while it is valid. */
+function cardExpiryPill(record) {
+  if (!record?.expiry_date) return "";
+  const status = documentStatus({ values: [record.civil_id], expiry: record.expiry_date, maxDays: alertWindowDays("national"), attached: 0, expected: 0 });
+  return ["bad", "warn"].includes(status.tone) ? `<span class="emp-pill ${status.tone}" title="نفاذ البطاقة الوطنية: ${formatDate(record.expiry_date)}">البطاقة: ${status.label}</span>` : "";
 }
 
 function rowSummaryFromInputs(row) {
@@ -1314,7 +1345,7 @@ function tabContent(tab, emp) {
         ${employeeNameFields("اسم الموظف", "full_name", emp, {required:true})}
         ${employeeNameFields("اسم الأم", "mother_name", emp)}
         ${field("الجنس", "gender", emp, {type:"select", options:[["","—"],["ذكر","ذكر"],["أنثى","أنثى"]]})}
-        ${field("الحالة الاجتماعية", "marital_status", emp, {type:"select", options:[["","—"],["أعزب","أعزب"],["متزوج","متزوج"],["مطلق","مطلق"],["أرمل","أرمل"]]})}
+        ${field("الحالة الاجتماعية", "marital_status", emp, {type:"select", options:maritalOptions(emp?.gender)})}
         ${field("تاريخ الولادة", "birthdate", emp, {date:true})}
         ${field("محل الولادة", "birthplace", emp)}
         ${field("فصيلة الدم", "blood_type", emp, {type:"select", options:[["","—"],...BLOOD_OPTIONS]})}
@@ -1381,6 +1412,15 @@ function tabContent(tab, emp) {
       </div>`;
 
   }
+}
+
+/** The stored values stay «متزوج» etc.; a woman's file shows «متزوجة». */
+const MARITAL_FEMININE = { "أعزب": "عزباء", "متزوج": "متزوجة", "مطلق": "مطلقة", "أرمل": "أرملة" };
+export function maritalLabel(value, gender) {
+  return gender === "أنثى" ? MARITAL_FEMININE[value] ?? value : value;
+}
+function maritalOptions(gender) {
+  return [["", "—"], ...["أعزب", "متزوج", "مطلق", "أرمل"].map(value => [value, maritalLabel(value, gender)])];
 }
 
 function parseJsonList(value) {
@@ -1668,6 +1708,8 @@ function renderPanel(emp) {
   updateTabCounts();
   panel.addEventListener("input", markPanelDirty);
   panel.addEventListener("input", refreshMissing);
+  panel.addEventListener("change", onRowFieldChange);
+  panel.addEventListener("input", event => { if (event.target.closest?.(".emp-row")) refreshRowWarnings(); });
   panel.addEventListener("change", refreshMissing);
   panel.addEventListener("change", markPanelDirty);
   bindNameFields(panel);
@@ -1681,7 +1723,7 @@ function renderPanel(emp) {
   });
 
   // Save
-  panel.querySelector("#panel-save").addEventListener("click", async () => {
+  panel.querySelector("#panel-save")?.addEventListener("click", async () => {
     collectVisiblePanelFields(panel);
     const g = id => _panelDraft?.[id] ?? null;
 
@@ -1746,16 +1788,7 @@ function renderPanel(emp) {
       ministry_badge_no:     g("ministry_badge_no"),
       ministry_badge_issue_date:g("ministry_badge_issue_date"),
       ministry_badge_expiry: g("ministry_badge_expiry"),
-      vehicle_plate:         g("vehicle_plate"),
-      vehicle_name:          g("vehicle_name"),
       // Preserve the legacy combined value while saving the new separate fields.
-      vehicle_color_model:   g("vehicle_color_model"),
-      vehicle_type:          g("vehicle_type"),
-      vehicle_color:         g("vehicle_color"),
-      vehicle_manufacture_year:g("vehicle_manufacture_year"),
-      vehicle_annual_no:     g("vehicle_annual_no"),
-      vehicle_annual_issue_date:g("vehicle_annual_issue_date"),
-      vehicle_annual_expiry_date:g("vehicle_annual_expiry_date"),
       vehicles:               g("vehicles") || "[]",
       spouse_name:           g("spouse_name"),
       spouse_mother_name:    g("spouse_mother_name"),
@@ -1772,6 +1805,16 @@ function renderPanel(emp) {
     _closeAfterSave = false;
     _afterSave = null;
     if (!data.full_name) { showToast("الاسم الكامل مطلوب", "error"); return; }
+    data.spouses = withoutEmptyRows(data.spouses);
+    data.family_members = withoutEmptyRows(data.family_members);
+    data.vehicles = withoutEmptyRows(data.vehicles);
+    const spouseConfig = spouseSectionConfig(_panelDraft);
+    const spouseLimit = spouseConfig && spouseLimitText(parseJsonList(_panelDraft.spouses).length, spouseConfig);
+    if (spouseLimit) {
+      showToast(spouseLimit, "error");
+      if (_activeTab !== "family") panel.querySelector('.tab-btn[data-tab="family"]')?.click();
+      return;
+    }
     try {
       let saved;
       if (isNew) {
@@ -1789,7 +1832,7 @@ function renderPanel(emp) {
       // Stay on the same employee and tab, with the same sections open.
       openPanel(fresh, _activeTab, _sectionState);
       if (afterSave) await afterSave();
-    } catch (err) { showToast(err?.message ?? String(err || "خطأ في الحفظ"), "error"); }
+    } catch (err) { showToast(errorText(err, "خطأ في الحفظ"), "error"); }
   });
 
   // Delete
@@ -1801,7 +1844,7 @@ function renderPanel(emp) {
       _employees = await api.listEmployees();
       renderTable();
       closePanel(true);
-    } catch (err) { showToast(err?.message ?? String(err || "خطأ"), "error"); }
+    } catch (err) { showToast(errorText(err, "خطأ"), "error"); }
   });
   applyEmployeePermissions(panel, isNew);
 }
@@ -1815,8 +1858,18 @@ function applyEmployeePermissions(panel, isNew) {
   if (!can(_currentUser, "employees.delete")) {
     panel.querySelector("#panel-delete")?.remove();
   }
+  if (!can(_currentUser, "documents.delete")) {
+    // Removing a row deletes its images, which only «مسؤول» may do (Rust refuses it too).
+    panel.querySelectorAll(".spouse-row, .family-row, .vehicle-row").forEach(row => {
+      const button = row.querySelector(".btn-remove-spouse, .btn-remove-member, .btn-remove-vehicle");
+      if (button && rowHasFiles(row)) {
+        button.disabled = true;
+        button.title = "له مرفقات: حذفه يحتاج إلى «مسؤول»";
+      }
+    });
+  }
   if (isNew || !can(_currentUser, "documents.delete")) {
-    panel.querySelectorAll(".btn-delete-sided-card,.btn-delete-passport,.btn-delete-ration-card,.btn-delete-family-card,.btn-delete-spouse-card").forEach(el => el.remove());
+    panel.querySelectorAll(".btn-delete-sided-card,.btn-delete-passport,.btn-delete-ration-card,.btn-delete-family-card,.btn-delete-spouse-card,.btn-delete-vehicle-annual").forEach(el => el.remove());
   }
   if (!can(_currentUser, "documents.upload") || !can(_currentUser, isNew ? "employees.create" : "employees.edit")) {
     panel.querySelectorAll(".btn-save-then-upload").forEach(el => el.remove());
@@ -1877,7 +1930,7 @@ function attachTabEvents(emp) {
           const readTarget = { national: "employee", airport: "employee:airport_badge", ministry: "employee:ministry_badge", residence: "employee:residence_card" }[cardType];
           const prefix = { national: "civil_id", airport: "airport_badge", ministry: "ministry_badge", residence: "residence_card" }[cardType];
           if (readTarget) await readUploadedFields(readTarget, _panelDraft?.[`${prefix}_${btn.dataset.side}_path`], _panelDraft?.[`${prefix}_${btn.dataset.side}_full_path`], `${cardName}، ${btn.dataset.side === "front" ? "الوجه الأمامي" : "الوجه الخلفي"}`);
-        } catch (err) { showToast(err?.message ?? String(err || "خطأ في الرفع"), "error"); }
+        } catch (err) { showToast(errorText(err, "خطأ في الرفع"), "error"); }
       });
     });
 
@@ -1898,7 +1951,7 @@ function attachTabEvents(emp) {
           else await api.deleteNationalCardAttachment(emp.id, btn.dataset.side);
           showToast(`تم حذف مرفق ${cardName}`);
           await refreshDocumentAttachments(emp.id);
-        } catch (err) { showToast(err?.message ?? String(err || "خطأ في الحذف"), "error"); }
+        } catch (err) { showToast(errorText(err, "خطأ في الحذف"), "error"); }
       });
     });
 
@@ -1917,7 +1970,7 @@ function attachTabEvents(emp) {
         const passportPaths = parseJsonList(_panelDraft?.passport_attachment_paths);
         const passportIndex = passportPaths.length - 1;
         await readUploadedFields("employee", passportPaths[passportIndex], _panelDraft?.passport_attachment_full_paths?.[passportIndex], "جواز السفر");
-      } catch (err) { showToast(err?.message ?? String(err || "خطأ في الرفع"), "error"); }
+      } catch (err) { showToast(errorText(err, "خطأ في الرفع"), "error"); }
     });
 
     panel.querySelectorAll(".btn-delete-passport").forEach(btn => {
@@ -1928,7 +1981,7 @@ function attachTabEvents(emp) {
           await api.deletePassportAttachment(emp.id, btn.dataset.path);
           showToast("تم حذف مرفق جواز السفر");
           await refreshDocumentAttachments(emp.id);
-        } catch (err) { showToast(err?.message ?? String(err || "خطأ في الحذف"), "error"); }
+        } catch (err) { showToast(errorText(err, "خطأ في الحذف"), "error"); }
       });
     });
 
@@ -1947,7 +2000,7 @@ function attachTabEvents(emp) {
         const rationPaths = parseJsonList(_panelDraft?.ration_card_attachment_paths);
         const rationIndex = rationPaths.length - 1;
         await readUploadedFields("employee:ration_card", rationPaths[rationIndex], _panelDraft?.ration_card_attachment_full_paths?.[rationIndex], "البطاقة التموينية");
-      } catch (err) { showToast(err?.message ?? String(err || "خطأ في الرفع"), "error"); }
+      } catch (err) { showToast(errorText(err, "خطأ في الرفع"), "error"); }
     });
 
     panel.querySelectorAll(".btn-delete-ration-card").forEach(btn => {
@@ -1958,14 +2011,15 @@ function attachTabEvents(emp) {
           await api.deleteRationCardAttachment(emp.id, btn.dataset.path);
           showToast("تم حذف مرفق البطاقة التموينية");
           await refreshDocumentAttachments(emp.id);
-        } catch (err) { showToast(err?.message ?? String(err || "خطأ في الحذف"), "error"); }
+        } catch (err) { showToast(errorText(err, "خطأ في الحذف"), "error"); }
       });
     });
   }
 
   // Family tab events
   if (_activeTab === "family") {
-    renderSpouseList(emp);
+    // From the draft: unsaved changes made before switching tabs stay in the form.
+    renderSpouseList(_panelDraft ?? emp);
     panel.querySelector("#btn-add-spouse")?.addEventListener("click", () => {
       const config = spouseSectionConfig(_panelDraft ?? emp);
       if (!config) return;
@@ -1977,7 +2031,8 @@ function attachTabEvents(emp) {
       markPanelDirty();
       addSpouseRow(config);
     });
-    renderFamilyList(emp);
+    renderFamilyList(_panelDraft ?? emp);
+    refreshRowWarnings();
     bindAttachmentDownloadButtons(document.getElementById("tab-content"));
     panel.querySelector("#btn-add-member")?.addEventListener("click", () => {
       markPanelDirty();
@@ -1987,6 +2042,7 @@ function attachTabEvents(emp) {
 
   if (_activeTab === "vehicle") {
     renderVehicleList(_panelDraft ?? emp);
+    refreshRowWarnings();
     bindAttachmentDownloadButtons(document.getElementById("tab-content"));
     panel.querySelector("#btn-add-vehicle")?.addEventListener("click", () => {
       markPanelDirty();
@@ -2081,7 +2137,169 @@ function spouseListFromEmployee(emp) {
       gender: config.defaultGender,
     }];
   }
-  return spouses.slice(0, config.max);
+  return spouses;
+}
+
+/** The spouse section allows `config.max` records (one husband, up to four wives). When the
+ *  gender was changed with more on file, say so above the list; saving is refused until fixed. */
+function spouseLimitText(count, config) {
+  if (count <= config.max) return "";
+  return config.max === 1
+    ? `للموظفة زوج واحد فقط، والمسجَّل هنا ${count}. احذف السجل الزائد ثم احفظ.`
+    : `لا يمكن تسجيل أكثر من ${config.max} زوجات، والمسجَّل هنا ${count}. احذف الزائد ثم احفظ.`;
+}
+
+function refreshSpouseLimitNote(container, config) {
+  const count = container.querySelectorAll(".spouse-row").length;
+  let note = container.parentElement?.querySelector(".spouse-limit");
+  const message = spouseLimitText(count, config);
+  if (!message) { note?.remove(); return; }
+  if (!note) {
+    note = document.createElement("p");
+    note.className = "emp-row-warning spouse-limit";
+    container.before(note);
+  }
+  note.textContent = message;
+}
+
+/** «حذف علي أحمد؟ …»: names the row being removed and says when it takes effect. */
+async function confirmRowRemoval(row, fallback, hasFiles) {
+  const name = rowSummaryFromInputs(row).split(" · ").find(part => part && part !== "بدون اسم" && part !== "مركبة بدون بيانات");
+  const what = name ? `«${name}»` : fallback;
+  const files = hasFiles ? " مع صور مرفقاته" : "";
+  return confirmAction(`حذف ${what}؟ يُحذف نهائيًا${files} عند الضغط على «حفظ».`);
+}
+
+/** After a row is removed: the saved rows are numbered again by position («فرد رقم 2» becomes
+ *  «فرد رقم 1»), and the «none» line comes back when the list is empty. */
+function afterRowRemoved(container, emptyHtml = "") {
+  let position = 0;
+  container.querySelectorAll(".emp-row").forEach(row => {
+    position += 1;
+    const title = row.querySelector(".emp-row-title");
+    if (title && / رقم \d+$/.test(title.textContent)) title.textContent = title.textContent.replace(/ رقم \d+$/, ` رقم ${position}`);
+  });
+  if (!position && emptyHtml && !container.querySelector(".list-empty")) container.innerHTML = emptyHtml;
+}
+
+const FAMILY_EMPTY = `<p class="family-empty list-empty" style="font-size:13px;color:var(--ui-text-faint);padding:8px 0">لا يوجد أفراد مسجلون</p>`;
+const VEHICLE_EMPTY = `<p class="vehicle-empty list-empty" style="font-size:13px;color:var(--ui-text-faint);padding:8px 0">لا توجد مركبات مسجلة</p>`;
+
+// ── Checks on spouse / family / vehicle rows ─────────────────────────────────
+// Shown under the row as a warning; saving is not blocked (the card may really say so).
+const MALE_RELATIONS = ["ابن", "أب", "أخ"];
+const FEMALE_RELATIONS = ["ابنة", "أم", "أخت"];
+
+function rowWarnings(row, { employeeBirthdate, civilCounts, plateCounts, today }) {
+  const value = selector => row.querySelector(selector)?.value?.trim() || "";
+  const warnings = [];
+  const vehicle = row.classList.contains("vehicle-row");
+  const prefix = row.classList.contains("spouse-row") ? "sp" : "fm";
+  const issue = value(vehicle ? ".vehicle-issue-date" : `.${prefix}-issue`);
+  const expiry = value(vehicle ? ".vehicle-expiry-date" : `.${prefix}-expiry`);
+  if (issue && expiry && expiry < issue) warnings.push("تاريخ النفاذ قبل تاريخ الإصدار");
+  if (vehicle) {
+    const year = value(".vehicle-model-year");
+    if (year && (!/^\d{4}$/.test(year) || Number(year) < 1950 || Number(year) > today.getFullYear() + 1)) warnings.push("سنة الصنع أربعة أرقام، مثل 2019");
+    const plate = value(".vehicle-plate").replace(/\s+/g, " ");
+    if (plate && plateCounts.get(plate) > 1) warnings.push("رقم اللوحة مكرر في مركبة أخرى");
+    return warnings;
+  }
+  const civil = value(`.${prefix}-civil`);
+  if (civil && !/^\d{12}$/.test(civil)) warnings.push("الرقم الوطني 12 رقمًا");
+  else if (civil && civilCounts.get(civil) > 1) warnings.push("الرقم الوطني مكرر في سجل آخر");
+  const birthdate = value(`.${prefix}-birthdate`);
+  const todayIso = localIso(today);
+  if (birthdate && birthdate > todayIso) warnings.push("تاريخ الولادة في المستقبل");
+  if (prefix === "fm") {
+    const relation = value(".fm-relation");
+    const gender = value(".fm-gender");
+    if (gender && ((MALE_RELATIONS.includes(relation) && gender !== "ذكر") || (FEMALE_RELATIONS.includes(relation) && gender !== "أنثى"))) {
+      warnings.push(`صلة القرابة «${relation}» لا توافق الجنس «${gender}»`);
+    }
+    if (["ابن", "ابنة"].includes(relation) && birthdate && employeeBirthdate && birthdate <= employeeBirthdate) {
+      warnings.push("تاريخ ولادة الابن قبل تاريخ ولادة الموظف");
+    }
+  }
+  return warnings;
+}
+
+function localIso(date) {
+  return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(date.getDate()).padStart(2, "0")}`;
+}
+
+/** Puts each row's warnings under it, and «تنبيه» in its heading while it is folded. */
+function refreshRowWarnings() {
+  const content = document.getElementById("tab-content");
+  if (!content) return;
+  const rows = [...content.querySelectorAll(".spouse-row, .family-row, .vehicle-row")];
+  if (!rows.length) return;
+  const count = (selector, normalize = v => v) => {
+    const counts = new Map();
+    content.querySelectorAll(selector).forEach(input => {
+      const v = normalize(input.value.trim());
+      if (v) counts.set(v, (counts.get(v) ?? 0) + 1);
+    });
+    return counts;
+  };
+  const context = {
+    employeeBirthdate: document.querySelector("#emp-panel #f-birthdate")?.value || _panelDraft?.birthdate || "",
+    civilCounts: count(".sp-civil, .fm-civil"),
+    plateCounts: count(".vehicle-plate", v => v.replace(/\s+/g, " ")),
+    today: new Date(),
+  };
+  rows.forEach(row => {
+    const warnings = rowWarnings(row, context);
+    let box = row.querySelector(":scope > .row-check");
+    let flag = row.querySelector(":scope > .emp-row-head .row-check-flag");
+    if (!warnings.length) { box?.remove(); flag?.remove(); return; }
+    if (!box) {
+      box = document.createElement("p");
+      box.className = "emp-row-warning row-check";
+      box.style.gridColumn = "span 2";
+      row.appendChild(box);
+    }
+    box.textContent = `تحقق: ${warnings.join(" · ")}`;
+    if (!flag) {
+      flag = document.createElement("span");
+      flag.className = "emp-pill warn row-check-flag";
+      flag.textContent = "تحقق";
+      row.querySelector(":scope > .emp-row-head .emp-row-summary")?.after(flag);
+    }
+    flag.title = warnings.join("، ");
+  });
+}
+
+/** A row the user added and left completely empty (no value, no attachment) is not saved. */
+function withoutEmptyRows(json) {
+  const rows = parseJsonList(json);
+  const filled = rows.filter(row => Object.entries(row ?? {}).some(([key, value]) => {
+    if (key === "gender" || key === "name_parts") return false; // a spouse row starts with a gender
+    return String(value ?? "").trim() !== "";
+  }));
+  return JSON.stringify(filled);
+}
+
+/** Inside a family / vehicle row: «ابن» picks «ذكر» (and so on), then the row checks run again. */
+function onRowFieldChange(event) {
+  if (event.target.id === "f-gender") {
+    document.querySelectorAll("#f-marital_status option").forEach(option => {
+      option.textContent = option.value ? maritalLabel(option.value, event.target.value) : "—";
+    });
+  }
+  const row = event.target.closest?.(".emp-row");
+  if (!row) return;
+  if (event.target.matches(".fm-relation")) {
+    const gender = row.querySelector(".fm-gender");
+    const relation = event.target.value;
+    const wanted = MALE_RELATIONS.includes(relation) ? "ذكر" : FEMALE_RELATIONS.includes(relation) ? "أنثى" : "";
+    if (gender && wanted) gender.value = wanted;
+  }
+  refreshRowWarnings();
+}
+
+function rowHasFiles(row) {
+  return Object.entries(row.dataset).some(([key, value]) => /(Front|Back)Path$/.test(key) && !/FullPath$/.test(key) && value);
 }
 
 function renderSpouseList(emp) {
@@ -2092,6 +2310,7 @@ function renderSpouseList(emp) {
   const spouses = spouseListFromEmployee(emp);
   container.innerHTML = spouses.map((spouse, index) => spouseRowHtml(spouse, index, config)).join("") ||
     `<p class="spouse-empty" style="font-size:13px;color:var(--ui-text-faint);padding:8px 0">${config.emptyLabel}</p>`;
+  refreshSpouseLimitNote(container, config);
   const addButton = document.getElementById("btn-add-spouse");
   if (addButton) {
     addButton.style.display = spouses.length >= config.max ? "none" : "inline-flex";
@@ -2099,9 +2318,12 @@ function renderSpouseList(emp) {
 
   container.querySelectorAll(".btn-remove-spouse").forEach(btn => {
     btn.addEventListener("click", async () => {
-      if (!(await confirmAction("تأكيد حذف الزوجة؟"))) return;
+      const row = btn.closest(".spouse-row");
+      if (!(await confirmRowRemoval(row, `هذا ${config.itemLabel}`, rowHasFiles(row)))) return;
       markPanelDirty();
-      btn.closest(".spouse-row").remove();
+      row.remove();
+      afterRowRemoved(container);
+      refreshSpouseLimitNote(container, config);
       const addButton = document.getElementById("btn-add-spouse");
       if (addButton && container.querySelectorAll(".spouse-row").length < config.max) {
         addButton.style.display = "inline-flex";
@@ -2128,7 +2350,7 @@ function renderSpouseList(emp) {
         await refreshSpouseAttachments(_panelDraft.id);
         const spouse = ocrTarget(`spouse:${btn.dataset.spouseIndex}`).record;
         await readUploadedFields(`spouse:${btn.dataset.spouseIndex}`, spouse?.[`national_card_${btn.dataset.side}_path`], spouse?.[`national_card_${btn.dataset.side}_full_path`], `البطاقة الوطنية للـ${config.itemLabel}`);
-      } catch (err) { showToast(err?.message ?? String(err || "خطأ في رفع المرفق"), "error"); }
+      } catch (err) { showToast(errorText(err, "خطأ في رفع المرفق"), "error"); }
     });
   });
 
@@ -2144,7 +2366,7 @@ function renderSpouseList(emp) {
         await api.deleteSpouseNationalCardAttachment(_panelDraft.id, Number(btn.dataset.spouseIndex), btn.dataset.side);
         showToast(`تم حذف مرفق البطاقة الوطنية للـ${config.itemLabel}`);
         await refreshSpouseAttachments(_panelDraft.id);
-      } catch (err) { showToast(err?.message ?? String(err || "خطأ في حذف المرفق"), "error"); }
+      } catch (err) { showToast(errorText(err, "خطأ في حذف المرفق"), "error"); }
     });
   });
 }
@@ -2168,11 +2390,11 @@ function spouseRowHtml(spouse = {}, index = Date.now(), config = { itemLabel: "�
   const existing = typeof index === "number" && index < 100;
   const rowKey = existing ? `row:spouse:${index}` : "";
   const attached = [spouse.national_card_front_path, spouse.national_card_back_path].filter(Boolean).length;
-  return `<div class="spouse-row emp-row${rowOpenClass(rowKey, existing)}" data-row-key="${rowKey}" data-national-card-front-path="${escHtml(spouse.national_card_front_path ?? "")}" data-national-card-back-path="${escHtml(spouse.national_card_back_path ?? "")}">
+  return `<div class="spouse-row emp-row${rowOpenClass(rowKey, existing)}" data-row-key="${rowKey}" ${rowPathAttrs(spouse, "national_card")}>
     ${rowHead({
-      title: `${config.itemLabel} ${number ? `رقم ${number}` : "جديدة"}`,
+      title: `${config.itemLabel} ${number ? `رقم ${number}` : config.itemLabel === "زوج" ? "جديد" : "جديدة"}`,
       summary: personSummary({ name: spouse.name, gender: spouse.gender || config.defaultGender, birthdate: spouse.birthdate }),
-      extra: `<span class="emp-pill ${attached === 2 ? "ok" : "none"}">المرفقات ${attached}/2</span>`,
+      extra: `${cardExpiryPill(spouse)}<span class="emp-pill ${attached === 2 ? "ok" : "none"}">المرفقات ${attached}/2</span>`,
       removeClass: "btn-remove-spouse",
     })}
     <div style="grid-column:span 2">
@@ -2238,9 +2460,11 @@ function addSpouseRow(config = spouseSectionConfig(_panelDraft ?? {}) ?? { defau
   const row = div.firstElementChild;
   row.classList.remove("collapsed");
   row.querySelector(".btn-remove-spouse").addEventListener("click", async () => {
-    if (!(await confirmAction("تأكيد حذف الزوجة؟"))) return;
+    if (!(await confirmRowRemoval(row, `هذا ${config.itemLabel}`, false))) return;
     markPanelDirty();
     row.remove();
+    afterRowRemoved(container);
+    refreshSpouseLimitNote(container, config);
     const addButton = document.getElementById("btn-add-spouse");
     if (addButton && container.querySelectorAll(".spouse-row").length < config.max) {
       addButton.style.display = "inline-flex";
@@ -2259,14 +2483,15 @@ function renderFamilyList(emp) {
   let members = [];
   try { members = JSON.parse(emp?.family_members ?? "[]"); } catch {}
 
-  container.innerHTML = members.map((m, i) => familyRowHtml(m, i)).join("") ||
-    `<p style="font-size:13px;color:var(--ui-text-faint);padding:8px 0">لا يوجد أفراد مسجلون</p>`;
+  container.innerHTML = members.map((m, i) => familyRowHtml(m, i)).join("") || FAMILY_EMPTY;
 
   container.querySelectorAll(".btn-remove-member").forEach(btn => {
     btn.addEventListener("click", async () => {
-      if (!(await confirmAction("تأكيد حذف فرد العائلة؟"))) return;
+      const row = btn.closest(".family-row");
+      if (!(await confirmRowRemoval(row, "هذا الفرد", rowHasFiles(row)))) return;
       markPanelDirty();
-      btn.closest(".family-row").remove();
+      row.remove();
+      afterRowRemoved(container, FAMILY_EMPTY);
     });
   });
 
@@ -2289,7 +2514,7 @@ function renderFamilyList(emp) {
         await refreshFamilyAttachments(_panelDraft.id);
         const member = ocrTarget(`family:${btn.dataset.memberIndex}`).record;
         await readUploadedFields(`family:${btn.dataset.memberIndex}`, member?.[`national_card_${btn.dataset.side}_path`], member?.[`national_card_${btn.dataset.side}_full_path`], "البطاقة الوطنية لفرد الأسرة");
-      } catch (err) { showToast(err?.message ?? String(err || "خطأ في رفع المرفق"), "error"); }
+      } catch (err) { showToast(errorText(err, "خطأ في رفع المرفق"), "error"); }
     });
   });
 
@@ -2305,7 +2530,7 @@ function renderFamilyList(emp) {
         await api.deleteFamilyNationalCardAttachment(_panelDraft.id, Number(btn.dataset.memberIndex), btn.dataset.side);
         showToast("تم حذف مرفق البطاقة الوطنية لفرد الأسرة");
         await refreshFamilyAttachments(_panelDraft.id);
-      } catch (err) { showToast(err?.message ?? String(err || "خطأ في حذف المرفق"), "error"); }
+      } catch (err) { showToast(errorText(err, "خطأ في حذف المرفق"), "error"); }
     });
   });
 }
@@ -2330,11 +2555,11 @@ function familyRowHtml(m = {}, i = Date.now()) {
   const existing = typeof i === "number" && i < 100;
   const rowKey = existing ? `row:family:${i}` : "";
   const attached = [m.national_card_front_path, m.national_card_back_path].filter(Boolean).length;
-  return `<div class="family-row emp-row${rowOpenClass(rowKey, existing)}" data-row-key="${rowKey}" data-national-card-front-path="${escHtml(m.national_card_front_path ?? "")}" data-national-card-back-path="${escHtml(m.national_card_back_path ?? "")}">
+  return `<div class="family-row emp-row${rowOpenClass(rowKey, existing)}" data-row-key="${rowKey}" ${rowPathAttrs(m, "national_card")}>
     ${rowHead({
       title: existing ? `فرد رقم ${i + 1}` : "فرد جديد",
       summary: [m.relation, personSummary({ name: m.name, gender: m.gender, birthdate: m.birthdate })].filter(Boolean).join(" · "),
-      extra: `<span class="emp-pill ${attached === 2 ? "ok" : "none"}">المرفقات ${attached}/2</span>`,
+      extra: `${cardExpiryPill(m)}<span class="emp-pill ${attached === 2 ? "ok" : "none"}">المرفقات ${attached}/2</span>`,
       removeClass: "btn-remove-member",
     })}
     <div>
@@ -2396,16 +2621,16 @@ function familyRowHtml(m = {}, i = Date.now()) {
 function addFamilyRow() {
   const container = document.getElementById("family-list");
   if (!container) return;
-  // remove "no members" text if present
-  const empty = container.querySelector("p");
-  if (empty) empty.remove();
+  // Only the «no members» line: a <p> inside a member row is a field label.
+  container.querySelector(".family-empty")?.remove();
   const div = document.createElement("div");
   div.innerHTML = familyRowHtml({}, Date.now());
   const row = div.firstElementChild;
   row.querySelector(".btn-remove-member").addEventListener("click", async () => {
-    if (!(await confirmAction("تأكيد حذف فرد العائلة؟"))) return;
+    if (!(await confirmRowRemoval(row, "هذا الفرد", false))) return;
     markPanelDirty();
     row.remove();
+    afterRowRemoved(container, FAMILY_EMPTY);
   });
   container.appendChild(row);
 }
@@ -2416,8 +2641,7 @@ function renderVehicleList(emp) {
   let vehicles = [];
   try { vehicles = JSON.parse(emp?.vehicles ?? "[]"); } catch {}
 
-  container.innerHTML = vehicles.map((vehicle, index) => vehicleRowHtml(vehicle, index)).join("") ||
-    `<p class="vehicle-empty" style="font-size:13px;color:var(--ui-text-faint);padding:8px 0">لا توجد مركبات مسجلة</p>`;
+  container.innerHTML = vehicles.map((vehicle, index) => vehicleRowHtml(vehicle, index)).join("") || VEHICLE_EMPTY;
 
   attachVehicleRemoveEvents(container);
   attachVehicleAnnualEvents(container);
@@ -2431,7 +2655,7 @@ function vehicleRowHtml(vehicle = {}, index = Date.now()) {
     ? `<span class="emp-pill ${status.tone}">السنوية: ${["bad", "warn"].includes(status.tone) ? status.label : formatDate(vehicle.expiry_date)}</span>`
     : "";
   const attached = [vehicle.annual_front_path, vehicle.annual_back_path].filter(Boolean).length;
-  return `<div class="vehicle-row emp-row${rowOpenClass(rowKey, existing)}" data-row-key="${rowKey}" data-annual-front-path="${escHtml(vehicle.annual_front_path ?? "")}" data-annual-back-path="${escHtml(vehicle.annual_back_path ?? "")}">
+  return `<div class="vehicle-row emp-row${rowOpenClass(rowKey, existing)}" data-row-key="${rowKey}" ${rowPathAttrs(vehicle, "annual")}>
     ${rowHead({
       title: existing ? `مركبة رقم ${index + 1}` : "مركبة جديدة",
       summary: vehicleSummary(vehicle),
@@ -2499,7 +2723,7 @@ function attachVehicleAnnualEvents(container) {
         await refreshVehicleAttachments(_panelDraft.id);
         const vehicle = ocrTarget(`vehicle:${index}`).record;
         await readUploadedFields(`vehicle:${index}`, vehicle?.[`annual_${btn.dataset.side}_path`], vehicle?.[`annual_${btn.dataset.side}_full_path`], "سنوية المركبة");
-      } catch (err) { showToast(err?.message ?? String(err || "خطأ في رفع المرفق"), "error"); }
+      } catch (err) { showToast(errorText(err, "خطأ في رفع المرفق"), "error"); }
     });
   });
   container.querySelectorAll(".btn-delete-vehicle-annual").forEach(btn => {
@@ -2514,7 +2738,7 @@ function attachVehicleAnnualEvents(container) {
         await api.deleteVehicleAnnualAttachment(_panelDraft.id, Number(btn.dataset.vehicleIndex), btn.dataset.side);
         showToast("تم حذف مرفق السنوية");
         await refreshVehicleAttachments(_panelDraft.id);
-      } catch (err) { showToast(err?.message ?? String(err || "خطأ في حذف المرفق"), "error"); }
+      } catch (err) { showToast(errorText(err, "خطأ في حذف المرفق"), "error"); }
     });
   });
 }
@@ -2530,12 +2754,12 @@ function vehicleInput(label, className, value = "", ltr = false, date = false) {
 function attachVehicleRemoveEvents(container) {
   container.querySelectorAll(".btn-remove-vehicle").forEach(button => {
     button.addEventListener("click", async () => {
-      if (!(await confirmAction("تأكيد حذف المركبة؟"))) return;
+      const row = button.closest(".vehicle-row");
+      const list = row.parentElement;
+      if (!(await confirmRowRemoval(row, "هذه المركبة", rowHasFiles(row)))) return;
       markPanelDirty();
-      button.closest(".vehicle-row").remove();
-      if (!container.querySelector(".vehicle-row")) {
-        container.innerHTML = `<p class="vehicle-empty" style="font-size:13px;color:var(--ui-text-faint);padding:8px 0">لا توجد مركبات مسجلة</p>`;
-      }
+      row.remove();
+      afterRowRemoved(list, VEHICLE_EMPTY);
     });
   });
 }

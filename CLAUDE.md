@@ -27,7 +27,7 @@ npm run seed-db
 npm run tauri:dev
 ```
 
-Initial login: `sysadmin` / temporary password `password`. The account is blocked from normal system access until the password is changed. See [README.md](README.md) and [ARCHITECTURE.md](ARCHITECTURE.md) for fuller detail.
+First run: a three-step wizard (folders, the administrator's own account, section/unit names) replaces the built-in `sysadmin` / `password` account and shows a recovery code once. Development data (`npm run test-data`) still signs in as `sysadmin` / `password`. Admin recovery: recovery code, or a developer unlock signed with `tools/admin-unlock`. See [README.md](README.md) and [ARCHITECTURE.md](ARCHITECTURE.md) for fuller detail.
 
 ## Conventions to follow
 

@@ -1122,6 +1122,67 @@ html[data-ui-scale] #app-shell { height: calc(100vh / var(--ui-scale)); }
 .users-matrix .yes{color:var(--ui-ok);font-weight:700}
 .users-matrix .no{color:var(--ui-text-muted)}
 .users-help summary{cursor:pointer;font-weight:600;color:var(--ui-text-strong);font-size:14px}
+.report-per-vehicle{display:inline-flex;align-items:center;gap:6px;font-size:13px;color:var(--ui-text-muted);white-space:nowrap;cursor:pointer}
+.report-per-vehicle input{width:15px;height:15px;accent-color:var(--ui-accent)}
+/* Family / vehicle rows: checks and the spouse-count note (warnings, saving not blocked) */
+.emp-row-warning{margin:2px 0 6px;padding:6px 10px;border-radius:6px;font-size:12px;line-height:1.6;color:var(--ui-warn);background:var(--ui-warn-bg);border:1px solid var(--ui-warn-line)}
+.emp-row-head .btn-danger:disabled{opacity:.45;cursor:not-allowed}
+
+/* ── First-run wizard, password rules, recovery (login-setup review) ───────── */
+.setup-screen{min-height:100vh;display:flex;align-items:center;justify-content:center;padding:24px}
+.setup-screen.hidden{display:none}
+.setup-card{width:100%;max-width:42rem;display:flex;flex-direction:column;gap:18px}
+.setup-brand{display:flex;align-items:center;gap:12px;padding-bottom:14px;border-bottom:1px solid var(--ui-line)}
+.setup-logo{width:48px;height:48px}
+.setup-product{font-size:18px;font-weight:800;color:var(--ui-text-strong);margin:0;direction:ltr;text-align:right}
+.setup-product-sub{font-size:12.5px;color:var(--ui-text-muted);margin:0}
+.setup-steps{display:flex;gap:8px;list-style:none;margin:0;padding:0}
+.setup-steps.hidden{display:none}
+.setup-steps li{flex:1;display:flex;align-items:center;gap:8px;font-size:12.5px;color:var(--ui-text-muted);padding:8px 10px;border-radius:8px;border:1px solid var(--ui-line);background:transparent}
+.setup-steps li span{display:inline-flex;align-items:center;justify-content:center;width:22px;height:22px;border-radius:50%;font-weight:700;font-size:12px;background:var(--ui-surface);border:1px solid var(--ui-line-strong)}
+.setup-steps li.is-current{color:var(--ui-text-strong);border-color:var(--ui-accent);background:var(--ui-accent-soft);font-weight:700}
+.setup-steps li.is-current span{background:var(--ui-accent);color:var(--ui-on-accent);border-color:var(--ui-accent)}
+.setup-steps li.is-done span{background:var(--ui-ok-bg);color:var(--ui-ok);border-color:var(--ui-ok-line)}
+.setup-step.hidden{display:none}
+.setup-note{font-size:12.5px;line-height:1.7;border-radius:8px;padding:8px 10px;margin:0}
+.setup-note.is-warn{color:var(--ui-warn);background:var(--ui-warn-bg);border:1px solid var(--ui-warn-line)}
+.setup-note.is-info{color:var(--ui-info);background:var(--ui-info-bg);border:1px solid var(--ui-info-line)}
+.setup-note.is-ok{color:var(--ui-ok);background:var(--ui-ok-bg);border:1px solid var(--ui-ok-line)}
+.field-warning{font-size:12px;color:var(--ui-warn);margin:0}
+.field-warning.hidden{display:none}
+
+.password-field{position:relative}
+.password-field .input-field{padding-left:40px}
+.password-eye{position:absolute;left:6px;top:50%;transform:translateY(-50%);width:30px;height:30px;display:inline-flex;align-items:center;justify-content:center;border-radius:6px;color:var(--ui-text-muted);background:transparent;border:0;cursor:pointer}
+.password-eye:hover{background:var(--ui-hover);color:var(--ui-text)}
+.password-eye[aria-pressed="true"]{color:var(--ui-accent)}
+.password-eye svg{width:18px;height:18px;fill:none;stroke:currentColor;stroke-width:1.8;stroke-linecap:round;stroke-linejoin:round}
+.password-rules{border:1px solid var(--ui-line);background:var(--ui-sunken);border-radius:8px;padding:8px 12px}
+.password-rules-title{font-size:12px;color:var(--ui-text-muted);margin:0 0 4px}
+.password-rules ul{list-style:none;margin:0;padding:0;display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:2px 14px}
+.password-rules li{font-size:12.5px;color:var(--ui-text-muted);display:flex;gap:6px;align-items:baseline}
+.password-rules li span{width:14px;text-align:center;font-weight:700}
+.password-rules li.is-met{color:var(--ui-ok)}
+
+.recovery-code-box{border:2px dashed var(--ui-line-strong);border-radius:10px;padding:14px;text-align:center;background:var(--ui-sunken)}
+.recovery-code-user{font-size:12.5px;color:var(--ui-text-muted);margin:0 0 6px}
+.recovery-code{font:700 24px/1.4 Consolas,"Courier New",monospace;letter-spacing:2px;color:var(--ui-text-strong);margin:0;word-break:break-all}
+.recovery-code.is-small{font-size:15px;letter-spacing:1px}
+.recovery-code-input{font-family:Consolas,"Courier New",monospace;text-align:left;letter-spacing:1px}
+.recovery-overlay{position:fixed;inset:0;z-index:10000;background:rgba(0,0,0,.66);display:flex;align-items:center;justify-content:center;padding:20px}
+.recovery-dialog{width:min(560px,100%);max-height:calc(100vh - 40px);overflow:auto;padding:20px;display:flex;flex-direction:column;gap:12px}
+.recovery-section{border-top:1px solid var(--ui-line);padding-top:12px;margin-top:4px}
+.recovery-dialog .icon-btn{background:transparent;border:0;color:var(--ui-text-muted);font-size:16px;cursor:pointer;padding:2px 6px;border-radius:6px}
+.recovery-dialog .icon-btn:hover{background:var(--ui-hover)}
+.unlock-challenge{display:flex;justify-content:center}
+.unlock-qr{width:200px;height:200px;background:#fff;padding:8px;border-radius:8px}
+.unlock-qr svg{width:100%;height:100%;display:block}
+.unlock-text summary{font-size:12px;color:var(--ui-text-muted);cursor:pointer;width:max-content}
+.settings-fixed-name{font-size:14px;font-weight:700;color:var(--ui-text-strong);margin:0;padding:8px 0}
+.users-security{display:grid;gap:16px;margin-top:16px}
+.policy-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:14px 20px;align-items:start}
+.policy-checks{display:grid;gap:6px}
+.policy-check{display:flex;align-items:center;gap:8px;font-size:13px;color:var(--ui-text);cursor:pointer}
 
 /* ── Home screen («الرئيسية») ── */
 .stat-sub{font-size:12px;color:var(--ui-text-muted)}

@@ -494,26 +494,27 @@ export async function renderSettings(container, user, ctx) {
       ${canSettings ? `<section class="card settings-panel settings-block" data-settings-panel="company">
         <div class="settings-block-head">
           <p class="settings-block-title">الجهة والشعار</p>
-          <p class="settings-block-help">يظهر اسم الجهة والقسم في رأس الشاشات وفي المطبوعات والتقارير.</p>
+          <p class="settings-block-help">يظهر اسم القسم في رأس الشاشات وفي المطبوعات والتقارير، واسم الشعبة في شاشة الدخول.</p>
         </div>
         <div class="settings-company">
           <div class="settings-logo-col">
             <div id="company-logo-box">${logoMarkup()}</div>
-            <p class="text-xs text-gray-500">شعار الشركة ثابت ومضمَّن في النظام</p>
+            <p class="text-xs text-gray-500">الشعار واسم الجهة ثابتان ومضمَّنان في النظام</p>
           </div>
           <div class="settings-company-fields space-y-3">
             <div>
-              <label class="section-title" for="c-company">اسم الشركة / الجهة *</label>
-              <input id="c-company" class="input-field" value="${escHtml(companyConfig?.company_name ?? "")}" />
+              <p class="section-title">اسم الجهة</p>
+              <p class="settings-fixed-name">${escHtml(companyConfig?.company_name ?? "")}</p>
             </div>
             <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
               <div>
                 <label class="section-title" for="c-dept">اسم القسم</label>
-                <input id="c-dept" class="input-field" value="${escHtml(companyConfig?.department_name ?? "")}" />
+                <input id="c-dept" class="input-field" maxlength="40" value="${escHtml(companyConfig?.department_name ?? "")}" />
               </div>
               <div>
                 <label class="section-title" for="c-div">اسم الشعبة / الوحدة</label>
-                <input id="c-div" class="input-field" value="${escHtml(companyConfig?.division_name ?? "")}" />
+                <input id="c-div" class="input-field" maxlength="40" value="${escHtml(companyConfig?.division_name ?? "")}" />
+                <p class="field-help">يظهر في شاشة الدخول. 40 حرفًا على الأكثر.</p>
               </div>
             </div>
           </div>
@@ -701,17 +702,15 @@ export async function renderSettings(container, user, ctx) {
 
   bindPasswordToggle(container, "#auto-backup-password", "#auto-backup-password-toggle");
 
-  const resetCompanyDirty = trackUnsavedChanges(container, container.querySelector("#btn-save-cfg"), ["#c-company", "#c-dept", "#c-div"]);
+  const resetCompanyDirty = trackUnsavedChanges(container, container.querySelector("#btn-save-cfg"), ["#c-dept", "#c-div"]);
   const resetAutoBackupDirty = trackUnsavedChanges(container, container.querySelector("#btn-save-auto-backup"),
     ["#auto-backup-mode", "#auto-keep-daily", "#auto-keep-weekly", "#auto-keep-monthly", "#auto-backup-delete", "#auto-backup-password"]);
 
   const saveCompany = async () => {
     const data = {
-      company_name: container.querySelector("#c-company").value.trim(),
       department_name: container.querySelector("#c-dept").value.trim(),
       division_name: container.querySelector("#c-div").value.trim(),
     };
-    if (!data.company_name) { showToast("اسم الشركة مطلوب", "error"); return false; }
     try {
       companyConfig = await api.updateCompanyConfig(data);
       applyBranding(companyConfig);

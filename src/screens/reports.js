@@ -2,7 +2,7 @@ import { api } from "../api.js";
 import { escHtml, formatDate, showToast } from "../utils.js";
 import { COMPANY_LOGO } from "../branding.js";
 import { save } from "@tauri-apps/plugin-dialog";
-import { missingFields } from "./employees.js";
+import { missingFields, maritalLabel } from "./employees.js";
 import { buildDocumentAlerts, loadAlertRules } from "./document-alerts.js";
 import { readAddress } from "../address-field.js";
 
@@ -140,6 +140,11 @@ const fieldGroups = [
       ["family_members_count", "عدد أفراد الأسرة", "number"],
       ["family_members_names", "أسماء أفراد الأسرة"],
       ["family_cards_count", "عدد مرفقات بطاقات أفراد الأسرة", "number"],
+      ["family_members_details", "أفراد الأسرة (الصلة والعمر)"],
+      ["children_under_18", "عدد الأبناء دون 18 سنة", "number"],
+      ["family_civil_ids", "الأرقام الوطنية لأفراد الأسرة", "ltr"],
+      ["family_card_expiry", "نفاذ بطاقات أفراد الأسرة", "date"],
+      ["spouses_card_expiry", "نفاذ بطاقات الزوج/الزوجات", "date"],
     ],
   },
   {
@@ -150,6 +155,9 @@ const fieldGroups = [
       ["vehicles_plates", "أرقام المركبات"],
       ["vehicle_brand", "العلامة التجارية"],
       ["vehicle_type", "نوع المركبة"],
+      ["vehicle_governorate", "محافظة اللوحة"],
+      ["vehicle_plate_category", "نوع اللوحة"],
+      ["vehicle_chassis_no", "رقم الشاصي", "ltr"],
       ["vehicle_color", "لون المركبة"],
       ["vehicle_manufacture_year", "سنة الصنع", "ltr"],
       ["vehicle_annual_no", "رقم السنوية", "ltr"],
@@ -175,16 +183,16 @@ const fieldByKey = new Map(fieldDefs.map(field => [field.key, field]));
 export const employeeFieldLabels = Object.fromEntries(fieldDefs.map(field => [field.key, field.label]));
 
 const defaultColumns = ["employee_number", "full_name", "job_title", "department", "civil_id", "phone", "is_active_label"];
-const defaultFilters = { search: "", status: "active", docs: "all", data: "all" };
+const defaultFilters = { search: "", status: "active", docs: "all", data: "all", perVehicle: false };
 
 /** Ready-made reports: columns and filters set with one choice. */
 const PRESETS = [
   { id: "contacts", label: "قائمة الاتصال", columns: ["employee_number", "full_name", "job_title", "phone", "email"], filters: {} },
   { id: "documents", label: "المستمسكات المنتهية أو القريبة", columns: ["employee_number", "full_name", "documents_status", "civil_id_expiry_date", "passport_expiry_date", "airport_badge_expiry", "ministry_badge_expiry", "vehicle_annual_expiry_date"], filters: { docs: "alerts" } },
   { id: "missing", label: "البيانات الناقصة", columns: ["employee_number", "full_name", "missing_count", "missing_fields"], filters: { data: "missing" } },
-  { id: "family", label: "العائلة", columns: ["employee_number", "full_name", "marital_status", "spouses_names", "family_members_count", "family_members_names"], filters: {} },
+  { id: "family", label: "العائلة", columns: ["employee_number", "full_name", "marital_status", "spouses_names", "family_members_count", "family_members_details", "children_under_18"], filters: {} },
   { id: "address", label: "السكن", columns: ["employee_number", "full_name", "residence_governorate", "residence_district", "residence_subdistrict", "residence_city", "residence_address", "phone"], filters: {} },
-  { id: "vehicles", label: "المركبات", columns: ["employee_number", "full_name", "vehicles_count", "vehicles_plates", "vehicle_type", "vehicle_annual_expiry_date"], filters: {} },
+  { id: "vehicles", label: "المركبات", columns: ["full_name", "vehicles_plates", "vehicle_brand", "vehicle_type", "vehicle_color", "vehicle_annual_expiry_date"], filters: { perVehicle: true } },
 ];
 
 function parseJsonArray(value) {
@@ -199,6 +207,25 @@ function parseJsonArray(value) {
 const yesNo = value => (value ? "نعم" : "لا");
 const listNames = (items, key = "name") => items.map(item => item?.[key]).filter(Boolean).join("، ");
 const text = value => String(value ?? "").trim();
+
+/** Whole years from a birth date (YYYY-MM-DD) to today, or null. */
+function ageYears(birthdate, today = new Date()) {
+  const match = text(birthdate).match(/^(\d{4})-(\d{2})-(\d{2})/);
+  if (!match) return null;
+  let years = today.getFullYear() - Number(match[1]);
+  if (today.getMonth() + 1 < Number(match[2]) || (today.getMonth() + 1 === Number(match[2]) && today.getDate() < Number(match[3]))) years -= 1;
+  return years >= 0 ? years : null;
+}
+
+/** «علي (ابن، 8)» for each family member. */
+function memberDetails(members) {
+  return members.filter(member => text(member?.name)).map(member => {
+    const age = ageYears(member?.birthdate);
+    const extra = [text(member?.relation), age === null ? "" : String(age)].filter(Boolean).join("، ");
+    return extra ? `${text(member.name)} (${extra})` : text(member.name);
+  }).join("، ");
+}
+const CHILD_RELATIONS = ["ابن", "ابنة"];
 
 function storedConfig() {
   const valid = columns => Array.isArray(columns) ? columns.filter(key => fieldByKey.has(key)) : [];
@@ -230,7 +257,8 @@ function reportRow(employee, company, alerts) {
   const vehicles = parseJsonArray(employee.vehicles);
   const address = readAddress(employee.residence_address_parts, employee.residence_address);
   const missing = missingFields(employee);
-  const fromVehicles = key => vehicles.map(vehicle => text(vehicle?.[key])).filter(Boolean);
+  // One value per vehicle, empty ones kept, so the n-th value of every column is the n-th vehicle.
+  const fromVehicles = key => vehicles.map(vehicle => text(vehicle?.[key]));
   const expired = alerts.filter(alert => alert.expired);
   const soon = alerts.filter(alert => !alert.expired);
   const statusParts = [
@@ -265,14 +293,23 @@ function reportRow(employee, company, alerts) {
     spouses_cards_count: spouses.reduce((count, spouse) => count + Number(Boolean(spouse?.national_card_front_path)) + Number(Boolean(spouse?.national_card_back_path)), 0),
     family_members_count: family.length,
     family_members_names: listNames(family),
+    marital_status: maritalLabel(employee.marital_status, employee.gender),
+    family_members_details: memberDetails(family),
+    children_under_18: family.filter(member => CHILD_RELATIONS.includes(text(member?.relation)) && (ageYears(member?.birthdate) ?? 99) < 18).length,
+    family_civil_ids: family.length ? family.map(member => text(member?.civil_id)) : "",
+    family_card_expiry: family.map(member => text(member?.expiry_date)),
+    spouses_card_expiry: spouses.map(spouse => text(spouse?.expiry_date)),
     family_cards_count: family.reduce((count, member) => count + Number(Boolean(member?.national_card_front_path)) + Number(Boolean(member?.national_card_back_path)), 0),
     vehicles_count: vehicles.length,
-    vehicles_plates: fromVehicles("plate").join("، "),
-    vehicle_brand: fromVehicles("brand").join("، "),
-    vehicle_type: fromVehicles("type").join("، "),
-    vehicle_color: fromVehicles("color").join("، "),
-    vehicle_manufacture_year: fromVehicles("model_year").join("، "),
-    vehicle_annual_no: fromVehicles("annual_no").join("، "),
+    vehicles_plates: fromVehicles("plate"),
+    vehicle_brand: fromVehicles("brand"),
+    vehicle_governorate: fromVehicles("governorate"),
+    vehicle_plate_category: fromVehicles("plate_category"),
+    vehicle_chassis_no: fromVehicles("chassis_no"),
+    vehicle_type: fromVehicles("type"),
+    vehicle_color: fromVehicles("color"),
+    vehicle_manufacture_year: fromVehicles("model_year"),
+    vehicle_annual_no: fromVehicles("annual_no"),
     vehicle_annual_issue_date: fromVehicles("issue_date"),
     vehicle_annual_expiry_date: fromVehicles("expiry_date"),
     attachments_count: parseJsonArray(employee.attachment_paths).length,
@@ -282,30 +319,40 @@ function reportRow(employee, company, alerts) {
   return { employee, values, missing: missing.length, alerts, expired: expired.length };
 }
 
-/** What a cell shows: dates as 2026/12/7, a list of dates joined, «—» when empty. */
+/** Several values of one employee (one per vehicle): «—» for an empty one, each kept in its own
+ *  direction, and the list read right to left so the first vehicle comes first in every column. */
+function valueList(values, format) {
+  if (values.every(value => !text(value))) return "";
+  if (values.length === 1) return format(values[0]);
+  return `\u2067${values.map(value => `\u2066${text(value) ? format(value) : "—"}\u2069`).join("، ")}\u2069`;
+}
+
+/** What a cell shows: dates as 2026/12/7, a list of values joined, «—» when empty. */
 function displayValue(row, field) {
   const value = row.values[field.key];
-  if (field.type === "date") {
-    const dates = (Array.isArray(value) ? value : [value]).filter(Boolean);
-    return dates.length ? dates.map(formatDate).join("، ") : "—";
-  }
+  const format = field.type === "date" ? formatDate : String;
+  if (Array.isArray(value)) return valueList(value, format) || "—";
+  if (field.type === "date") return value ? formatDate(value) : "—";
   return text(value) === "" ? "—" : String(value);
 }
 
 /** What goes to Excel: a single date as YYYY-MM-DD (the program makes it a real date),
- *  several dates as text, and an empty cell for an empty value. */
+ *  several values as text, and an empty cell for an empty value. */
 function excelValue(row, field) {
   const value = row.values[field.key];
   if (field.type === "date") {
-    const dates = (Array.isArray(value) ? value : [value]).filter(Boolean);
-    return dates.length === 1 ? String(dates[0]).slice(0, 10) : dates.map(formatDate).join("، ");
+    const dates = Array.isArray(value) ? value : [value];
+    if (dates.length === 1) return dates[0] ? String(dates[0]).slice(0, 10) : "";
+    return valueList(dates, formatDate);
   }
+  if (Array.isArray(value)) return valueList(value, String);
   return text(value);
 }
 
 function sortValue(row, field) {
   const value = row.values[field.key];
-  if (field.type === "date") return (Array.isArray(value) ? value[0] : value) || "";
+  if (Array.isArray(value)) return text(value.find(item => text(item))) || "";
+  if (field.type === "date") return value || "";
   if (field.type === "number") return Number(value) || 0;
   return text(value);
 }
@@ -348,7 +395,7 @@ function printPages(rows, fields, fontPx) {
   return pages.map(page => [keyField, ...page]);
 }
 
-function printReport(rows, fields, { company, filterText }) {
+function printReport(rows, fields, { company, filterText, perVehicle = false }) {
   const fontPx = fields.length > 8 ? 9 : 11;
   const pages = printPages(rows, fields, fontPx);
   const table = (pageFields, index) => `
@@ -384,7 +431,7 @@ function printReport(rows, fields, { company, filterText }) {
     </style></head><body>
     <header class="report-head"><img src="${escHtml(new URL(COMPANY_LOGO.print, location.href).href)}" alt="${escHtml(COMPANY_LOGO.alt)}" />
       <h1>تقرير الموظفين</h1><p>${escHtml(text(company?.company_name))}${unit ? ` — ${escHtml(unit)}` : ""}</p></header>
-    <div class="meta"><span>تاريخ الطباعة: ${escHtml(formatDate(localIsoDate()))}</span><span>عدد الموظفين: ${rows.length}</span>${filterText ? `<span>${escHtml(filterText)}</span>` : ""}</div>
+    <div class="meta"><span>تاريخ الطباعة: ${escHtml(formatDate(localIsoDate()))}</span><span>${perVehicle ? "عدد المركبات" : "عدد الموظفين"}: ${rows.length}</span>${filterText ? `<span>${escHtml(filterText)}</span>` : ""}</div>
     ${pages.map(table).join("")}</body></html>`);
   doc.close();
   // Print only after the company logo has loaded, so it is never missing from the page.
@@ -425,7 +472,10 @@ export async function renderReports(container) {
   const [employees, company] = await Promise.all([api.listEmployees(), api.getCompanyConfig().catch(() => null), loadAlertRules()]);
   const alertsById = new Map();
   buildDocumentAlerts(employees).forEach(alert => alertsById.set(alert.employeeId, [...(alertsById.get(alert.employeeId) ?? []), alert]));
-  const allRows = employees.map(employee => reportRow(employee, company, alertsById.get(employee.id) ?? []));
+  const employeeRows = employees.map(employee => reportRow(employee, company, alertsById.get(employee.id) ?? []));
+  // «صف لكل مركبة»: one row for each vehicle (with its employee), employees without one left out.
+  const vehicleRows = employees.flatMap(employee => parseJsonArray(employee.vehicles).map(vehicle =>
+    reportRow({ ...employee, vehicles: JSON.stringify([vehicle]) }, company, alertsById.get(employee.id) ?? [])));
 
   const config = storedConfig();
   const state = {
@@ -444,6 +494,7 @@ export async function renderReports(container) {
           <select id="report-status" class="input-field" aria-label="حالة الموظف">${optionsHtml(STATUS_OPTIONS, state.filters.status)}</select>
           <select id="report-docs" class="input-field" aria-label="المستمسكات">${optionsHtml(DOCS_OPTIONS, state.filters.docs)}</select>
           <select id="report-data" class="input-field" aria-label="البيانات">${optionsHtml(DATA_OPTIONS, state.filters.data)}</select>
+          <label class="report-per-vehicle" title="كل مركبة في صف مع اسم موظفها، ويُترك من ليس له مركبة"><input id="report-per-vehicle" type="checkbox" ${state.filters.perVehicle ? "checked" : ""} /> صف لكل مركبة</label>
           <span id="report-summary" class="report-count"></span>
         </div>
         <div class="report-actions">
@@ -513,11 +564,12 @@ export async function renderReports(container) {
     if (state.filters.docs !== "all") parts.push(`المستمسكات: ${label(DOCS_OPTIONS, state.filters.docs)}`);
     if (state.filters.data !== "all") parts.push(label(DATA_OPTIONS, state.filters.data));
     if (text(state.filters.search)) parts.push(`بحث: ${text(state.filters.search)}`);
+    if (state.filters.perVehicle) parts.push("صف لكل مركبة");
     return parts.join(" · ");
   };
 
   const current = () => {
-    const visible = allRows.filter(matches);
+    const visible = (state.filters.perVehicle ? vehicleRows : employeeRows).filter(matches);
     const sortField = state.sort && fieldByKey.get(state.sort.key);
     if (sortField) visible.sort((a, b) => compareRows(a, b, sortField) * (sortValue(a, sortField) === "" || sortValue(b, sortField) === "" ? 1 : state.sort.dir));
     const chosen = visible.filter(row => !state.excluded.has(row.employee.id));
@@ -530,7 +582,9 @@ export async function renderReports(container) {
 
   const render = () => {
     const { visible, chosen, fields: shown } = current();
-    $("#report-summary").textContent = `في التقرير: ${chosen.length} من ${visible.length} موظفاً`;
+    $("#report-summary").textContent = state.filters.perVehicle
+      ? `في التقرير: ${chosen.length} من ${visible.length} مركبة`
+      : `في التقرير: ${chosen.length} من ${visible.length} موظفاً`;
     container.querySelector(".report-body").classList.toggle("is-panel-hidden", state.panelHidden);
     if (!shown.length) {
       $("#report-table").innerHTML = `<div class="p-8 text-center text-gray-500">اختر عموداً واحداً على الأقل من «أعمدة التقرير»</div>`;
@@ -572,7 +626,8 @@ export async function renderReports(container) {
     const preset = PRESETS.find(item => item.id === event.target.value);
     if (!preset) return;
     state.columns = [...preset.columns];
-    state.filters = { ...state.filters, docs: "all", data: "all", ...preset.filters };
+    state.filters = { ...state.filters, docs: "all", data: "all", perVehicle: false, ...preset.filters };
+    $("#report-per-vehicle").checked = state.filters.perVehicle;
     state.sort = null;
     $("#report-docs").value = state.filters.docs;
     $("#report-data").value = state.filters.data;
@@ -587,6 +642,7 @@ export async function renderReports(container) {
     clearTimeout(searchTimer);
     searchTimer = setTimeout(() => { state.filters.search = event.target.value; render(); }, 200);
   });
+  $("#report-per-vehicle").addEventListener("change", event => { state.filters.perVehicle = event.target.checked; render(); });
   [["#report-status", "status"], ["#report-docs", "docs"], ["#report-data", "data"]].forEach(([selector, key]) =>
     $(selector).addEventListener("change", event => { state.filters[key] = event.target.value; render(); }));
 
@@ -644,7 +700,7 @@ export async function renderReports(container) {
       showToast(typeof error === "string" ? error : error?.message ?? "تعذر تسجيل الطباعة", "error");
       return;
     }
-    const pages = printReport(report.chosen, report.fields, { company, filterText: filterText() });
+    const pages = printReport(report.chosen, report.fields, { company, filterText: filterText(), perVehicle: state.filters.perVehicle });
     if (pages > 1) showToast(`الأعمدة كثيرة على عرض الورقة، فقُسّمت على ${pages} أجزاء، وفي كل جزء التسلسل والاسم`);
   });
 

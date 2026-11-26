@@ -33,7 +33,7 @@
 .login-hit-eye{--x0:1028;--y0:500;--x1:1074;--y1:538}
 .login-hit-submit{--x0:585;--y0:559;--x1:1085;--y1:611}
 .login-hit-forgot{--x0:722;--y0:625;--x1:952;--y1:656}
-.login-unit-name{--x0:790;--y0:674;--x1:935;--y1:710}
+.login-unit-name{--x0:790;--y0:674;--x1:955;--y1:710}
 .login-message{--x0:534;--y0:728;--x1:1138;--y1:805}
 .login-box,.login-hit,.login-unit-name,.login-message,.login-card-top,.login-card-ext,.login-card-cap{
   left:calc((var(--x0) - 835.5) * var(--px));top:calc(var(--y0) * var(--px));
@@ -87,12 +87,16 @@
 
 /* Unit name inside the drawn pill, next to the drawn gear. */
 .login-unit-name{
-  display:flex;align-items:center;justify-content:center;
-  color:#fff;font-size:calc(24 * var(--px));font-weight:700;white-space:nowrap;pointer-events:none;
+  display:flex;align-items:center;justify-content:center;overflow:hidden;text-align:center;
+  /* the box spans the pill from the drawn gear (on its left) to the pill's right end */
+  padding:0 calc(6 * var(--px));box-sizing:border-box;line-height:1.1;
+  color:#fff;font-size:calc(24 * var(--px) * var(--unit-scale, 1));font-weight:700;white-space:nowrap;pointer-events:auto;
 }
+/* A name too long for one line at a readable size: two smaller lines. */
+.login-unit-name.is-two-lines{white-space:normal;font-size:calc(15 * var(--px));line-height:1.05}
 .login-unit-name.is-hint{
   /* muted, one line, same place: tells the admin the division name is not set yet */
-  color:#9fb6cf;font-size:calc(16.5 * var(--px));font-weight:600;pointer-events:auto;cursor:help;
+  color:#9fb6cf;font-size:calc(16.5 * var(--px) * var(--unit-scale, 1));font-weight:600;cursor:help;
 }
 
 /* Message box: the design's own red error box (text removed), shown only when needed.
