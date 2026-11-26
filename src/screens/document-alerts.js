@@ -104,13 +104,23 @@ export function documentStatus({ values, expiry, maxDays, attached, expected, to
   return { tone: "ok", label: "مكتمل" };
 }
 
+/** The expiry dates to watch for one document type. Vehicles are kept in the «المركبات» list
+ *  (each with its own annual registration); the older single-vehicle field is read too. */
+function expiryDates(employee, documentType) {
+  if (documentType.key !== "vehicle") return [employee[documentType.field]];
+  let vehicles = [];
+  try { vehicles = JSON.parse(employee.vehicles ?? "[]"); } catch { /* no list */ }
+  const dates = (Array.isArray(vehicles) ? vehicles : []).map(vehicle => vehicle?.expiry_date);
+  return [...new Set([employee[documentType.field], ...dates].filter(Boolean))];
+}
+
 export function buildDocumentAlerts(employees, rules = cachedRules, today = new Date()) {
   const alerts = [];
   employees.filter(e => e.is_active).forEach(employee => {
-    ALERT_DOCUMENT_TYPES.forEach(documentType => {
+    ALERT_DOCUMENT_TYPES.forEach(documentType => expiryDates(employee, documentType).forEach(expiryDate => {
       const rule = ruleFor(documentType.key, rules);
       if (!rule?.enabled || !rule.days?.length) return;
-      const days = daysLeft(employee[documentType.field], today);
+      const days = daysLeft(expiryDate, today);
       if (days === null || days > Math.max(...rule.days)) return;
       // The reminder reached: the smallest reminder day that is still ≥ the days left.
       const reminder = days < 0 ? null : Math.min(...rule.days.filter(day => day >= days));
@@ -121,12 +131,12 @@ export function buildDocumentAlerts(employees, rules = cachedRules, today = new 
         employeeNumber: employee.employee_number,
         documentKey: documentType.key,
         documentName: documentType.type,
-        expiryDate: employee[documentType.field],
+        expiryDate,
         days,
         expired: days < 0,
         reminder,
       });
-    });
+    }));
   });
   return alerts.sort((a, b) => a.days - b.days);
 }

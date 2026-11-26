@@ -171,8 +171,12 @@ function documentsCell(employee, alertsById) {
   const expired = alerts.filter(a => a.expired).length;
   const soon = alerts.length - expired;
   if (!alerts.length) return `<span class="emp-doc-cell is-ok"><span class="emp-dot ok" aria-hidden="true"></span>سليمة</span>`;
-  const parts = [expired && `${expired} منتهٍ`, soon && `${soon} قارب`].filter(Boolean).join(" · ");
-  const names = alerts.map(a => `${a.documentName}: ${a.expired ? "منتهٍ" : "قارب على النفاذ"} (${formatDate(a.expiryDate)})`).join("\n");
+  const label = (count, text) => count > 1 ? `${count} ${text}` : text;
+  const parts = [
+    expired && `<span class="emp-doc-tag bad">${label(expired, "منتهي")}</span>`,
+    soon && `<span class="emp-doc-tag warn">${label(soon, "ينتهي قريبًا")}</span>`,
+  ].filter(Boolean).join(`<span class="emp-doc-sep" aria-hidden="true">·</span>`);
+  const names = alerts.map(a => `${a.documentName}: ${a.expired ? "منتهي في" : "ينتهي في"} ${formatDate(a.expiryDate)}`).join("\n");
   return `<span class="emp-doc-cell" title="${escHtml(names)}"><span class="emp-dot ${expired ? "bad" : "warn"}" aria-hidden="true"></span>${parts}</span>`;
 }
 
@@ -197,7 +201,7 @@ function renderTable({ keepVisibleRows = false } = {}) {
         <th class="table-header">الرقم الوظيفي</th>
         <th class="table-header">الاسم الرباعي</th>
         <th class="table-header">العنوان الوظيفي</th>
-        <th class="table-header">المستمسكات</th>
+        <th class="table-header emp-doc-col">المستمسكات</th>
         <th class="table-header">الهاتف</th>
         <th class="table-header">الحالة</th>
       </tr></thead>
@@ -1201,7 +1205,7 @@ function tabContent(tab, emp) {
         ${field("الحالة الاجتماعية", "marital_status", emp, {type:"select", options:[["","—"],["أعزب","أعزب"],["متزوج","متزوج"],["مطلق","مطلق"],["أرمل","أرمل"]]})}
         ${field("تاريخ الولادة", "birthdate", emp, {date:true})}
         ${field("محل الولادة", "birthplace", emp)}
-        ${field("فصيلة الدم", "blood_type", emp, {type:"select", options:[["","—"],["A+","A+"],["A-","A-"],["B+","B+"],["B-","B-"],["AB+","AB+"],["AB-","AB-"],["O+","O+"],["O-","O-"]]})}
+        ${field("فصيلة الدم", "blood_type", emp, {type:"select", options:[["","—"],...BLOOD_OPTIONS]})}
         ${field("رقم الهاتف", "phone", emp, {ltr:true})}
         ${field("البريد الإلكتروني", "email", emp, {ltr:true, span:true})}
       </div>`;
@@ -1269,6 +1273,9 @@ function tabContent(tab, emp) {
 function parseJsonList(value) {
   try { const list = JSON.parse(value ?? "[]"); return Array.isArray(list) ? list : []; } catch { return []; }
 }
+
+/** Blood types with a left-to-right mark after the label, so «O+» is not shown as «+O» in a right-to-left line. */
+const BLOOD_OPTIONS = ["A+","A-","B+","B-","AB+","AB-","O+","O-"].map(v => [v, `${v}\u200E`]);
 
 // ── Missing data ───────────────────────────────────────────────────────────
 /** The «البيانات الأساسية» fields every employee file should have. The rest (email, parents,
@@ -1718,12 +1725,18 @@ function applyEmployeePermissions(panel, isNew) {
   }
 }
 
+const _documentsViewLogged = new Set();
+
 function attachTabEvents(emp) {
   const panel = document.getElementById("emp-panel");
   if (!panel) return;
 
   if (_activeTab === "documents" && emp) {
-    api.auditDocumentView(emp.id, "employee_documents").catch(() => {});
+    // Recorded once per employee and sign-in, not on every return to the tab.
+    if (!_documentsViewLogged.has(emp.id)) {
+      _documentsViewLogged.add(emp.id);
+      api.auditDocumentView(emp.id, "employee_documents").catch(() => {});
+    }
     bindAttachmentDownloadButtons(document.getElementById("tab-content"));
     panel.querySelectorAll(".btn-upload-sided-card").forEach(btn => {
       btn.addEventListener("click", async () => {
@@ -2065,7 +2078,7 @@ function spouseRowHtml(spouse = {}, index = Date.now(), config = { itemLabel: "�
       <p style="font-size:10px;color:var(--ui-text-faint);margin-bottom:3px">فصيلة الدم</p>
       <select class="input-field sp-blood">
         ${["","A+","A-","B+","B-","AB+","AB-","O+","O-"].map(b =>
-          `<option ${spouse.blood_type===b?"selected":""}>${b}</option>`).join("")}
+          `<option value="${b}" ${spouse.blood_type===b?"selected":""}>${b ? `${b}\u200E` : ""}</option>`).join("")}
       </select>
     </div>
     <div>
@@ -2233,7 +2246,7 @@ function familyRowHtml(m = {}, i = Date.now()) {
       <p style="font-size:10px;color:var(--ui-text-faint);margin-bottom:3px">فصيلة الدم</p>
       <select class="input-field fm-blood">
         ${["","A+","A-","B+","B-","AB+","AB-","O+","O-"].map(b =>
-          `<option ${m.blood_type===b?"selected":""}>${b}</option>`).join("")}
+          `<option value="${b}" ${m.blood_type===b?"selected":""}>${b ? `${b}\u200E` : ""}</option>`).join("")}
       </select>
     </div>
     <div>
