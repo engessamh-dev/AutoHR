@@ -2,7 +2,7 @@
  * main.js — Auth, navigation, RBAC, i18n
  */
 import { api }           from "./api.js";
-import { applyBranding, showToast, confirmAction, escHtml } from "./utils.js";
+import { applyBranding, showToast, confirmAction, escHtml, errorText } from "./utils.js";
 import { renderDashboard }  from "./screens/dashboard.js";
 import { alertStageKey, buildDocumentAlerts, loadAlertRules, renderDocumentAlerts } from "./screens/document-alerts.js";
 import { renderEmployees }  from "./screens/employees.js";
@@ -102,7 +102,7 @@ function toggleSidebar() {
 
 function renderSidebarUser(user) {
   document.getElementById("current-user").textContent = user.username;
-  const role = user.username === "sysadmin" ? "مسؤول النظام" : (roleLabels[user.role] ?? user.role ?? "");
+  const role = roleLabels[user.role] ?? user.role ?? "";
   document.getElementById("current-user-role").textContent = role;
   document.getElementById("sidebar-user-avatar").textContent = (user.username || "?").trim().charAt(0).toUpperCase();
   document.getElementById("sidebar-user").title = role ? `${user.username} · ${role}` : user.username;
@@ -582,7 +582,7 @@ async function doLogin(username, password) {
     await enterApp(user);
   } catch (err) {
     const message = typeof err === "string" ? err : String(err?.message ?? err ?? "");
-    if (message.startsWith("تم تعديل بيانات هذا الحساب")) {
+    if (message.startsWith("تم تعديل بيانات هذا الحساب") || message.startsWith("هذا الحساب موقوف")) {
       showLoginMessage(message, "error");
     } else if (message.startsWith("تم إيقاف تسجيل الدخول")) {
       startLoginLockout(lockoutMinutes(message));
@@ -681,7 +681,7 @@ document.addEventListener("DOMContentLoaded", async () => {
   loginPassword.addEventListener("keyup", syncCapsLock);
 
   document.getElementById("btn-forgot-password").addEventListener("click", () => {
-    showLoginMessage("تواصل مع مسؤول النظام لإعادة تعيين كلمة المرور", "info");
+    showLoginMessage("تواصل مع المسؤول لإعادة تعيين كلمة المرور", "info");
   });
 
   document.querySelectorAll("#login-username, #login-password").forEach(input => {
@@ -714,7 +714,10 @@ document.addEventListener("DOMContentLoaded", async () => {
       document.getElementById("password-change-form").reset();
       await enterApp(user);
     } catch (err) {
-      error.textContent = err?.message ?? String(err || "تعذر تغيير كلمة المرور");
+      // A wrong current password comes back as «not authorized».
+      error.textContent = errorText(err, "تعذر تغيير كلمة المرور") === "ليست لديك صلاحية لهذا الإجراء"
+        ? "كلمة المرور الحالية غير صحيحة"
+        : errorText(err, "تعذر تغيير كلمة المرور");
       error.classList.remove("hidden");
     }
   });

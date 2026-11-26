@@ -41,7 +41,7 @@ AutoHR/
 
 | Table | Purpose |
 |-------|---------|
-| `users` | Operators (max 10). Roles: `system_admin`, `archive_admin`, `archive_officer`, `viewer`. Seeded: `sysadmin`, forced password change |
+| `users` | Operators (max 10). Roles: `system_admin` (مسؤول), `archive_officer` (موظف), `viewer` (مشاهد); `disabled` stops an account. Seeded: `sysadmin`, forced password change |
 | `company_config` | Single row: `company_name`, `department_name`, `division_name`, `logo_path` |
 | `app_settings` | `storage_destination` → Documents/AutoHR default |
 | `employees` | Full HR records + relative attachment paths |

@@ -56,7 +56,7 @@ test("details are readable Arabic, for new and old entries", async ({ page }) =>
   });
   expect(lines.ministry).toBe("الموظف: علي حسن كاظم (1024) · الوجه الخلفي");
   expect(lines.oldMinistry).toBe("الموظف رقم 7 · الوجه الأمامي");
-  expect(lines.role).toBe("المستخدم: viewer1 · من «مشاهد» إلى «موظف الأرشيف»");
+  expect(lines.role).toBe("المستخدم: viewer1 · من «مشاهد» إلى «موظف»");
   expect(lines.number).toContain("الرقم الوظيفي: من «1024» إلى «1042»");
   expect(lines.dept).toContain("القسم: من «قسم الاتصالات» إلى «قسم الصيانة»");
   expect(lines.docDelete).toBe("وزارة النقل، تعميم، العدد م/4133، 2026/10/8، مرفقات: 2");
@@ -123,5 +123,5 @@ test("export saves every matching entry in Arabic and is recorded by the backend
   });
   await page.evaluate(async () => (await import("/src/screens/audit.js")).renderAudit(document.querySelector("#root")));
   await page.locator("#audit-export").click();
-  await expect.poll(() => page.evaluate(() => window.exported?.rows?.[0])).toEqual([expect.stringMatching(/^2026\/11\/25 \d\d:00$/), "hr.admin", "مسؤول الأرشيف", "حذف موظف", "الموظف: رنا هادي", "نجحت"]);
+  await expect.poll(() => page.evaluate(() => window.exported?.rows?.[0])).toEqual([expect.stringMatching(/^2026\/11\/25 \d\d:00$/), "hr.admin", "مسؤول الأرشيف (سابقًا)", "حذف موظف", "الموظف: رنا هادي", "نجحت"]);
 });
