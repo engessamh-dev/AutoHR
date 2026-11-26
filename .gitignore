@@ -35,3 +35,7 @@ src-tauri/resources/*.db-shm
 
 # Local notes about where the installer was built
 .exe path.txt
+
+# Developer unlock key (tools/admin-unlock): never commit a private key
+*.pem
+CNSArch-unlock-key/

@@ -252,6 +252,17 @@ fn store_new_recovery_code(conn: &Connection) -> AppResult<String> {
     Ok(code)
 }
 
+/// What «نسيت كلمة المرور؟» can offer on this installation.
+#[derive(Debug, Clone, Serialize)]
+pub struct RecoveryOptions {
+    pub recovery_code: bool,
+    pub developer_unlock: bool,
+}
+
+pub fn recovery_options(conn: &Connection) -> RecoveryOptions {
+    RecoveryOptions { recovery_code: recovery_status(conn).exists, developer_unlock: unlock_available() }
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub struct RecoveryStatus {
     pub exists: bool,
@@ -311,6 +322,120 @@ pub fn recover_admin_password(conn: &Connection, code: &str, new_password: &str)
     Ok(RecoveryResult { username: admin, recovery_code: code })
 }
 
+// ── Developer unlock («نسيت كلمة مرور المسؤول») ─────────────────────────────
+//
+// When the recovery code is lost, the program shows a challenge bound to this computer, this
+// data folder and today's date. The developer signs it with a private Ed25519 key that never
+// leaves his computer (tools/admin-unlock), and the program checks the signature with the public
+// key below. Reading the program's code gives nobody the power to unlock it.
+
+/// Raw Ed25519 public key in hex, written by `node tools/admin-unlock/unlock.mjs keygen`.
+/// Empty: developer unlock is not available in this build.
+const UNLOCK_PUBLIC_KEY: &str = include_str!("../unlock_public_key.txt");
+const UNLOCK_CHALLENGE_KEY: &str = "admin_unlock_challenge";
+const UNLOCK_LOCK_KEY: &str = "#unlock";
+const BASE32: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZ234567";
+
+#[cfg(test)]
+thread_local! { static TEST_UNLOCK_KEY: std::cell::RefCell<Option<String>> = const { std::cell::RefCell::new(None) }; }
+
+fn unlock_public_key() -> Option<ed25519_dalek::VerifyingKey> {
+    #[cfg(test)]
+    let configured = TEST_UNLOCK_KEY.with(|k| k.borrow().clone()).unwrap_or_else(|| UNLOCK_PUBLIC_KEY.to_string());
+    #[cfg(not(test))]
+    let configured = UNLOCK_PUBLIC_KEY.to_string();
+    let bytes: [u8; 32] = hex::decode(configured.trim()).ok()?.try_into().ok()?;
+    ed25519_dalek::VerifyingKey::from_bytes(&bytes).ok()
+}
+
+pub fn unlock_available() -> bool {
+    unlock_public_key().is_some()
+}
+
+fn base32_decode(text: &str) -> Option<Vec<u8>> {
+    let mut bits: u64 = 0;
+    let mut count = 0u32;
+    let mut out = Vec::new();
+    for c in text.chars().filter(|c| c.is_ascii_alphanumeric()) {
+        let value = BASE32.iter().position(|b| *b as char == c.to_ascii_uppercase())? as u64;
+        bits = (bits << 5) | value;
+        count += 5;
+        if count >= 8 {
+            count -= 8;
+            out.push((bits >> count) as u8);
+            bits &= (1 << count) - 1;
+        }
+    }
+    Some(out)
+}
+
+/// Four hex characters that identify this computer and data folder.
+fn machine_tag() -> String {
+    use sha2::{Digest, Sha256};
+    let computer = std::env::var("COMPUTERNAME").or_else(|_| std::env::var("HOSTNAME")).unwrap_or_default();
+    let digest = Sha256::digest(format!("{}|{}", computer.to_uppercase(), crate::paths::data_root().display()).as_bytes());
+    hex::encode_upper(&digest[..2])
+}
+
+fn today_stamp() -> String {
+    chrono::Local::now().format("%Y%m%d").to_string()
+}
+
+/// Makes (or replaces) today's challenge, shown on the sign-in screen and sent to the developer.
+pub fn new_unlock_challenge(conn: &Connection) -> AppResult<String> {
+    if !unlock_available() {
+        return Err(AppError::Validation("فتح حساب المسؤول عن طريق المطوّر غير مفعّل في هذه النسخة. تواصل مع الدعم الفني.".into()));
+    }
+    let mut nonce = [0u8; 6];
+    OsRng.fill_bytes(&mut nonce);
+    let nonce: String = nonce.iter().map(|b| CODE_ALPHABET[(*b as usize) % CODE_ALPHABET.len()] as char).collect();
+    let challenge = format!("CNS1-{nonce}-{}-{}", machine_tag(), today_stamp());
+    set_setting(conn, UNLOCK_CHALLENGE_KEY, &challenge)?;
+    crate::services::log_audit(conn, Some(&base_admin(conn)), "ADMIN_UNLOCK_REQUEST", Some("user"), None, Some(&base_admin(conn)), "Success", Some(&challenge));
+    Ok(challenge)
+}
+
+/// Checks the developer's unlock code against today's challenge and sets the administrator's new
+/// password. The challenge works once, on this computer and data folder, and only today.
+pub fn unlock_admin(conn: &Connection, unlock_code: &str, new_password: &str) -> AppResult<String> {
+    if let Some(message) = crate::services::lockout_message(conn, UNLOCK_LOCK_KEY) {
+        return Err(AppError::Validation(message));
+    }
+    let key = unlock_public_key().ok_or_else(|| AppError::Validation("فتح حساب المسؤول عن طريق المطوّر غير مفعّل في هذه النسخة.".into()))?;
+    let Some(challenge) = get_setting(conn, UNLOCK_CHALLENGE_KEY)?.filter(|v| !v.is_empty()) else {
+        return Err(AppError::Validation("اطلب رمزًا جديدًا من الشاشة أولًا.".into()));
+    };
+    let parts: Vec<&str> = challenge.split('-').collect();
+    if parts.len() != 4 || parts[3] != today_stamp() {
+        return Err(AppError::Validation("انتهت صلاحية الرمز لأنه من يوم سابق. اطلب رمزًا جديدًا وأرسله مرة أخرى.".into()));
+    }
+    if parts[2] != machine_tag() {
+        return Err(AppError::Validation("الرمز ليس لهذا الجهاز أو لهذا المجلد. اطلب رمزًا جديدًا.".into()));
+    }
+    let admin = base_admin(conn);
+    validate_account_password(conn, &admin, new_password)?;
+    let signature = base32_decode(unlock_code)
+        .and_then(|bytes| <[u8; 64]>::try_from(bytes.as_slice()).ok())
+        .map(|bytes| ed25519_dalek::Signature::from_bytes(&bytes));
+    let valid = signature.is_some_and(|sig| key.verify_strict(challenge.as_bytes(), &sig).is_ok());
+    if !valid {
+        crate::services::record_login_failure(conn, UNLOCK_LOCK_KEY);
+        crate::services::log_audit(conn, Some(&admin), "ADMIN_UNLOCK", Some("user"), None, Some(&admin), "Failure", Some("Wrong unlock code"));
+        if let Some(message) = crate::services::lockout_message(conn, UNLOCK_LOCK_KEY) {
+            return Err(AppError::Validation(message));
+        }
+        return Err(AppError::Validation("رمز الفتح غير صحيح. انسخه كما وصلك كاملًا.".into()));
+    }
+    let tx = conn.unchecked_transaction()?;
+    tx.execute("UPDATE users SET password=?1, must_change_password=0 WHERE username=?2", params![hash_password(new_password)?, admin])?;
+    tx.execute("DELETE FROM app_settings WHERE key=?1", params![UNLOCK_CHALLENGE_KEY])?;
+    log_activity(&tx, &admin, "ADMIN_UNLOCK", Some("user"), None, Some(&admin), Some(&challenge));
+    tx.commit()?;
+    crate::services::clear_login_failures(conn, UNLOCK_LOCK_KEY);
+    crate::services::clear_login_failures(conn, &admin);
+    Ok(admin)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -338,6 +463,42 @@ mod tests {
         assert_eq!(letters(12), "12 حرفًا");
         let p = clamp(PasswordPolicy { min_length: 3, max_failures: 0, lockout_minutes: 999, ..Default::default() });
         assert_eq!((p.min_length, p.max_failures, p.lockout_minutes), (8, 3, 60));
+    }
+
+    fn base32_encode(bytes: &[u8]) -> String {
+        let mut out = String::new();
+        let (mut bits, mut count) = (0u64, 0u32);
+        for b in bytes {
+            bits = (bits << 8) | *b as u64; count += 8;
+            while count >= 5 { count -= 5; out.push(BASE32[((bits >> count) & 31) as usize] as char); }
+        }
+        if count > 0 { out.push(BASE32[((bits << (5 - count)) & 31) as usize] as char); }
+        out
+    }
+
+    #[test]
+    fn developer_unlock_works_once_with_the_developers_signature() {
+        use ed25519_dalek::{Signer, SigningKey};
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch("CREATE TABLE app_settings(key TEXT PRIMARY KEY, value TEXT);
+            CREATE TABLE users(id INTEGER PRIMARY KEY, username TEXT, password TEXT, role TEXT, must_change_password INTEGER DEFAULT 0, disabled INTEGER DEFAULT 0);
+            CREATE TABLE activity_log(id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER, username TEXT, action TEXT, target_type TEXT, target_id INTEGER, target_name TEXT, result TEXT, details TEXT, created_at TEXT DEFAULT (datetime('now')));
+            INSERT INTO users(username,password,role) VALUES('sysadmin','x','system_admin');").unwrap();
+        assert!(new_unlock_challenge(&conn).is_err(), "no public key: not available");
+        let developer = SigningKey::from_bytes(&[7u8; 32]);
+        TEST_UNLOCK_KEY.with(|k| *k.borrow_mut() = Some(hex::encode(developer.verifying_key().to_bytes())));
+        let challenge = new_unlock_challenge(&conn).unwrap();
+        assert!(challenge.starts_with("CNS1-") && challenge.ends_with(&today_stamp()));
+        let forged = SigningKey::from_bytes(&[9u8; 32]).sign(challenge.as_bytes());
+        assert!(unlock_admin(&conn, &base32_encode(&forged.to_bytes()), "Nakheel2026").is_err());
+        let code = base32_encode(&developer.sign(challenge.as_bytes()).to_bytes());
+        let grouped: String = code.chars().collect::<Vec<_>>().chunks(4).map(|c| c.iter().collect::<String>()).collect::<Vec<_>>().join("-");
+        assert!(unlock_admin(&conn, &grouped, "weak").is_err(), "the password policy still applies");
+        assert_eq!(unlock_admin(&conn, &grouped.to_lowercase(), "Nakheel2026").unwrap(), "sysadmin");
+        assert!(unlock_admin(&conn, &grouped, "Another7Pass").is_err(), "a challenge works once");
+        let hash: String = conn.query_row("SELECT password FROM users", [], |r| r.get(0)).unwrap();
+        assert!(verify_password("Nakheel2026", &hash).unwrap());
+        TEST_UNLOCK_KEY.with(|k| *k.borrow_mut() = None);
     }
 
     #[test]

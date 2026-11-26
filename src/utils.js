@@ -172,6 +172,18 @@ export function confirmSaveChanges(message = "توجد تغييرات غير م�
 }
 
 // ── Branding ───────────────────────────────────────────────────────────────
+/** The unit name sits in a drawn pill of fixed size: a long name gets a smaller font until it fits. */
+export function fitLoginUnitName(el) {
+  el.style.removeProperty("--unit-scale");
+  requestAnimationFrame(() => {
+    let scale = 1;
+    while (el.scrollWidth > el.clientWidth + 1 && scale > 0.5) {
+      scale -= 0.05;
+      el.style.setProperty("--unit-scale", scale.toFixed(2));
+    }
+  });
+}
+
 export function applyBranding(config) {
   const co   = document.getElementById("sidebar-company");
   const dept = document.getElementById("sidebar-dept");
@@ -195,9 +207,10 @@ export function applyBranding(config) {
   if (loginUnit) {
     // Login screen: show the configured unit name, or a muted hint telling the admin where to set it.
     const unitName = String(config.division_name ?? "").trim();
-    loginUnit.textContent = unitName || "لم يُحدَّد اسم الشعبة/الوحدة";
-    loginUnit.title = unitName ? "" : "يضبطه مدير النظام من الإعدادات ← الجهة والشعار";
+    loginUnit.textContent = unitName || "حدّد اسم الشعبة من الإعدادات";
+    loginUnit.title = unitName ? unitName : "يضبطه المسؤول من الإعدادات ← الجهة والشعار";
     loginUnit.classList.toggle("is-hint", !unitName);
+    fitLoginUnitName(loginUnit);
   }
 
   // The company logo is fixed and bundled with the app; any logo_path stored by an

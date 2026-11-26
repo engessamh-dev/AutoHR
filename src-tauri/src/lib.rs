@@ -472,8 +472,14 @@ struct FirstRunState { needs_admin: bool }
     let user = session_user(&sess)?;
     account::set_password_policy(&conn, &user, policy)
 }
-#[tauri::command] fn cmd_recovery_available(state: State<DbState>) -> Result<bool, AppError> {
-    Ok(account::recovery_status(&*state.conn()?).exists)
+#[tauri::command] fn cmd_get_recovery_options(state: State<DbState>) -> Result<account::RecoveryOptions, AppError> {
+    Ok(account::recovery_options(&*state.conn()?))
+}
+#[tauri::command] fn cmd_new_unlock_challenge(state: State<DbState>) -> Result<String, AppError> {
+    account::new_unlock_challenge(&*state.conn()?)
+}
+#[tauri::command] fn cmd_unlock_admin(state: State<DbState>, unlock_code: String, new_password: String) -> Result<String, AppError> {
+    account::unlock_admin(&*state.conn()?, &unlock_code, &new_password)
 }
 #[tauri::command] fn cmd_get_recovery_status(state: State<DbState>, sess: State<SessionState>) -> Result<account::RecoveryStatus, AppError> {
     let conn = state.conn()?;
@@ -1510,7 +1516,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             cmd_login, cmd_change_password, cmd_logout,
             cmd_get_first_run_state, cmd_complete_first_run, cmd_get_password_policy, cmd_set_password_policy,
-            cmd_recovery_available, cmd_get_recovery_status, cmd_regenerate_recovery_code, cmd_recover_admin_password,
+            cmd_get_recovery_options, cmd_new_unlock_challenge, cmd_unlock_admin, cmd_get_recovery_status, cmd_regenerate_recovery_code, cmd_recover_admin_password,
             cmd_get_company_config, cmd_get_public_company_config, cmd_update_company_config,
             cmd_next_employee_number,
             cmd_list_employees, cmd_get_employee,

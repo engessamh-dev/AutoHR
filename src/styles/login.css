@@ -87,12 +87,14 @@
 
 /* Unit name inside the drawn pill, next to the drawn gear. */
 .login-unit-name{
-  display:flex;align-items:center;justify-content:center;
-  color:#fff;font-size:calc(24 * var(--px));font-weight:700;white-space:nowrap;pointer-events:none;
+  display:flex;align-items:center;justify-content:center;overflow:hidden;
+  /* the drawn gear sits on the left of the pill: keep the text to its right */
+  padding-left:calc(28 * var(--px));padding-right:calc(4 * var(--px));box-sizing:border-box;
+  color:#fff;font-size:calc(24 * var(--px) * var(--unit-scale, 1));font-weight:700;white-space:nowrap;pointer-events:auto;
 }
 .login-unit-name.is-hint{
   /* muted, one line, same place: tells the admin the division name is not set yet */
-  color:#9fb6cf;font-size:calc(16.5 * var(--px));font-weight:600;pointer-events:auto;cursor:help;
+  color:#9fb6cf;font-size:calc(16.5 * var(--px) * var(--unit-scale, 1));font-weight:600;cursor:help;
 }
 
 /* Message box: the design's own red error box (text removed), shown only when needed.
