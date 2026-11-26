@@ -484,6 +484,8 @@ mod tests {
             CREATE TABLE users(id INTEGER PRIMARY KEY, username TEXT, password TEXT, role TEXT, must_change_password INTEGER DEFAULT 0, disabled INTEGER DEFAULT 0);
             CREATE TABLE activity_log(id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER, username TEXT, action TEXT, target_type TEXT, target_id INTEGER, target_name TEXT, result TEXT, details TEXT, created_at TEXT DEFAULT (datetime('now')));
             INSERT INTO users(username,password,role) VALUES('sysadmin','x','system_admin');").unwrap();
+        // A build without a key (the file left empty) offers no developer unlock.
+        TEST_UNLOCK_KEY.with(|k| *k.borrow_mut() = Some(String::new()));
         assert!(new_unlock_challenge(&conn).is_err(), "no public key: not available");
         let developer = SigningKey::from_bytes(&[7u8; 32]);
         TEST_UNLOCK_KEY.with(|k| *k.borrow_mut() = Some(hex::encode(developer.verifying_key().to_bytes())));
