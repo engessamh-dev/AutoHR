@@ -495,6 +495,21 @@ mod save_tests {
     }
 
     #[test]
+    fn the_department_set_in_settings_is_every_employees_department() {
+        let conn = conn();
+        // Nothing set in Settings: the department sent is kept.
+        conn.execute("UPDATE company_config SET department_name='' WHERE id=1", []).unwrap();
+        let kept = services::create_employee(&conn, &data(json!({"full_name": "سامر خالد عبد الله التجريبي", "department": "قسم مقروء"})), "editor").unwrap();
+        assert_eq!(kept.department.as_deref(), Some("قسم مقروء"));
+        // Set in Settings: it wins on create and on update.
+        conn.execute("UPDATE company_config SET department_name=' قسم تجريبي ' WHERE id=1", []).unwrap();
+        let created = services::create_employee(&conn, &data(json!({"full_name": "كريم خالد عبد الله التجريبي", "department": "قسم آخر"})), "editor").unwrap();
+        assert_eq!(created.department.as_deref(), Some("قسم تجريبي"));
+        let updated = services::update_employee(&conn, kept.id, &data(json!({"full_name": "سامر خالد عبد الله التجريبي", "department": "قسم مقروء"})), "editor").unwrap();
+        assert_eq!(updated.department.as_deref(), Some("قسم تجريبي"));
+    }
+
+    #[test]
     fn empty_parts_do_not_bypass_the_required_name() {
         let conn = conn();
         let result = services::create_employee(&conn, &data(json!({"full_name": "", "name_parts": {"full_name": {"first": " "}}})), "editor");

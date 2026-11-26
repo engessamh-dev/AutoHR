@@ -6,7 +6,8 @@ import { bindAttachmentScannerButtons } from "../attachments/integration.js";
 import { zoomToolbarHtml, mountZoomViewer } from "../attachments/zoom-viewer.js";
 import { convertFileSrc } from "@tauri-apps/api/core";
 import { open, save } from "@tauri-apps/plugin-dialog";
-import { showToast, formatDate, escHtml, debounce, confirmAction, confirmSaveChanges } from "../utils.js";
+import { showToast, formatDate, escHtml, debounce, confirmAction, confirmSaveChanges, AIRPORT_ZONES } from "../utils.js";
+import { addressHtml, wireAddress, readAddress, composeResidence, citySuggestions, loadAddressPlaces, addressIsEmpty } from "../address-field.js";
 import { can } from "../permissions.js";
 import { openNameReview } from "./name-review.js";
 import { employeeNameFields, recordNameFields, bindNameFields, readNameFields, readNameGroup, applyNames, joinNameParts } from "./name-fields.js";
@@ -157,7 +158,7 @@ function filtered() {
   return byStatus.filter(e =>
     e.full_name?.toLowerCase().includes(_filter) ||
     String(e.employee_number ?? "").toLowerCase().includes(_filter) ||
-    e.department?.toLowerCase().includes(_filter) ||
+    fixedDepartment(e).toLowerCase().includes(_filter) ||
     e.civil_id?.includes(_filter) ||
     e.phone?.includes(_filter) ||
     e.job_title?.toLowerCase().includes(_filter)
@@ -193,7 +194,7 @@ function renderTable({ keepVisibleRows = false } = {}) {
             <tr class="table-row" data-id="${e.id}" style="cursor:pointer">
               <td class="table-cell font-medium text-gray-100">${escHtml(e.full_name)}</td>
               <td class="table-cell">${escHtml(e.job_title ?? "—")}</td>
-              <td class="table-cell">${escHtml(e.department ?? "—")}</td>
+              <td class="table-cell">${escHtml(fixedDepartment(e) || "—")}</td>
               <td class="table-cell" dir="ltr">${escHtml(e.phone ?? "—")}</td>
               <td class="table-cell">
                 <span class="badge ${e.is_active ? "badge-green" : "badge-gray"}">
@@ -223,11 +224,20 @@ function renderTable({ keepVisibleRows = false } = {}) {
 function openPanel(emp, tab = "basic", sectionState = new Map()) {
   _activeTab = TABS.some(t => t.id === tab) ? tab : "basic";
   _panelDraft = emp ? { ...emp } : { is_active: 1, spouses: "[]", family_members: "[]", vehicles: "[]" };
+  const draftNow = _panelDraft;
   // One birth date and place: older records may hold them only in the national card's copy.
   _panelDraft.birthdate ||= _panelDraft.civil_id_birthdate ?? null;
   _panelDraft.birthplace ||= _panelDraft.civil_id_birthplace ?? null;
   _panelDirty = false;
   _sectionState = sectionState;
+  // Places users added: the residence lists show them once they arrive.
+  loadAddressPlaces().then(() => {
+    const box = document.querySelector("#emp-panel [data-address]");
+    if (_panelDraft !== draftNow || !box) return;
+    const fresh = document.createElement("div");
+    fresh.innerHTML = addressHtml(box.dataset.address, panelAddress(), { cities: citySuggestions(_employees) });
+    box.replaceWith(fresh.firstElementChild);
+  });
   document.getElementById("emp-panel").style.transform = "translateX(0)";
   document.getElementById("emp-overlay").style.display = "block";
   markSelectedRow(emp?.id ?? null);
@@ -410,6 +420,32 @@ function field(label, id, emp, opts = {}) {
            dir="${opts.ltr ? 'ltr' : 'rtl'}" value="${opts.date ? (emp?.[id] ?? '') : val}" /></div>`;
 }
 
+/** The residence address: المحافظة / القضاء / الناحية / المدينة, then م / ز / د or one free line.
+ *  Kept as parts (`residence_address_parts`) and as the composed line (`residence_address`). */
+const panelAddress = () => readAddress(_panelDraft?.residence_address_parts, _panelDraft?.residence_address);
+function addressField(label, id) {
+  const parts = panelAddress();
+  const legacy = !_panelDraft?.residence_address_parts && parts.useOther && parts.other;
+  const cap = "font-size:11px;color:var(--ui-text-faint);margin-bottom:4px";
+  return `<div style="grid-column:span 2">
+    <p style="${cap};text-transform:uppercase;letter-spacing:.05em">${label}</p>
+    ${addressHtml(id, parts, { cities: citySuggestions(_employees) })}
+    ${legacy ? `<p class="emp-address-note">⚠ العنوان محفوظ بصيغة قديمة، فوُضع في «تنسيق عنوان آخر»: اختر المحافظة والقضاء ووزّعه على م وز ود إن أمكن.</p>` : ""}</div>`;
+}
+
+/** Keeps what the address field holds in the panel's draft. */
+function wirePanelAddress(panel) {
+  wireAddress(panel, {
+    get: () => ({ parts: panelAddress(), cities: citySuggestions(_employees) }),
+    set: (_key, parts) => {
+      if (!_panelDraft) return;
+      _panelDraft.residence_address_parts = addressIsEmpty(parts) ? null : JSON.stringify(parts);
+      _panelDraft.residence_address = composeResidence(parts) || null;
+      markPanelDirty();
+    },
+  });
+}
+
 /** Comma-separated codes ("S1,T,VIP") → unique upper-case codes. */
 function zoneCodes(value) {
   return [...new Set(String(value ?? "").split(/[\s,،;|]+/).map(z => z.trim().toUpperCase()).filter(Boolean))];
@@ -428,13 +464,20 @@ function zonesField(label, id, emp) {
       <input type="hidden" id="f-${id}" value="${escHtml(codes.join(","))}" />
       <span class="emp-zone-list">${zoneChipsHtml(codes)}</span>
       <input type="text" class="emp-zone-input" dir="ltr" maxlength="12" placeholder="أضف رمزاً" aria-label="${label}" />
-    </div></div>`;
+    </div><div class="emp-zone-quick">${zoneQuickHtml(codes)}</div></div>`;
+}
+
+/** One-click buttons for the usual codes the badge does not have yet. */
+function zoneQuickHtml(codes) {
+  return AIRPORT_ZONES.filter(z => !codes.includes(z)).map(z => `<button type="button" class="emp-zone-add" data-zone="${z}" dir="ltr" title="إضافة ${z}">+ ${z}</button>`).join("");
 }
 
 function setZones(box, codes) {
   const hidden = box.querySelector("input[type=hidden]");
   hidden.value = codes.join(",");
   box.querySelector(".emp-zone-list").innerHTML = zoneChipsHtml(codes);
+  const quick = box.parentElement.querySelector(".emp-zone-quick");
+  if (quick) quick.innerHTML = zoneQuickHtml(codes);
   markPanelDirty();
 }
 
@@ -444,6 +487,11 @@ function addZonesFromInput(input) {
   input.value = "";
   if (!box || !added.length) return;
   setZones(box, zoneCodes([box.querySelector("input[type=hidden]").value, ...added].join(",")));
+}
+
+/** Every employee is in the department set in Settings; an older record's own value only without one. */
+function fixedDepartment(emp) {
+  return (_companyConfig?.department_name ?? "").trim() || emp?.department || "";
 }
 
 function fixedCompanyField(label, id, value) {
@@ -709,8 +757,8 @@ function documentStatus({ values, expiry, maxDays, attached, expected }) {
 function documentSections(emp) {
   const hasId = Boolean(emp?.id);
   const sided = (type, prefix) => [
-    sidedCardTile("الوجه الأمامي", "front", emp?.[`${prefix}_front_path`], emp?.[`${prefix}_front_full_path`], hasId, type),
-    sidedCardTile("الوجه الخلفي", "back", emp?.[`${prefix}_back_path`], emp?.[`${prefix}_back_full_path`], hasId, type),
+    sidedCardTile(type === "ministry" ? "الوجه العربي" : "الوجه الأمامي", "front", emp?.[`${prefix}_front_path`], emp?.[`${prefix}_front_full_path`], hasId, type),
+    sidedCardTile(type === "ministry" ? "الوجه الإنكليزي" : "الوجه الخلفي", "back", emp?.[`${prefix}_back_path`], emp?.[`${prefix}_back_full_path`], hasId, type),
   ];
   const sidedCount = prefix => [emp?.[`${prefix}_front_path`], emp?.[`${prefix}_back_path`]].filter(Boolean).length;
   const sections = [
@@ -740,12 +788,15 @@ function documentSections(emp) {
     },
     {
       key: "residence", title: "بطاقة السكن",
-      // The old card's other fields are handwritten and cannot be read; the address is kept.
-      keys: ["residence_card_no", "residence_card_issue_date", "residence_address"],
+      // The old card's other fields are handwritten and cannot be read: they are typed.
+      keys: ["residence_card_no", "residence_card_issue_date", "residence_card_issuer", "residence_head_name", "residence_form_no", "residence_address"],
       fields: [
         field("رقم بطاقة السكن", "residence_card_no", emp, {ltr:true}),
         field("تاريخ الإصدار", "residence_card_issue_date", emp, {date:true}),
-        field("عنوان السكن الحالي", "residence_address", emp, {span:true}),
+        field("مكتب المعلومات", "residence_card_issuer", emp),
+        field("اسم رب الأسرة", "residence_head_name", emp),
+        field("رقم الاستمارة", "residence_form_no", emp, {ltr:true}),
+        addressField("عنوان السكن", "residence_address"),
       ],
       tiles: sided("residence", "residence_card"), attached: sidedCount("residence_card"), expected: 2,
     },
@@ -942,8 +993,8 @@ const printableDocumentDefinitions = [
       ["رقم الهوية", "ministry_badge_no"],
     ],
     attachments: [
-      ["الوجه الأمامي", "ministry_badge_front_path", "ministry_badge_front_full_path"],
-      ["الوجه الخلفي", "ministry_badge_back_path", "ministry_badge_back_full_path"],
+      ["الوجه العربي", "ministry_badge_front_path", "ministry_badge_front_full_path"],
+      ["الوجه الإنكليزي", "ministry_badge_back_path", "ministry_badge_back_full_path"],
     ],
   },
 ];
@@ -1168,7 +1219,7 @@ function tabContent(tab, emp) {
         ${field("العنوان الوظيفي", "job_title", emp)}
         ${field("الدرجة الوظيفية", "job_grade", emp)}
         ${field("تاريخ التعيين", "appointment_date", emp, {date:true})}
-        ${fixedCompanyField("القسم", "department", _companyConfig?.department_name ?? emp?.department ?? "")}
+        ${fixedCompanyField("القسم", "department", fixedDepartment(emp))}
         ${fixedCompanyField("الشعبة / الوحدة", "division", _companyConfig?.division_name ?? emp?.division ?? "")}
         ${field("تاريخ المباشرة", "hire_date", emp, {date:true})}
         ${field("نوع التوظيف", "contract_type", emp, {type:"select", options:[["","—"],["ملاك","ملاك"],["عقد","عقد"],["تنسيب","تنسيب"],["تكليف","تكليف"],["اجر يومي","اجر يومي"]]})}
@@ -1306,6 +1357,12 @@ function handlePanelUiClick(event) {
     const buttons = [...scope.querySelectorAll(".emp-view-attachment")];
     openAttachmentViewer(buttons.map(viewerItemFromButton), Math.max(0, buttons.indexOf(viewer)));
   }
+  const zoneAdd = target.closest(".emp-zone-add");
+  if (zoneAdd) {
+    const box = zoneAdd.parentElement.previousElementSibling;
+    setZones(box, zoneCodes([box.querySelector("input[type=hidden]").value, zoneAdd.dataset.zone].join(",")));
+    return;
+  }
   const zoneRemove = target.closest(".emp-zone-remove");
   if (zoneRemove) {
     const box = zoneRemove.closest(".emp-zones");
@@ -1367,7 +1424,7 @@ function renderPanel(emp) {
         <div id="emp-panel-photo">${headerPhotoHtml(draft)}</div>
         <div style="min-width:0">
           <h3 style="font-weight:700;font-size:15px">${isNew ? "إضافة موظف جديد" : escHtml(emp.full_name)}</h3>
-          ${!isNew ? `<p style="font-size:11px;color:var(--ui-text-faint)">${escHtml(emp.job_title??"")} ${emp.department ? "· "+escHtml(emp.department) : ""}</p>` : ""}
+          ${!isNew ? `<p style="font-size:11px;color:var(--ui-text-faint)">${escHtml(emp.job_title??"")} ${fixedDepartment(emp) ? "· "+escHtml(fixedDepartment(emp)) : ""}</p>` : ""}
         </div>
         ${!isNew ? `<span class="emp-pill ${emp.is_active ? "ok" : "none"}">${emp.is_active ? "نشط" : "غير نشط"}</span>` : ""}
       </div>
@@ -1451,6 +1508,7 @@ function renderPanel(emp) {
   panel.addEventListener("input", markPanelDirty);
   panel.addEventListener("change", markPanelDirty);
   bindNameFields(panel);
+  wirePanelAddress(panel);
 
   panel.querySelector("#panel-close").addEventListener("click",  () => closePanel());
   panel.querySelector("#panel-cancel").addEventListener("click", () => closePanel());
@@ -1485,7 +1543,7 @@ function renderPanel(emp) {
       contract_type:         g("contract_type"),
       work_schedule:         g("work_schedule"),
       work_type_notes:       g("work_type_notes"),
-      department:            _companyConfig?.department_name ?? g("department"),
+      department:            fixedDepartment(_panelDraft),
       division:              _companyConfig?.division_name ?? g("division"),
       phone:                 g("phone"),
       email:                 g("email"),
@@ -1505,6 +1563,7 @@ function renderPanel(emp) {
       residence_head_name:   g("residence_head_name"),
       residence_form_no:     g("residence_form_no"),
       residence_address:     g("residence_address"),
+      residence_address_parts: g("residence_address_parts"),
       ration_card_no:        g("ration_card_no"),
       ration_center_name:    g("ration_center_name"),
       // Preserve legacy ration-card values that are no longer editable in the form.

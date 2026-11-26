@@ -12,7 +12,8 @@
  */
 import { api } from "../api.js";
 import { open } from "@tauri-apps/plugin-dialog";
-import { showToast, escHtml, confirmAction } from "../utils.js";
+import { showToast, escHtml, AIRPORT_ZONES } from "../utils.js";
+import { addressHtml, wireAddress, readAddress, composeResidence, citySuggestions, loadAddressPlaces, addressIsEmpty } from "../address-field.js";
 import { joinNameParts } from "./name-fields.js";
 import { mergeSides } from "./id-reader.js";
 
@@ -41,6 +42,8 @@ const STEPS = [
       { key: "civil_id_issue_date", label: "تاريخ الإصدار", ocr: "issue_date", date: true },
       { key: "civil_id_expiry_date", label: "تاريخ النفاذ", ocr: "expiry_date", date: true },
     ] },
+  { id: "photo", title: "الصورة الشخصية", short: "الصورة", photo: true,
+    hint: "اختياري: اختر صورة من الحاسبة، ثم حرّك الإطار وكبّره من زاويته" },
   { id: "passport", title: "جواز السفر", short: "الجواز", sides: ["page"],
     hint: "صفحة البيانات تكفي، والشريط السفلي يُطابق المواليد والجنس",
     fields: [
@@ -52,11 +55,12 @@ const STEPS = [
       { key: "birthdate", label: "تاريخ الولادة", ocr: "birthdate", date: true },
       { key: "gender", label: "الجنس", ocr: "gender", options: GENDERS },
     ] },
-  { id: "ministry", title: "هوية وزارة النقل", short: "هوية الوزارة", sides: ["front"],
-    hint: "الوجه العربي يكفي: منه القسم والعنوان الوظيفي ورقم الهوية ونفاذها، ويُطابَق الاسم مع البطاقة الوطنية",
+  { id: "ministry", title: "هوية وزارة النقل", short: "هوية الوزارة", sides: ["front", "back"],
+    sideLabels: { front: "الوجه العربي", back: "الوجه الإنكليزي" }, keepOnly: ["back"],
+    hint: "تُقرأ البيانات من الوجه العربي: القسم والعنوان الوظيفي ورقم الهوية ونفاذها، ويُطابَق الاسم مع البطاقة الوطنية. الوجه الإنكليزي يُحفظ مرفقًا فقط",
     fields: [
       { key: "job_title", label: "العنوان الوظيفي", ocr: "job_title" },
-      { key: "department", label: "القسم", ocr: "department", list: "departments" },
+      { key: "department", label: "القسم", ocr: "department", fixed: true },
       { key: "ministry_badge_no", label: "رقم الهوية", ocr: "doc_number", ltr: true },
       { key: "ministry_badge_issue_date", label: "تاريخ الإصدار", ocr: "issue_date", date: true },
       { key: "ministry_badge_expiry", label: "تاريخ النفاذ", ocr: "expiry_date", date: true },
@@ -77,11 +81,14 @@ const STEPS = [
       { key: "ration_center_name", label: "اسم رب الأسرة", ocr: "head_name" },
     ] },
   { id: "residence", title: "بطاقة السكن", short: "السكن", sides: ["front", "back"],
-    hint: "البطاقة القديمة: يُقرأ رقمها المطبوع فقط، والباقي بخط اليد",
+    hint: "البطاقة القديمة: يُقرأ رقمها المطبوع فقط، والباقي بخط اليد فانقله من الصورة",
     fields: [
       { key: "residence_card_no", label: "رقم بطاقة السكن", ocr: "doc_number", ltr: true },
       { key: "residence_card_issue_date", label: "تاريخ الإصدار", ocr: "issue_date", date: true },
-      { key: "residence_address", label: "العنوان", full: true },
+      { key: "residence_card_issuer", label: "مكتب المعلومات", ocr: "info_office" },
+      { key: "residence_head_name", label: "اسم رب الأسرة", ocr: "head_name" },
+      { key: "residence_form_no", label: "رقم الاستمارة", ocr: "form_no", ltr: true },
+      { key: "residence_address", label: "عنوان السكن", ocr: "address", address: true, full: true },
     ] },
   { id: "family", title: "أفراد الأسرة", short: "الأسرة",
     hint: "ارفع بطاقة كل فرد. للأبناء يُنقل الأب والجد واللقب من الموظف" },
@@ -92,7 +99,6 @@ const MANUAL = [
   { key: "phone", label: "رقم الهاتف", ltr: true, placeholder: "07xx xxx xxxx" },
   { key: "email", label: "البريد الإلكتروني", ltr: true },
   { key: "hire_date", label: "تاريخ التعيين", date: true },
-  { key: "department", label: "القسم", list: "departments" },
   { key: "job_title", label: "العنوان الوظيفي" },
   { key: "marital_status", label: "الحالة الاجتماعية", options: MARITAL },
 ];
@@ -112,6 +118,9 @@ const RELATIONS = [["spouse", "زوج / زوجة"], ["son", "ابن"], ["daughte
 // What the family member's «صلة القرابة» stores.
 const STORED_RELATION = { son: "ابن", daughter: "ابنة", father: "أب", mother: "أم", brother: "أخ", sister: "أخت", other: "أخرى" };
 const SIDE_LABEL = { front: "الوجه الأمامي", back: "الوجه الخلفي", page: "صفحة البيانات" };
+const sideLabel = (slot, side) => STEPS.find(s => s.id === slot)?.sideLabels?.[side] ?? SIDE_LABEL[side];
+/** A side kept as an attachment only, never read (the ministry ID's English side). */
+const keptOnly = (slot, side) => !!STEPS.find(s => s.id === slot)?.keepOnly?.includes(side);
 const UPLOAD = {
   national: (id, side, path) => api.wizardUpload("cmd_upload_national_card_attachment", { employeeId: id, side, sourcePath: path }),
   passport: (id, _side, path) => api.wizardUpload("cmd_upload_passport_attachment", { employeeId: id, sourcePath: path }),
@@ -122,8 +131,9 @@ const UPLOAD = {
 };
 
 const text = value => String(value ?? "").trim();
-const isEmpty = value => value == null || (typeof value === "object" ? !Object.values(value).some(v => text(v)) : !text(value));
-const shown = (field, value) => field.name ? joinNameParts(value, field.latin) : text(value);
+const isEmpty = value => value == null || (typeof value === "object" ? (value.useOther !== undefined ? addressIsEmpty(value) : !Object.values(value).some(v => text(v))) : !text(value));
+const asAddress = value => typeof value === "object" && value ? value : readAddress(null, value);
+const shown = (field, value) => field.address ? composeResidence(asAddress(value)) : field.name ? joinNameParts(value, field.latin) : text(value);
 const same = (field, a, b) => shown(field, a).replace(/\s+/g, " ") === shown(field, b).replace(/\s+/g, " ");
 
 /** Values of one person: key -> { value, source, edited, unsure }. */
@@ -145,15 +155,43 @@ function readingsFor(fields, result) {
       if (any) out[field.key] = { value: parts, unsure };
     } else if (field.ocr) {
       const f = get(field.ocr);
-      if (f?.value) out[field.key] = { value: field.chips ? f.value.split(/[,\s]+/).filter(Boolean).join(",") : f.value, unsure: f.confidence < 0.8 };
+      if (f?.value && field.address) out[field.key] = { value: readAddress(null, f.value), unsure: f.confidence < 0.8 };
+      else if (f?.value) out[field.key] = { value: field.chips ? f.value.split(/[,\s]+/).filter(Boolean).join(",") : f.value, unsure: f.confidence < 0.8 };
     }
   }
   return out;
 }
 
+/** Letters that differ between two name parts (normalised), as edit distance. */
+function nameDistance(a, b) {
+  const norm = v => text(v).replace(/[أإآ]/g, "ا").replace(/ة/g, "ه").replace(/[ىی]/g, "ي").replace(/\s+/g, "");
+  const [x, y] = [norm(a), norm(b)];
+  let prev = Array.from({ length: y.length + 1 }, (_, j) => j);
+  for (let i = 1; i <= x.length; i++) {
+    const cur = [i];
+    for (let j = 1; j <= y.length; j++) cur[j] = Math.min(prev[j] + 1, cur[j - 1] + 1, prev[j - 1] + (x[i - 1] === y[j - 1] ? 0 : 1));
+    prev = cur;
+  }
+  return prev[y.length];
+}
+
+/** Fields the card has written by hand (not read), on any side. */
+const handwrittenOf = results => [...new Set(Object.values(results ?? {}).flatMap(r => r?.handwritten ?? []))];
+
 /** Puts readings into the values: only where nothing is there yet. */
+/** Values set in Settings, not per employee: a reading of them is only compared. */
+const FIXED = ["department"];
+
+/** «قسم اتصالات الطيران» and «اتصالات الطيران» are the same department. */
+const sameDepartment = (a, b) => {
+  const norm = v => text(v).replace(/^قسم\s+/, "").replace(/[أإآ]/g, "ا").replace(/ة/g, "ه").replace(/[ىی]/g, "ي").replace(/\s+/g, "");
+  const [x, y] = [norm(a), norm(b)];
+  return !!x && !!y && (x === y || x.includes(y) || y.includes(x));
+};
+
 function applyReadings(values, readings, source) {
   for (const [key, reading] of Object.entries(readings)) {
+    if (FIXED.includes(key)) continue;
     if (isEmpty(values[key]?.value)) values[key] = { value: reading.value, source, edited: false, unsure: reading.unsure };
   }
 }
@@ -174,6 +212,7 @@ function dropDraft() {
 function revokeImages(state) {
   Object.values(state.docs).forEach(d => Object.values(d.images).forEach(i => URL.revokeObjectURL(i.url)));
   state.members.forEach(m => Object.values(m.images).forEach(i => URL.revokeObjectURL(i.url)));
+  if (state.photo) URL.revokeObjectURL(state.photo.url);
 }
 
 /** Called on logout: a draft belongs to the session that made it. */
@@ -239,10 +278,35 @@ function openWizard({ user, employees, onCreated, resume = null }) {
     members: [],
     saving: false,
   };
-  const departments = [...new Set(employees.map(e => text(e.department)).filter(Boolean))].sort((a, b) => a.localeCompare(b, "ar"));
+  const cities = citySuggestions(employees);
+  // The department is the one set in Settings, for every employee.
+  let department = "";
+  api.getCompanyConfig().then(config => {
+    department = text(config?.department_name);
+    if (overlay.isConnected) render();
+  }).catch(() => {});
   const overlay = document.createElement("div");
   overlay.className = "aw-overlay";
   document.body.append(overlay);
+  // The address field draws itself again on each change of its lists; what it holds is kept here.
+  wireAddress(overlay, {
+    get: key => ({ parts: asAddress(state.values[key]?.value), cities }),
+    set: (key, parts) => {
+      const before = state.values[key] ?? {};
+      state.values[key] = { ...before, value: parts, edited: !!before.source || !!before.edited, unsure: false, source: before.source ?? null };
+      const box = overlay.querySelector(`[data-address="${key}"]`)?.closest(".aw-field");
+      box?.querySelector(".aw-tag")?.replaceWith(htmlToNode(tag(state.values[key], current().id, key, "")));
+      box?.classList.toggle("is-empty", isEmpty(parts));
+      refreshGate();
+    },
+  });
+  // Typing the address (handwritten on the card) zooms the card to it, to copy from.
+  overlay.addEventListener("focusin", event => {
+    const box = event.target.closest?.("[data-address]");
+    if (box && event.target.matches("[data-addr]") && !box.dataset.address.startsWith("m")) showOnCard("", box.dataset.address);
+  });
+  // Places added by users: the lists show them once they arrive.
+  loadAddressPlaces().then(() => { if (overlay.isConnected && current().fields?.some(f => f.address)) render(); });
   let unlistenDrop = null;
   // `keep`: what was entered stays as a draft (in memory) to continue later.
   const close = (keep = false) => {
@@ -258,6 +322,104 @@ function openWizard({ user, employees, onCreated, resume = null }) {
       revokeImages(state);
     }
   };
+
+  /** The national number is already registered: no second record. Open that employee, add what
+   *  was uploaded here to their record (choosing which differing fields to update), or go back. */
+  function askRegistered(twin) {
+    if (overlay.querySelector(".aw-ask")) return;
+    const ask = htmlToNode(`<div class="aw-ask" role="alertdialog" aria-modal="true" aria-label="الموظف مسجّل مسبقًا">
+      <div class="aw-ask-box"><h3>هذا الموظف مسجّل مسبقًا: ${escHtml(twin.full_name ?? "")}</h3>
+        <p>الرقم الوطني ${escHtml(text(twin.civil_id))} مسجّل له، ولا يُنشأ موظف ثانٍ بالرقم نفسه. إن كان الرقم خطأ قراءة فارجع وصحّحه.</p>
+        <div class="aw-ask-actions">
+          <button type="button" class="btn-primary" data-ask="attach">إضافة المستمسكات إلى ملفه</button>
+          <button type="button" class="btn-secondary" data-ask="open">فتح ملفه</button>
+          <button type="button" class="btn-secondary" data-ask="back">إلغاء</button>
+        </div></div></div>`);
+    overlay.appendChild(ask);
+    ask.addEventListener("click", event => {
+      const choice = event.target.closest("[data-ask]")?.dataset.ask ?? (event.target === ask ? "back" : null);
+      if (!choice) return;
+      ask.remove();
+      if (choice === "attach") askAttach(twin);
+      else if (choice === "open") { close(true); onCreated(twin); }
+      else { go(0); overlay.querySelector('[data-key="civil_id"]')?.focus(); }
+    });
+    ask.querySelector('[data-ask="attach"]').focus();
+  }
+
+  /** Labels of the employee's fields, for the list of differences. */
+  function fieldLabel(key) {
+    if (key === "full_name") return "الاسم الرباعي واللقب";
+    if (key === "mother_name") return "اسم الأم";
+    if (key === "passport_name") return "الاسم في الجواز";
+    const step = STEPS.find(st => st.fields?.some(f => f.key === key));
+    const field = step?.fields.find(f => f.key === key) ?? MANUAL.find(f => f.key === key);
+    if (!field) return null;
+    return step && step.id !== "national" ? `${field.label} (${step.short})` : field.label;
+  }
+
+  /** The uploaded documents go to the registered employee; the fields that differ are listed, and
+   *  only the ticked ones replace what the record has. Fields the record lacks are ticked. */
+  function askAttach(twin) {
+    const { data } = payload();
+    const skip = new Set(["name_parts", "is_active", "spouses", "family_members", "civil_id_birthdate", "civil_id_birthplace"]);
+    const diffs = Object.entries(data)
+      .filter(([key, value]) => !skip.has(key) && !isEmpty(value) && fieldLabel(key) && text(twin[key]) !== text(value))
+      .map(([key, value]) => ({ key, value, old: text(twin[key]) }));
+    const ask = htmlToNode(`<div class="aw-ask" role="alertdialog" aria-modal="true" aria-label="إضافة المستمسكات إلى ملفه">
+      <div class="aw-ask-box aw-attach"><h3>إضافة المستمسكات إلى ملف ${escHtml(twin.full_name ?? "")}</h3>
+        <p>تُضاف الصور المرفوعة هنا إلى ملفه. ${diffs.length ? "اختر الحقول التي تُحدَّث بقيم هذه المستمسكات:" : "لا تختلف الحقول عمّا في ملفه."}</p>
+        ${diffs.length ? `<div class="aw-diffs">${diffs.map(d => `<label class="aw-diff"><input type="checkbox" data-diff="${d.key}" ${d.old ? "" : "checked"}>
+          <b>${escHtml(fieldLabel(d.key))}</b><span>${d.old ? `في ملفه «<bdi>${escHtml(d.old)}</bdi>» ← ` : "فارغ في ملفه ← "}«<bdi>${escHtml(text(d.value))}</bdi>»</span></label>`).join("")}</div>` : ""}
+        <div class="aw-ask-actions">
+          <button type="button" class="btn-primary" data-ask="apply">إضافة${diffs.length ? " وتحديث المحدَّد" : ""}</button>
+          <button type="button" class="btn-secondary" data-ask="back">رجوع</button>
+        </div></div></div>`);
+    overlay.appendChild(ask);
+    ask.addEventListener("click", event => {
+      const choice = event.target.closest("[data-ask]")?.dataset.ask ?? (event.target === ask ? "back" : null);
+      if (!choice) return;
+      if (choice === "back") { ask.remove(); return; }
+      const chosen = Object.fromEntries([...ask.querySelectorAll("[data-diff]:checked")].map(b => [b.dataset.diff, data[b.dataset.diff]]));
+      ask.remove();
+      attachTo(twin, chosen);
+    });
+    ask.querySelector('[data-ask="apply"]').focus();
+  }
+
+  async function attachTo(twin, chosen) {
+    const update = { ...twin, ...chosen };
+    if ("residence_address" in chosen) update.residence_address_parts = payload().data.residence_address_parts;
+    if ("birthdate" in chosen) update.civil_id_birthdate = chosen.birthdate;
+    if ("birthplace" in chosen) update.civil_id_birthplace = chosen.birthplace;
+    if ("full_name" in chosen || "mother_name" in chosen || "passport_name" in chosen) {
+      const parts = payload().data.name_parts;
+      const kept = (() => { try { return typeof twin.name_parts === "string" ? JSON.parse(twin.name_parts) : twin.name_parts ?? {}; } catch { return {}; } })() ?? {};
+      update.name_parts = { ...kept, ...Object.fromEntries(Object.keys(chosen).filter(k => parts[k]).map(k => [k, parts[k]])) };
+    }
+    state.saving = true;
+    render();
+    let saved;
+    try {
+      saved = Object.keys(chosen).length ? await api.updateEmployee(twin.id, update) : twin;
+    } catch (error) {
+      state.saving = false;
+      render();
+      showToast(error?.message ?? String(error || "تعذّر تحديث الموظف"), "error");
+      return;
+    }
+    // Only the documents: the family's cards stay with the record's own family list.
+    const failed = [];
+    // The photo goes in only where the record has none: an existing photo is not replaced here.
+    for (const upload of pendingUploads(twin.id, [], []).filter(u => u.image !== state.photo || !twin.photo_path)) {
+      try { await upload.task(); upload.image.uploaded = true; } catch { failed.push(upload.label); }
+    }
+    state.saving = false;
+    state.employee = saved;
+    dropDraft();
+    showToast(failed.length ? `أُضيفت المستمسكات إلى ملف ${twin.full_name ?? ""}، لكن تعذّر رفع: ${failed.join("، ")}` : `أُضيفت المستمسكات إلى ملف ${twin.full_name ?? ""}`, failed.length ? "error" : "info");
+    close(false);
+  }
 
   /** Leaving with entries asks what to do with them: save the employee, keep a draft, or discard. */
   function askClose() {
@@ -284,7 +446,7 @@ function openWizard({ user, employees, onCreated, resume = null }) {
     });
     ask.querySelector(canSaveNow() ? '[data-ask="save"]' : '[data-ask="stay"]').focus();
   }
-  const hasWork = () => Object.values(state.docs).some(d => Object.keys(d.images).length) || Object.keys(state.values).length > 0;
+  const hasWork = () => Object.values(state.docs).some(d => Object.keys(d.images).length) || Object.keys(state.values).length > 0 || !!state.photo;
   const onKey = event => {
     if (event.key !== "Escape") return;
     const viewer = overlay.querySelector(".aw-viewer");
@@ -390,12 +552,14 @@ function openWizard({ user, employees, onCreated, resume = null }) {
 
   /** How far a step is filled: its own fields with a value (not those another document filled). */
   function stepFill(s) {
+    if (s.photo) return { filled: state.photo ? 1 : 0, total: 1 };
     if (s.id === "family") {
       const named = state.members.filter(m => !isEmpty(m.values.name?.value)).length;
       return { filled: named, total: state.members.length };
     }
     const fields = s.id === "summary" ? MANUAL : s.fields ?? [];
     const own = fields.filter(f => {
+      if (f.fixed) return !!department || !!state.docs[s.id]?.readings?.[f.key];
       const entry = state.values[f.key];
       if (isEmpty(entry?.value)) return false;
       return s.id === "summary" || !entry.source || entry.edited || entry.source === s.id || !STEPS.some(o => o.id === entry.source && o.id !== s.id);
@@ -434,6 +598,7 @@ function openWizard({ user, employees, onCreated, resume = null }) {
   function tagLabel(entry, here) {
     if (!entry || isEmpty(entry.value)) return `<span class="aw-src is-manual">يدوي</span>`;
     if (entry.edited) return `<span class="aw-src is-edited">معدّل يدويًا</span>`;
+    if (!entry.source) return `<span class="aw-src is-manual">يدوي</span>`;
     if (entry.source === "employee" || entry.source === "spouse") return `<span class="aw-src is-inherited">${entry.source === "employee" ? "من الموظف" : "من الزوجة"}</span>`;
     if (entry.source === "derived") return `<span class="aw-src is-inherited">مستنتج</span>`;
     if (entry.unsure) return `<span class="aw-src is-warn">راجِع</span>`;
@@ -442,7 +607,9 @@ function openWizard({ user, employees, onCreated, resume = null }) {
   }
 
   /** The note under a field: how this document's reading compares with the value kept. */
-  function note(field, entry, reading, here) {
+  function note(field, entry, reading, here, handwritten = []) {
+    if (!reading && field.ocr && handwritten.includes(field.ocr) && isEmpty(entry?.value))
+      return `<div class="aw-note is-warn">✍ مكتوب بخط اليد على البطاقة: انقله من الصورة</div>`;
     if (!reading) return entry?.unsure && entry.source === here ? `<div class="aw-note is-warn">⚠ القراءة غير مؤكدة، قارنها بالصورة</div>` : "";
     if (same(field, reading.value, entry?.value)) {
       if (entry?.source && entry.source !== here) return `<div class="aw-note is-ok">✓ يطابق ${escHtml(STEPS.find(s => s.id === entry.source)?.short ?? "")}</div>`;
@@ -460,23 +627,36 @@ function openWizard({ user, employees, onCreated, resume = null }) {
     if (key === "civil_id") {
       if (!/^\d{12}$/.test(v)) return `<div class="aw-note is-warn">⚠ الرقم الوطني 12 رقمًا، والمكتوب ${v.replace(/\D/g, "").length} أرقام</div>`;
       const same = !scope && duplicateOf(v);
-      if (same) return `<div class="aw-note is-error">⚠ يوجد موظف مسجّل بهذا الرقم الوطني: ${escHtml(same.full_name ?? "")}</div>`;
+      if (same) return `<div class="aw-note is-error">⚠ هذا الموظف مسجّل مسبقًا: ${escHtml(same.full_name ?? "")}</div>`;
     }
     if (key === "civil_id_family_number") {
       const digits = v.replace(/\D/g, "").length;
       if (!/^[0-9A-Z]{14,22}$/.test(v) || digits < 10) return `<div class="aw-note is-warn">⚠ صيغة الرقم العائلي غير معتادة: أرقام مع حرف أو حرفين لاتينيين (14 إلى 22 خانة)</div>`;
     }
+    if (!scope) return numberOwnerHtml(key, v);
     return "";
   }
   const duplicateOf = civilId => employees.find(e => text(e.civil_id) && text(e.civil_id) === civilId);
 
-  function fieldHtml(field, values, readings, here, scope = "") {
+  function fieldHtml(field, values, readings, here, scope = "", handwritten = []) {
     const entry = values[field.key];
     const id = `aw-${scope}${field.key}`;
     const value = entry?.value;
     const attrs = `data-key="${field.key}" data-scope="${scope}"`;
     let control;
-    if (field.name) {
+    if (field.fixed) {
+      const reading = readings?.[field.key]?.value;
+      const check = !reading ? ""
+        : !department ? `<div class="aw-note is-warn">⚠ لم يُضبط القسم في الإعدادات، فسيُحفظ ما قُرئ من الهوية «${escHtml(reading)}»</div>`
+        : sameDepartment(reading, department) ? `<div class="aw-note is-ok">✓ يطابق القسم المثبّت في الإعدادات</div>`
+        : `<div class="aw-note is-warn">⚠ الهوية تكتب «${escHtml(reading)}»، والقسم المثبّت في الإعدادات «${escHtml(department)}». تأكد أن الهوية لهذا الموظف.</div>`;
+      return `<div class="aw-field ${field.full ? "is-full" : ""}">
+        <div class="aw-label"><label for="${id}">${field.label}</label><span class="aw-src">من الإعدادات</span></div>
+        <input id="${id}" class="input-field" data-fixed="${field.key}" value="${escHtml(department || reading || "")}" placeholder="يُضبط من الإعدادات" readonly>${check}</div>`;
+    }
+    if (field.address) {
+      control = addressHtml(`${scope}${field.key}`, asAddress(value), { cities });
+    } else if (field.name) {
       control = `<div class="aw-name" style="--parts:${field.name.length}">${field.name.map(([part, label]) => `<label><span>${label}</span>
         <input class="input-field" ${attrs} data-part="${part}" dir="${field.latin ? "ltr" : "rtl"}" value="${escHtml(value?.[part] ?? "")}"></label>`).join("")}</div>`;
     } else if (field.options) {
@@ -484,19 +664,22 @@ function openWizard({ user, employees, onCreated, resume = null }) {
     } else if (field.chips) {
       const codes = text(value).split(",").filter(Boolean);
       control = `<div class="aw-chips" data-chips="${field.key}" data-scope="${scope}">${codes.map(c => `<span class="aw-chip" dir="ltr">${escHtml(c)}<button type="button" data-chip-remove="${escHtml(c)}" aria-label="حذف ${escHtml(c)}">✕</button></span>`).join("")}
-        <input class="aw-chip-input" dir="ltr" placeholder="أضف رمزًا ثم Enter" aria-label="إضافة صلاحية"></div>`;
+        <input class="aw-chip-input" dir="ltr" placeholder="أضف رمزًا ثم Enter" aria-label="إضافة صلاحية">
+        ${AIRPORT_ZONES.filter(z => !codes.includes(z)).map(z => `<button type="button" class="aw-chip-add" data-chip-add="${z}" dir="ltr" title="إضافة ${z}">+ ${z}</button>`).join("")}</div>`;
     } else {
       control = `<input id="${id}" class="input-field" ${attrs} type="${field.date ? "date" : "text"}" dir="${field.ltr || field.date ? "ltr" : "rtl"}" value="${escHtml(value ?? "")}" placeholder="${escHtml(field.placeholder ?? "")}" ${field.list ? `list="aw-${field.list}"` : ""}>`;
     }
     return `<div class="aw-field ${field.full ? "is-full" : ""} ${isEmpty(value) && !field.name ? "is-empty" : ""}">
-      <div class="aw-label"><label for="${id}">${field.label}</label>${tag(entry, here, field.key, scope)}</div>${control}${note(field, entry, readings?.[field.key], here)}<div class="aw-check">${checkHtml(field.key, value, scope)}</div></div>`;
+      <div class="aw-label"><label for="${id}">${field.label}</label>${tag(entry, here, field.key, scope)}</div>${control}${note(field, entry, readings?.[field.key], here, handwritten)}<div class="aw-check">${checkHtml(field.key, value, scope)}</div></div>`;
   }
 
   function slotHtml(slot, side, image, busy) {
-    if (busy?.[side]) return `<div class="aw-pic is-busy"><div class="aw-drop"><span class="aw-spinner" aria-hidden="true"></span><b>جارٍ قراءة ${SIDE_LABEL[side]}…</b></div></div>`;
-    if (image) return `<div class="aw-pic"><div class="aw-thumb"><img src="${image.url}" alt="${SIDE_LABEL[side]}" data-slot="${slot}" data-side="${side}"><span class="aw-thumb-cap">${SIDE_LABEL[side]}<em>${image.count ? `✓ قُرئ ${image.count}` : "لم يُقرأ شيء"}</em></span></div>
+    const label = sideLabel(slot, side);
+    const kept = keptOnly(slot, side);
+    if (busy?.[side]) return `<div class="aw-pic is-busy"><div class="aw-drop"><span class="aw-spinner" aria-hidden="true"></span><b>${kept ? "جارٍ تحميل" : "جارٍ قراءة"} ${label}…</b></div></div>`;
+    if (image) return `<div class="aw-pic"><div class="aw-thumb"><img src="${image.url}" alt="${label}" data-slot="${slot}" data-side="${side}"><span class="aw-thumb-cap">${label}<em>${kept ? "✓ يُحفظ مرفقًا" : image.count ? `✓ قُرئ ${image.count}` : "لم يُقرأ شيء"}</em></span></div>
       <div class="aw-pic-actions"><button type="button" class="btn-secondary" data-pick="${slot}" data-side="${side}">استبدال</button><button type="button" class="btn-secondary" data-remove="${slot}" data-side="${side}">إزالة</button></div></div>`;
-    return `<div class="aw-pic"><div class="aw-drop" data-slot="${slot}" data-side="${side}"><b>${SIDE_LABEL[side]}</b>
+    return `<div class="aw-pic"><div class="aw-drop" data-slot="${slot}" data-side="${side}"><b>${label}</b>${kept ? "<small>يُحفظ مرفقًا ولا يُقرأ</small>" : ""}
       <div class="aw-drop-actions"><button type="button" class="btn-primary" data-pick="${slot}" data-side="${side}">اختيار صورة من الحاسبة</button><button type="button" class="btn-secondary" data-scan="${slot}" data-side="${side}">مسح بالماسح</button></div>
       <small>أو اسحب الصورة إلى هنا · JPG · PNG · WebP</small></div></div>`;
   }
@@ -505,24 +688,63 @@ function openWizard({ user, employees, onCreated, resume = null }) {
     const doc = state.docs[step.id];
     const readings = Object.values(doc.readings).length ? doc.readings : null;
     return `<div class="aw-pics">${step.sides.map(side => slotHtml(step.id, side, doc.images[side], doc.busy)).join("")}</div>
-      <div class="aw-fields">${step.fields.map(f => fieldHtml(f, state.values, readings, step.id)).join("")}
-      ${step.id === "national" ? "" : nameCheckHtml(doc)}
-      ${(doc.warnings ?? []).map(w => `<div class="aw-field is-full aw-note is-warn">⚠ ${escHtml(w)}</div>`).join("")}</div>`;
+      <div class="aw-fields">${step.fields.map(f => fieldHtml(f, state.values, readings, step.id, "", doc.handwritten ?? [])).join("")}
+      ${step.id === "national" ? "" : nameCheckHtml(doc, step)}
+      ${(doc.warnings ?? []).filter(w => !(doc.handwritten?.length && w.startsWith("مكتوب بخط اليد"))).map(w => `<div class="aw-field is-full aw-note is-warn">⚠ ${escHtml(w)}</div>`).join("")}</div>`;
   }
 
   /** A document that prints the employee's name (first, father, grandfather): compared with the
-   *  name from the national card, part by part, as far as the document goes. */
-  function nameCheckHtml(doc) {
-    const fields = Object.values(doc.results ?? {}).flatMap(r => r.fields ?? []);
-    const read = Object.fromEntries(["first", "father", "grandfather", "surname"].map(k => [k, fields.find(f => f.key === k)?.value]).filter(([, v]) => v));
-    const parts = Object.keys(read);
+   *  name from the national card, part by part, as far as the document goes. A different name means
+   *  someone else's document (a relative's, say): red, with «استبدال الصورة» or «هو للموظف نفسه».
+   *  A one-letter difference is more likely a misread, and only asks to compare. The ration card
+   *  carries the head of household, who may legitimately be someone else: a softer notice. */
+  function nameCheckHtml(doc, step) {
     const kept = state.values.full_name?.value ?? {};
-    if (!parts.length || isEmpty(kept)) return "";
-    const norm = v => text(v).replace(/[أإآ]/g, "ا").replace(/ة/g, "ه").replace(/[ىی]/g, "ي").replace(/\s+/g, " ");
-    const shownRead = parts.map(k => read[k]).join(" ");
-    const shownKept = parts.map(k => kept[k] ?? "").join(" ");
-    if (parts.every(k => norm(read[k]) === norm(kept[k]))) return `<div class="aw-field is-full aw-note is-ok">✓ الاسم في هذا المستمسك «${escHtml(shownRead)}» يطابق البطاقة الوطنية</div>`;
-    return `<div class="aw-field is-full aw-note is-warn">⚠ الاسم في هذا المستمسك «${escHtml(shownRead)}» يختلف عن البطاقة الوطنية «${escHtml(shownKept.trim())}»: تأكد أنه للموظف نفسه</div>`;
+    if (isEmpty(kept)) return "";
+    const sides = Object.entries(doc.results ?? {});
+    const fieldOf = key => sides.map(([side, r]) => [side, (r.fields ?? []).find(f => f.key === key)]).find(([, f]) => f?.value);
+    const parts = ["first", "father", "grandfather", "surname"];
+    const read = Object.fromEntries(parts.map(k => [k, fieldOf(k)?.[1]?.value]).filter(([, v]) => v));
+    const side = parts.map(fieldOf).find(Boolean)?.[0];
+    const head = step.id === "ration" && fieldOf("head_name");
+    if (head) {
+      // Compared as words, so a compound name («عبد الله») lines up.
+      const keptWords = ["first", "father", "grandfather"].map(k => text(kept[k])).join(" ").split(/\s+/).filter(Boolean);
+      const headText = text(head[1].value);
+      const same = nameDistance(headText.split(/\s+/).slice(0, keptWords.length).join(" "), keptWords.join(" ")) === 0;
+      return same
+        ? `<div class="aw-field is-full aw-note is-ok">✓ رب الأسرة في البطاقة هو الموظف «${escHtml(headText)}»</div>`
+        : `<div class="aw-field is-full aw-note is-warn">ℹ رب الأسرة في البطاقة «${escHtml(headText)}» وليس الموظف «${escHtml(keptWords.join(" "))}». هذا طبيعي إن كان الموظف فردًا في الأسرة: تأكد أنها بطاقة أسرته.</div>`;
+    }
+    const names = Object.keys(read).filter(k => !isEmpty(kept[k]));
+    if (!names.length) return "";
+    const shownRead = Object.values(read).join(" ");
+    const shownKept = parts.filter(k => read[k]).map(k => kept[k] ?? "").join(" ").trim();
+    const distance = names.map(k => nameDistance(read[k], kept[k]));
+    if (distance.every(d => d === 0)) {
+      return `<div class="aw-field is-full aw-note is-ok">✓ الاسم في هذا المستمسك «${escHtml(shownRead)}» يطابق البطاقة الوطنية</div>`;
+    }
+    if (doc.nameOk) return `<div class="aw-field is-full aw-note is-ok">✓ أكّدت أن المستمسك للموظف رغم اختلاف الاسم «${escHtml(shownRead)}»</div>`;
+    if (distance.every(d => d <= 1)) {
+      return `<div class="aw-field is-full aw-note is-warn">⚠ الاسم في هذا المستمسك «${escHtml(shownRead)}» قريب من البطاقة الوطنية «${escHtml(shownKept)}»: قد يكون خطأ قراءة، قارنه بالصورة</div>`;
+    }
+    return `<div class="aw-field is-full aw-other" role="alert">⛔ هذا المستمسك باسم شخص آخر: «${escHtml(shownRead)}»، والموظف «${escHtml(shownKept)}».
+      <div class="aw-other-actions"><button type="button" class="btn-primary" data-name-replace="${step.id}" data-side="${side ?? step.sides[0]}">استبدال الصورة</button>
+      <button type="button" class="btn-secondary" data-name-ok="${step.id}">هو للموظف نفسه</button></div></div>`;
+  }
+
+  /** A number already on another employee's record: passport, badges (red); ration and residence
+   *  cards, which family members share (a notice). */
+  function numberOwnerHtml(key, value) {
+    const v = text(value).toUpperCase();
+    const shared = { ration_card_no: true, residence_card_no: true };
+    const owned = { passport_no: "جواز", airport_badge_no: "باج المطار", ministry_badge_no: "هوية الوزارة", ration_card_no: "البطاقة التموينية", residence_card_no: "بطاقة السكن" };
+    if (!v || !owned[key]) return "";
+    const other = employees.find(e => e.id !== state.employee?.id && text(e[key]).toUpperCase() === v);
+    if (!other) return "";
+    return shared[key]
+      ? `<div class="aw-note is-warn">ℹ رقم ${owned[key]} نفسه مسجّل للموظف ${escHtml(other.full_name ?? "")}: طبيعي إن كانا من أسرة واحدة</div>`
+      : `<div class="aw-note is-error">⛔ رقم ${owned[key]} هذا مسجّل للموظف ${escHtml(other.full_name ?? "")}: قد يكون المستمسك له</div>`;
   }
 
   function memberHtml(member, index) {
@@ -533,6 +755,78 @@ function openWizard({ user, employees, onCreated, resume = null }) {
         <button type="button" class="aw-link is-danger" data-member-remove="${index}">حذف الفرد</button></div>
       <div class="aw-member-body"><div class="aw-pics is-small">${["front", "back"].map(side => slotHtml(`member:${index}`, side, member.images[side], member.busy)).join("")}</div>
       <div class="aw-fields">${fields.map(f => fieldHtml(f, member.values, Object.keys(member.readings).length ? member.readings : null, "member", scope)).join("")}</div></div></section>`;
+  }
+
+  /** The personal photo: a picked image, cut with a box the user moves (drag) and resizes
+   *  (corner). Saved as the employee's photo. */
+  function photoBody() {
+    const photo = state.photo;
+    const actions = `<div class="aw-photo-actions">
+      <button type="button" class="btn-primary" data-photo-pick>${photo ? "اختيار صورة أخرى" : "اختيار صورة من الحاسبة"}</button>
+      ${photo ? `<button type="button" class="btn-secondary" data-photo-remove>إزالة</button>` : ""}</div>`;
+    if (!photo) return `<div class="aw-photo">${actions}<p class="aw-photo-empty">JPG · PNG · WebP</p></div>`;
+    const [x0, y0, x1, y1] = photo.rect;
+    return `<div class="aw-photo">${actions}
+      <div class="aw-photo-work">
+        <div class="aw-crop-area"><img src="${photo.url}" alt="الصورة المختارة" draggable="false">
+          <div class="aw-crop" style="left:${x0 * 100}%;top:${y0 * 100}%;width:${(x1 - x0) * 100}%;height:${(y1 - y0) * 100}%" aria-label="منطقة الصورة الشخصية"><span class="aw-crop-handle" aria-hidden="true"></span></div></div>
+        <div class="aw-photo-result"><div class="aw-photo-preview" style="${photoPreviewStyle(photo)}"></div>
+          <small>${photo.uploaded ? "محفوظة" : "ما سيُحفظ"}</small></div></div></div>`;
+  }
+
+  const photoPreviewStyle = photo => {
+    const [x0, y0, x1, y1] = photo.rect;
+    const [w, h] = [Math.max(0.01, x1 - x0), Math.max(0.01, y1 - y0)];
+    const pos = (start, size) => size >= 0.999 ? 0 : start / (1 - size) * 100;
+    return `background-image:url('${photo.url}');background-size:${100 / w}% ${100 / h}%;background-position:${pos(x0, w)}% ${pos(y0, h)}%`;
+  };
+
+  async function pickPhoto() {
+    const selected = await open({ multiple: false, filters: [{ name: "صورة شخصية", extensions: IMAGE_EXTENSIONS }] });
+    if (!selected) return;
+    try {
+      const bytes = await api.imagePreview(selected);
+      const url = URL.createObjectURL(new Blob([new Uint8Array(bytes)], { type: "image/jpeg" }));
+      if (state.photo) URL.revokeObjectURL(state.photo.url);
+      state.photo = { source: "file", path: selected, url, turns: 0, rect: [0, 0, 1, 1], uploaded: false };
+      render();
+    } catch (error) {
+      showToast(error?.message ?? String(error || "تعذّر فتح الصورة"), "error");
+    }
+  }
+
+  /** Drag inside the box moves it; drag the corner resizes it. Kept inside the image. */
+  function bindCrop() {
+    const area = overlay.querySelector(".aw-crop-area");
+    const box = area?.querySelector(".aw-crop");
+    if (!box) return;
+    const preview = overlay.querySelector(".aw-photo-preview");
+    box.addEventListener("pointerdown", event => {
+      event.preventDefault();
+      const resize = event.target.classList.contains("aw-crop-handle");
+      const bounds = area.getBoundingClientRect();
+      const start = [event.clientX, event.clientY];
+      const [x0, y0, x1, y1] = state.photo.rect;
+      box.setPointerCapture?.(event.pointerId);
+      const move = e => {
+        const dx = (e.clientX - start[0]) / bounds.width, dy = (e.clientY - start[1]) / bounds.height;
+        let rect;
+        if (resize) {
+          rect = [x0, y0, Math.min(1, Math.max(x0 + 0.05, x1 + dx)), Math.min(1, Math.max(y0 + 0.05, y1 + dy))];
+        } else {
+          const nx = Math.min(1 - (x1 - x0), Math.max(0, x0 + dx)), ny = Math.min(1 - (y1 - y0), Math.max(0, y0 + dy));
+          rect = [nx, ny, nx + (x1 - x0), ny + (y1 - y0)];
+        }
+        state.photo.rect = rect;
+        state.photo.uploaded = false;
+        Object.assign(box.style, { left: `${rect[0] * 100}%`, top: `${rect[1] * 100}%`, width: `${(rect[2] - rect[0]) * 100}%`, height: `${(rect[3] - rect[1]) * 100}%` });
+        if (preview) preview.setAttribute("style", photoPreviewStyle(state.photo));
+      };
+      const up = () => { box.removeEventListener("pointermove", move); box.removeEventListener("pointerup", up); box.removeEventListener("pointercancel", up); render(); };
+      box.addEventListener("pointermove", move);
+      box.addEventListener("pointerup", up);
+      box.addEventListener("pointercancel", up);
+    });
   }
 
   function familyBody() {
@@ -561,7 +855,7 @@ function openWizard({ user, employees, onCreated, resume = null }) {
         <div class="aw-fields is-three">${MANUAL.map(f => fieldHtml(f, state.values, null, "summary")).join("")}</div></div>
       <div class="aw-sum-grid">
         ${card("البيانات الشخصية", [["الاسم", v("full_name")], ["الأم", v("mother_name")], ["الولادة", [v("birthdate"), v("birthplace")].filter(Boolean).join(" · ")], ["الجنس والدم", [v("gender"), v("blood_type")].filter(Boolean).join(" · ")]])}
-        ${card("الوظيفة", [["القسم", v("department")], ["العنوان الوظيفي", v("job_title")], ["صلاحيات الباج", v("airport_badge_zones").replaceAll(",", " · ")]])}
+        ${card("الوظيفة", [["القسم", departmentValue() ?? ""], ["العنوان الوظيفي", v("job_title")], ["صلاحيات الباج", v("airport_badge_zones").replaceAll(",", " · ")]])}
         ${card("الأسرة", state.members.map((m, i) => [RELATIONS.find(r => r[0] === m.relation)?.[1] ?? `فرد ${i + 1}`, joinNameParts(m.values.name?.value)]))}
         ${card("البطاقة الوطنية", [["الرقم", v("civil_id")]], expiry("civil_id_expiry_date"))}
         ${card("جواز السفر", [["الرقم", v("passport_no")]], expiry("passport_expiry_date"))}
@@ -625,7 +919,7 @@ function openWizard({ user, employees, onCreated, resume = null }) {
 
   function render() {
     const step = current();
-    const body = step.id === "family" ? familyBody() : step.id === "summary" ? summaryBody() : docBody(step);
+    const body = step.photo ? photoBody() : step.id === "family" ? familyBody() : step.id === "summary" ? summaryBody() : docBody(step);
     const last = state.step === STEPS.length - 1;
     const next = STEPS[state.step + 1];
     const scroll = overlay.querySelector(".aw-content-body")?.scrollTop ?? 0;
@@ -643,8 +937,7 @@ function openWizard({ user, employees, onCreated, resume = null }) {
             ${!step.required && !last ? `<button type="button" class="btn-secondary" data-skip>تخطٍّ</button>` : ""}
             ${state.step > 0 ? `<button type="button" class="btn-secondary" data-back>رجوع</button>` : ""}
             <span class="aw-hint">${escHtml(gateHint())}</span>
-          </div></div></div>
-      <datalist id="aw-departments">${departments.map(d => `<option value="${escHtml(d)}">`).join("")}</datalist></div>`;
+          </div></div></div></div>`;
     const content = overlay.querySelector(".aw-content-body");
     if (content) content.scrollTop = scroll;
     bind();
@@ -683,6 +976,15 @@ function openWizard({ user, employees, onCreated, resume = null }) {
     overlay.querySelector("[data-save-now]")?.addEventListener("click", save);
     overlay.querySelectorAll("[data-go]").forEach(b => b.addEventListener("click", () => go(Number(b.dataset.go))));
     overlay.querySelectorAll("[data-pick]").forEach(b => b.addEventListener("click", () => pick(b.dataset.pick, b.dataset.side)));
+    overlay.querySelector("[data-photo-pick]")?.addEventListener("click", pickPhoto);
+    overlay.querySelector("[data-photo-remove]")?.addEventListener("click", () => {
+      if (state.photo) URL.revokeObjectURL(state.photo.url);
+      state.photo = null;
+      render();
+    });
+    bindCrop();
+    overlay.querySelectorAll("[data-name-replace]").forEach(b => b.addEventListener("click", () => pick(b.dataset.nameReplace, b.dataset.side)));
+    overlay.querySelectorAll("[data-name-ok]").forEach(b => b.addEventListener("click", () => { state.docs[b.dataset.nameOk].nameOk = true; render(); }));
     overlay.querySelectorAll("[data-scan]").forEach(b => b.addEventListener("click", () => scan(b.dataset.scan, b.dataset.side)));
     overlay.querySelectorAll("[data-remove]").forEach(b => b.addEventListener("click", () => removeImage(b.dataset.remove, b.dataset.side)));
     // On the thumbnail itself: wheel zooms, drag moves, double-click resets; a plain click enlarges.
@@ -724,7 +1026,10 @@ function openWizard({ user, employees, onCreated, resume = null }) {
     // Focusing a value to review shows where it is on the card.
     overlay.querySelectorAll("[data-key]").forEach(input => input.addEventListener("focus", () => {
       const entry = valuesOf(input.dataset.scope)[input.dataset.key];
-      if (entry?.unsure) showOnCard(input.dataset.scope, input.dataset.key, input.dataset.part);
+      // A handwritten field being typed: the card zooms to it, to copy from.
+      const field = !input.dataset.scope && current().fields?.find(f => f.key === input.dataset.key);
+      const handwritten = field?.ocr && (state.docs[current().id]?.handwritten ?? []).includes(field.ocr);
+      if (entry?.unsure || handwritten) showOnCard(input.dataset.scope, input.dataset.key, input.dataset.part);
     }));
     overlay.querySelectorAll("[data-take]").forEach(b => b.addEventListener("click", () => {
       const scope = b.closest(".aw-member") ? `m${[...overlay.querySelectorAll(".aw-member")].indexOf(b.closest(".aw-member"))}-` : "";
@@ -743,6 +1048,7 @@ function openWizard({ user, employees, onCreated, resume = null }) {
       };
       const codes = () => text(values[key]?.value).split(",").filter(Boolean);
       box.querySelectorAll("[data-chip-remove]").forEach(b => b.addEventListener("click", () => set(codes().filter(c => c !== b.dataset.chipRemove))));
+      box.querySelectorAll("[data-chip-add]").forEach(b => b.addEventListener("click", () => set([...codes(), b.dataset.chipAdd])));
       const input = box.querySelector(".aw-chip-input");
       input.addEventListener("keydown", event => {
         if ((event.key === "Enter" || event.key === ",") && input.value.trim()) {
@@ -837,6 +1143,21 @@ function openWizard({ user, employees, onCreated, resume = null }) {
     // Each side reads on its own: the other side can be chosen while this one is read.
     holder.busy[side] = true;
     render();
+    if (keptOnly(slot, side)) {
+      // Stored as the second attachment only: shown, not read.
+      try {
+        const bytes = await api.imagePreview(path);
+        URL.revokeObjectURL(holder.images[side]?.url ?? "");
+        holder.images[side] = { path, url: URL.createObjectURL(new Blob([new Uint8Array(bytes)], { type: "image/jpeg" })), count: 0, kept: true };
+        holder.skipped = false;
+      } catch (error) {
+        showToast(error?.message ?? String(error || "تعذّر فتح الصورة"), "error");
+      } finally {
+        delete holder.busy[side];
+        render();
+      }
+      return;
+    }
     try {
       const reading = await api.readImageFields(path);
       const old = holder.images[side];
@@ -846,6 +1167,8 @@ function openWizard({ user, employees, onCreated, resume = null }) {
       holder.regions = { ...(holder.regions ?? {}), [side]: reading.regions ?? {} };
       const merged = mergeSides(Object.values(holder.results));
       holder.warnings = merged.warnings;
+      holder.handwritten = handwrittenOf(holder.results);
+      holder.nameOk = false;
       holder.readings = readingsFor(fields, merged);
       holder.images[side] = { path, url, count: Object.keys(readingsFor(fields, reading.result)).length };
       holder.skipped = false;
@@ -875,10 +1198,14 @@ function openWizard({ user, employees, onCreated, resume = null }) {
     const merged = Object.values(holder.results).length ? mergeSides(Object.values(holder.results)) : null;
     holder.readings = merged ? readingsFor(fields, merged) : {};
     holder.warnings = merged?.warnings ?? [];
+    holder.handwritten = handwrittenOf(holder.results);
     render();
   }
 
   // ── Saving ────────────────────────────────────────────────────────────
+  /** Settings' department; without one, the department read from the ministry ID. */
+  const departmentValue = () => department || text(state.docs.ministry?.readings?.department?.value) || null;
+
   function payload() {
     const v = key => {
       const value = state.values[key]?.value;
@@ -897,8 +1224,13 @@ function openWizard({ user, employees, onCreated, resume = null }) {
       "passport_no", "passport_type", "passport_issue_date", "passport_expiry_date",
       "ministry_badge_no", "ministry_badge_issue_date", "ministry_badge_expiry",
       "airport_badge_no", "airport_badge_issue_date", "airport_badge_expiry", "airport_badge_zones",
-      "ration_card_no", "ration_center_name", "residence_card_no", "residence_card_issue_date", "residence_address"];
+      "ration_card_no", "ration_center_name", "residence_card_no", "residence_card_issue_date", "residence_address",
+      "residence_head_name", "residence_form_no", "residence_card_issuer"];
     plain.forEach(key => { data[key] = v(key); });
+    data.department = departmentValue();
+    const address = v("residence_address");
+    data.residence_address = address ? composeResidence(asAddress(address)) || null : null;
+    data.residence_address_parts = address && !addressIsEmpty(asAddress(address)) ? JSON.stringify(asAddress(address)) : null;
     // The national card's own copies of the birth data, as the form keeps them.
     data.civil_id_birthdate = data.birthdate;
     data.civil_id_birthplace = data.birthplace;
@@ -924,9 +1256,11 @@ function openWizard({ user, employees, onCreated, resume = null }) {
   /** Images not uploaded yet, with how to upload each, once the employee exists. */
   function pendingUploads(id, spouses, family) {
     const out = [];
+    const photo = state.photo;
+    if (photo && !photo.uploaded) out.push({ image: photo, label: "الصورة الشخصية", task: () => api.uploadEmployeePhotoCrop(id, photo.path, photo.turns, photo.rect) });
     for (const step of STEPS.filter(st => st.sides)) {
       for (const [side, image] of Object.entries(state.docs[step.id].images)) {
-        if (!image.uploaded) out.push({ image, label: `${step.title} (${SIDE_LABEL[side]})`, task: () => UPLOAD[step.id](id, side, image.path) });
+        if (!image.uploaded) out.push({ image, label: `${step.title} (${sideLabel(step.id, side)})`, task: () => UPLOAD[step.id](id, side, image.path) });
       }
     }
     for (const [index, member] of spouses.entries()) {
@@ -956,8 +1290,9 @@ function openWizard({ user, employees, onCreated, resume = null }) {
   async function save() {
     if (!nationalDone()) { go(0); showToast(`أكمل البطاقة الوطنية أولًا: ${nationalMissing().join("، ")}`, "error"); return false; }
     if (!state.employee) {
+      // A national number belongs to one person: the employee is already registered.
       const twin = duplicateOf(text(state.values.civil_id?.value));
-      if (twin && !(await confirmAction(`يوجد موظف مسجّل بنفس الرقم الوطني: ${twin.full_name ?? ""}. حفظ موظف جديد رغم ذلك؟`))) return false;
+      if (twin) { askRegistered(twin); return false; }
     }
     const { data, spouses, family } = payload();
     state.saving = true;

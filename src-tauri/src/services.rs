@@ -158,6 +158,9 @@ pub struct Employee {
     pub notes: Option<String>,
     /// Name parts per field (see names.rs).
     pub name_parts: Option<serde_json::Value>,
+    /// The residence address as entered: JSON {gov, district, sub, city, m, z, d, other, useOther}.
+    /// `residence_address` keeps the same address composed into one line.
+    pub residence_address_parts: Option<String>,
     pub is_active: i64,
     pub created_at: Option<String>,
     pub updated_at: Option<String>,
@@ -243,6 +246,9 @@ pub struct EmployeeData {
     /// JSON object of name parts sent by the form; the combined names are rebuilt from it.
     #[serde(default)]
     pub name_parts: Option<serde_json::Value>,
+    /// The residence address parts as JSON (see `Employee::residence_address_parts`).
+    #[serde(default)]
+    pub residence_address_parts: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -813,7 +819,7 @@ const EMP_COLS: &str = "id,employee_number,photo_path,full_name,mother_name,fath
   airport_badge_issue_date,airport_badge_front_path,airport_badge_back_path,
   ministry_badge_issue_date,ministry_badge_front_path,ministry_badge_back_path,
   vehicle_color,vehicle_manufacture_year,vehicle_type,vehicle_annual_issue_date,vehicle_annual_expiry_date,vehicles,spouses,
-  appointment_date,father_birthdate,mother_birthdate,name_parts,airport_badge_zones";
+  appointment_date,father_birthdate,mother_birthdate,name_parts,airport_badge_zones,residence_address_parts";
 
 fn map_emp(r: &rusqlite::Row) -> rusqlite::Result<Employee> {
     Ok(Employee {
@@ -868,6 +874,7 @@ fn map_emp(r: &rusqlite::Row) -> rusqlite::Result<Employee> {
         mother_birthdate:r.get(87)?,
         name_parts:r.get::<_, Option<String>>(88)?.and_then(|value| serde_json::from_str(&value).ok()),
         airport_badge_zones:r.get(89)?,
+        residence_address_parts:r.get(90)?,
         residence_card_front_full_path:None,
         residence_card_back_full_path:None,
         airport_badge_front_full_path:None,
@@ -1237,6 +1244,15 @@ pub fn get_employee(conn: &Connection, id: i64) -> AppResult<Employee> {
 
 /// Rebuilds the employee's combined names from their parts (see names.rs) and returns the
 /// data to save plus the `name_parts` JSON to store beside it.
+/// Every employee is in the department set in Settings: when one is set there, it is the
+/// employee's department, whatever the screen sent (a department read from an ID is only a check).
+fn fix_department(conn: &Connection, d: &mut EmployeeData) {
+    let fixed: Option<String> = conn.query_row("SELECT department_name FROM company_config WHERE id=1", [], |r| r.get(0)).ok().flatten();
+    if let Some(name) = fixed.map(|n| n.trim().to_string()).filter(|n| !n.is_empty()) {
+        d.department = Some(name);
+    }
+}
+
 fn resolve_employee_names(conn: &Connection, id: Option<i64>, d: &EmployeeData) -> AppResult<(EmployeeData, String)> {
     let stored = match id {
         Some(id) => conn.query_row("SELECT name_parts FROM employees WHERE id=?1", params![id], |r| r.get::<_, Option<String>>(0))
@@ -1262,7 +1278,8 @@ fn resolve_employee_names(conn: &Connection, id: Option<i64>, d: &EmployeeData) 
 
 pub fn create_employee(conn: &Connection, d: &EmployeeData, username: &str) -> AppResult<Employee> {
     assert_permission(conn, username, "employees.create")?;
-    let (d, name_parts) = resolve_employee_names(conn, None, d)?;
+    let (mut d, name_parts) = resolve_employee_names(conn, None, d)?;
+    fix_department(conn, &mut d);
     let d = &d;
     validate_employee_data(d)?;
     conn.execute("INSERT INTO employees(employee_number,full_name,mother_name,father_birthplace,mother_birthplace,
@@ -1304,15 +1321,22 @@ pub fn create_employee(conn: &Connection, d: &EmployeeData, username: &str) -> A
       d.vehicle_annual_issue_date,d.vehicle_annual_expiry_date,d.vehicles.as_deref().unwrap_or("[]"),
       d.spouses.as_deref().unwrap_or("[]"),d.appointment_date,d.father_birthdate,d.mother_birthdate,d.airport_badge_zones])?;
     let id = conn.last_insert_rowid();
-    conn.execute("UPDATE employees SET name_parts=?1 WHERE id=?2", params![name_parts, id])?;
+    conn.execute("UPDATE employees SET name_parts=?1, residence_address_parts=?2 WHERE id=?3", params![name_parts, address_parts(d), id])?;
     replace_employee_repeating_data(conn, id, d)?;
     log_activity(conn, username, "CREATE_EMPLOYEE", Some("employee"), Some(id), Some(d.full_name.trim()), None);
     get_employee(conn, id)
 }
 
+/// The address parts as stored: a JSON object only, so a malformed value is not kept.
+fn address_parts(d: &EmployeeData) -> Option<String> {
+    let value: serde_json::Value = serde_json::from_str(d.residence_address_parts.as_deref()?).ok()?;
+    value.is_object().then(|| value.to_string())
+}
+
 pub fn update_employee(conn: &Connection, id: i64, d: &EmployeeData, username: &str) -> AppResult<Employee> {
     assert_permission(conn, username, "employees.edit")?;
-    let (d, name_parts) = resolve_employee_names(conn, Some(id), d)?;
+    let (mut d, name_parts) = resolve_employee_names(conn, Some(id), d)?;
+    fix_department(conn, &mut d);
     let d = &d;
     validate_employee_data(d)?;
     conn.execute("UPDATE employees SET employee_number=?1,full_name=?2,mother_name=?3,father_birthplace=?4,
@@ -1351,7 +1375,7 @@ pub fn update_employee(conn: &Connection, id: i64, d: &EmployeeData, username: &
       d.airport_badge_issue_date,d.ministry_badge_issue_date,d.vehicle_color,d.vehicle_manufacture_year,d.vehicle_type,
       d.vehicle_annual_issue_date,d.vehicle_annual_expiry_date,d.vehicles.as_deref().unwrap_or("[]"),
       d.spouses.as_deref().unwrap_or("[]"),d.appointment_date,d.father_birthdate,d.mother_birthdate,d.airport_badge_zones,id])?;
-    conn.execute("UPDATE employees SET name_parts=?1 WHERE id=?2", params![name_parts, id])?;
+    conn.execute("UPDATE employees SET name_parts=?1, residence_address_parts=?2 WHERE id=?3", params![name_parts, address_parts(d), id])?;
     replace_employee_repeating_data(conn, id, d)?;
     log_activity(conn, username, "UPDATE_EMPLOYEE", Some("employee"), Some(id), Some(d.full_name.trim()), None);
     get_employee(conn, id)
@@ -1402,6 +1426,43 @@ pub fn upload_employee_photo(conn: &Connection, employee_id: i64, source_path: &
         }
     }
     Ok(rel)
+}
+
+// ── Address places added by users ───────────────────────────────────────────
+/// A district (subdistrict empty) or a sub-district a user added because the bundled list of
+/// Iraqi governorates, districts and sub-districts lacked it.
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
+pub struct AddressPlace {
+    pub governorate: String,
+    pub district: String,
+    #[serde(default)]
+    pub subdistrict: String,
+}
+
+pub fn list_address_places(conn: &Connection) -> AppResult<Vec<AddressPlace>> {
+    let mut stmt = conn.prepare("SELECT governorate, district, subdistrict FROM address_places ORDER BY governorate, district, subdistrict")?;
+    let places = stmt
+        .query_map([], |r| Ok(AddressPlace { governorate: r.get(0)?, district: r.get(1)?, subdistrict: r.get(2)? }))?
+        .collect::<rusqlite::Result<_>>()?;
+    Ok(places)
+}
+
+pub fn add_address_place(conn: &Connection, place: &AddressPlace, username: &str) -> AppResult<AddressPlace> {
+    let clean = |v: &str| v.split_whitespace().collect::<Vec<_>>().join(" ");
+    let place = AddressPlace { governorate: clean(&place.governorate), district: clean(&place.district), subdistrict: clean(&place.subdistrict) };
+    if place.governorate.is_empty() || place.district.is_empty() {
+        return Err(AppError::Validation("اختر المحافظة واكتب اسم القضاء".into()));
+    }
+    if [&place.governorate, &place.district, &place.subdistrict].iter().any(|v| v.chars().count() > 60) {
+        return Err(AppError::Validation("الاسم طويل جدًا".into()));
+    }
+    conn.execute(
+        "INSERT OR IGNORE INTO address_places(governorate, district, subdistrict, created_by) VALUES(?1, ?2, ?3, ?4)",
+        params![place.governorate, place.district, place.subdistrict, username],
+    )?;
+    let detail = [place.governorate.as_str(), place.district.as_str(), place.subdistrict.as_str()].iter().filter(|v| !v.is_empty()).copied().collect::<Vec<_>>().join(" / ");
+    log_activity(conn, username, "ADD_ADDRESS_PLACE", Some("address_place"), None, Some(&detail), None);
+    Ok(place)
 }
 
 // ── Grade history ──────────────────────────────────────────────────────────
@@ -3471,6 +3532,23 @@ fn development_data_path_is_isolated() {
     assert_eq!(app_data_path(),base.join("CNSArch-Development"));
     assert_ne!(app_data_path(),base.join("CNSArch"));
     assert_eq!(crate::db::db_path(),app_data_path().join("database.db"));
+}
+
+#[cfg(test)]
+mod address_place_tests {
+    use super::*;
+
+    #[test]
+    fn places_are_added_once_under_their_parent_and_validated() {
+        let conn = Connection::open_in_memory().unwrap();
+        crate::db::migrate_for_tests(&conn);
+        let place = |g: &str, d: &str, s: &str| AddressPlace { governorate: g.into(), district: d.into(), subdistrict: s.into() };
+        add_address_place(&conn, &place("محافظة تجريبية", " قضاء  تجريبي ", ""), "tester").unwrap();
+        add_address_place(&conn, &place("محافظة تجريبية", "قضاء تجريبي", "ناحية تجريبية"), "tester").unwrap();
+        add_address_place(&conn, &place("محافظة تجريبية", "قضاء تجريبي", "ناحية تجريبية"), "tester").unwrap();
+        assert_eq!(list_address_places(&conn).unwrap(), vec![place("محافظة تجريبية", "قضاء تجريبي", ""), place("محافظة تجريبية", "قضاء تجريبي", "ناحية تجريبية")]);
+        assert!(add_address_place(&conn, &place("محافظة تجريبية", "", "ناحية"), "tester").is_err());
+    }
 }
 
 #[cfg(test)]

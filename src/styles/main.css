@@ -780,6 +780,23 @@ html[data-ui-scale] #app-shell { height: calc(100vh / var(--ui-scale)); }
 .doc-att-icon{width:18px;height:18px;fill:none;stroke:currentColor;stroke-width:1.8;stroke-linecap:round;stroke-linejoin:round}
 
 /* ── Airport badge access zones (chips) ── */
+.emp-address{display:grid;grid-template-columns:repeat(3,1fr);gap:8px}
+.emp-address label{display:flex;flex-direction:column}
+.emp-address-note{margin-top:4px;font-size:11px;color:var(--ui-warn)}
+/* Residence address: places (linked lists), then م / ز / د or one free line. */
+.addr{display:flex;flex-direction:column;gap:8px}
+.addr-row{display:grid;gap:8px}
+.addr-place{grid-template-columns:repeat(4,minmax(0,1fr))}
+.addr-mzd{grid-template-columns:repeat(3,minmax(0,1fr))}
+.addr-cell{display:flex;flex-direction:column;min-width:0}
+.addr-cell>span{display:block;font-size:10px;color:var(--ui-text-faint);margin-bottom:2px}
+.addr-cell select:disabled,.addr-cell input:disabled{opacity:.55;cursor:not-allowed}
+.addr-mzd.is-off{opacity:.5}
+.addr-other-toggle{display:flex;align-items:center;gap:6px;font-size:12px;cursor:pointer;width:fit-content}
+.addr-other-toggle small{color:var(--ui-text-faint)}
+.addr-add{display:flex;gap:6px;align-items:center;padding:8px;border:1px dashed var(--ui-line-strong);border-radius:8px}
+.addr-add input{flex:1}
+@media (max-width:720px){.addr-place{grid-template-columns:repeat(2,minmax(0,1fr))}}
 .emp-zones{display:flex;flex-wrap:wrap;align-items:center;gap:6px;min-height:38px;height:auto;padding:4px 8px;cursor:text}
 .emp-zone-list{display:contents}
 .emp-zone-chip{display:inline-flex;align-items:center;gap:4px;padding:2px 4px 2px 10px;border:1px solid var(--ui-accent);border-radius:999px;background:var(--ui-accent-soft);color:var(--ui-text-strong);font-size:12px;font-weight:600;letter-spacing:.03em}
@@ -895,6 +912,21 @@ html[data-ui-scale] #app-shell { height: calc(100vh / var(--ui-scale)); }
 .aw-chips{display:flex;flex-wrap:wrap;gap:6px;align-items:center;min-height:36px;padding:4px 6px;border:1px solid var(--ui-line-strong);border-radius:8px;background:var(--ui-sunken)}
 .aw-chip{display:inline-flex;align-items:center;gap:6px;padding:2px 6px 2px 10px;border-radius:999px;border:1px solid var(--ui-accent);background:var(--ui-accent-soft);color:var(--ui-text-strong);font-weight:700;font-size:12.5px}
 .aw-chip button{background:none;border:0;color:var(--ui-text-muted);cursor:pointer;font-size:11px;padding:0 2px}
+.aw-photo{display:flex;flex-direction:column;gap:12px}
+.aw-photo-actions{display:flex;flex-wrap:wrap;gap:8px}
+.aw-photo-empty{font-size:13px;color:var(--ui-text-muted)}
+.aw-photo-work{display:flex;gap:16px;align-items:flex-start;flex-wrap:wrap}
+.aw-crop-area{position:relative;display:inline-block;line-height:0;border-radius:8px;overflow:hidden;user-select:none;touch-action:none}
+.aw-photo-work .aw-crop-area img{display:block;width:auto;height:auto;max-width:min(620px,100%);max-height:58vh;min-width:0;opacity:1;object-fit:fill;border-radius:0}
+.aw-crop{position:absolute;border:2px solid var(--ui-accent);box-shadow:0 0 0 9999px rgba(0,0,0,.35);cursor:move;background:transparent}
+.aw-crop-handle{position:absolute;right:0;bottom:0;width:16px;height:16px;border-radius:3px;background:var(--ui-accent);cursor:nwse-resize}
+.aw-photo-result{display:flex;flex-direction:column;align-items:center;gap:6px}
+.aw-photo-preview{width:132px;height:170px;border-radius:8px;border:1px solid var(--ui-line-strong);background-repeat:no-repeat;background-color:var(--ui-sunken)}
+.aw-photo-result small{font-size:11.5px;color:var(--ui-text-muted)}
+.aw-chip-add,.emp-zone-add{display:inline-flex;align-items:center;padding:2px 10px;border-radius:999px;border:1px dashed var(--ui-line-strong);background:transparent;color:var(--ui-text-muted);font-size:12px;font-weight:600;cursor:pointer}
+.aw-chip-add:hover,.emp-zone-add:hover,.aw-chip-add:focus-visible,.emp-zone-add:focus-visible{border-color:var(--ui-accent);color:var(--ui-text-strong);outline:none}
+.emp-zone-quick{display:flex;flex-wrap:wrap;gap:6px;margin-top:6px}
+.emp-zone-quick:empty{display:none}
 .aw-chip-input{flex:1;min-width:120px;background:none;border:0;outline:none;color:var(--ui-text-strong);font:inherit;font-size:12.5px}
 .aw-foot{display:flex;gap:8px;align-items:center;padding:10px 16px;border-top:1px solid var(--ui-line)}
 .aw-hint{margin-inline-start:auto;font-size:12px;color:var(--ui-text-faint)}
@@ -929,6 +961,8 @@ html[data-ui-scale] #app-shell { height: calc(100vh / var(--ui-scale)); }
 .aw-tag{display:inline-flex;align-items:center;gap:6px}
 .aw-confirm{font-size:10px;line-height:1.7;padding:0 8px;border-radius:999px;border:1px solid var(--ui-ok-line);background:var(--ui-ok-bg);color:var(--ui-ok);cursor:pointer;white-space:nowrap}
 .aw-confirm:hover,.aw-confirm:focus-visible{filter:brightness(1.15);outline:2px solid var(--ui-ok-line);outline-offset:1px}
+.aw-other{padding:10px 12px;border:1px solid var(--ui-danger);border-radius:8px;background:color-mix(in srgb,var(--ui-danger) 10%,transparent);color:var(--ui-danger);font-weight:700;font-size:12.5px;line-height:1.7}
+.aw-other-actions{display:flex;gap:8px;margin-top:8px}
 .aw-note.is-error{color:var(--ui-danger);font-weight:600}
 .aw-thumb img.is-focused{outline:3px solid #fbbf24;outline-offset:-3px}
 .aw-draft{display:flex;align-items:center;gap:10px;margin:14px 18px 0;padding:10px 14px;border-radius:10px;border:1px solid var(--ui-info-line);background:var(--ui-info-bg)}
@@ -937,6 +971,10 @@ html[data-ui-scale] #app-shell { height: calc(100vh / var(--ui-scale)); }
 /* Leaving the wizard with unsaved entries. */
 .aw-ask{position:absolute;inset:0;z-index:96;display:grid;place-items:center;background:rgba(0,0,0,.55)}
 .aw-ask-box{width:min(460px,92vw);padding:18px 20px;border-radius:12px;border:1px solid var(--ui-line);background:var(--ui-surface);box-shadow:0 20px 50px rgba(0,0,0,.45)}
+.aw-attach{width:min(620px,94vw)}
+.aw-diffs{display:flex;flex-direction:column;gap:6px;max-height:46vh;overflow:auto;margin:0 0 14px}
+.aw-diff{display:grid;grid-template-columns:auto 150px 1fr;gap:8px;align-items:center;padding:6px 8px;border:1px solid var(--ui-line);border-radius:8px;font-size:12.5px;cursor:pointer}
+.aw-diff span{color:var(--ui-text-muted)}
 .aw-ask-box h3{margin:0 0 6px;font-size:16px}
 .aw-ask-box p{margin:0 0 14px;font-size:13px;color:var(--ui-text-muted);line-height:1.7}
 .aw-ask-actions{display:flex;flex-wrap:wrap;gap:8px}

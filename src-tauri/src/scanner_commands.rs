@@ -360,7 +360,7 @@ pub(crate) async fn cmd_read_image_fields(
     tauri::async_runtime::spawn_blocking(move || {
         let image = scanner::load_image(std::path::Path::new(&source_path))
             .map_err(|_| AppError::Validation("قراءة البيانات تعمل على الصور فقط (JPEG أو PNG أو WebP)".into()))?;
-        let Some((lines, upright)) = ocr::read_lines_upright(&image) else {
+        let Some((lines, upright, _)) = ocr::read_lines_upright(&image) else {
             return Err(AppError::Other("text reader unavailable".into()));
         };
         let result = ocr_parse::parse_with_codes(&lines, &ocr::read_qr_codes(&image));
@@ -374,4 +374,87 @@ pub(crate) async fn cmd_read_image_fields(
     })
     .await
     .map_err(|e| AppError::Other(e.to_string()))?
+}
+
+/// A small upright-as-stored JPEG of a picked image, for the wizard's photo crop box (the asset
+/// protocol only serves the data folder). Nothing is stored.
+#[tauri::command]
+pub(crate) async fn cmd_image_preview(
+    state: State<'_, DbState>,
+    sess: State<'_, SessionState>,
+    source_path: String,
+) -> Result<tauri::ipc::Response, AppError> {
+    {
+        let conn = state.conn()?;
+        authorize(&conn, &sess, "employees.create")?;
+        let upload = files::validate_upload(&source_path, false, true, 25 * 1024 * 1024)?;
+        if !upload.mime_type.starts_with("image/") {
+            return Err(AppError::Validation("اختر صورة JPEG أو PNG أو WebP".into()));
+        }
+    }
+    tauri::async_runtime::spawn_blocking(move || {
+        let image = scanner::load_image(std::path::Path::new(&source_path))?;
+        scanner::jpeg(&scanner::thumbnail(&image, 900), 85)
+    })
+    .await
+    .map_err(|e| AppError::Other(e.to_string()))?
+    .map(tauri::ipc::Response::new)
+}
+
+/// Saves part of a picked image as the employee's personal photo: the image is turned upright
+/// as the reader turned it (`turns`), then cut to `rect` (fractions of the upright image).
+#[tauri::command]
+pub(crate) fn cmd_upload_employee_photo_crop(
+    state: State<DbState>,
+    sess: State<SessionState>,
+    employee_id: i64,
+    source_path: String,
+    turns: u8,
+    rect: [f32; 4],
+) -> Result<String, AppError> {
+    let conn = state.conn()?;
+    let user = authorize(&conn, &sess, "employees.edit")?;
+    files::validate_upload(&source_path, false, true, 25 * 1024 * 1024)?;
+    let image = scanner::load_image(std::path::Path::new(&source_path))?;
+    let photo = crop_upright(&image, turns, rect)?;
+    let temp = tempfile::Builder::new().prefix("autohr-photo-").suffix(".jpg").tempfile().map_err(|e| AppError::Other(e.to_string()))?;
+    std::fs::write(temp.path(), scanner::jpeg(&photo, 92)?).map_err(|e| AppError::Other(e.to_string()))?;
+    let path = temp.path().to_str().ok_or_else(|| AppError::Validation("Invalid path".into()))?.to_owned();
+    let result = crate::services::upload_employee_photo(&conn, employee_id, &path)?;
+    crate::services::log_activity(&conn, &user, "UPLOAD_DOCUMENT", Some("employee"), Some(employee_id), Some(&result), Some("photo"));
+    Ok(result)
+}
+
+pub(crate) fn crop_upright(image: &image::DynamicImage, turns: u8, rect: [f32; 4]) -> Result<image::DynamicImage, AppError> {
+    let upright = ocr::rotate(&image.to_rgb8(), turns % 4);
+    let (w, h) = (upright.width() as f32, upright.height() as f32);
+    let [x0, y0, x1, y1] = rect.map(|v| if v.is_finite() { v.clamp(0., 1.) } else { 0. });
+    let (left, top) = ((x0.min(x1) * w) as u32, (y0.min(y1) * h) as u32);
+    let (width, height) = (((x1 - x0).abs() * w) as u32, ((y1 - y0).abs() * h) as u32);
+    if width < 16 || height < 16 {
+        return Err(AppError::Validation("منطقة الصورة صغيرة جدًا".into()));
+    }
+    Ok(image::DynamicImage::ImageRgb8(image::imageops::crop_imm(&upright, left, top, width, height).to_image()))
+}
+
+#[cfg(test)]
+mod photo_tests {
+    use super::*;
+
+    #[test]
+    fn crop_turns_the_image_upright_then_cuts_the_fractions() {
+        // 40 x 20, red on the left half: one quarter turn makes it 20 x 40 with red on the top half.
+        let mut img = image::RgbImage::new(40, 20);
+        for (x, _, p) in img.enumerate_pixels_mut() { *p = if x < 20 { image::Rgb([255, 0, 0]) } else { image::Rgb([0, 0, 255]) }; }
+        let source = image::DynamicImage::ImageRgb8(img);
+        let unturned = crop_upright(&source, 0, [0., 0., 0.5, 1.]).unwrap().to_rgb8();
+        assert_eq!((unturned.width(), unturned.height()), (20, 20));
+        assert!(unturned.pixels().all(|p| p.0 == [255, 0, 0]));
+        let turned = crop_upright(&source, 1, [0., 0., 1., 0.5]).unwrap().to_rgb8();
+        assert_eq!((turned.width(), turned.height()), (20, 20));
+        let colours: std::collections::HashSet<_> = turned.pixels().map(|p| p.0).collect();
+        assert_eq!(colours.len(), 1);
+        assert!(crop_upright(&source, 0, [0., 0., 0.1, 0.1]).is_err());
+        assert!(crop_upright(&source, 0, [f32::NAN, 0., 1., 1.]).is_ok());
+    }
 }

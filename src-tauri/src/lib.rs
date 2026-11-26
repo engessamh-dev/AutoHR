@@ -450,6 +450,19 @@ fn cmd_scan_document(state: State<DbState>, sess: State<SessionState>, device_id
     log_activity(&conn, &user, "UPLOAD_DOCUMENT", Some("employee"), Some(employee_id), Some(&result), Some("photo"));
     Ok(result)
 }
+#[tauri::command] fn cmd_list_address_places(state: State<DbState>, sess: State<SessionState>) -> Result<Vec<AddressPlace>, AppError> {
+    let conn = state.conn()?;
+    authorize(&conn, &sess, "employees.view")?;
+    list_address_places(&conn)
+}
+/// A district or sub-district missing from the bundled list, added while entering an address.
+#[tauri::command] fn cmd_add_address_place(state: State<DbState>, sess: State<SessionState>, place: AddressPlace) -> Result<AddressPlace, AppError> {
+    let conn = state.conn()?;
+    let user = session_user(&sess)?;
+    let permission = if assert_permission(&conn, &user, "employees.edit").is_ok() { "employees.edit" } else { "employees.create" };
+    let user = authorize(&conn, &sess, permission)?;
+    add_address_place(&conn, &place, &user)
+}
 #[tauri::command] fn cmd_delete_employee_photo(state: State<DbState>, sess: State<SessionState>, employee_id: i64) -> Result<(), AppError> {
     let conn = state.conn()?;
     let user = authorize(&conn, &sess, "employees.edit")?;
@@ -1302,7 +1315,7 @@ pub fn run() {
             cmd_list_employees, cmd_get_employee,
             cmd_create_employee, cmd_update_employee, cmd_delete_employee,
             cmd_list_name_review, cmd_save_name_review,
-            cmd_upload_employee_photo, cmd_delete_employee_photo,
+            cmd_upload_employee_photo, cmd_delete_employee_photo, cmd_upload_employee_photo_crop, cmd_image_preview, cmd_list_address_places, cmd_add_address_place,
             cmd_upload_national_card_attachment, cmd_delete_national_card_attachment,
             cmd_upload_family_national_card_attachment, cmd_delete_family_national_card_attachment,
             cmd_upload_spouse_national_card_attachment, cmd_delete_spouse_national_card_attachment,

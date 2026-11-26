@@ -130,7 +130,7 @@ test("badge: number and dates fill the badge section", async ({ page }) => {
 
 test("residence card: the printed serial fills the card number", async ({ page }) => {
   await page.evaluate(() => {
-    window.employeePatch = { residence_card_back_path: "Files/Employees/1/Documents/Residence/back.jpg", residence_card_back_full_path: "synthetic" };
+    window.employeePatch = { residence_card_back_path: "Files/Employees/1/Documents/Residence/back.jpg", residence_card_back_full_path: "synthetic", residence_card_issuer: "مكتب 00", residence_form_no: "1111", residence_address: "محلة 100 زقاق 2 دار 3" };
     window.readResult = { document: "other", warnings: [], fields: [{ key: "doc_number", value: "1000001", confidence: 0.6, source: "text" }] };
   });
   await openDocuments(page);
@@ -139,6 +139,31 @@ test("residence card: the printed serial fills the card number", async ({ page }
   await tile.getByRole("menuitem", { name: "قراءة البيانات" }).click();
   await page.getByRole("dialog", { name: /قراءة البيانات/ }).getByRole("button", { name: "اعتماد المحدَّد" }).click();
   await expect(page.locator("#f-residence_card_no")).toHaveValue("1000001");
+  // The handwritten fields are kept in the file too.
+  await expect(page.locator("#f-residence_card_issuer")).toHaveValue("مكتب 00");
+  await expect(page.locator("#f-residence_form_no")).toHaveValue("1111");
+  // An older one-line address is split into م / ز / د, and saved as parts and as one line.
+  const address = page.locator('[data-address="residence_address"]');
+  await expect(address.locator('[data-addr="m"]')).toHaveValue("100");
+  await expect(address.locator('[data-addr="z"]')).toHaveValue("2");
+  await expect(address.locator('[data-addr="d"]')).toHaveValue("3");
+  await address.locator('[data-addr="z"]').fill("22");
+  await address.locator('[data-addr="gov"]').selectOption("البصرة");
+  await page.click("#panel-save");
+  await page.getByRole("button", { name: "تأكيد", exact: true }).click();
+  await expect.poll(() => page.evaluate(() => window.calls.find(c => c.command === "cmd_update_employee")?.args.data.residence_address)).toBe("البصرة، م 100 ز 22 د 3");
+  const parts = await page.evaluate(() => JSON.parse(window.calls.find(c => c.command === "cmd_update_employee").args.data.residence_address_parts));
+  expect(parts).toMatchObject({ gov: "البصرة", m: "100", z: "22", d: "3" });
+});
+
+test("residence address written another way is kept whole as «تنسيق عنوان آخر», with a note", async ({ page }) => {
+  await page.evaluate(() => { window.employeePatch = { residence_address: "بغداد - حي تجريبي" }; });
+  await openDocuments(page);
+  const address = page.locator('[data-address="residence_address"]');
+  await expect(address.locator('[data-addr="useOther"]')).toBeChecked();
+  await expect(address.locator('[data-addr="other"]')).toHaveValue("بغداد - حي تجريبي");
+  await expect(address.locator('[data-addr="m"]')).toBeDisabled();
+  await expect(page.locator(".emp-address-note")).toContainText("بصيغة قديمة");
 });
 
 test("ration card: number from the QR code and the head of household", async ({ page }) => {
@@ -305,4 +330,14 @@ test("a new vehicle's registration image: + رفع saves, then uploads to the sa
   await page.getByRole("button", { name: "رفع بالطريقة المعتادة" }).click();
   await expect.poll(() => page.evaluate(() => window.calls.find(c => c.command === "cmd_upload_vehicle_annual_attachment")?.args)).toMatchObject({ employeeId: 1, vehicleIndex: 0, side: "front" });
   await expect(page.locator('.tab-btn[data-tab="vehicle"]')).toHaveCSS("font-weight", "700");
+});
+
+test("badge zones: the usual codes, C included, are added with one click", async ({ page }) => {
+  await page.evaluate(() => { window.employeePatch = { airport_badge_zones: "S1,T" }; });
+  await openDocuments(page);
+  const quick = page.locator(".emp-zone-add");
+  await expect(quick).toHaveText(["+ VIP", "+ C"]);
+  await page.click('.emp-zone-add[data-zone="C"]');
+  await expect(page.locator("#f-airport_badge_zones")).toHaveValue("S1,T,C");
+  await expect(quick).toHaveText(["+ VIP"]);
 });
