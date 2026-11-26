@@ -176,7 +176,7 @@ pub fn db_path() -> PathBuf {
 /// To change the schema later: bump this constant and add an `if from < N { ... }` step in
 /// `upgrade()`. Every upgrade of an existing database runs only after a verified
 /// pre-upgrade snapshot exists, and the snapshot is restored automatically if a step fails.
-pub const SCHEMA_VERSION: i64 = 10;
+pub const SCHEMA_VERSION: i64 = 11;
 
 #[derive(Debug)]
 pub enum OpenError {
@@ -299,7 +299,13 @@ fn upgrade(conn: &Connection, from: i64) -> SqlResult<()> {
     if from < 10 {
         upgrade_to_v10(conn)?;
     }
-    // Future steps go here, for example: if from < 11 { ... }
+    if from < 11 {
+        // The organisation's name is fixed and matches the logo; the old default section
+        // «GCANS» is cleared (the section and unit are named by the first-run wizard or Settings).
+        conn.execute("UPDATE company_config SET company_name=?1 WHERE id=1", [crate::services::COMPANY_NAME])?;
+        conn.execute("UPDATE company_config SET department_name='' WHERE id=1 AND department_name='GCANS'", [])?;
+    }
+    // Future steps go here, for example: if from < 12 { ... }
     #[cfg(test)]
     if FAIL_UPGRADE.with(|flag| flag.get()) {
         return Err(rusqlite::Error::InvalidQuery);

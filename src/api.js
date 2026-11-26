@@ -11,6 +11,18 @@ export const api = {
   changePassword: (currentPassword, newPassword) => invoke("cmd_change_password", { currentPassword, newPassword }),
   logout: ()                   => invoke("cmd_logout"),
 
+  // Accounts: first-run administrator, password policy, recovery code
+  getFirstRunState: ()            => invoke("cmd_get_first_run_state"),
+  completeFirstRun: (data)        => invoke("cmd_complete_first_run", { data }),
+  getPasswordPolicy: ()           => invoke("cmd_get_password_policy"),
+  setPasswordPolicy: (policy)     => invoke("cmd_set_password_policy", { policy }),
+  getRecoveryOptions: ()          => invoke("cmd_get_recovery_options"),
+  newUnlockChallenge: ()          => invoke("cmd_new_unlock_challenge"),
+  unlockAdmin: (unlockCode, newPassword) => invoke("cmd_unlock_admin", { unlockCode, newPassword }),
+  getRecoveryStatus: ()           => invoke("cmd_get_recovery_status"),
+  regenerateRecoveryCode: ()      => invoke("cmd_regenerate_recovery_code"),
+  recoverAdminPassword: (code, newPassword) => invoke("cmd_recover_admin_password", { code, newPassword }),
+
   // Company config
   getCompanyConfig:    ()           => invoke("cmd_get_company_config"),
   getPublicCompanyConfig: ()        => invoke("cmd_get_public_company_config"),

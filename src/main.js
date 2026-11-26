@@ -22,6 +22,8 @@ import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { initTheme, mountThemeMenu } from "./theme.js";
 import { installErrorReporting, setErrorScreen } from "./error-log.js";
+import { loadPasswordPolicy, mountPasswordRules, passwordProblem, addPasswordToggle, watchCapsLock } from "./password-rules.js";
+import { openForgotPassword } from "./recovery.js";
 
 // Apply the saved light/dark choice before anything is shown.
 installErrorReporting();
@@ -450,7 +452,11 @@ async function offerAvailableUpdate(user) {
 // One fixed slot at the bottom of the card, under the unit name, so a message
 // never covers the fields, the login button or the "forgot password" link.
 let loginLockoutTimer = null;
+// The name the countdown is for: another name on the same computer can still sign in.
+let lockedLoginName = "";
 let loginBusy = false;
+const typedLoginName = () => (document.getElementById("login-username")?.value || "").trim().toLowerCase();
+const lockoutApplies = () => Boolean(loginLockoutTimer) && typedLoginName() === lockedLoginName;
 
 function showLoginMessage(text, kind = "error", field = null) {
   const slot = document.getElementById("login-error");
@@ -467,7 +473,7 @@ function showLoginMessage(text, kind = "error", field = null) {
 }
 
 function clearLoginMessage() {
-  if (loginLockoutTimer) return;
+  if (lockoutApplies()) return;
   const slot = document.getElementById("login-error");
   slot.classList.add("hidden");
   slot.textContent = "";
@@ -477,7 +483,7 @@ function clearLoginMessage() {
 function setLoginBusy(busy) {
   loginBusy = busy;
   const submit = document.querySelector(".login-hit-submit");
-  if (submit) submit.disabled = busy || Boolean(loginLockoutTimer);
+  if (submit) submit.disabled = busy || lockoutApplies();
   document.getElementById("login-form")?.setAttribute("aria-busy", String(busy));
 }
 
@@ -489,10 +495,12 @@ function lockoutMinutes(message) {
 
 function startLoginLockout(minutes) {
   let remaining = Math.max(1, minutes) * 60;
+  lockedLoginName = typedLoginName();
   const tick = () => {
     const mm = String(Math.floor(remaining / 60)).padStart(2, "0");
     const ss = String(remaining % 60).padStart(2, "0");
-    showLoginMessage(`الحساب موقوف مؤقتاً. حاول بعد ${mm}:${ss}`, "error");
+    // Shown only while the paused name is in the field.
+    if (lockoutApplies()) showLoginMessage(`تم إيقاف الدخول مؤقتًا. حاول بعد ${mm}:${ss}`, "error");
     remaining -= 1;
   };
   if (loginLockoutTimer) clearInterval(loginLockoutTimer);
@@ -501,6 +509,7 @@ function startLoginLockout(minutes) {
     if (remaining < 0) {
       clearInterval(loginLockoutTimer);
       loginLockoutTimer = null;
+      lockedLoginName = "";
       clearLoginMessage();
       setLoginBusy(false);
       document.getElementById("login-password")?.focus();
@@ -509,6 +518,11 @@ function startLoginLockout(minutes) {
     tick();
   }, 1000);
   setLoginBusy(false);
+}
+
+/** Back on the paused name: show its countdown again at once (the timer keeps running). */
+function startLoginLockoutDisplay() {
+  showLoginMessage("تم إيقاف الدخول مؤقتًا بسبب تكرار المحاولات الخاطئة.", "error");
 }
 
 // ── Recent usernames ──────────────────────────────────────────────────────
@@ -575,17 +589,18 @@ function bindLoginUsernameSuggestions() {
 }
 
 async function doLogin(username, password) {
-  if (loginBusy || loginLockoutTimer) return;
+  if (loginBusy || lockoutApplies()) return;
   setLoginBusy(true);
   showLoginMessage("جارٍ التحقق…", "info");
   try {
     const user = await api.login(username, password);
     currentUser = user;
-    rememberLoginUsername(username);
+    rememberLoginUsername(user.username);
     clearLoginMessage();
     document.getElementById("login-screen").classList.add("hidden");
     if (user.must_change_password) {
       document.getElementById("password-change-screen").classList.remove("hidden");
+      await window.autohrShowPasswordChange?.();
       document.getElementById("current-password").focus();
       return;
     }
@@ -594,10 +609,12 @@ async function doLogin(username, password) {
     const message = typeof err === "string" ? err : String(err?.message ?? err ?? "");
     if (message.startsWith("تم تعديل بيانات هذا الحساب") || message.startsWith("هذا الحساب موقوف")) {
       showLoginMessage(message, "error");
-    } else if (message.startsWith("تم إيقاف تسجيل الدخول")) {
+    } else if (message.startsWith("تم إيقاف الدخول مؤقتًا")) {
       startLoginLockout(lockoutMinutes(message));
-    } else if (message === "You are not authorized to perform this action") {
-      showLoginMessage(t("loginError"), "error", "password");
+      document.getElementById("login-password").value = "";
+    } else if (message === "You are not authorized to perform this action" || message.startsWith(t("loginError"))) {
+      // A wrong name or password; near the limit Rust adds how many attempts are left.
+      showLoginMessage(message.startsWith(t("loginError")) ? message : t("loginError"), "error", "password");
       const password = document.getElementById("login-password");
       password.value = "";
       password.focus();
@@ -656,7 +673,7 @@ document.addEventListener("DOMContentLoaded", async () => {
   });
 
   // First run or unavailable data folder: choose folders before the login screen.
-  await runStartupGate();
+  const firstRunUser = await runStartupGate();
   applyLoginBranding();
 
   // Login form
@@ -695,7 +712,14 @@ document.addEventListener("DOMContentLoaded", async () => {
   loginPassword.addEventListener("keyup", syncCapsLock);
 
   document.getElementById("btn-forgot-password").addEventListener("click", () => {
-    showLoginMessage("تواصل مع المسؤول لإعادة تعيين كلمة المرور", "info");
+    openForgotPassword((username, note) => {
+      const name = document.getElementById("login-username");
+      name.value = username;
+      name.dispatchEvent(new Event("input"));
+      document.getElementById("login-password").value = "";
+      document.getElementById("login-password").focus();
+      showLoginMessage(note || "تم تعيين كلمة المرور الجديدة. ادخل بها الآن.", "info");
+    });
   });
 
   document.querySelectorAll("#login-username, #login-password").forEach(input => {
@@ -706,10 +730,24 @@ document.addEventListener("DOMContentLoaded", async () => {
     input.addEventListener("input", () => {
       syncPlaceholder();
       clearLoginMessage();
+      if (lockoutApplies()) startLoginLockoutDisplay();
+      setLoginBusy(loginBusy);
     });
     input.addEventListener("change", syncPlaceholder);
     syncPlaceholder();
   });
+
+  const newPasswordInput = document.getElementById("new-password");
+  ["current-password", "new-password", "confirm-password"].forEach(id => addPasswordToggle(document.getElementById(id)));
+  watchCapsLock(["current-password", "new-password", "confirm-password"].map(id => document.getElementById(id)), document.getElementById("password-change-caps"));
+  let changePolicy = null;
+  const refreshChangeRules = async () => {
+    changePolicy = await loadPasswordPolicy({ fresh: true });
+    const holder = document.getElementById("password-change-rules");
+    const clone = newPasswordInput; // rules follow this field as it is typed
+    mountPasswordRules(holder, clone, changePolicy, () => currentUser?.username ?? "");
+  };
+  window.autohrShowPasswordChange = refreshChangeRules;
 
   document.getElementById("password-change-form").addEventListener("submit", async e => {
     e.preventDefault();
@@ -717,8 +755,11 @@ document.addEventListener("DOMContentLoaded", async () => {
     const newPassword = document.getElementById("new-password").value;
     const confirmPassword = document.getElementById("confirm-password").value;
     const error = document.getElementById("password-change-error");
-    if (newPassword !== confirmPassword) {
-      error.textContent = "كلمتا المرور الجديدتان غير متطابقتين";
+    const problem = !currentPassword ? "اكتب كلمة المرور الحالية"
+      : (changePolicy && passwordProblem(changePolicy, newPassword, currentUser?.username ?? ""))
+      || (newPassword !== confirmPassword ? "كلمتا المرور الجديدتان غير متطابقتين" : "");
+    if (problem) {
+      error.textContent = problem;
       error.classList.remove("hidden");
       return;
     }
@@ -727,6 +768,7 @@ document.addEventListener("DOMContentLoaded", async () => {
       error.classList.add("hidden");
       document.getElementById("password-change-form").reset();
       await enterApp(user);
+      showToast("تم تغيير كلمة المرور");
     } catch (err) {
       // A wrong current password comes back as «not authorized».
       error.textContent = errorText(err, "تعذر تغيير كلمة المرور") === "ليست لديك صلاحية لهذا الإجراء"
@@ -759,4 +801,11 @@ document.addEventListener("DOMContentLoaded", async () => {
     const item = e.target.closest(".nav-item[data-screen]");
     if (item) navigateTo(item.dataset.screen);
   });
+
+  // The first-run wizard has just made the administrator's account: open the program signed in.
+  if (firstRunUser) {
+    rememberLoginUsername(firstRunUser.username);
+    await enterApp(firstRunUser);
+    showToast("اكتمل الإعداد. مرحبًا بك في CNSArch");
+  }
 });

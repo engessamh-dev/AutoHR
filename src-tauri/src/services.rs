@@ -53,6 +53,8 @@ pub struct User {
     #[serde(default = "default_true")] pub trusted: bool,
     /// Time of the last successful sign-in, from the audit log.
     #[serde(default)] pub last_login: Option<String>,
+    /// The base administrator (made by the first-run wizard): cannot be deleted, stopped or demoted.
+    #[serde(default)] pub is_base: bool,
 }
 
 fn default_true() -> bool { true }
@@ -323,7 +325,7 @@ pub struct ActivityLog {
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct CompanyConfigData {
-    pub company_name: String, pub department_name: Option<String>, pub division_name: Option<String>,
+    #[serde(default)] pub company_name: String, pub department_name: Option<String>, pub division_name: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -391,11 +393,11 @@ fn legacy_hash_password(plain: &str) -> String {
     let mut h = Sha256::new(); h.update(plain.as_bytes()); hex::encode(h.finalize())
 }
 
-fn hash_password(plain: &str) -> AppResult<String> {
+pub(crate) fn hash_password(plain: &str) -> AppResult<String> {
     hash(plain, DEFAULT_COST).map_err(|e| AppError::Other(format!("Password hashing failed: {e}")))
 }
 
-fn verify_password(plain: &str, stored: &str) -> AppResult<bool> {
+pub(crate) fn verify_password(plain: &str, stored: &str) -> AppResult<bool> {
     if stored.starts_with("$2") {
         return verify(plain, stored)
             .map_err(|e| AppError::Other(format!("Password verification failed: {e}")));
@@ -774,8 +776,12 @@ fn normalize_document_types(types: &[String]) -> Vec<String> {
 }
 
 // ── Auth ───────────────────────────────────────────────────────────────────
-const LOGIN_MAX_FAILURES: u32 = 5;
-const LOGIN_LOCKOUT: std::time::Duration = std::time::Duration::from_secs(5 * 60);
+/// Wrong sign-ins older than this are forgotten: only a burst of failures pauses an account.
+const LOGIN_FAILURE_WINDOW_SECS: i64 = 15 * 60;
+/// Shown for a wrong name or password (the same text for both).
+pub const WRONG_CREDENTIALS: &str = "اسم المستخدم أو كلمة المرور غير صحيحة";
+/// Start of the message for a paused account; the sign-in screen recognises it.
+pub const LOCKOUT_PREFIX: &str = "تم إيقاف الدخول مؤقتًا";
 
 /// Failed sign-in attempts per username, kept in the database so that restarting the
 /// application does not reset a lockout.
@@ -794,34 +800,67 @@ fn login_key(username: &str) -> String {
     username.trim().to_lowercase()
 }
 
-fn login_locked_remaining(conn: &Connection, username: &str) -> Option<std::time::Duration> {
+/// Failure count and time of the last failure for a name (a stale count restarts in `record_login_failure`).
+fn recent_failures(conn: &Connection, username: &str) -> (i64, i64) {
     login_failures_table(conn);
-    let key = login_key(username);
-    let (count, last): (i64, i64) = conn.query_row(
-        "SELECT failures,last_failure FROM login_failures WHERE username_key=?1", params![key], |r| Ok((r.get(0)?, r.get(1)?)),
-    ).ok()?;
-    if count < LOGIN_MAX_FAILURES as i64 { return None; }
+    let Some((count, last)) = conn.query_row(
+        "SELECT failures,last_failure FROM login_failures WHERE username_key=?1", params![login_key(username)], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)?)),
+    ).ok() else { return (0, 0) };
+    (count, last)
+}
+
+fn login_locked_remaining(conn: &Connection, username: &str) -> Option<std::time::Duration> {
+    let policy = crate::account::password_policy(conn);
+    let (count, last) = recent_failures(conn, username);
+    if count < policy.max_failures as i64 { return None; }
+    let lockout = std::time::Duration::from_secs(policy.lockout_minutes as u64 * 60);
     // A clock moved backwards counts as "just now" rather than unlocking early.
     let elapsed = std::time::Duration::from_secs(now_secs().saturating_sub(last).max(0) as u64);
-    if elapsed >= LOGIN_LOCKOUT {
+    if elapsed >= lockout {
         clear_login_failures(conn, username);
         return None;
     }
-    Some(LOGIN_LOCKOUT - elapsed)
+    Some(lockout - elapsed)
 }
 
-fn record_login_failure(conn: &Connection, username: &str) {
+/// The Arabic lockout message while `key` is paused, with the time left.
+pub(crate) fn lockout_message(conn: &Connection, key: &str) -> Option<String> {
+    login_locked_remaining(conn, key).map(|remaining| {
+        let minutes = remaining.as_secs().div_ceil(60).max(1);
+        format!("{LOCKOUT_PREFIX} بسبب تكرار المحاولات الخاطئة. حاول بعد {}.", arabic_minutes(minutes))
+    })
+}
+
+pub(crate) fn record_login_failure(conn: &Connection, username: &str) {
     login_failures_table(conn);
+    let now = now_secs();
+    // A failure long after the previous one starts a new count.
     conn.execute(
         "INSERT INTO login_failures(username_key,failures,last_failure) VALUES(?1,1,?2)
-         ON CONFLICT(username_key) DO UPDATE SET failures=failures+1, last_failure=excluded.last_failure",
-        params![login_key(username), now_secs()],
+         ON CONFLICT(username_key) DO UPDATE SET
+           failures = CASE WHEN ?2 - last_failure > ?3 THEN 1 ELSE failures + 1 END,
+           last_failure = excluded.last_failure",
+        params![login_key(username), now, LOGIN_FAILURE_WINDOW_SECS],
     ).ok();
 }
 
-fn clear_login_failures(conn: &Connection, username: &str) {
+pub(crate) fn clear_login_failures(conn: &Connection, username: &str) {
     login_failures_table(conn);
     conn.execute("DELETE FROM login_failures WHERE username_key=?1", params![login_key(username)]).ok();
+}
+
+/// After a wrong sign-in: the lockout message if this failure paused the account, a warning
+/// when two or fewer attempts are left, otherwise the plain «wrong name or password».
+fn failed_login(conn: &Connection, username: &str) -> AppError {
+    record_login_failure(conn, username);
+    if let Some(message) = lockout_message(conn, username) { return AppError::Validation(message); }
+    let policy = crate::account::password_policy(conn);
+    let left = (policy.max_failures as i64 - recent_failures(conn, username).0).max(0);
+    match left {
+        1 => AppError::Validation(format!("{WRONG_CREDENTIALS}. بقيت محاولة واحدة قبل إيقاف الدخول {}.", arabic_minutes(policy.lockout_minutes as u64))),
+        2 => AppError::Validation(format!("{WRONG_CREDENTIALS}. بقيت محاولتان قبل إيقاف الدخول {}.", arabic_minutes(policy.lockout_minutes as u64))),
+        _ => AppError::Unauthorized,
+    }
 }
 
 /// A bcrypt hash of a random value, checked when the username does not exist so that the
@@ -846,19 +885,17 @@ fn arabic_minutes(minutes: u64) -> String {
 }
 
 pub fn login(conn: &Connection, username: &str, password: &str) -> AppResult<User> {
-    if username.trim().is_empty() || username.len() > 64 || password.is_empty() || password.len() > 256 {
-        return Err(AppError::Validation("Enter a valid username and password".into()));
+    let username = username.trim();
+    if username.is_empty() || username.len() > 64 || password.is_empty() || password.len() > 256 {
+        return Err(AppError::Unauthorized);
     }
-    if let Some(remaining) = login_locked_remaining(conn, username) {
+    if let Some(message) = lockout_message(conn, username) {
         log_audit(conn, Some(&login_name_for_log(conn, username)), "LOGIN", Some("session"), None, None, "Failure", Some("Account temporarily locked"));
-        let minutes = remaining.as_secs().div_ceil(60).max(1);
-        return Err(AppError::Validation(format!(
-            "تم إيقاف تسجيل الدخول لهذا الحساب مؤقتًا بسبب تكرار المحاولات الفاشلة. حاول بعد {}.",
-            arabic_minutes(minutes)
-        )));
+        return Err(AppError::Validation(message));
     }
+    // Names are matched without case, like «إضافة مستخدم» which refuses «HR.admin» next to «hr.admin».
     let row = match conn.query_row(
-        "SELECT id,username,password,role,must_change_password,created_at FROM users WHERE username=?1",
+        "SELECT id,username,password,role,must_change_password,created_at FROM users WHERE username=?1 COLLATE NOCASE ORDER BY username=?1 DESC LIMIT 1",
         params![username],
         |r| Ok((
             r.get::<_,i64>(0)?, r.get::<_,String>(1)?, r.get::<_,String>(2)?,
@@ -868,15 +905,14 @@ pub fn login(conn: &Connection, username: &str, password: &str) -> AppResult<Use
         Ok(row) => row,
         Err(_) => {
             let _ = verify_password(password, dummy_password_hash());
-            record_login_failure(conn, username);
             log_audit(conn, Some(&login_name_for_log(conn, username)), "LOGIN", Some("session"), None, None, "Failure", Some("Unknown username"));
-            return Err(AppError::Unauthorized);
+            return Err(failed_login(conn, username));
         }
     };
+    let username = row.1.as_str();
     if !verify_password(password, &row.2)? {
-        record_login_failure(conn, username);
         log_audit(conn, Some(username), "LOGIN", Some("session"), None, None, "Failure", Some("Invalid password"));
-        return Err(AppError::Unauthorized);
+        return Err(failed_login(conn, username));
     }
     if !crate::integrity::user_trusted(conn, row.0) {
         log_audit(conn, Some(username), "LOGIN", Some("session"), None, None, "Failure", Some("Account modified outside the program"));
@@ -890,18 +926,19 @@ pub fn login(conn: &Connection, username: &str, password: &str) -> AppResult<Use
     if !row.2.starts_with("$2") {
         conn.execute("UPDATE users SET password=?1 WHERE id=?2", params![hash_password(password)?, row.0])?;
     }
-    let is_master = row.1 == "sysadmin" || row.3 == "system_admin";
+    let is_base = crate::account::is_base_admin(conn, username);
+    let is_master = is_base || row.3 == "system_admin";
     log_activity(conn, username, "LOGIN", None, None, None, None);
     Ok(User {
-        id: row.0, username: row.1, role: row.3.clone(), is_master,
+        id: row.0, username: row.1.clone(), role: row.3.clone(), is_master,
         permissions: role_permissions(&row.3).iter().map(|p| p.to_string()).collect(),
         must_change_password: row.4, created_at: row.5,
-        disabled: false, trusted: true, last_login: None,
+        disabled: false, trusted: true, last_login: None, is_base,
     })
 }
 
 pub fn change_password(conn: &Connection, username: &str, current_password: &str, new_password: &str) -> AppResult<User> {
-    validate_new_password(new_password)?;
+    crate::account::validate_account_password(conn, username, new_password)?;
     if current_password == new_password {
         return Err(AppError::Validation("كلمة المرور الجديدة يجب أن تختلف عن الحالية".into()));
     }
@@ -925,13 +962,16 @@ pub fn logout(conn: &Connection, username: &str) -> AppResult<()> {
 }
 
 // ── Company ────────────────────────────────────────────────────────────────
+/// The organisation's name is fixed, like the bundled logo, and matches it.
+pub const COMPANY_NAME: &str = "الشركة العامة لإدارة المطارات والملاحة الجوية";
+
 pub fn get_company_config(conn: &Connection) -> AppResult<CompanyConfig> {
     conn.query_row("SELECT company_name,department_name,division_name,logo_path FROM company_config WHERE id=1",
         [], |r| {
             let logo_path: Option<String> = r.get(3)?;
             let logo_full_path = logo_path.as_ref().map(|p| crate::scanner::effective_path(conn,p).unwrap_or_else(|_|storage_path(conn).join(p)).to_string_lossy().into_owned());
             Ok(CompanyConfig {
-                company_name:r.get(0)?,
+                company_name: { let _stored: String = r.get(0)?; COMPANY_NAME.into() },
                 department_name:r.get(1)?,
                 division_name:r.get(2)?,
                 logo_path,
@@ -947,8 +987,12 @@ pub fn update_company_config(conn: &Connection, user: &str, data: &CompanyConfig
         "company_name": c.company_name, "department_name": c.department_name, "division_name": c.division_name,
     });
     let before = get_company_config(conn).map(|c| names(&c)).unwrap_or_default();
+    let department = data.department_name.as_deref().unwrap_or("").trim();
+    let division = data.division_name.as_deref().unwrap_or("").trim();
+    crate::account::check_unit_names(department, division)?;
+    // The organisation's name is fixed (COMPANY_NAME); only the section and unit change here.
     conn.execute("UPDATE company_config SET company_name=?1,department_name=?2,division_name=?3 WHERE id=1",
-        params![data.company_name, data.department_name.as_deref().unwrap_or(""), data.division_name.as_deref().unwrap_or("")])?;
+        params![COMPANY_NAME, department, division])?;
     let after = get_company_config(conn)?;
     let changes = changes_details(&before, &names(&after), &[]);
     log_activity(conn, user, "CHANGE_SETTING", Some("settings"), Some(1), Some("company_config"), changes.as_deref());
@@ -2294,6 +2338,7 @@ fn has_disabled_column(conn: &Connection) -> bool {
 
 pub fn list_users(conn: &Connection) -> AppResult<Vec<User>> {
     let disabled = if has_disabled_column(conn) { "u.disabled" } else { "0" };
+    let base = crate::account::base_admin(conn);
     let mut stmt = conn.prepare(&format!(
         "SELECT u.id,u.username,u.role,u.must_change_password,u.created_at,{disabled},
                 (SELECT MAX(l.created_at) FROM activity_log l WHERE l.user_id=u.id AND l.action='LOGIN' AND l.result='Success')
@@ -2301,12 +2346,13 @@ pub fn list_users(conn: &Connection) -> AppResult<Vec<User>> {
     ))?;
     let rows = stmt.query_map([], |r| {
         let username: String = r.get(1)?; let role: String = r.get(2)?;
-        let is_master = username == "sysadmin" || role == "system_admin";
+        let is_base = username.eq_ignore_ascii_case(&base);
+        let is_master = is_base || role == "system_admin";
         Ok(User {
             id:r.get(0)?, username, role: role.clone(), is_master,
             permissions: role_permissions(&role).iter().map(|p| p.to_string()).collect(),
             must_change_password:r.get(3)?, created_at:r.get(4)?,
-            disabled: r.get(5)?, trusted: true, last_login: r.get(6)?,
+            disabled: r.get(5)?, trusted: true, last_login: r.get(6)?, is_base,
         })
     })?.collect::<rusqlite::Result<Vec<_>>>()?;
     Ok(rows.into_iter().map(|mut user| { user.trusted = crate::integrity::user_trusted(conn, user.id); user }).collect())
@@ -2323,17 +2369,15 @@ fn caller_id(conn: &Connection, caller: &str) -> Option<i64> {
 pub fn create_user(conn: &Connection, caller: &str, data: &UserData) -> AppResult<User> {
     assert_permission(conn, caller, "users.manage")?;
     let username = data.username.trim();
-    if username.len() < 3 || username.len() > 64 || !username.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '-' | '.')) {
-        return Err(AppError::Validation("اسم المستخدم من 3 إلى 64 حرفًا: أحرف إنجليزية وأرقام و . - _ فقط".into()));
-    }
+    crate::account::valid_username(username)?;
     if !valid_role(&data.role) { return Err(AppError::Validation("اختر دورًا للمستخدم".into())); }
     if data.role == "system_admin" {
         assert_permission(conn, caller, "users.assign_system_admin")?;
     }
-    validate_new_password(&data.password)?;
+    crate::account::validate_account_password(conn, username, &data.password)?;
     let count: i64 = conn.query_row("SELECT COUNT(*) FROM users", [], |r| r.get(0))?;
     if count >= MAX_USERS { return Err(AppError::Validation(format!("وصلت إلى الحد الأقصى ({MAX_USERS} مستخدمين). احذف مستخدمًا لإضافة آخر."))); }
-    // Sign-in matches the name exactly, so «HR.admin» next to «hr.admin» would only confuse.
+    // Sign-in ignores case, so «HR.admin» next to «hr.admin» would be the same account.
     let taken: i64 = conn.query_row("SELECT COUNT(*) FROM users WHERE username=?1 COLLATE NOCASE", params![username], |r| r.get(0))?;
     if taken > 0 { return Err(AppError::Validation(format!("اسم المستخدم «{username}» موجود"))); }
     conn.execute("INSERT INTO users(username,password,role,must_change_password) VALUES(?1,?2,?3,1)",
@@ -2351,7 +2395,7 @@ fn target_user(conn: &Connection, id: i64) -> AppResult<(String, String)> {
 pub fn delete_user(conn: &Connection, caller: &str, id: i64) -> AppResult<()> {
     assert_permission(conn, caller, "users.manage")?;
     let (username, role) = target_user(conn, id)?;
-    if username == "sysadmin" { return Err(AppError::Validation("لا يمكن حذف مستخدم النظام الأساسي".into())); }
+    if crate::account::is_base_admin(conn, &username) { return Err(AppError::Validation("لا يمكن حذف مستخدم النظام الأساسي".into())); }
     if caller_id(conn, caller) == Some(id) { return Err(AppError::Validation("لا يمكنك حذف حسابك".into())); }
     if role == "system_admin" { assert_permission(conn, caller, "users.assign_system_admin")?; }
     conn.execute("DELETE FROM users WHERE id=?1", params![id])?;
@@ -2369,14 +2413,15 @@ pub fn update_user_role(conn: &Connection, caller: &str, id: i64, role: &str) ->
     assert_permission(conn, caller, "users.manage")?;
     if !valid_role(role) { return Err(AppError::Validation("اختر دورًا للمستخدم".into())); }
     let (username, old_role) = target_user(conn, id)?;
-    if username == "sysadmin" && role != "system_admin" {
+    let base = crate::account::is_base_admin(conn, &username);
+    if base && role != "system_admin" {
         return Err(AppError::Validation("لا يمكن تغيير دور مستخدم النظام الأساسي".into()));
     }
     // An admin who lowers their own role loses the screen they are on; another admin does it.
     if caller_id(conn, caller) == Some(id) && role != old_role {
         return Err(AppError::Validation("لا يمكنك تغيير دورك. يغيّره مسؤول آخر.".into()));
     }
-    if username == "sysadmin" || old_role == "system_admin" || role == "system_admin" {
+    if base || old_role == "system_admin" || role == "system_admin" {
         assert_permission(conn, caller, "users.assign_system_admin")?;
     }
     if role != old_role {
@@ -2388,8 +2433,8 @@ pub fn update_user_role(conn: &Connection, caller: &str, id: i64, role: &str) ->
 
 pub fn reset_user_password(conn: &Connection, caller: &str, id: i64, password: &str) -> AppResult<()> {
     assert_permission(conn, caller, "users.manage")?;
-    validate_new_password(password)?;
     let (username, role) = target_user(conn, id)?;
+    crate::account::validate_account_password(conn, &username, password)?;
     if role == "system_admin" { assert_permission(conn, caller, "users.assign_system_admin")?; }
     conn.execute("UPDATE users SET password=?1,must_change_password=1 WHERE id=?2", params![hash_password(password)?, id])?;
     clear_login_failures(conn, &username);
@@ -2401,7 +2446,7 @@ pub fn reset_user_password(conn: &Connection, caller: &str, id: i64, password: &
 pub fn set_user_disabled(conn: &Connection, caller: &str, id: i64, disabled: bool) -> AppResult<User> {
     assert_permission(conn, caller, "users.manage")?;
     let (username, role) = target_user(conn, id)?;
-    if username == "sysadmin" { return Err(AppError::Validation("لا يمكن إيقاف مستخدم النظام الأساسي".into())); }
+    if crate::account::is_base_admin(conn, &username) { return Err(AppError::Validation("لا يمكن إيقاف مستخدم النظام الأساسي".into())); }
     if caller_id(conn, caller) == Some(id) { return Err(AppError::Validation("لا يمكنك إيقاف حسابك".into())); }
     if role == "system_admin" { assert_permission(conn, caller, "users.assign_system_admin")?; }
     conn.execute("UPDATE users SET disabled=?1 WHERE id=?2", params![disabled, id])?;
@@ -2476,11 +2521,11 @@ mod auth_tests {
             params![hash_password("temporary-password").unwrap()],
         ).unwrap();
 
-        let user = change_password(&conn, "sysadmin", "temporary-password", "new-secure-password").unwrap();
+        let user = change_password(&conn, "sysadmin", "temporary-password", "Tigris7Bridge").unwrap();
 
         assert!(!user.must_change_password);
         assert!(login(&conn, "sysadmin", "temporary-password").is_err());
-        assert!(login(&conn, "sysadmin", "new-secure-password").is_ok());
+        assert!(login(&conn, "sysadmin", "Tigris7Bridge").is_ok());
     }
 
     #[test]
@@ -2553,26 +2598,49 @@ mod auth_tests {
     fn a_username_that_differs_only_in_letter_case_is_refused_in_arabic() {
         let conn = auth_db();
         add_users(&conn, &[("admin", "system_admin"), ("hr.clerk", "archive_officer")]);
-        let error = create_user(&conn, "admin", &UserData { username: "HR.Clerk".into(), password: "12345678".into(), role: "viewer".into() }).unwrap_err();
+        let error = create_user(&conn, "admin", &UserData { username: "HR.Clerk".into(), password: "Tigris7Bridge".into(), role: "viewer".into() }).unwrap_err();
         assert!(matches!(error, AppError::Validation(ref m) if m.contains("موجود")));
-        let error = create_user(&conn, "admin", &UserData { username: "أحمد".into(), password: "12345678".into(), role: "viewer".into() }).unwrap_err();
+        let error = create_user(&conn, "admin", &UserData { username: "أحمد".into(), password: "Tigris7Bridge".into(), role: "viewer".into() }).unwrap_err();
         assert!(matches!(error, AppError::Validation(ref m) if m.contains("أحرف إنجليزية")));
     }
 
     #[test]
-    fn repeated_failed_logins_lock_the_username_temporarily() {
+    fn repeated_failed_logins_warn_then_lock_the_username_temporarily() {
         let conn = auth_db();
         conn.execute(
             "INSERT INTO users(username,password,role) VALUES('lockme',?1,'viewer')",
             params![hash_password("correct-password").unwrap()],
         ).unwrap();
-        for _ in 0..LOGIN_MAX_FAILURES {
-            assert!(matches!(login(&conn, "lockme", "wrong-password"), Err(AppError::Unauthorized)));
-        }
-        // Even the correct password is refused while locked.
-        assert!(matches!(login(&conn, "LockMe", "correct-password"), Err(AppError::Validation(_))));
+        let message = |r: AppResult<User>| match r { Err(AppError::Validation(m)) => m, Err(AppError::Unauthorized) => "wrong".into(), other => panic!("{other:?}") };
+        assert_eq!(message(login(&conn, "lockme", "x")), "wrong");
+        assert_eq!(message(login(&conn, "lockme", "x")), "wrong");
+        assert!(message(login(&conn, "lockme", "x")).contains("بقيت محاولتان"));
+        assert!(message(login(&conn, "lockme", "x")).contains("بقيت محاولة واحدة"));
+        // The failure that pauses the account says so at once.
+        assert!(message(login(&conn, "lockme", "x")).starts_with(LOCKOUT_PREFIX));
+        // Even the correct password is refused while locked, under any letter case.
+        assert!(message(login(&conn, "LockMe", "correct-password")).starts_with(LOCKOUT_PREFIX));
         clear_login_failures(&conn, "lockme");
         assert!(login(&conn, "lockme", "correct-password").is_ok());
+    }
+
+    #[test]
+    fn old_failures_are_forgotten() {
+        let conn = auth_db();
+        conn.execute("INSERT INTO users(username,password,role) VALUES('slow',?1,'viewer')", params![hash_password("correct-password").unwrap()]).unwrap();
+        for _ in 0..4 { let _ = login(&conn, "slow", "x"); }
+        conn.execute("UPDATE login_failures SET last_failure=last_failure-86400", []).unwrap();
+        assert!(matches!(login(&conn, "slow", "x"), Err(AppError::Unauthorized)), "a day later the count starts again");
+        assert!(login(&conn, "slow", "correct-password").is_ok());
+    }
+
+    #[test]
+    fn sign_in_ignores_letter_case_and_keeps_the_stored_name() {
+        let conn = auth_db();
+        conn.execute("INSERT INTO users(username,password,role) VALUES('it.manager',?1,'viewer')", params![hash_password("correct-password").unwrap()]).unwrap();
+        let user = login(&conn, " IT.Manager ", "correct-password").unwrap();
+        assert_eq!(user.username, "it.manager");
+        assert!(matches!(login(&conn, &"a".repeat(65), "x"), Err(AppError::Unauthorized)));
     }
 
     #[test]
@@ -2590,7 +2658,7 @@ mod auth_tests {
             "INSERT INTO users(username,password,role) VALUES('resetme',?1,'viewer')",
             params![hash_password("correct-password").unwrap()],
         ).unwrap();
-        for _ in 0..LOGIN_MAX_FAILURES - 1 {
+        for _ in 0..4 {
             assert!(login(&conn, "resetme", "wrong-password").is_err());
         }
         assert!(login(&conn, "resetme", "correct-password").is_ok());
@@ -2985,14 +3053,14 @@ pub(crate) fn encrypt_backup(plaintext: &[u8], password: &str, magic: &[u8; 9]) 
 fn decrypt_backup(encrypted: &[u8], password: &str) -> AppResult<(bool, Vec<u8>)> {
     let header = BACKUP_MAGIC_V2.len() + 16 + 12;
     if encrypted.len() <= header {
-        return Err(AppError::Validation("This is not a valid encrypted CNSArch backup".into()));
+        return Err(AppError::Validation("هذا الملف ليس نسخة احتياطية مشفرة من CNSArch، أو أنه تالف".into()));
     }
     let magic = if &encrypted[..9] == BACKUP_MAGIC_V2 {
         BACKUP_MAGIC_V2
     } else if &encrypted[..9] == BACKUP_MAGIC_V1 {
         BACKUP_MAGIC_V1
     } else {
-        return Err(AppError::Validation("This is not a valid encrypted CNSArch backup".into()));
+        return Err(AppError::Validation("هذا الملف ليس نسخة احتياطية مشفرة من CNSArch، أو أنه تالف".into()));
     };
     let key = backup_key(password, &encrypted[magic.len()..magic.len() + 16])?;
     let plaintext = Aes256Gcm::new_from_slice(&key).map_err(|e| AppError::Other(e.to_string()))?
@@ -3209,14 +3277,14 @@ fn validate_database_connection(source_conn: &Connection) -> AppResult<()> {
     let required_tables: i64 = source_conn.query_row(
         "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name IN ('users','employees','company_config','app_settings','activity_log')",
         [], |r| r.get(0),
-    ).map_err(|_| AppError::Validation("Backup is from an unsupported CNSArch version".into()))?;
-    if required_tables != 5 { return Err(AppError::Validation("Backup is missing required CNSArch data".into())); }
+    ).map_err(|_| AppError::Validation("النسخة الاحتياطية من إصدار غير مدعوم من البرنامج".into()))?;
+    if required_tables != 5 { return Err(AppError::Validation("النسخة الاحتياطية ناقصة ولا تحتوي على بيانات البرنامج الأساسية".into())); }
     let foreign_key_errors: i64 = source_conn.query_row("SELECT COUNT(*) FROM pragma_foreign_key_check", [], |r| r.get(0))
         .map_err(|_| AppError::Validation("Backup relationships could not be validated".into()))?;
     if foreign_key_errors > 0 { return Err(AppError::Validation("Backup contains inconsistent relationships".into())); }
     let invalid_roles: i64 = source_conn.query_row(
         "SELECT COUNT(*) FROM users WHERE role NOT IN ('system_admin','archive_admin','archive_officer','viewer')", [], |r| r.get(0)
-    ).map_err(|_| AppError::Validation("Backup is from an unsupported CNSArch version".into()))?;
+    ).map_err(|_| AppError::Validation("النسخة الاحتياطية من إصدار غير مدعوم من البرنامج".into()))?;
     if invalid_roles > 0 { return Err(AppError::Validation("Backup contains unsupported roles".into())); }
     Ok(())
 }
