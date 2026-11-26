@@ -294,7 +294,8 @@ fn employee_json(index: usize, p: &Person) -> Value {
     }
     if d.ration {
         set(&mut v, "ration_card_no", json!(format!("88{n:05}")));
-        set(&mut v, "ration_center_name", json!(format!("وكيل تموين {city} التجريبي")));
+        // The field holds the ration card's «اسم رب الأسرة» (as the screens label it).
+        set(&mut v, "ration_center_name", json!(p.name));
         set(&mut v, "ration_center_no", json!(format!("{}", 40 + n)));
         set(&mut v, "ration_card_date", json!(day(-700)));
     }

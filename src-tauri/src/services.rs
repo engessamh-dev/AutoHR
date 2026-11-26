@@ -2956,7 +2956,7 @@ fn automatic_backup_is_current(conn: &Connection, date_key: &str, path_key: &str
 /// An automatic backup is taken only when something else happened since the last one.
 const NON_DATA_ACTIONS: &[&str] = &[
     "LOGIN", "LOGOUT", "VIEW_DOCUMENT", "DOWNLOAD_DOCUMENT", "PRINT_DOCUMENT",
-    "CREATE_BACKUP", "CREATE_AUTO_BACKUP", "EXPORT_BACKUP",
+    "CREATE_BACKUP", "CREATE_AUTO_BACKUP", "EXPORT_BACKUP", "EXPORT_REPORT", "PRINT_REPORT",
     // Reading a card's text fills the form only; saving the form is logged separately.
     "DOCUMENT_TEXT_READ",
     "SAVE_HEALTH_REPORT", "ACCESS_DENIED", "INSTALL_UPDATE", "UPDATE_AUTO_UPDATE_SETTING",

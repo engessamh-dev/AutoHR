@@ -1205,7 +1205,7 @@ function tabContent(tab, emp) {
         ${field("الحالة الاجتماعية", "marital_status", emp, {type:"select", options:[["","—"],["أعزب","أعزب"],["متزوج","متزوج"],["مطلق","مطلق"],["أرمل","أرمل"]]})}
         ${field("تاريخ الولادة", "birthdate", emp, {date:true})}
         ${field("محل الولادة", "birthplace", emp)}
-        ${field("فصيلة الدم", "blood_type", emp, {type:"select", options:[["","—"],["A+","A+"],["A-","A-"],["B+","B+"],["B-","B-"],["AB+","AB+"],["AB-","AB-"],["O+","O+"],["O-","O-"]]})}
+        ${field("فصيلة الدم", "blood_type", emp, {type:"select", options:[["","—"],...BLOOD_OPTIONS]})}
         ${field("رقم الهاتف", "phone", emp, {ltr:true})}
         ${field("البريد الإلكتروني", "email", emp, {ltr:true, span:true})}
       </div>`;
@@ -1273,6 +1273,9 @@ function tabContent(tab, emp) {
 function parseJsonList(value) {
   try { const list = JSON.parse(value ?? "[]"); return Array.isArray(list) ? list : []; } catch { return []; }
 }
+
+/** Blood types with a left-to-right mark after the label, so «O+» is not shown as «+O» in a right-to-left line. */
+const BLOOD_OPTIONS = ["A+","A-","B+","B-","AB+","AB-","O+","O-"].map(v => [v, `${v}\u200E`]);
 
 // ── Missing data ───────────────────────────────────────────────────────────
 /** The «البيانات الأساسية» fields every employee file should have. The rest (email, parents,
@@ -2075,7 +2078,7 @@ function spouseRowHtml(spouse = {}, index = Date.now(), config = { itemLabel: "�
       <p style="font-size:10px;color:var(--ui-text-faint);margin-bottom:3px">فصيلة الدم</p>
       <select class="input-field sp-blood">
         ${["","A+","A-","B+","B-","AB+","AB-","O+","O-"].map(b =>
-          `<option ${spouse.blood_type===b?"selected":""}>${b}</option>`).join("")}
+          `<option value="${b}" ${spouse.blood_type===b?"selected":""}>${b ? `${b}\u200E` : ""}</option>`).join("")}
       </select>
     </div>
     <div>
@@ -2243,7 +2246,7 @@ function familyRowHtml(m = {}, i = Date.now()) {
       <p style="font-size:10px;color:var(--ui-text-faint);margin-bottom:3px">فصيلة الدم</p>
       <select class="input-field fm-blood">
         ${["","A+","A-","B+","B-","AB+","AB-","O+","O-"].map(b =>
-          `<option ${m.blood_type===b?"selected":""}>${b}</option>`).join("")}
+          `<option value="${b}" ${m.blood_type===b?"selected":""}>${b ? `${b}\u200E` : ""}</option>`).join("")}
       </select>
     </div>
     <div>
