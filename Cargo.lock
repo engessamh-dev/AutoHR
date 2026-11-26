@@ -277,7 +277,7 @@ checksum = "f2032f911046de80f0a198e0901378627c33f59ea0ac00e363d481118bd70a53"
 
 [[package]]
 name = "autohr"
-version = "1.0.6"
+version = "1.1.0"
 dependencies = [
  "aes-gcm",
  "argon2",
@@ -290,8 +290,10 @@ dependencies = [
  "image",
  "imageproc",
  "rand 0.8.6",
+ "reqwest",
  "rqrr",
  "rusqlite",
+ "rustls",
  "serde",
  "serde_json",
  "sha2 0.10.9",

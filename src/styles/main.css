@@ -1009,6 +1009,15 @@ html[data-ui-scale] #app-shell { height: calc(100vh / var(--ui-scale)); }
 .aw-saved{margin-inline-start:auto;font-size:12px;padding:2px 10px;border-radius:999px;border:1px solid var(--ui-ok-line);background:var(--ui-ok-bg);color:var(--ui-ok);white-space:nowrap}
 .aw-saved+.aw-head-save{margin-inline-start:0}
 
+/* «ما الجديد» (whats-new.js) */
+.whats-new-overlay{position:fixed;inset:0;z-index:10000;background:rgba(0,0,0,.6);display:flex;align-items:center;justify-content:center;padding:20px}
+.whats-new-box{width:min(560px,100%);max-height:calc(100vh - 40px);display:flex;flex-direction:column;background:var(--ui-surface);border:1px solid var(--ui-line);border-radius:12px;box-shadow:0 18px 60px rgba(0,0,0,.45)}
+.whats-new-title{margin:0;padding:16px 18px 10px;font-size:17px;font-weight:700;color:var(--ui-text-strong)}
+.whats-new-body{padding:0 18px 8px;overflow:auto;font-size:14px;line-height:1.9;color:var(--ui-text)}
+.whats-new-body ul{margin:4px 0 10px;padding-inline-start:20px;list-style:disc}
+.whats-new-body p{margin:6px 0}
+.whats-new-body .whats-new-heading{font-weight:700;color:var(--ui-text-strong);margin-top:10px}
+.whats-new-actions{display:flex;justify-content:flex-start;padding:12px 18px;border-top:1px solid var(--ui-line)}
 /* Document archive (review of the archive screen) */
 .doc-tabs{display:flex;gap:8px;border-bottom:1px solid var(--ui-line)}
 .doc-tab{display:inline-flex;align-items:center;gap:7px;padding:8px 16px;border:0;border-bottom:2px solid transparent;background:transparent;cursor:pointer;font-size:13px;color:var(--ui-text-muted)}

@@ -1,6 +1,6 @@
 [package]
 name    = "autohr"
-version = "1.0.6"
+version = "1.1.0"
 edition = "2021"
 
 [package.metadata.bundle]
@@ -48,6 +48,10 @@ imageproc = { version = "0.27.0", default-features = false }
 # Pure-Rust ONNX inference for the bundled on-device document detector (no DLL, no network).
 tract-onnx = "0.23"
 tauri-plugin-updater = "2"
+# Already used by the updater; reads the «ما الجديد» notes from the GitHub release (fixed URL).
+reqwest = { version = "0.13", default-features = false, features = ["json"] }
+# The TLS crypto the updater installs; set up here too when the notes are read first.
+rustls = { version = "0.23", default-features = false, features = ["ring"] }
 # Pure-Rust QR decoder: the electronic ration card carries its number in a QR code (ocr.rs).
 rqrr = { version = "0.11.0", default-features = false }
 

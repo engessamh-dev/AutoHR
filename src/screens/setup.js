@@ -11,6 +11,7 @@
  * Data folder unavailable (disk unplugged, network share offline): the app never creates a new
  * empty database; the user reconnects the disk and retries, or points to the folder that holds it.
  */
+import { markWhatsNewSeen } from "../whats-new.js";
 import { api } from "../api.js";
 import { escHtml, errorText as translateError, showToast } from "../utils.js";
 import { open } from "@tauri-apps/plugin-dialog";
@@ -237,6 +238,8 @@ export async function runStartupGate() {
   const hide = () => { screen.classList.add("hidden"); login.classList.remove("hidden"); };
 
   const firstRun = status.state === "needs_setup";
+  // A brand-new installation has nothing "new" to announce.
+  if (firstRun) markWhatsNewSeen();
   if (status.state !== "ready") {
     show();
     await runFolderStep(status, { firstRun });

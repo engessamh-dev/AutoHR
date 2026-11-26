@@ -14,6 +14,7 @@ import { renderAbout }     from "./screens/about.js";
 import { renderSupport }   from "./screens/support.js";
 import { renderSettings, installUpdateFlow } from "./screens/settings.js";
 import { runStartupGate } from "./screens/setup.js";
+import { showWhatsNewIfUpdated } from "./whats-new.js";
 import { renderAudit }     from "./screens/audit.js";
 import { can, roleLabels } from "./permissions.js";
 import { formatAppVersion } from "./version.js";
@@ -408,6 +409,8 @@ async function enterApp(user) {
     applyBranding(await api.getCompanyConfig());
   } catch (_) { /* non-fatal */ }
   await navigateTo("dashboard");
+  // «ما الجديد»: once, on the first sign-in after an update.
+  await showWhatsNewIfUpdated();
   notifyDocumentAlerts();
   await checkDataIntegrity(user);
   offerAvailableUpdate(user);
