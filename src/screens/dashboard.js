@@ -34,9 +34,8 @@ export async function renderDashboard(container, user, ctx) {
               data-archive-tab="${archiveTab}" data-doc-id="${d.id}"
               title="إدارة مرفقات الوثيقة"
               style="border:none;background:transparent;cursor:pointer;padding:2px">
-              <span class="badge ${d.attachment_paths?.length ? "badge-green" : "badge-gray"}"
-                style="gap:6px;font-size:12px;padding:5px 11px">
-                <span>📎</span>
+              <span class="badge ${d.attachment_paths?.length ? "badge-green" : "badge-gray"} doc-clip-badge">
+                <svg aria-hidden="true" class="doc-clip-icon" viewBox="0 0 24 24"><path d="m20.5 11.5-8.2 8.2a5 5 0 0 1-7.1-7.1l8.5-8.5a3.3 3.3 0 0 1 4.7 4.7l-8.4 8.4a1.7 1.7 0 0 1-2.4-2.4l7.7-7.7"/></svg>
                 <span dir="ltr">${d.attachment_paths?.length ?? 0}</span>
               </span>
             </button>
@@ -105,7 +104,6 @@ export async function renderDashboard(container, user, ctx) {
       ctx.navigateTo("documents", {
         archiveTab: row.dataset.archiveTab,
         editDocId: parseInt(row.dataset.docId, 10),
-        compactArchiveMode: true,
       });
     });
   });
@@ -115,7 +113,6 @@ export async function renderDashboard(container, user, ctx) {
       ctx.navigateTo("documents", {
         archiveTab: button.dataset.archiveTab,
         manageAttachmentDocId: parseInt(button.dataset.docId, 10),
-        compactArchiveMode: true,
       });
     });
   });

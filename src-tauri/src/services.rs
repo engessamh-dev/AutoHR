@@ -1547,7 +1547,9 @@ fn replace_general_doc_employees(conn: &Connection, doc_id: i64, employee_ids: &
     Ok(())
 }
 
-fn validate_document_data(data: &GeneralDocData) -> AppResult<()> {
+/// `outgoing`: in «الصادر» the sender is this unit (the screen fills it in), so the field that
+/// must be filled is the receiver («إلى», stored in `doc_number`) instead of the sender.
+fn validate_document_data(data: &GeneralDocData, outgoing: bool) -> AppResult<()> {
     if data.title.chars().count() > 300 {
         return Err(AppError::Validation("Enter a valid document title".into()));
     }
@@ -1555,7 +1557,8 @@ fn validate_document_data(data: &GeneralDocData) -> AppResult<()> {
     // them it is an empty row in the archive.
     let blank = |value: Option<&str>| value.map_or(true, |v| v.trim().is_empty());
     let missing: Vec<&str> = [
-        ("الجهة المصدرة للوثيقة", blank(Some(data.title.as_str()))),
+        ("الجهة المصدرة للوثيقة", !outgoing && blank(Some(data.title.as_str()))),
+        ("إلى", outgoing && blank(data.doc_number.as_deref())),
         ("الموضوع", blank(data.issuer.as_deref())),
         ("العدد", blank(data.doc_count.as_deref())),
         ("تاريخ الإصدار", blank(data.issue_date.as_deref())),
@@ -1629,7 +1632,7 @@ fn get_general_doc(conn: &Connection, id: i64) -> AppResult<GeneralDoc> {
 
 pub fn create_general_doc(conn: &Connection, data: &GeneralDocData, username: &str) -> AppResult<GeneralDoc> {
     assert_permission(conn, username, "documents.manage")?;
-    validate_document_data(data)?;
+    validate_document_data(data, false)?;
     let tx = conn.unchecked_transaction()?;
     tx.execute("INSERT INTO general_docs(title,doc_type,doc_number,issue_date,issuer,doc_count,margin,is_internal_memo,hr_effect_type,hr_affects_promotion,hr_affects_allowance,hr_effect_months,hr_effect_days,notes) VALUES(?1,NULL,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13)",
         params![data.title.trim(),data.doc_number,data.issue_date,data.issuer,data.doc_count,data.margin,data.is_internal_memo,
@@ -1643,7 +1646,7 @@ pub fn create_general_doc(conn: &Connection, data: &GeneralDocData, username: &s
 
 pub fn update_general_doc(conn: &Connection, id: i64, data: &GeneralDocData, username: &str) -> AppResult<GeneralDoc> {
     assert_permission(conn, username, "documents.manage")?;
-    validate_document_data(data)?;
+    validate_document_data(data, false)?;
     let tx = conn.unchecked_transaction()?;
     // The HR effect fields are no longer edited from the UI. They are intentionally left out of
     // this UPDATE so that values already stored on existing documents are preserved.
@@ -1830,7 +1833,7 @@ fn get_outgoing_doc(conn: &Connection, id: i64) -> AppResult<GeneralDoc> {
 
 pub fn create_outgoing_doc(conn: &Connection, data: &GeneralDocData, username: &str) -> AppResult<GeneralDoc> {
     assert_permission(conn, username, "documents.manage")?;
-    validate_document_data(data)?;
+    validate_document_data(data, true)?;
     let tx = conn.unchecked_transaction()?;
     tx.execute(
         "INSERT INTO outgoing_docs(title,doc_type,doc_number,issue_date,issuer,doc_count,margin,is_internal_memo,notes) VALUES(?1,NULL,?2,?3,?4,?5,?6,?7,?8)",
@@ -1845,7 +1848,7 @@ pub fn create_outgoing_doc(conn: &Connection, data: &GeneralDocData, username: &
 
 pub fn update_outgoing_doc(conn: &Connection, id: i64, data: &GeneralDocData, username: &str) -> AppResult<GeneralDoc> {
     assert_permission(conn, username, "documents.manage")?;
-    validate_document_data(data)?;
+    validate_document_data(data, true)?;
     let tx = conn.unchecked_transaction()?;
     tx.execute(
         "UPDATE outgoing_docs SET title=?1,doc_type=NULL,doc_number=?2,issue_date=?3,issuer=?4,doc_count=?5,margin=?6,is_internal_memo=?7,notes=?8,updated_at=datetime('now') WHERE id=?9",
@@ -3586,14 +3589,20 @@ fn saving_a_document_requires_issuer_subject_number_and_date() {
         hr_effect_type: None, hr_affects_promotion: false, hr_affects_allowance: false,
         hr_effect_months: 0, hr_effect_days: 0, notes: None, employee_ids: vec![],
     };
-    for result in [create_general_doc(&conn, &empty, "docadmin"), create_outgoing_doc(&conn, &empty, "docadmin")] {
-        match result {
-            Err(AppError::Validation(message)) => {
-                assert!(message.contains("الجهة المصدرة للوثيقة") && message.contains("الموضوع") && message.contains("العدد"));
-                assert!(!message.contains("تاريخ الإصدار"));
-            }
-            other => panic!("expected a validation error, got {other:?}"),
+    match create_general_doc(&conn, &empty, "docadmin") {
+        Err(AppError::Validation(message)) => {
+            assert!(message.contains("الجهة المصدرة للوثيقة") && message.contains("الموضوع") && message.contains("العدد"));
+            assert!(!message.contains("تاريخ الإصدار") && !message.contains("إلى"));
         }
+        other => panic!("expected a validation error, got {other:?}"),
+    }
+    // «الصادر»: the sender is this unit; the receiver («إلى») is the field that must be filled.
+    match create_outgoing_doc(&conn, &empty, "docadmin") {
+        Err(AppError::Validation(message)) => {
+            assert!(message.contains("إلى") && message.contains("الموضوع") && message.contains("العدد"));
+            assert!(!message.contains("الجهة المصدرة للوثيقة") && !message.contains("تاريخ الإصدار"));
+        }
+        other => panic!("expected a validation error, got {other:?}"),
     }
     let count: i64 = conn.query_row("SELECT (SELECT COUNT(*) FROM general_docs)+(SELECT COUNT(*) FROM outgoing_docs)", [], |r| r.get(0)).unwrap();
     assert_eq!(count, 0);
@@ -3601,6 +3610,13 @@ fn saving_a_document_requires_issuer_subject_number_and_date() {
         title: "مركز الوزارة".into(), issuer: Some("أمر إداري".into()), doc_count: Some("230/547".into()), ..empty
     };
     assert!(create_general_doc(&conn, &filled, "docadmin").is_ok());
+    let outgoing = GeneralDocData {
+        title: "".into(), doc_type: None, doc_number: Some("وزارة النقل".into()), issue_date: Some("2026-11-25".into()),
+        issuer: Some("أمر إداري".into()), doc_count: Some("ص/12".into()), margin: None, is_internal_memo: false,
+        hr_effect_type: None, hr_affects_promotion: false, hr_affects_allowance: false,
+        hr_effect_months: 0, hr_effect_days: 0, notes: None, employee_ids: vec![],
+    };
+    assert!(create_outgoing_doc(&conn, &outgoing, "docadmin").is_ok());
 }
 
 #[cfg(test)]
