@@ -7,6 +7,7 @@ const person = (id, extra = {}) => ({
   id, employee_number: `T-${1000 + id}`, full_name: `موظف ${id}`, mother_name: "أم", gender: "ذكر", marital_status: "متزوج",
   birthdate: "1990-01-01", birthplace: "بغداد", blood_type: "O+", phone: "07700000000", job_title: "مهندس", job_grade: "السادسة",
   appointment_date: "2015-03-01", contract_type: "ملاك", education_level: "بكالوريوس", is_active: 1,
+  father_birthdate: "1960-01-01", father_birthplace: "بغداد", mother_birthdate: "1965-01-01", mother_birthplace: "بغداد",
   department: "قسم قديم", division: null, workplace: "المقر العام", spouses: "[]", family_members: "[]", vehicles: "[]", attachment_paths: "[]", ...extra,
 });
 
