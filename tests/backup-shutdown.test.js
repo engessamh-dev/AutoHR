@@ -36,13 +36,15 @@ function harness({ fail = false } = {}) {
     clearLoginMessage: () => {},
     applyUiScale: () => {},
     clearAddEmployeeDraft: () => {},
+    confirmLeaveWhileBusy: async () => true,
+    stopInSessionBackups: () => {},
     listen: async () => () => {},
     requestAnimationFrame: fn => fn(),
     setTimeout: fn => { fn(); },
     notifyWindows: async title => { calls.push(`notification:${title}`); },
     openAutomaticBackupProgress: () => { throw new Error("No progress event expected in mock"); },
   });
-  vm.runInContext(`let automaticBackupPromise = null; let isClosingWindow = false; let currentUser = { username: 'test' };\n${runner}\n${logout}\n${close}`, context);
+  vm.runInContext(`let automaticBackupPromise = null; let inSessionBackupPromise = null; let isClosingWindow = false; let currentUser = { username: 'test' };\n${runner}\n${logout}\n${close}`, context);
   return { context, calls, finish };
 }
 
