@@ -67,6 +67,7 @@ export const ACTIONS = {
   RESET_USER_PASSWORD: A("إعادة تعيين كلمة مرور", "المستخدمون"),
   FIRST_RUN_SETUP: A("الإعداد الأول: إنشاء حساب المسؤول", "المستخدمون"),
   UPDATE_PASSWORD_POLICY: A("تعديل سياسة كلمة المرور", "المستخدمون"),
+  UPDATE_ROLE_PERMISSIONS: A("تعديل صلاحيات الأدوار", "المستخدمون"),
   NEW_RECOVERY_CODE: A("إنشاء رمز استعادة جديد", "المستخدمون"),
   RECOVER_ADMIN_PASSWORD: A("استعادة كلمة مرور المسؤول برمز الاستعادة", "الدخول"),
   ADMIN_UNLOCK_REQUEST: A("طلب رمز فتح من المطوّر", "الدخول"),

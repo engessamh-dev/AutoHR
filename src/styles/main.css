@@ -1130,6 +1130,7 @@ html[data-ui-scale] #app-shell { height: calc(100vh / var(--ui-scale)); }
 .users-matrix th,.users-matrix td{padding:7px 10px;border-bottom:1px solid var(--ui-line);text-align:center}
 .users-matrix th:first-child,.users-matrix td:first-child{text-align:start}
 .users-matrix th{font-size:12px;color:var(--ui-text-muted);font-weight:600}
+.role-matrix-edit input{width:16px;height:16px;accent-color:var(--ui-accent);cursor:pointer}
 .users-matrix .yes{color:var(--ui-ok);font-weight:700}
 .users-matrix .no{color:var(--ui-text-muted)}
 .report-per-vehicle{display:inline-flex;align-items:center;gap:6px;font-size:13px;color:var(--ui-text-muted);white-space:nowrap;cursor:pointer}

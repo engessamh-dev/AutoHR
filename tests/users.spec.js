@@ -145,3 +145,45 @@ test("«المستخدمين والصلاحيات» is a side list like «الد
   await expect(panel.locator("#btn-new-recovery")).toBeVisible();
   await expect(panel.locator("#btn-save-policy")).toBeHidden();
 });
+
+test("«ماذا يستطيع كل دور» can be changed by a System Admin for «موظف» and «مشاهد» only", async ({ page }) => {
+  await page.evaluate(async () => {
+    const before = window.__TAURI_INTERNALS__.invoke;
+    window.__TAURI_INTERNALS__.invoke = async (command, args) => {
+      if (command === "cmd_get_role_permissions") return { archive_officer: ["print", "employees_edit", "upload"], viewer: ["print"] };
+      if (command === "cmd_set_role_permissions") { window.calls.push({ command, args }); return args.groups; }
+      return before(command, args);
+    };
+    await window.renderActual("users");
+  });
+  const matrix = page.locator(".users-matrix");
+  // «مسؤول», viewing and the admin row are fixed; six rows × two roles can be ticked.
+  await expect(matrix.locator("input[type=checkbox]")).toHaveCount(12);
+  await expect(matrix.locator('input[data-role="system_admin"]')).toHaveCount(0);
+  await expect(matrix.locator('input[data-group="view"], input[data-group="admin"]')).toHaveCount(0);
+  const save = page.locator("#btn-save-roles");
+  await expect(save).toBeDisabled();
+  await matrix.locator('input[data-role="archive_officer"][data-group="delete"]').check();
+  await matrix.locator('input[data-role="viewer"][data-group="print"]').uncheck();
+  await expect(save).toBeEnabled();
+  await save.click();
+  await expect.poll(() => called(page, "cmd_set_role_permissions")).toEqual([{ groups: {
+    archive_officer: ["print", "employees_edit", "upload", "delete"], viewer: [] } }]);
+  await expect(save).toBeDisabled();
+  // The role cards follow the new choice.
+  await page.locator("#btn-add-user").click();
+  await expect(page.locator(".role-card:has(input[value=viewer])")).toContainText("يعرض الموظفين والأرشيف فقط.");
+  await expect(page.locator(".role-card:has(input[value=archive_officer])")).toContainText("الحذف");
+});
+
+test("an admin without the System Admin permission sees the table but cannot change it", async ({ page }) => {
+  await page.evaluate(async () => {
+    window.permissionsOverride = ["users.manage", "settings.manage"];
+    const before = window.__TAURI_INTERNALS__.invoke;
+    window.__TAURI_INTERNALS__.invoke = async (command, args) => command === "cmd_get_role_permissions"
+      ? { archive_officer: ["print"], viewer: [] } : before(command, args);
+    await window.renderActual("users");
+  });
+  await expect(page.locator(".users-matrix input[type=checkbox]")).toHaveCount(0);
+  await expect(page.locator("#btn-save-roles")).toHaveCount(0);
+});

@@ -472,6 +472,18 @@ struct FirstRunState { needs_admin: bool }
     let user = session_user(&sess)?;
     account::set_password_policy(&conn, &user, policy)
 }
+/// «ماذا يستطيع كل دور»: which rows «موظف» and «مشاهد» have. Readable by user managers, changed by a System Admin.
+#[tauri::command] fn cmd_get_role_permissions(state: State<DbState>, sess: State<SessionState>) -> Result<services::RoleGroups, AppError> {
+    let conn = state.conn()?;
+    let user = session_user(&sess)?;
+    services::assert_permission(&conn, &user, "users.manage")?;
+    Ok(services::role_groups(&conn))
+}
+#[tauri::command] fn cmd_set_role_permissions(state: State<DbState>, sess: State<SessionState>, groups: services::RoleGroups) -> Result<services::RoleGroups, AppError> {
+    let conn = state.conn()?;
+    let user = session_user(&sess)?;
+    services::set_role_groups(&conn, &user, groups)
+}
 #[tauri::command] fn cmd_get_recovery_options(state: State<DbState>) -> Result<account::RecoveryOptions, AppError> {
     Ok(account::recovery_options(&*state.conn()?))
 }
@@ -1555,7 +1567,7 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             cmd_login, cmd_change_password, cmd_logout,
-            cmd_get_first_run_state, cmd_complete_first_run, cmd_get_password_policy, cmd_set_password_policy,
+            cmd_get_first_run_state, cmd_complete_first_run, cmd_get_password_policy, cmd_set_password_policy, cmd_get_role_permissions, cmd_set_role_permissions,
             cmd_get_recovery_options, cmd_new_unlock_challenge, cmd_unlock_admin, cmd_get_recovery_status, cmd_regenerate_recovery_code, cmd_recover_admin_password,
             cmd_get_company_config, cmd_get_public_company_config, cmd_update_company_config,
             cmd_next_employee_number,
