@@ -1127,7 +1127,7 @@ html[data-ui-scale] #app-shell { height: calc(100vh / var(--ui-scale)); }
 .user-state.is-muted{color:var(--ui-text-muted);background:color-mix(in srgb,var(--ui-sunken) 60%,transparent)}
 .users-table tr.is-disabled td:not(:last-child){opacity:.55}
 .users-matrix{width:100%;border-collapse:collapse;font-size:13px}
-.users-matrix th,.users-matrix td{padding:7px 10px;border-bottom:1px solid var(--ui-line);text-align:center}
+.users-matrix th,.users-matrix td{color:var(--ui-text);padding:7px 10px;border-bottom:1px solid var(--ui-line);text-align:center}
 .users-matrix th:first-child,.users-matrix td:first-child{text-align:start}
 .users-matrix th{font-size:12px;color:var(--ui-text-muted);font-weight:600}
 .role-matrix-edit input{width:16px;height:16px;accent-color:var(--ui-accent);cursor:pointer}
