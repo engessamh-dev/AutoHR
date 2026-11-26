@@ -108,3 +108,20 @@ test("employee documents tab shows «ينتهي خلال» from the saved remind
   await page.locator('.tab-btn[data-tab="documents"]').click();
   await expect(page.getByText(/ينتهي خلال 45/).first()).toBeVisible();
 });
+
+test("employee list «المستمسكات» column: plain labels, count only above one, names and dates on hover", async ({ page }) => {
+  await page.evaluate(({ expired, soon1, soon2 }) => {
+    window.employeePatch = { civil_id_expiry_date: expired, passport_expiry_date: soon1, airport_badge_expiry: soon2 };
+  }, { expired: inDays(-3), soon1: inDays(20), soon2: inDays(10) });
+  await page.evaluate(() => window.renderActual("employees"));
+  const cell = page.locator('.table-row[data-id="1"] .emp-doc-cell');
+  await expect(cell.locator(".emp-doc-tag.bad")).toHaveText("منتهي");
+  await expect(cell.locator(".emp-doc-tag.warn")).toHaveText("2 ينتهي قريبًا");
+  const title = await cell.getAttribute("title");
+  expect(title.split("\n")).toHaveLength(3);
+  expect(title).toMatch(/منتهي في/);
+  expect(title).toMatch(/ينتهي في/);
+  // Nothing in the column is cut off.
+  const clipped = await cell.evaluate(el => el.scrollWidth > el.parentElement.clientWidth);
+  expect(clipped).toBe(false);
+});

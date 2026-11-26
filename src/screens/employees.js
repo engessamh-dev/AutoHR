@@ -171,8 +171,12 @@ function documentsCell(employee, alertsById) {
   const expired = alerts.filter(a => a.expired).length;
   const soon = alerts.length - expired;
   if (!alerts.length) return `<span class="emp-doc-cell is-ok"><span class="emp-dot ok" aria-hidden="true"></span>سليمة</span>`;
-  const parts = [expired && `${expired} منتهٍ`, soon && `${soon} قارب`].filter(Boolean).join(" · ");
-  const names = alerts.map(a => `${a.documentName}: ${a.expired ? "منتهٍ" : "قارب على النفاذ"} (${formatDate(a.expiryDate)})`).join("\n");
+  const label = (count, text) => count > 1 ? `${count} ${text}` : text;
+  const parts = [
+    expired && `<span class="emp-doc-tag bad">${label(expired, "منتهي")}</span>`,
+    soon && `<span class="emp-doc-tag warn">${label(soon, "ينتهي قريبًا")}</span>`,
+  ].filter(Boolean).join(`<span class="emp-doc-sep" aria-hidden="true">·</span>`);
+  const names = alerts.map(a => `${a.documentName}: ${a.expired ? "منتهي في" : "ينتهي في"} ${formatDate(a.expiryDate)}`).join("\n");
   return `<span class="emp-doc-cell" title="${escHtml(names)}"><span class="emp-dot ${expired ? "bad" : "warn"}" aria-hidden="true"></span>${parts}</span>`;
 }
 
@@ -197,7 +201,7 @@ function renderTable({ keepVisibleRows = false } = {}) {
         <th class="table-header">الرقم الوظيفي</th>
         <th class="table-header">الاسم الرباعي</th>
         <th class="table-header">العنوان الوظيفي</th>
-        <th class="table-header">المستمسكات</th>
+        <th class="table-header emp-doc-col">المستمسكات</th>
         <th class="table-header">الهاتف</th>
         <th class="table-header">الحالة</th>
       </tr></thead>
@@ -1721,12 +1725,18 @@ function applyEmployeePermissions(panel, isNew) {
   }
 }
 
+const _documentsViewLogged = new Set();
+
 function attachTabEvents(emp) {
   const panel = document.getElementById("emp-panel");
   if (!panel) return;
 
   if (_activeTab === "documents" && emp) {
-    api.auditDocumentView(emp.id, "employee_documents").catch(() => {});
+    // Recorded once per employee and sign-in, not on every return to the tab.
+    if (!_documentsViewLogged.has(emp.id)) {
+      _documentsViewLogged.add(emp.id);
+      api.auditDocumentView(emp.id, "employee_documents").catch(() => {});
+    }
     bindAttachmentDownloadButtons(document.getElementById("tab-content"));
     panel.querySelectorAll(".btn-upload-sided-card").forEach(btn => {
       btn.addEventListener("click", async () => {

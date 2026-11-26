@@ -170,6 +170,9 @@ const fieldDefs = fieldGroups.flatMap(group =>
 );
 const fieldByKey = new Map(fieldDefs.map(field => [field.key, field]));
 
+/** Arabic names of the employee fields, also used by «سجل النظام» to say what changed. */
+export const employeeFieldLabels = Object.fromEntries(fieldDefs.map(field => [field.key, field.label]));
+
 const defaultColumns = ["employee_number", "full_name", "job_title", "department", "civil_id", "phone", "is_active_label"];
 const defaultFilters = { search: "", status: "active", docs: "all", data: "all" };
 
