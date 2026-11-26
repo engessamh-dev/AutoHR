@@ -114,7 +114,9 @@ function runFolderStep(status, { firstRun }) {
   dataInput.addEventListener("change", check);
   backupInput.addEventListener("change", check);
   $("setup-exit").addEventListener("click", () => api.exitApp());
-  check();
+  // First run: show at once whether the suggested folders get a warning. In recovery mode the
+  // reason the database could not be opened stays on screen until the user changes something.
+  if (firstRun) check();
 
   return new Promise(resolve => {
     retry.addEventListener("click", async () => {

@@ -33,8 +33,8 @@ test("a new user gets no role until the admin picks one, and the username is che
   await expect(page.locator(".role-card")).toHaveCount(3);
   await expect(page.locator("#new-username")).toHaveAttribute("dir", "ltr");
   await page.locator("#new-username").fill("أحمد");
-  await page.locator("#new-user-password").fill("12345678");
-  await page.locator("#new-user-password-confirm").fill("12345678");
+  await page.locator("#new-user-password").fill("Archive7Desk");
+  await page.locator("#new-user-password-confirm").fill("Archive7Desk");
   await page.locator("form.card [type=submit]").click();
   await expect(page.locator("[data-dialog-error]")).toContainText("أحرف إنجليزية");
   await page.locator("#new-username").fill("IT.Manager");
@@ -45,7 +45,7 @@ test("a new user gets no role until the admin picks one, and the username is che
   await expect(page.locator("[data-dialog-error]")).toHaveText("اختر دور المستخدم");
   await page.locator(".role-card:has(input[value=archive_officer])").click();
   await page.locator("form.card [type=submit]").click();
-  await expect.poll(() => called(page, "cmd_create_user")).toEqual([{ data: { username: "new.clerk", password: "12345678", role: "archive_officer" } }]);
+  await expect.poll(() => called(page, "cmd_create_user")).toEqual([{ data: { username: "new.clerk", password: "Archive7Desk", role: "archive_officer" } }]);
 });
 
 test("your own account cannot be deleted and its role is not offered", async ({ page }) => {

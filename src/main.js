@@ -500,7 +500,7 @@ function startLoginLockout(minutes) {
     const mm = String(Math.floor(remaining / 60)).padStart(2, "0");
     const ss = String(remaining % 60).padStart(2, "0");
     // Shown only while the paused name is in the field.
-    if (lockoutApplies()) showLoginMessage(`تم إيقاف الدخول مؤقتًا بسبب تكرار المحاولات الخاطئة. حاول بعد ${mm}:${ss}`, "error");
+    if (lockoutApplies()) showLoginMessage(`تم إيقاف الدخول مؤقتًا. حاول بعد ${mm}:${ss}`, "error");
     remaining -= 1;
   };
   if (loginLockoutTimer) clearInterval(loginLockoutTimer);

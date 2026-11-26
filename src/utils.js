@@ -175,11 +175,17 @@ export function confirmSaveChanges(message = "توجد تغييرات غير م�
 /** The unit name sits in a drawn pill of fixed size: a long name gets a smaller font until it fits. */
 export function fitLoginUnitName(el) {
   el.style.removeProperty("--unit-scale");
+  el.classList.remove("is-two-lines");
   requestAnimationFrame(() => {
     let scale = 1;
-    while (el.scrollWidth > el.clientWidth + 1 && scale > 0.5) {
+    while (el.scrollWidth > el.clientWidth + 1 && scale > 0.7) {
       scale -= 0.05;
       el.style.setProperty("--unit-scale", scale.toFixed(2));
+    }
+    // Still too long at 70%: two smaller lines read better than one tiny line.
+    if (el.scrollWidth > el.clientWidth + 1) {
+      el.style.removeProperty("--unit-scale");
+      el.classList.add("is-two-lines");
     }
   });
 }

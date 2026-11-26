@@ -1138,7 +1138,7 @@ html[data-ui-scale] #app-shell { height: calc(100vh / var(--ui-scale)); }
 .setup-product-sub{font-size:12.5px;color:var(--ui-text-muted);margin:0}
 .setup-steps{display:flex;gap:8px;list-style:none;margin:0;padding:0}
 .setup-steps.hidden{display:none}
-.setup-steps li{flex:1;display:flex;align-items:center;gap:8px;font-size:12.5px;color:var(--ui-text-muted);padding:8px 10px;border-radius:8px;border:1px solid var(--ui-line);background:var(--ui-sunken)}
+.setup-steps li{flex:1;display:flex;align-items:center;gap:8px;font-size:12.5px;color:var(--ui-text-muted);padding:8px 10px;border-radius:8px;border:1px solid var(--ui-line);background:transparent}
 .setup-steps li span{display:inline-flex;align-items:center;justify-content:center;width:22px;height:22px;border-radius:50%;font-weight:700;font-size:12px;background:var(--ui-surface);border:1px solid var(--ui-line-strong)}
 .setup-steps li.is-current{color:var(--ui-text-strong);border-color:var(--ui-accent);background:var(--ui-accent-soft);font-weight:700}
 .setup-steps li.is-current span{background:var(--ui-accent);color:var(--ui-on-accent);border-color:var(--ui-accent)}

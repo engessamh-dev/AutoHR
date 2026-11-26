@@ -404,7 +404,7 @@ async function renderSecurity(host, user, onPolicyChange) {
         </div>
         <div class="grid grid-cols-2 gap-3">
           <div>
-            <label class="section-title" for="policy-failures">المحاولات الخاطئة قبل الإيقاف</label>
+            <label class="section-title" for="policy-failures">محاولات قبل الإيقاف</label>
             <input id="policy-failures" class="input-field" type="number" min="3" max="20" value="${policy.max_failures}" />
           </div>
           <div>
@@ -424,7 +424,7 @@ async function renderSecurity(host, user, onPolicyChange) {
         <p class="settings-block-help">إذا نسي المسؤول الأساسي كلمة مروره، يكتب هذا الرمز في «نسيت كلمة المرور؟» بشاشة الدخول.</p>
       </div>
       <p class="text-sm" id="recovery-state">${recovery?.exists
-        ? `يوجد رمز للحساب <bdi dir="ltr">${escHtml(recovery.admin)}</bdi>، أُنشئ في ${escHtml(recovery.created_at ?? "")}.`
+        ? `يوجد رمز للحساب <bdi dir="ltr">${escHtml(recovery.admin)}</bdi>، أُنشئ في <bdi dir="ltr">${escHtml(String(recovery.created_at ?? "").replaceAll("-", "/"))}</bdi>.`
         : `<span class="setup-note is-warn" style="display:inline-block">لا يوجد رمز استعادة بعد. أنشئ واحدًا واحفظه مطبوعًا.</span>`}</p>
       <div class="settings-block-foot"><button id="btn-new-recovery" type="button" class="btn-secondary">إنشاء رمز جديد</button></div>
     </section>` : ""}`;
