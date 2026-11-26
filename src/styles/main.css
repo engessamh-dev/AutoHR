@@ -1122,3 +1122,8 @@ html[data-ui-scale] #app-shell { height: calc(100vh / var(--ui-scale)); }
 .users-matrix .yes{color:var(--ui-ok);font-weight:700}
 .users-matrix .no{color:var(--ui-text-muted)}
 .users-help summary{cursor:pointer;font-weight:600;color:var(--ui-text-strong);font-size:14px}
+.report-per-vehicle{display:inline-flex;align-items:center;gap:6px;font-size:13px;color:var(--ui-text-muted);white-space:nowrap;cursor:pointer}
+.report-per-vehicle input{width:15px;height:15px;accent-color:var(--ui-accent)}
+/* Family / vehicle rows: checks and the spouse-count note (warnings, saving not blocked) */
+.emp-row-warning{margin:2px 0 6px;padding:6px 10px;border-radius:6px;font-size:12px;line-height:1.6;color:var(--ui-warn);background:var(--ui-warn-bg);border:1px solid var(--ui-warn-line)}
+.emp-row-head .btn-danger:disabled{opacity:.45;cursor:not-allowed}

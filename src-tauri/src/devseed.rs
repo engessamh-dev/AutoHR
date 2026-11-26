@@ -312,10 +312,6 @@ fn employee_json(index: usize, p: &Person) -> Value {
     }
     if let Some(offset) = d.vehicle {
         let plate = format!("{} أ بغداد", 10000 + n * 137);
-        set(&mut v, "vehicle_plate", json!(plate));
-        set(&mut v, "vehicle_annual_no", json!(format!("A{n:06}")));
-        set(&mut v, "vehicle_annual_issue_date", json!(day(offset - 365)));
-        set(&mut v, "vehicle_annual_expiry_date", json!(day(offset)));
         set(&mut v, "vehicles", json!(json!([{
             "plate": plate, "brand": if n % 2 == 0 { "تويوتا" } else { "كيا" }, "type": "صالون",
             "color": "أبيض", "annual_no": format!("A{n:06}"), "issue_date": day(offset - 365), "expiry_date": day(offset),

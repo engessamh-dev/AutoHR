@@ -46,7 +46,7 @@ test("a saved setting keeps columns and filters, not the list of employees", asy
   await page.locator("#report-status").selectOption("all");
   await page.locator("#report-save").click();
   const saved = await page.evaluate(() => JSON.parse(localStorage.getItem("autohr.reportBuilder.v2")));
-  expect(saved).toEqual({ columns: ["full_name", "phone"], filters: { search: "", status: "all", docs: "all", data: "all" } });
+  expect(saved).toEqual({ columns: ["full_name", "phone"], filters: { search: "", status: "all", docs: "all", data: "all", perVehicle: false } });
 });
 
 test("department, division and workplace come from Settings, like the employee file", async ({ page }) => {
@@ -57,17 +57,45 @@ test("department, division and workplace come from Settings, like the employee f
   await expect(cells(page, 0).nth(4)).toHaveText("شعبة الإعدادات");
 });
 
-test("vehicle columns read the vehicles list, one value per vehicle", async ({ page }) => {
+const plain = value => value.replace(/[\u2066-\u2069]/g, "");
+const isolated = values => `\u2067${values.map(v => `\u2066${v}\u2069`).join("، ")}\u2069`;
+
+test("vehicle columns read the vehicles list, one value per vehicle in the same order", async ({ page }) => {
   const vehicles = JSON.stringify([
-    { plate: "111 أ بغداد", type: "صالون", color: "أبيض", model_year: "2019", annual_no: "A1", expiry_date: "2027-05-01" },
+    { plate: "111 أ بغداد", type: "صالون", color: "", model_year: "2019", annual_no: "A1", expiry_date: "2027-05-01" },
     { plate: "222 ب بغداد", type: "بيك أب", color: "أسود", model_year: "2021", annual_no: "A2", expiry_date: "2028-01-09" },
   ]);
   await openReports(page, [person(1, { vehicles })]);
   await columns(page, ["vehicles_count", "vehicle_type", "vehicle_color", "vehicle_annual_expiry_date"]);
   await expect(cells(page, 0).nth(2)).toHaveText("2");
-  await expect(cells(page, 0).nth(3)).toHaveText("صالون، بيك أب");
-  await expect(cells(page, 0).nth(4)).toHaveText("أبيض، أسود");
-  await expect(cells(page, 0).nth(5)).toHaveText("2027/5/1، 2028/1/9");
+  await expect(cells(page, 0).nth(3)).toHaveText(isolated(["صالون", "بيك أب"]));
+  // An empty value keeps its place, so «أسود» stays with the second vehicle.
+  await expect(cells(page, 0).nth(4)).toHaveText(isolated(["—", "أسود"]));
+  await expect(cells(page, 0).nth(5)).toHaveText(isolated(["2027/5/1", "2028/1/9"]));
+  expect(plain(await cells(page, 0).nth(5).textContent())).toBe("2027/5/1، 2028/1/9");
+});
+
+test("«صف لكل مركبة»: the ready-made vehicles report lists each vehicle on its own row", async ({ page }) => {
+  const vehicles = JSON.stringify([{ plate: "111 أ بغداد", type: "صالون" }, { plate: "222 ب بغداد", type: "بيك أب" }]);
+  await openReports(page, [person(1, { vehicles }), person(2)]);
+  await page.locator("#report-preset").selectOption("vehicles");
+  await expect(page.locator("#report-per-vehicle")).toBeChecked();
+  await expect(page.locator("#report-table tbody tr")).toHaveCount(2);
+  await expect(cells(page, 1).nth(3)).toHaveText("222 ب بغداد");
+  await expect(page.locator("#report-summary")).toHaveText("في التقرير: 2 من 2 مركبة");
+  await page.locator("#report-per-vehicle").uncheck();
+  await expect(page.locator("#report-table tbody tr")).toHaveCount(2);
+  await expect(page.locator("#report-summary")).toHaveText("في التقرير: 2 من 2 موظفاً");
+});
+
+test("the family report shows relation and age, and a woman's status in the feminine", async ({ page }) => {
+  const birth = years => { const d = new Date(); d.setFullYear(d.getFullYear() - years); d.setDate(d.getDate() - 3); return d.toISOString().slice(0, 10); };
+  const family = JSON.stringify([{ name: "علي", relation: "ابن", birthdate: birth(8) }, { name: "سلمى", relation: "أم", birthdate: birth(70) }]);
+  await openReports(page, [person(1, { gender: "أنثى", family_members: family })]);
+  await columns(page, ["marital_status", "family_members_details", "children_under_18"]);
+  await expect(cells(page, 0).nth(2)).toHaveText("متزوجة");
+  await expect(cells(page, 0).nth(3)).toHaveText("علي (ابن، 8)، سلمى (أم، 70)");
+  await expect(cells(page, 0).nth(4)).toHaveText("1");
 });
 
 test("missing data, document status and the address parts are columns and filters", async ({ page }) => {
@@ -143,5 +171,5 @@ test("blood type, numbers and dates are kept left-to-right", async ({ page }) =>
 test("a vehicle in the vehicles list counts for the document status (and the expiry reminders)", async ({ page }) => {
   await openReports(page, [person(1, { vehicles: JSON.stringify([{ plate: "1", expiry_date: iso(-5) }, { plate: "2", expiry_date: iso(400) }]) })]);
   await columns(page, ["documents_status"]);
-  await expect(cells(page, 0).nth(2)).toHaveText("منتهٍ: سنوية المركبة");
+  await expect(cells(page, 0).nth(2)).toHaveText("منتهٍ: سنوية المركبة \u20681\u2069");
 });
