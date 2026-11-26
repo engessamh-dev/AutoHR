@@ -980,4 +980,7 @@ export async function renderSettings(container, user, ctx) {
       if (unlisten) unlisten();
     }
   });
+
+  // The home-screen reminder «تصدير نسخة كاملة…» opens the export itself, not only this page.
+  if (ctx?.action === "export" && !ctx?.keepPosition) container.querySelector("#btn-export-backup")?.click();
 }
