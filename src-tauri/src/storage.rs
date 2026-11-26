@@ -9,8 +9,8 @@ use serde::Serialize;
 
 use crate::paths::{self, AppPaths, DATABASE_FILE};
 use crate::services::{
-    assert_permission, backup_progress, create_backup_archive, create_backup_at, ensure_backup_layout,
-    log_activity, sha256_file, verify_written_backup, AppError, AppResult, BackupProgress,
+    assert_permission, backup_progress, create_backup_at, ensure_backup_layout,
+    log_activity, sha256_file, AppError, AppResult, BackupProgress,
 };
 
 fn io_err(error: std::io::Error) -> AppError {
@@ -36,7 +36,7 @@ pub fn storage_status() -> StorageStatus {
         warnings.push("مجلد النسخ الاحتياطية غير متاح حاليًا (قرص غير موصول أو مجلد شبكة غير متصل). العمل مستمر، لكن النسخ التلقائي لن يعمل حتى يعود المجلد أو تختار مجلدًا آخر.".into());
     }
     if legacy_location {
-        warnings.push("البيانات محفوظة في الموقع القديم داخل قرص النظام (AppData). يمكنك نقلها إلى قرص آخر من زر «نقل مجلد البيانات».".into());
+        warnings.push("البيانات محفوظة في الموقع القديم داخل قرص النظام (AppData). يمكنك نقلها إلى قرص آخر من زر «نقل المجلد…» في الإعدادات ← مجلد البيانات.".into());
     }
     if let Ok(mut pair) = paths::validate_pair(&current.data_root, &current.backup_root) {
         warnings.append(&mut pair);
@@ -124,8 +124,8 @@ pub fn change_backup_root(conn: &Connection, user: &str, new_root: &Path) -> App
     Ok(storage_status())
 }
 
-/// Writes a fresh, verified encrypted backup straight into any folder the user picks
-/// (USB stick, network share). Works even while the configured backup folder is offline.
+/// Writes a fresh, verified, self-contained backup file (database and every attachment) into
+/// any folder the user picks (USB stick, network share). Works even while the configured backup folder is offline.
 pub fn export_backup_to(
     conn: &Connection,
     user: &str,
@@ -142,17 +142,13 @@ pub fn export_backup_to(
     }
     paths::ensure_writable(folder)?;
     let stamp = chrono::Local::now().format("%Y-%m-%d_%H%M%S");
-    let path = folder.join(format!("autohr_export_{stamp}.autohrbak"));
+    let path = folder.join(format!("cnsarch_export_{stamp}.{}", crate::backup_store::BACKUP_EXTENSION));
     if path.exists() {
         return Err(AppError::Validation("يوجد ملف بنفس الاسم في المجلد المختار. أعد المحاولة بعد ثانية.".into()));
     }
-    create_backup_archive(conn, password, &path, progress)?;
-    progress(backup_progress(98, "جاري التحقق من النسخة المصدّرة..."));
-    if let Err(error) = verify_written_backup(&path, password) {
-        std::fs::remove_file(&path).ok();
-        return Err(error);
-    }
+    crate::backup_store::write_full_export(conn, password, &path, progress)?;
     log_activity(conn, user, "EXPORT_BACKUP", Some("backup"), None, path.to_str(), None);
+    crate::services::set_setting(conn, "backup_last_export", &chrono::Local::now().format("%Y-%m-%d %H:%M").to_string())?;
     progress(backup_progress(100, "تم تصدير النسخة الاحتياطية والتحقق منها"));
     Ok(path.to_string_lossy().into_owned())
 }
@@ -289,7 +285,7 @@ pub fn relocate_data(
     let updated = AppPaths { data_root: new_root.to_path_buf(), backup_root };
     paths::write_config(&updated)?;
     // The caller writes the audit entry into the NEW database once it is open.
-    progress(backup_progress(100, "تم نقل البيانات والتحقق منها. الموقع القديم بقي كما هو ولم يُحذف."));
+    progress(backup_progress(100, "تم نقل البيانات والتحقق منها. بقيت نسخة غير مشفرة في الموقع القديم: احذفها بنفسك بعد التأكد من أن كل شيء يعمل."));
     Ok((updated, safety))
 }
 
@@ -386,7 +382,8 @@ mod tests {
         assert!(file.is_file(), "old data must stay");
         assert!(data.join(DATABASE_FILE).is_file());
         let safety: Vec<_> = list_files(&backups.join("PreMove")).unwrap();
-        assert_eq!(safety.len(), 1);
+        // The backup file and its list of attachments (for cleaning the store).
+        assert_eq!(safety.iter().filter(|p| p.extension().is_some_and(|e| e == "cnsarchbak")).count(), 1);
         paths::set_current(None);
         assert_eq!(
             paths::resolve_startup().unwrap(),
@@ -421,7 +418,7 @@ mod tests {
         let usb = env.root.join("usb");
         let path = export_backup_to(&conn, &user, "Backup-Pass-2026", &usb, &mut |_| {}).unwrap();
         assert!(Path::new(&path).is_file());
-        verify_written_backup(Path::new(&path), "Backup-Pass-2026").unwrap();
+        crate::services::verify_written_backup(Path::new(&path), "Backup-Pass-2026").unwrap();
         assert!(export_backup_to(&conn, &user, "Backup-Pass-2026", &data.join("Data"), &mut |_| {}).is_err());
     }
 
@@ -443,5 +440,202 @@ mod tests {
             paths::resolve_startup().unwrap(),
             paths::StartupState::Ready(AppPaths { data_root: data, backup_root: other })
         );
+    }
+
+    // ── Backups from 1.0.7: store, daily file, restore of every kind ─────────
+
+    use crate::services::{create_backup_with_progress, restore_backup_with_progress, log_activity, AutoBackupSettingsData};
+    use rusqlite::params;
+
+    fn add_employee(conn: &Connection, data: &Path, id: i64, name: &str) {
+        let relative = format!("Files/Employees/{id}/Attachments/card.pdf");
+        let file = data.join("Data").join(&relative);
+        std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+        std::fs::write(&file, format!("%PDF-1.7 card of {name}")).unwrap();
+        conn.execute("INSERT INTO employees(id,full_name,employee_number,attachment_paths) VALUES(?1,?2,?3,?4)",
+            params![id, name, format!("E-{id}"), serde_json::to_string(&[&relative]).unwrap()]).unwrap();
+        log_activity(conn, "sysadmin", "CREATE_EMPLOYEE", Some("employee"), Some(id), Some(name), None);
+    }
+
+    fn names(conn: &Connection) -> Vec<String> {
+        let mut stmt = conn.prepare("SELECT full_name FROM employees ORDER BY id").unwrap();
+        stmt.query_map([], |r| r.get(0)).unwrap().map(Result::unwrap).collect()
+    }
+
+    fn store_files(backups: &Path) -> usize {
+        let mut count = 0;
+        let mut pending = vec![backups.join("Store")];
+        while let Some(dir) = pending.pop() {
+            for entry in std::fs::read_dir(&dir).into_iter().flatten().flatten() {
+                if entry.path().is_dir() { pending.push(entry.path()) } else { count += 1 }
+            }
+        }
+        count
+    }
+
+    #[test]
+    fn small_backup_shares_attachments_and_restores_everything() {
+        let env = env();
+        let data = env.root.join("data");
+        let backups = env.root.join("backups");
+        let mut conn = complete_setup(&data, &backups, false).unwrap();
+        let user = admin(&conn);
+        add_employee(&conn, &data, 1, "قبل النسخة");
+        let first = create_backup_with_progress(&conn, &user, "Backup-2026!", |_| {}).unwrap();
+        assert_eq!(store_files(&backups), 1);
+        // The restore list shows it with its type and employee count, without the password.
+        let listed = crate::backup_store::list_backups(&conn);
+        assert_eq!(listed.len(), 1);
+        assert_eq!((listed[0].kind.as_str(), listed[0].employees, listed[0].old_format), ("manual", Some(1), false));
+        assert!(listed[0].path.ends_with(".cnsarchbak") && listed[0].path.contains("cnsarch_manual_"));
+        // A second backup does not copy the unchanged attachment again.
+        std::thread::sleep(std::time::Duration::from_millis(1100));
+        create_backup_with_progress(&conn, &user, "Backup-2026!", |_| {}).unwrap();
+        assert_eq!(store_files(&backups), 1);
+        // The backup file itself is small: the attachment is in the store, not in the file.
+        assert!(std::fs::metadata(&first).unwrap().len() < 200_000);
+
+        add_employee(&conn, &data, 2, "بعد النسخة");
+        conn.execute("INSERT INTO users(username,password,role,must_change_password) VALUES('new.clerk','x','viewer',0)", []).unwrap();
+        crate::services::set_auto_backup_settings(&conn, &user, &AutoBackupSettingsData {
+            enabled: true, password: Some("Auto-Pass-2026".into()), interval_minutes: 30,
+            keep_daily: 10, keep_weekly: 4, keep_monthly: 12, auto_delete: true,
+        }).unwrap();
+
+        assert!(restore_backup_with_progress(&mut conn, &user, &first, "Wrong-pass-1", |_| {}).is_err());
+        let failures: i64 = conn.query_row("SELECT COUNT(*) FROM activity_log WHERE action='RESTORE_BACKUP' AND result='Failure'", [], |r| r.get(0)).unwrap();
+        assert_eq!(failures, 1, "a failed restore is logged");
+
+        restore_backup_with_progress(&mut conn, &user, &first, "Backup-2026!", |_| {}).unwrap();
+        assert_eq!(names(&conn), vec!["قبل النسخة"]);
+        assert!(data.join("Data/Files/Employees/1/Attachments/card.pdf").is_file());
+        assert!(!data.join("Data/Files/Employees/2").exists());
+        let new_clerk: i64 = conn.query_row("SELECT COUNT(*) FROM users WHERE username='new.clerk'", [], |r| r.get(0)).unwrap();
+        assert_eq!(new_clerk, 0);
+        // The automatic-backup settings of this computer survive the restore.
+        let settings = crate::services::get_auto_backup_settings(&conn, &user).unwrap();
+        assert!(settings.enabled && settings.password_works);
+        assert_eq!((settings.interval_minutes, settings.keep_daily), (30, 10));
+        // The log keeps every entry once, including the safety backup made before the restore.
+        let duplicates: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM (SELECT 1 FROM activity_log GROUP BY action,username,IFNULL(target_name,''),created_at,IFNULL(details,''),result HAVING COUNT(*)>1)",
+            [], |r| r.get(0)).unwrap();
+        assert_eq!(duplicates, 0);
+        let safety: i64 = conn.query_row("SELECT COUNT(*) FROM activity_log WHERE action='CREATE_BACKUP' AND details='PreRestore'", [], |r| r.get(0)).unwrap();
+        assert_eq!(safety, 1);
+    }
+
+    #[test]
+    fn copied_backup_folder_restores_elsewhere_and_missing_store_is_explained() {
+        let env = env();
+        let data = env.root.join("data");
+        let backups = env.root.join("backups");
+        let conn = complete_setup(&data, &backups, false).unwrap();
+        let user = admin(&conn);
+        add_employee(&conn, &data, 1, "موظف");
+        let path = PathBuf::from(create_backup_with_progress(&conn, &user, "Backup-2026!", |_| {}).unwrap());
+        // The whole backup folder copied to a USB stick: the store is found next to the file.
+        let usb = env.root.join("usb");
+        let copy = |from: &Path, to: &Path| {
+            let mut pending = vec![PathBuf::new()];
+            while let Some(relative) = pending.pop() {
+                std::fs::create_dir_all(to.join(&relative)).unwrap();
+                for entry in std::fs::read_dir(from.join(&relative)).unwrap().flatten() {
+                    let child = relative.join(entry.file_name());
+                    if entry.path().is_dir() { pending.push(child) } else { std::fs::copy(entry.path(), to.join(&child)).unwrap(); }
+                }
+            }
+        };
+        copy(&backups, &usb);
+        std::fs::rename(&backups, env.root.join("backups-away")).unwrap();
+        let on_usb = usb.join(path.strip_prefix(&backups).unwrap());
+        let staging = tempfile::tempdir().unwrap();
+        crate::services::stage_backup(&on_usb, "Backup-2026!", staging.path()).unwrap();
+        assert!(staging.path().join("Data/Files/Employees/1/Attachments/card.pdf").is_file());
+        // The file alone, without its store, is refused with an explanation.
+        let alone = env.root.join("alone.autohrbak");
+        std::fs::copy(&on_usb, &alone).unwrap();
+        let error = crate::services::stage_backup(&alone, "Backup-2026!", tempfile::tempdir().unwrap().path()).unwrap_err();
+        assert!(serde_json::to_string(&error).unwrap().contains("Store"));
+    }
+
+    #[test]
+    fn full_export_and_old_full_backup_both_restore() {
+        let env = env();
+        let data = env.root.join("data");
+        let backups = env.root.join("backups");
+        let mut conn = complete_setup(&data, &backups, false).unwrap();
+        let user = admin(&conn);
+        add_employee(&conn, &data, 1, "في التصدير");
+        let export = export_backup_to(&conn, &user, "Backup-2026!", &env.root.join("usb"), &mut |_| {}).unwrap();
+        // The home-screen reminder counts from the last full export.
+        assert!(crate::services::get_setting(&conn, "backup_last_export").unwrap().is_some());
+        let old = env.root.join("old-1.0.6.autohrbak");
+        crate::services::create_backup_archive(&conn, "Backup-2026!", &old, &mut |_| {}).unwrap();
+        add_employee(&conn, &data, 2, "بعد التصدير");
+        restore_backup_with_progress(&mut conn, &user, &export, "Backup-2026!", |_| {}).unwrap();
+        assert_eq!(names(&conn), vec!["في التصدير"]);
+        add_employee(&conn, &data, 3, "بعد الاستعادة");
+        restore_backup_with_progress(&mut conn, &user, old.to_str().unwrap(), "Backup-2026!", |_| {}).unwrap();
+        assert_eq!(names(&conn), vec!["في التصدير"]);
+        assert!(data.join("Data/Files/Employees/1/Attachments/card.pdf").is_file());
+    }
+
+    #[test]
+    fn restore_that_cannot_swap_folders_changes_nothing_and_loses_nothing_later() {
+        let env = env();
+        let data = env.root.join("data");
+        let backups = env.root.join("backups");
+        let mut conn = complete_setup(&data, &backups, false).unwrap();
+        let user = admin(&conn);
+        add_employee(&conn, &data, 1, "قديم");
+        let backup = create_backup_with_progress(&conn, &user, "Backup-2026!", |_| {}).unwrap();
+        // Something in the way of renaming the data folder (on Windows: a file open elsewhere).
+        std::fs::write(data.join("Data.restore.rollback"), b"blocker").unwrap();
+        let error = restore_backup_with_progress(&mut conn, &user, &backup, "Backup-2026!", |_| {}).unwrap_err();
+        assert!(serde_json::to_string(&error).unwrap().contains("لم يتغير شيء"));
+        assert!(!data.join("restore.in_progress").exists());
+        add_employee(&conn, &data, 2, "أضيف بعد الفشل");
+        drop(conn);
+        std::fs::remove_file(data.join("Data.restore.rollback")).ok();
+        let conn = crate::db::open_at(&data.join(DATABASE_FILE), false).unwrap();
+        assert_eq!(names(&conn), vec!["قديم", "أضيف بعد الفشل"]);
+    }
+
+    #[test]
+    fn automatic_backups_are_one_per_day_and_old_days_are_thinned() {
+        let env = env();
+        let data = env.root.join("data");
+        let backups = env.root.join("backups");
+        let conn = complete_setup(&data, &backups, false).unwrap();
+        let user = admin(&conn);
+        crate::services::set_auto_backup_settings(&conn, &user, &AutoBackupSettingsData {
+            enabled: true, password: Some("Auto-Pass-2026".into()), interval_minutes: 60,
+            keep_daily: 7, keep_weekly: 4, keep_monthly: 12, auto_delete: true,
+        }).unwrap();
+        // Forty days of files from 1.0.6 (three a day: daily, weekly, monthly).
+        let today = chrono::Local::now().date_naive();
+        for day in 1..=40u64 {
+            let date = today - chrono::Days::new(day);
+            for kind in ["daily", "weekly", "monthly"] {
+                let folder = backups.join(format!("{}{}", kind[..1].to_uppercase(), &kind[1..])).join(date.format("%Y").to_string());
+                std::fs::create_dir_all(&folder).unwrap();
+                std::fs::write(folder.join(format!("cnsarch_{kind}_{}_090000.autohrbak", date.format("%Y-%m-%d"))), b"old").unwrap();
+            }
+        }
+        // A manual backup is never thinned.
+        std::fs::create_dir_all(backups.join("Manual/2025")).unwrap();
+        std::fs::write(backups.join("Manual/2025/autohr_manual_2025-01-01_100000.autohrbak"), b"manual").unwrap();
+        for round in 0..3 {
+            add_employee(&conn, &data, 10 + round, &format!("موظف {round}"));
+            assert_eq!(crate::services::run_due_automatic_backups_with_progress(&conn, false, |_| {}).unwrap(), vec!["يومي"]);
+        }
+        let left = crate::backup_store::automatic_backups(&backups);
+        // Today + 6 earlier days, 4 weeks, and the months that remain of the forty days.
+        assert!(left.len() <= 7 + 4 + 2, "{} left", left.len());
+        assert_eq!(left.iter().filter(|b| b.date == today).count(), 1);
+        assert!(backups.join("Manual/2025/autohr_manual_2025-01-01_100000.autohrbak").is_file());
+        let removed: i64 = conn.query_row("SELECT COUNT(*) FROM activity_log WHERE action='DELETE_OLD_BACKUPS'", [], |r| r.get(0)).unwrap();
+        assert!(removed >= 1);
     }
 }

@@ -2,7 +2,7 @@
  * main.js — Auth, navigation, RBAC, i18n
  */
 import { api }           from "./api.js";
-import { applyBranding, showToast, confirmAction, escHtml, errorText } from "./utils.js";
+import { applyBranding, showToast, confirmAction, escHtml, errorText, busyTaskLabel } from "./utils.js";
 import { renderDashboard }  from "./screens/dashboard.js";
 import { alertStageKey, buildDocumentAlerts, loadAlertRules, renderDocumentAlerts } from "./screens/document-alerts.js";
 import { renderEmployees }  from "./screens/employees.js";
@@ -161,40 +161,49 @@ function openAutomaticBackupProgress() {
   };
 }
 
-async function runShutdownAutomaticBackupsOld({ showProgress = true } = {}) {
-  if (automaticBackupPromise) return automaticBackupPromise;
-  automaticBackupPromise = (async () => {
-  const progress = showProgress ? openAutomaticBackupProgress() : null;
-  let unlisten = null;
-  try {
-    if (progress) {
-      unlisten = await listen("auto-backup-progress", event => progress.update(event.payload));
-      await new Promise(resolve => requestAnimationFrame(() => setTimeout(resolve, 0)));
-    }
-    const created = await api.runDueAutoBackups();
-    if (created.length) {
-      const createdTypes = created.join("، ");
-      await notifyWindows(
-        "\u0646\u0633\u062e \u0627\u062d\u062a\u064a\u0627\u0637\u064a \u062a\u0644\u0642\u0627\u0626\u064a",
-        `\u062a\u0645 \u0625\u0646\u0634\u0627\u0621 \u0646\u0633\u062e \u062a\u0644\u0642\u0627\u0626\u064a \u0628\u0646\u062c\u0627\u062d: ${createdTypes}.`,
-      );
-    }
-  } catch (err) {
-    await notifyWindows(
-      "\u0641\u0634\u0644 \u0627\u0644\u0646\u0633\u062e \u0627\u0644\u062a\u0644\u0642\u0627\u0626\u064a",
-      err?.message ?? "\u062a\u0639\u0630\u0631 \u0625\u0646\u0634\u0627\u0621 \u0627\u0644\u0646\u0633\u062e\u0629 \u0627\u0644\u0627\u062d\u062a\u064a\u0627\u0637\u064a\u0629 \u0627\u0644\u062a\u0644\u0642\u0627\u0626\u064a\u0629.",
-    );
-  } finally {
-    if (unlisten) unlisten();
-    if (progress) setTimeout(() => progress.close(), 450);
-    automaticBackupPromise = null;
-  }
-  })();
-  return automaticBackupPromise;
+// While someone works, today's automatic backup is refreshed quietly. Rust decides whether one is
+// due (the interval chosen in Settings, and only when something changed), so checking often is cheap.
+const IN_SESSION_BACKUP_CHECK_MS = 5 * 60 * 1000;
+let inSessionBackupTimer = null;
+let inSessionBackupPromise = null;
+
+function startInSessionBackups() {
+  stopInSessionBackups();
+  inSessionBackupTimer = setInterval(() => {
+    if (!currentUser || automaticBackupPromise || inSessionBackupPromise) return;
+    // Not marked busy: signing out or closing waits for it, then refreshes today's backup itself.
+    inSessionBackupPromise = (async () => {
+      try {
+        await api.runDueAutoBackups(true);
+      } catch (err) {
+        // Rust records the failure in the log; one quiet line here is enough.
+        console.warn("automatic backup", errorText(err));
+      } finally {
+        inSessionBackupPromise = null;
+      }
+    })();
+  }, IN_SESSION_BACKUP_CHECK_MS);
+}
+
+function stopInSessionBackups() {
+  if (inSessionBackupTimer) clearInterval(inSessionBackupTimer);
+  inSessionBackupTimer = null;
+}
+
+/** Asks before closing or signing out while a backup, restore, export, move or update runs. */
+async function confirmLeaveWhileBusy(action) {
+  const label = busyTaskLabel();
+  if (!label) return true;
+  return confirmAction(
+    `ما زالت عملية «${label}» جارية. ${action} الآن قد يقطعها ويترك ملفًا غير مكتمل. يُنصح بالانتظار حتى تنتهي.`,
+    { title: "عملية جارية", confirmLabel: `${action} على أي حال`, danger: true },
+  );
 }
 
 // ── Screen routing ─────────────────────────────────────────────────────────
 async function runShutdownAutomaticBackups({ showProgress = true } = {}) {
+  if (automaticBackupPromise) return automaticBackupPromise;
+  if (inSessionBackupPromise) await inSessionBackupPromise;
   if (automaticBackupPromise) return automaticBackupPromise;
   automaticBackupPromise = (async () => {
     let progress = null;
@@ -380,6 +389,7 @@ function bindUiScalePicker() {
 
 async function enterApp(user) {
   currentUser = user;
+  startInSessionBackups();
   applyUiScale(savedUiScale());
   renderSidebarUser(user);
   const canViewAudit = can(user, "audit.view");
@@ -603,7 +613,9 @@ async function doLogout() {
   if (window.autohrCanLeaveCurrentScreen && !(await window.autohrCanLeaveCurrentScreen())) {
     return;
   }
+  if (!(await confirmLeaveWhileBusy("تسجيل الخروج"))) return;
   if (!(await confirmAction("تأكيد تسجيل الخروج؟"))) return;
+  stopInSessionBackups();
 
   await runShutdownAutomaticBackups();
 
@@ -633,7 +645,9 @@ document.addEventListener("DOMContentLoaded", async () => {
     if (window.autohrCanLeaveCurrentScreen && !(await window.autohrCanLeaveCurrentScreen())) {
       return;
     }
+    if (!(await confirmLeaveWhileBusy("إغلاق البرنامج"))) return;
     isClosingWindow = true;
+    stopInSessionBackups();
     try {
       await runShutdownAutomaticBackups();
     } finally {

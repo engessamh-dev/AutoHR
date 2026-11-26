@@ -49,6 +49,7 @@ CREATE TABLE IF NOT EXISTS employees (
   workplace                 TEXT,
   job_title                 TEXT,
   job_grade                 TEXT,
+  job_step                  TEXT,
   hire_date                 TEXT,
   appointment_date          TEXT,
   contract_type             TEXT DEFAULT 'ملاك',

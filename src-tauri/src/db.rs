@@ -176,7 +176,7 @@ pub fn db_path() -> PathBuf {
 /// To change the schema later: bump this constant and add an `if from < N { ... }` step in
 /// `upgrade()`. Every upgrade of an existing database runs only after a verified
 /// pre-upgrade snapshot exists, and the snapshot is restored automatically if a step fails.
-pub const SCHEMA_VERSION: i64 = 8;
+pub const SCHEMA_VERSION: i64 = 9;
 
 #[derive(Debug)]
 pub enum OpenError {
@@ -292,7 +292,11 @@ fn upgrade(conn: &Connection, from: i64) -> SqlResult<()> {
     if from < 8 {
         upgrade_to_v8(conn)?;
     }
-    // Future steps go here, for example: if from < 9 { ... }
+    if from < 9 {
+        // «رقم المرحلة» next to «الدرجة الوظيفية», chosen from a list set in the settings.
+        add_column_if_missing(conn, "employees", "job_step", "TEXT")?;
+    }
+    // Future steps go here, for example: if from < 10 { ... }
     #[cfg(test)]
     if FAIL_UPGRADE.with(|flag| flag.get()) {
         return Err(rusqlite::Error::InvalidQuery);
@@ -462,6 +466,7 @@ fn migrate(conn: &Connection) -> SqlResult<()> {
         ("blood_type",           "TEXT"),
         ("workplace",            "TEXT"),
         ("job_grade",            "TEXT"),
+        ("job_step",             "TEXT"),
         ("hire_date",            "TEXT"),
         ("appointment_date",     "TEXT"),
         ("contract_type",        "TEXT DEFAULT 'ملاك'"),

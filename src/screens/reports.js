@@ -48,6 +48,7 @@ const fieldGroups = [
       ["workplace", "مكان العمل"],
       ["job_title", "العنوان الوظيفي"],
       ["job_grade", "الدرجة الوظيفية"],
+      ["job_step", "المرحلة"],
       ["department", "القسم"],
       ["division", "الشعبة / الوحدة"],
       ["appointment_date", "تاريخ التعيين", "date"],

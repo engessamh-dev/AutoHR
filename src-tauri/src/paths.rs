@@ -195,7 +195,7 @@ pub fn is_same_or_inside(path: &Path, parent: &Path) -> bool {
     normalize(path).starts_with(normalize(parent))
 }
 
-fn drive_of(path: &Path) -> Option<String> {
+pub(crate) fn drive_of(path: &Path) -> Option<String> {
     match normalize(path).components().next() {
         Some(Component::Prefix(prefix)) => Some(prefix.as_os_str().to_string_lossy().to_lowercase()),
         _ => None,

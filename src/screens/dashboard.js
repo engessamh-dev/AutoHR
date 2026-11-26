@@ -4,15 +4,23 @@
  */
 import { api }        from "../api.js";
 import { buildDocumentAlerts, loadAlertRules } from "./document-alerts.js";
-import { escHtml, formatDate } from "../utils.js";
+import { escHtml, formatDate, daysSince, friendlyTime } from "../utils.js";
+import { can } from "../permissions.js";
 
 export async function renderDashboard(container, user, ctx) {
-  const [employees, incomingDocs, outgoingDocs, alertRules] = await Promise.all([
+  const canBackups = can(user, "backups.manage");
+  const [employees, incomingDocs, outgoingDocs, alertRules, lastExport] = await Promise.all([
     api.listEmployees(),
     api.listGeneralDocs(),
     api.listOutgoingDocs(),
     loadAlertRules(),
+    // undefined: not asked (no permission) or unknown; null: never exported.
+    canBackups ? api.lastFullExport().catch(() => undefined) : Promise.resolve(undefined),
   ]);
+  // A copy outside this computer is the only protection against a disk failure or theft,
+  // so a month without «تصدير نسخة كاملة» brings a reminder here.
+  const exportAge = daysSince(lastExport);
+  const exportReminder = lastExport !== undefined && (lastExport === null || exportAge >= 30);
   const active    = employees.filter(e => e.is_active);
   const inactive  = employees.filter(e => !e.is_active);
 
@@ -45,6 +53,11 @@ export async function renderDashboard(container, user, ctx) {
   }
 
   container.innerHTML = `<div class="space-y-5">
+    ${exportReminder ? `<div class="settings-storage-warning text-sm" role="status" style="display:flex;align-items:center;justify-content:space-between;gap:12px">
+      <span>${lastExport ? `مرّ ${exportAge} يومًا على آخر «تصدير نسخة كاملة» (${escHtml(friendlyTime(lastExport))}).` : "لم تُصدَّر بعد نسخة كاملة خارج هذا الجهاز."}
+        احفظ نسخة على فلاش أو قرص خارجي لتحمي البيانات إذا تعطّل الجهاز.</span>
+      <button type="button" id="btn-export-reminder" class="btn-primary whitespace-nowrap">تصدير نسخة كاملة…</button>
+    </div>` : ""}
 
     <!-- Stats -->
     <div class="grid grid-cols-2 md:grid-cols-4 gap-4">
@@ -95,6 +108,9 @@ export async function renderDashboard(container, user, ctx) {
     </div>
   </div>`;
 
+  container.querySelector("#btn-export-reminder")?.addEventListener("click", () => {
+    ctx.navigateTo("settings", { tab: "storage", sub: "manual" });
+  });
   container.querySelector("#stat-document-alerts")?.addEventListener("click", () => {
     ctx.navigateTo("documentAlerts");
   });

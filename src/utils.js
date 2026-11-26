@@ -323,3 +323,42 @@ export function parseAddress(value) {
   }
   return out;
 }
+
+// ── Long operations (backup, export, restore, folder move, update) ─────────
+// Closing or signing out while one of these runs can cut it off, so main.js asks first.
+const _busyTasks = new Map();
+let _busyNext = 0;
+export function beginBusyTask(label) {
+  const id = ++_busyNext;
+  _busyTasks.set(id, label);
+  return () => _busyTasks.delete(id);
+}
+export function busyTaskLabel() {
+  const labels = [..._busyTasks.values()];
+  return labels.length ? labels[labels.length - 1] : null;
+}
+
+// ── Friendly local times: «اليوم 1:39 م»، «أمس 11:58 ص»، «20 تشرين الثاني 4:05 م» ──
+const AR_MONTHS = ["كانون الثاني", "شباط", "آذار", "نيسان", "أيار", "حزيران", "تموز", "آب", "أيلول", "تشرين الأول", "تشرين الثاني", "كانون الأول"];
+export function clockText(date) {
+  const hours = date.getHours();
+  return `${hours % 12 || 12}:${String(date.getMinutes()).padStart(2, "0")} ${hours < 12 ? "ص" : "م"}`;
+}
+/** `text` is a local «YYYY-MM-DD HH:MM» (or ISO). */
+export function friendlyTime(text) {
+  if (!text) return "";
+  const date = new Date(String(text).replace(" ", "T"));
+  if (Number.isNaN(date.getTime())) return String(text);
+  const day = new Date(date); day.setHours(0, 0, 0, 0);
+  const today = new Date(); today.setHours(0, 0, 0, 0);
+  const days = Math.round((today - day) / 86400000);
+  const prefix = days === 0 ? "اليوم" : days === 1 ? "أمس" : days === -1 ? "غدًا"
+    : `${date.getDate()} ${AR_MONTHS[date.getMonth()]}${date.getFullYear() !== today.getFullYear() ? ` ${date.getFullYear()}` : ""}`;
+  return `${prefix} ${clockText(date)}`;
+}
+/** Whole days since a local «YYYY-MM-DD HH:MM», or null. */
+export function daysSince(text) {
+  if (!text) return null;
+  const date = new Date(String(text).replace(" ", "T"));
+  return Number.isNaN(date.getTime()) ? null : Math.floor((Date.now() - date.getTime()) / 86400000);
+}

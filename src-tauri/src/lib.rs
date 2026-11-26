@@ -1,5 +1,5 @@
 // lib.rs — GCANS v2.0
-mod db; mod names; mod services; mod files; mod scanner; mod paths; mod storage; mod ai_detect; mod secure; mod ocr; mod ocr_parse; mod health; mod errlog; mod integrity;
+mod backup_store; mod db; mod names; mod services; mod files; mod scanner; mod paths; mod storage; mod ai_detect; mod secure; mod ocr; mod ocr_parse; mod health; mod errlog; mod integrity;
 mod scanner_commands;
 #[cfg(debug_assertions)]
 mod devseed;
@@ -957,6 +957,12 @@ async fn cmd_move_data_folder(window: Window, state: State<'_, DbState>, sess: S
     let user = authorize(&conn, &sess, "settings.manage")?;
     set_document_alert_rules(&conn, &user, &rules)
 }
+/// For the home-screen reminder: when a full backup was last exported (None: never).
+#[tauri::command] fn cmd_last_full_export(state: State<DbState>, sess: State<SessionState>) -> Result<Option<String>, AppError> {
+    let conn = state.conn()?;
+    authorize(&conn, &sess, "backups.manage")?;
+    get_setting(&conn, "backup_last_export")
+}
 #[tauri::command] fn cmd_get_auto_backup_settings(state: State<DbState>, sess: State<SessionState>) -> Result<AutoBackupSettings, AppError> {
     let conn = state.conn()?;
     let user = authorize(&conn, &sess, "backups.manage")?;
@@ -968,7 +974,7 @@ async fn cmd_move_data_folder(window: Window, state: State<'_, DbState>, sess: S
     set_auto_backup_settings(&conn, &user, &data)
 }
 #[tauri::command]
-async fn cmd_run_due_auto_backups(window: Window, sess: State<'_, SessionState>) -> Result<Vec<String>, AppError> {
+async fn cmd_run_due_auto_backups(window: Window, sess: State<'_, SessionState>, in_session: Option<bool>) -> Result<Vec<String>, AppError> {
     // Only a signed-in session can trigger backups. Without one nothing could have changed
     // since the last run, so there is nothing due and the call quietly does nothing.
     if session_identity(&sess).is_err() { return Ok(Vec::new()); }
@@ -978,7 +984,10 @@ async fn cmd_run_due_auto_backups(window: Window, sess: State<'_, SessionState>)
         // up-to-date database, and quietly does nothing during setup.
         if !db::db_path().is_file() { return Ok(Vec::new()); }
         let conn = db::open_existing().map_err(AppError::from)?;
-        match run_due_automatic_backups_with_progress(&conn, move |progress| {
+        // The regular check while someone works is quiet: no progress window.
+        let quiet = in_session.unwrap_or(false);
+        match run_due_automatic_backups_with_progress(&conn, quiet, move |progress| {
+            if quiet { return; }
             let _ = progress_window.emit("auto-backup-progress", progress);
         }) {
             Ok(created) => Ok(created),
@@ -994,6 +1003,40 @@ async fn cmd_run_due_auto_backups(window: Window, sess: State<'_, SessionState>)
 #[tauri::command]
 fn cmd_exit_app(app: AppHandle) {
     app.exit(0);
+}
+/// Opens and checks a backup before a restore and says what it holds (date, employees, files).
+#[tauri::command]
+async fn cmd_inspect_backup(state: State<'_, DbState>, sess: State<'_, SessionState>, source_path: String, password: String) -> Result<BackupSummary, AppError> {
+    {
+        let conn = state.conn()?;
+        authorize(&conn, &sess, "backups.restore")?;
+    }
+    tauri::async_runtime::spawn_blocking(move || inspect_backup(&source_path, &password))
+        .await
+        .map_err(|error| AppError::Other(error.to_string()))?
+}
+#[tauri::command]
+async fn cmd_list_backups(state: State<'_, DbState>, sess: State<'_, SessionState>) -> Result<Vec<backup_store::BackupListItem>, AppError> {
+    {
+        let conn = state.conn()?;
+        authorize(&conn, &sess, "backups.restore")?;
+    }
+    tauri::async_runtime::spawn_blocking(move || {
+        let conn = db::open_existing().map_err(AppError::from)?;
+        Ok(backup_store::list_backups(&conn))
+    })
+    .await
+    .map_err(|error| AppError::Other(error.to_string()))?
+}
+#[tauri::command] fn cmd_get_job_lists(state: State<DbState>, sess: State<SessionState>) -> Result<JobLists, AppError> {
+    let conn = state.conn()?;
+    authorize(&conn, &sess, "employees.view")?;
+    get_job_lists(&conn)
+}
+#[tauri::command] fn cmd_set_job_lists(state: State<DbState>, sess: State<SessionState>, lists: JobLists) -> Result<JobLists, AppError> {
+    let conn = state.conn()?;
+    let user = authorize(&conn, &sess, "settings.manage")?;
+    set_job_lists(&conn, &user, &lists)
 }
 #[tauri::command] fn cmd_get_document_types(state: State<DbState>, sess: State<SessionState>) -> Result<Vec<String>, AppError> {
     let conn = state.conn()?;
@@ -1023,14 +1066,14 @@ async fn cmd_create_backup(window: Window, state: State<'_, DbState>, sess: Stat
     .map_err(|error| AppError::Other(error.to_string()))?
 }
 #[tauri::command]
-async fn cmd_restore_backup(window: Window, state: State<'_, DbState>, sess: State<'_, SessionState>, source_path: String, password: String) -> Result<(), AppError> {
+async fn cmd_restore_backup(window: Window, state: State<'_, DbState>, sess: State<'_, SessionState>, source_path: String, password: String) -> Result<String, AppError> {
     let user = {
         let conn = state.conn()?;
         authorize(&conn, &sess, "backups.restore")?
     };
     let app = window.app_handle().clone();
     let progress_window = window.clone();
-    tauri::async_runtime::spawn_blocking(move || {
+    let safety_copy = tauri::async_runtime::spawn_blocking(move || {
         let state = app.state::<DbState>();
         let mut conn = state.conn()?;
         restore_backup_with_progress(&mut conn, &user, &source_path, &password, move |progress| {
@@ -1040,7 +1083,7 @@ async fn cmd_restore_backup(window: Window, state: State<'_, DbState>, sess: Sta
     .await
     .map_err(|error| AppError::Other(error.to_string()))??;
     *sess.0.lock().unwrap() = None;
-    Ok(())
+    Ok(safety_copy)
 }
 #[tauri::command] fn cmd_audit_document_view(state: State<DbState>, sess: State<SessionState>, employee_id: i64, document_name: String) -> Result<(), AppError> {
     let conn = state.conn()?; let user = authorize(&conn, &sess, "documents.view")?;
@@ -1463,6 +1506,7 @@ pub fn run() {
             cmd_get_document_alert_rules, cmd_set_document_alert_rules,
             cmd_run_due_auto_backups, cmd_exit_app,
             cmd_get_document_types, cmd_set_document_types,
+            cmd_inspect_backup, cmd_list_backups, cmd_last_full_export, cmd_get_job_lists, cmd_set_job_lists,
             cmd_create_backup, cmd_restore_backup, cmd_audit_document_view, cmd_audit_document_download, cmd_download_document,
             cmd_get_document_preview_path, cmd_read_document, cmd_print_document, cmd_print_employee_documents, cmd_save_report_xlsx,
         ])

@@ -29,6 +29,8 @@ let _closeAfterSave = false;
 let _afterSave = null;
 let _currentUser = null;
 let _companyConfig = null;
+// The job grade and step picklists, edited in «الإعدادات ← الدرجات والمراحل».
+let _jobLists = { grades: [], steps: [] };
 const DOCUMENT_EXTENSIONS = ["jpg", "jpeg", "png", "webp", "pdf", "doc", "docx", "xls", "xlsx", "ppt", "pptx"];
 
 async function downloadEmployeeAttachment(path) {
@@ -73,6 +75,7 @@ export async function renderEmployees(container, user, ctx) {
   const [employees, companyConfig] = await Promise.all([
     api.listEmployees(),
     api.getCompanyConfig().catch(() => null),
+    api.getJobLists().then(lists => { _jobLists = lists; }).catch(() => {}),
     // The «قارب على النفاذ» status of each document follows the reminder days in the settings.
     loadAlertRules(),
   ]);
@@ -437,6 +440,107 @@ function field(label, id, emp, opts = {}) {
     <input id="f-${id}" class="input-field" type="${opts.date ? 'date' : 'text'}"
            dir="${opts.ltr ? 'ltr' : 'rtl'}" value="${opts.date ? (emp?.[id] ?? '') : val}" /></div>`;
 }
+
+const JOB_LIST_FIELDS = {
+  job_grade: { key: "grades", title: "قائمة الدرجات الوظيفية", noun: "درجة" },
+  job_step:  { key: "steps",  title: "قائمة المراحل", noun: "مرحلة" },
+};
+
+function jobListOptions(id, current) {
+  const items = _jobLists[JOB_LIST_FIELDS[id].key] ?? [];
+  const values = current && !items.includes(current) ? [current, ...items] : items;
+  return `<option value="" ${current ? "" : "selected"}>—</option>
+    ${values.map(value => `<option value="${escHtml(value)}" ${value === current ? "selected" : ""}>${escHtml(value)}${items.includes(value) ? "" : " (ليست في القائمة)"}</option>`).join("")}`;
+}
+
+/**
+ * The job grade / step picklist. A value saved before (or since removed from the list) stays
+ * selectable. Whoever may change settings manages the list right here («تعديل القائمة»).
+ */
+function listField(label, id, emp) {
+  const current = emp?.[id] ?? "";
+  const manage = can(_currentUser, "settings.manage")
+    ? `<button type="button" class="job-list-manage" data-job-field="${id}" title="إضافة قيم إلى القائمة أو حذفها"
+        style="border:none;background:transparent;color:var(--ui-accent);font-size:11px;cursor:pointer;padding:0">تعديل القائمة</button>` : "";
+  return `<div>
+    <div style="display:flex;justify-content:space-between;align-items:baseline;gap:8px;margin-bottom:4px">
+      <p style="font-size:11px;color:var(--ui-text-faint);text-transform:uppercase;letter-spacing:.05em;margin:0">${label}</p>${manage}
+    </div>
+    <select id="f-${id}" class="input-field">${jobListOptions(id, current)}</select></div>`;
+}
+
+/** Small dialog: the list's values, each with «حذف», a field to add one, then «حفظ» / «إلغاء». */
+async function manageJobList(id) {
+  const meta = JOB_LIST_FIELDS[id];
+  let items = [...(_jobLists[meta.key] ?? [])];
+  const overlay = document.createElement("div");
+  overlay.setAttribute("dir", "rtl");
+  overlay.style.cssText = "position:fixed;inset:0;z-index:10000;background:rgba(0,0,0,.6);display:flex;align-items:center;justify-content:center;padding:20px";
+  overlay.innerHTML = `<div class="card app-dialog" role="dialog" aria-modal="true" style="width:min(420px,100%);padding:18px 20px;color:var(--ui-text-strong)">
+    <p style="font-size:16px;font-weight:700;margin:0 0 4px">${meta.title}</p>
+    <p style="font-size:12px;color:var(--ui-text-muted);margin:0 0 12px">ما تحذفه يختفي من القائمة فقط؛ الموظفون المحفوظة لهم هذه القيمة يبقون عليها.</p>
+    <div data-role="items" style="max-height:min(340px,50vh);overflow:auto;border:1px solid var(--ui-line);border-radius:8px"></div>
+    <div style="display:flex;gap:8px;margin-top:10px">
+      <input data-role="new" class="input-field flex-1" maxlength="60" placeholder="${meta.noun} جديدة" aria-label="${meta.noun} جديدة" />
+      <button type="button" data-act="add" class="btn-secondary whitespace-nowrap">+ إضافة</button>
+    </div>
+    <div style="display:flex;gap:10px;margin-top:14px">
+      <button type="button" data-act="save" class="btn-primary">حفظ</button>
+      <button type="button" data-act="cancel" class="btn-secondary">إلغاء</button>
+    </div></div>`;
+  const list = overlay.querySelector('[data-role="items"]');
+  const input = overlay.querySelector('[data-role="new"]');
+  const draw = () => {
+    list.innerHTML = items.length ? items.map((item, index) => `<div style="display:flex;justify-content:space-between;align-items:center;gap:8px;padding:6px 12px;${index ? "border-top:1px solid var(--ui-line);" : ""}">
+        <span style="font-size:14px">${escHtml(item)}</span>
+        <button type="button" data-remove="${index}" class="btn-danger-outline" style="padding:2px 10px;font-size:12px" aria-label="حذف ${escHtml(item)}">حذف</button>
+      </div>`).join("")
+      : `<p style="font-size:13px;color:var(--ui-text-muted);padding:12px;margin:0">القائمة فارغة. أضف قيمة واحدة على الأقل.</p>`;
+  };
+  const add = () => {
+    const value = input.value.trim();
+    if (!value) return;
+    if (items.includes(value)) { showToast(`«${value}» موجودة في القائمة`, "error"); return; }
+    items.push(value);
+    input.value = "";
+    draw();
+    list.scrollTop = list.scrollHeight;
+    input.focus();
+  };
+  return new Promise(resolve => {
+    const finish = saved => { document.removeEventListener("keydown", onKey); overlay.remove(); resolve(saved); };
+    const onKey = event => { if (event.key === "Escape") finish(false); };
+    list.addEventListener("click", event => {
+      const button = event.target.closest("[data-remove]");
+      if (button) { items.splice(Number(button.dataset.remove), 1); draw(); }
+    });
+    input.addEventListener("keydown", event => { if (event.key === "Enter") { event.preventDefault(); add(); } });
+    overlay.querySelector('[data-act="add"]').addEventListener("click", add);
+    overlay.querySelector('[data-act="cancel"]').addEventListener("click", () => finish(false));
+    overlay.querySelector('[data-act="save"]').addEventListener("click", async () => {
+      if (input.value.trim()) add();
+      try {
+        _jobLists = await api.setJobLists({ ..._jobLists, [meta.key]: items });
+        showToast("تم حفظ القائمة");
+        finish(true);
+      } catch (err) { showToast(err?.message ?? String(err), "error"); }
+    });
+    document.addEventListener("keydown", onKey);
+    draw();
+    document.body.append(overlay);
+    input.focus();
+  });
+}
+
+// One listener for every employee panel: «تعديل القائمة» next to the grade and step fields.
+document.addEventListener("click", async event => {
+  const button = event.target.closest(".job-list-manage");
+  if (!button) return;
+  const id = button.dataset.jobField;
+  if (!(await manageJobList(id))) return;
+  const select = document.getElementById(`f-${id}`);
+  if (select) select.innerHTML = jobListOptions(id, select.value);
+});
 
 /** The residence address: المحافظة / القضاء / الناحية / المدينة, then م / ز / د or one free line.
  *  Kept as parts (`residence_address_parts`) and as the composed line (`residence_address`). */
@@ -1219,7 +1323,8 @@ function tabContent(tab, emp) {
         ${field("الرقم الوظيفي", "employee_number", emp, {ltr:true})}
         ${fixedCompanyField("مكان العمل", "workplace", _companyConfig?.company_name ?? emp?.workplace ?? "")}
         ${field("العنوان الوظيفي", "job_title", emp)}
-        ${field("الدرجة الوظيفية", "job_grade", emp)}
+        ${listField("الدرجة الوظيفية", "job_grade", emp)}
+        ${listField("المرحلة", "job_step", emp)}
         ${field("تاريخ التعيين", "appointment_date", emp, {date:true})}
         ${fixedCompanyField("القسم", "department", fixedDepartment(emp))}
         ${fixedCompanyField("الشعبة / الوحدة", "division", _companyConfig?.division_name ?? emp?.division ?? "")}
@@ -1588,6 +1693,7 @@ function renderPanel(emp) {
       workplace:             _companyConfig?.company_name ?? g("workplace"),
       job_title:             g("job_title"),
       job_grade:             g("job_grade"),
+      job_step:              g("job_step"),
       appointment_date:      g("appointment_date"),
       hire_date:             g("hire_date"),
       contract_type:         g("contract_type"),
