@@ -1250,17 +1250,26 @@ fn validate_spouses(data: &EmployeeData) -> AppResult<()> {
     let Some(value) = data.spouses.as_deref() else { return Ok(()); };
     let spouses: Vec<serde_json::Value> = serde_json::from_str(value)
         .map_err(|_| AppError::Validation("spouses must be a valid JSON array".into()))?;
-    let has_spouse_section = matches!(data.marital_status.as_deref(), Some("متزوج" | "أرمل" | "ارمل"));
+    // Same statuses as the «الزوج / الزوجات» section of the employee file (spouseSectionConfig).
+    let has_spouse_section = matches!(data.marital_status.as_deref(), Some("متزوج" | "أرمل" | "ارمل" | "مطلق"));
     let max = if has_spouse_section && data.gender.as_deref() == Some("أنثى") {
         1
     } else {
         4
     };
     if spouses.len() > max {
-        return Err(AppError::Validation(format!("spouses cannot contain more than {max} record(s)")));
+        return Err(AppError::Validation(if max == 1 {
+            "للموظفة زوج واحد فقط. احذف السجل الزائد في «أفراد الأسرة» ثم احفظ".into()
+        } else {
+            format!("لا يمكن تسجيل أكثر من {max} زوجات")
+        }));
     }
     Ok(())
 }
+
+/// The single-vehicle columns of `employees` stay empty: vehicles live in `employee_vehicles`
+/// (moved there by schema v10). Whatever an older form sends for them is not stored.
+const NO_TEXT: Option<&str> = None;
 
 fn validate_employee_data(data: &EmployeeData) -> AppResult<()> {
     if data.full_name.trim().is_empty() || data.full_name.chars().count() > 200 {
@@ -1306,8 +1315,52 @@ fn resolve_row_names(record: &serde_json::Value, stored: Option<&serde_json::Map
     (names, (!parts.is_empty()).then(|| serde_json::Value::Object(parts).to_string()))
 }
 
+/// Attachment paths the rows of one table of this employee hold now.
+fn stored_row_paths(conn: &Connection, table: &str, columns: [&str; 2], employee_id: i64) -> AppResult<Vec<String>> {
+    let mut stmt = conn.prepare(&format!(
+        "SELECT {a} FROM {table} WHERE employee_id=?1 AND {a} IS NOT NULL UNION SELECT {b} FROM {table} WHERE employee_id=?1 AND {b} IS NOT NULL",
+        a = columns[0], b = columns[1]))?;
+    let paths = stmt.query_map(params![employee_id], |r| r.get::<_, String>(0))?.collect::<rusqlite::Result<Vec<_>>>()?;
+    Ok(paths)
+}
+
+const SPOUSE_FILES: (&str, [&str; 2]) = ("employee_spouses", ["national_card_front_path", "national_card_back_path"]);
+const FAMILY_FILES: (&str, [&str; 2]) = ("employee_family_members", ["national_card_front_path", "national_card_back_path"]);
+const VEHICLE_FILES: (&str, [&str; 2]) = ("employee_vehicles", ["annual_front_path", "annual_back_path"]);
+
+/// Every spouse / family / vehicle attachment path of one employee.
+fn employee_row_paths(conn: &Connection, employee_id: i64) -> AppResult<std::collections::HashSet<String>> {
+    let mut paths = std::collections::HashSet::new();
+    for (table, columns) in [SPOUSE_FILES, FAMILY_FILES, VEHICLE_FILES] {
+        paths.extend(stored_row_paths(conn, table, columns, employee_id)?);
+    }
+    Ok(paths)
+}
+
+/// The stored attachment paths that the form's spouse / family / vehicle lists no longer hold:
+/// their rows were removed. (A path moves with its row when an earlier row is removed.)
+fn removed_row_paths(conn: &Connection, employee_id: i64, d: &EmployeeData) -> AppResult<Vec<String>> {
+    let stored = employee_row_paths(conn, employee_id)?;
+    let mut sent = std::collections::HashSet::new();
+    for (json, keys) in [
+        (d.spouses.as_deref(), SPOUSE_FILES.1), (d.family_members.as_deref(), FAMILY_FILES.1), (d.vehicles.as_deref(), VEHICLE_FILES.1),
+    ] {
+        let rows: Vec<serde_json::Value> = serde_json::from_str(json.unwrap_or("[]")).unwrap_or_default();
+        for row in &rows {
+            for key in keys { if let Some(path) = value_string(row, key) { sent.insert(path); } }
+        }
+    }
+    let mut removed: Vec<String> = stored.into_iter().filter(|path| !sent.contains(path)).collect();
+    removed.sort();
+    Ok(removed)
+}
+
 fn replace_employee_spouses(conn: &Connection, employee_id: i64, spouses_json: &str) -> AppResult<()> {
     let stored = stored_row_parts(conn, "employee_spouses", employee_id)?;
+    // Card images are uploaded by their own command: a row keeps only a path this employee's
+    // spouses already had (as for vehicles); anything else the form sends is dropped.
+    let files = stored_row_paths(conn, SPOUSE_FILES.0, SPOUSE_FILES.1, employee_id)?;
+    let kept = |row: &serde_json::Value, key: &str| value_string(row, key).filter(|path| files.contains(path));
     conn.execute("DELETE FROM employee_spouses WHERE employee_id=?1", params![employee_id])?;
     let spouses: Vec<serde_json::Value> = serde_json::from_str(spouses_json).unwrap_or_default();
     for (index, spouse) in spouses.iter().enumerate() {
@@ -1321,7 +1374,7 @@ fn replace_employee_spouses(conn: &Connection, employee_id: i64, spouses_json: &
                 value_string(spouse, "gender"), value_string(spouse, "birthplace"), value_string(spouse, "birthdate"),
                 value_string(spouse, "issue_date"), value_string(spouse, "expiry_date"), value_string(spouse, "issuer"),
                 value_string(spouse, "blood_type"), value_string(spouse, "marriage_date"),
-                value_string(spouse, "national_card_front_path"), value_string(spouse, "national_card_back_path"),
+                kept(spouse, "national_card_front_path"), kept(spouse, "national_card_back_path"),
                 name_parts,
             ],
         )?;
@@ -1340,6 +1393,8 @@ fn replace_employee_spouses(conn: &Connection, employee_id: i64, spouses_json: &
 
 fn replace_employee_family_members(conn: &Connection, employee_id: i64, family_json: &str) -> AppResult<()> {
     let stored = stored_row_parts(conn, "employee_family_members", employee_id)?;
+    let files = stored_row_paths(conn, FAMILY_FILES.0, FAMILY_FILES.1, employee_id)?;
+    let kept = |row: &serde_json::Value, key: &str| value_string(row, key).filter(|path| files.contains(path));
     conn.execute("DELETE FROM employee_family_members WHERE employee_id=?1", params![employee_id])?;
     let members: Vec<serde_json::Value> = serde_json::from_str(family_json).unwrap_or_default();
     for (index, member) in members.iter().enumerate() {
@@ -1352,7 +1407,7 @@ fn replace_employee_family_members(conn: &Connection, employee_id: i64, family_j
                 value_string(member, "civil_id"), names[0], value_string(member, "gender"),
                 value_string(member, "birthplace"), value_string(member, "birthdate"), value_string(member, "issue_date"),
                 value_string(member, "expiry_date"), value_string(member, "issuer"), value_string(member, "blood_type"),
-                value_string(member, "national_card_front_path"), value_string(member, "national_card_back_path"),
+                kept(member, "national_card_front_path"), kept(member, "national_card_back_path"),
                 name_parts, value_string(member, "relation"),
             ],
         )?;
@@ -1364,13 +1419,7 @@ fn replace_employee_vehicles(conn: &Connection, employee_id: i64, vehicles_json:
     // Registration images are uploaded by their own command. A saved row may only keep a path
     // this employee's vehicles already had (rows can move when one is removed); anything else
     // the form sends is dropped.
-    let stored: Vec<String> = {
-        let mut stmt = conn.prepare(
-            "SELECT annual_front_path FROM employee_vehicles WHERE employee_id=?1 AND annual_front_path IS NOT NULL
-             UNION SELECT annual_back_path FROM employee_vehicles WHERE employee_id=?1 AND annual_back_path IS NOT NULL")?;
-        let paths = stmt.query_map(params![employee_id], |r| r.get::<_, String>(0))?.collect::<rusqlite::Result<Vec<_>>>()?;
-        paths
-    };
+    let stored = stored_row_paths(conn, VEHICLE_FILES.0, VEHICLE_FILES.1, employee_id)?;
     let kept = |vehicle: &serde_json::Value, key: &str| value_string(vehicle, key).filter(|path| stored.contains(path));
     conn.execute("DELETE FROM employee_vehicles WHERE employee_id=?1", params![employee_id])?;
     let vehicles: Vec<serde_json::Value> = serde_json::from_str(vehicles_json).unwrap_or_default();
@@ -1393,9 +1442,18 @@ fn replace_employee_vehicles(conn: &Connection, employee_id: i64, vehicles_json:
 }
 
 fn replace_employee_repeating_data(conn: &Connection, employee_id: i64, data: &EmployeeData) -> AppResult<()> {
+    let before = employee_row_paths(conn, employee_id)?;
     replace_employee_spouses(conn, employee_id, data.spouses.as_deref().unwrap_or("[]"))?;
     replace_employee_family_members(conn, employee_id, data.family_members.as_deref().unwrap_or("[]"))?;
     replace_employee_vehicles(conn, employee_id, data.vehicles.as_deref().unwrap_or("[]"))?;
+    // The images of a removed spouse, family member or vehicle go with it (as when one image is
+    // deleted), so no card image stays on disk after its row is gone.
+    let after = employee_row_paths(conn, employee_id)?;
+    for path in before.difference(&after) {
+        if let Ok(relative) = crate::files::safe_relative_path(path) {
+            crate::scanner::cleanup_metadata_file(conn, &relative.to_string_lossy());
+        }
+    }
     Ok(())
 }
 
@@ -1504,13 +1562,13 @@ pub fn create_employee(conn: &Connection, d: &EmployeeData, username: &str) -> A
       d.ration_card_no,d.ration_center_name,d.ration_center_no,d.ration_card_date,
       d.passport_no,d.passport_name,d.passport_issue_date,d.passport_expiry_date,
       d.airport_badge_no,d.airport_badge_expiry,d.ministry_badge_no,d.ministry_badge_expiry,
-      d.vehicle_plate,d.vehicle_name,d.vehicle_color_model,d.vehicle_annual_no,
+      NO_TEXT,NO_TEXT,NO_TEXT,NO_TEXT,
       d.spouse_name,d.spouse_mother_name,d.spouse_birthdate,d.marriage_date,
       d.family_members.as_deref().unwrap_or("[]"),d.notes,d.is_active.unwrap_or(1),d.work_type_notes,d.work_schedule,
       d.civil_id_birthplace,d.civil_id_birthdate,d.civil_id_family_number,d.passport_type,
       d.residence_card_issue_date,d.residence_head_name,d.residence_form_no,
-      d.airport_badge_issue_date,d.ministry_badge_issue_date,d.vehicle_color,d.vehicle_manufacture_year,d.vehicle_type,
-      d.vehicle_annual_issue_date,d.vehicle_annual_expiry_date,d.vehicles.as_deref().unwrap_or("[]"),
+      d.airport_badge_issue_date,d.ministry_badge_issue_date,NO_TEXT,NO_TEXT,NO_TEXT,
+      NO_TEXT,NO_TEXT,d.vehicles.as_deref().unwrap_or("[]"),
       d.spouses.as_deref().unwrap_or("[]"),d.appointment_date,d.father_birthdate,d.mother_birthdate,d.airport_badge_zones])?;
     let id = conn.last_insert_rowid();
     conn.execute("UPDATE employees SET name_parts=?1, residence_address_parts=?2, job_step=?3 WHERE id=?4",
@@ -1537,6 +1595,11 @@ pub fn update_employee(conn: &Connection, id: i64, d: &EmployeeData, username: &
     check_employee_number(conn, Some(id), &mut d)?;
     let d = &d;
     validate_employee_data(d)?;
+    // Removing a spouse, family member or vehicle that has attachments deletes those images,
+    // so it needs the same permission as deleting an attachment.
+    if !removed_row_paths(conn, id, d)?.is_empty() && assert_permission(conn, username, "documents.delete").is_err() {
+        return Err(AppError::Validation("حذف زوج/زوجة أو فرد أو مركبة لها مرفقات يحتاج إلى «مسؤول». أعد الصف أو اطلب ذلك من المسؤول".into()));
+    }
     conn.execute("UPDATE employees SET employee_number=?1,full_name=?2,mother_name=?3,father_birthplace=?4,
       mother_birthplace=?5,gender=?6,birthdate=?7,birthplace=?8,marital_status=?9,blood_type=?10,
       workplace=?11,job_title=?12,job_grade=?13,hire_date=?14,contract_type=?15,
@@ -1565,13 +1628,13 @@ pub fn update_employee(conn: &Connection, id: i64, d: &EmployeeData, username: &
       d.ration_card_no,d.ration_center_name,d.ration_center_no,d.ration_card_date,
       d.passport_no,d.passport_name,d.passport_issue_date,d.passport_expiry_date,
       d.airport_badge_no,d.airport_badge_expiry,d.ministry_badge_no,d.ministry_badge_expiry,
-      d.vehicle_plate,d.vehicle_name,d.vehicle_color_model,d.vehicle_annual_no,
+      NO_TEXT,NO_TEXT,NO_TEXT,NO_TEXT,
       d.spouse_name,d.spouse_mother_name,d.spouse_birthdate,d.marriage_date,
       d.family_members.as_deref().unwrap_or("[]"),d.notes,d.is_active.unwrap_or(1),d.work_type_notes,d.work_schedule,
       d.civil_id_birthplace,d.civil_id_birthdate,d.civil_id_family_number,d.passport_type,
       d.residence_card_issue_date,d.residence_head_name,d.residence_form_no,
-      d.airport_badge_issue_date,d.ministry_badge_issue_date,d.vehicle_color,d.vehicle_manufacture_year,d.vehicle_type,
-      d.vehicle_annual_issue_date,d.vehicle_annual_expiry_date,d.vehicles.as_deref().unwrap_or("[]"),
+      d.airport_badge_issue_date,d.ministry_badge_issue_date,NO_TEXT,NO_TEXT,NO_TEXT,
+      NO_TEXT,NO_TEXT,d.vehicles.as_deref().unwrap_or("[]"),
       d.spouses.as_deref().unwrap_or("[]"),d.appointment_date,d.father_birthdate,d.mother_birthdate,d.airport_badge_zones,id])?;
     conn.execute("UPDATE employees SET name_parts=?1, residence_address_parts=?2, job_step=?3 WHERE id=?4",
         params![name_parts, address_parts(d), d.job_step.as_deref().map(str::trim).filter(|v| !v.is_empty()), id])?;
@@ -4278,5 +4341,99 @@ mod audit_log_tests {
         assert!(!role_permissions("archive_officer").contains(&"audit.view"));
         assert!(!role_permissions("viewer").contains(&"audit.view"));
         assert!(role_permissions("system_admin").contains(&"audit.view"));
+    }
+}
+
+#[cfg(test)]
+mod family_vehicle_row_tests {
+    use super::*;
+
+    fn conn() -> Connection {
+        let conn = Connection::open_in_memory().unwrap();
+        crate::db::initialize_test(&conn).unwrap();
+        conn.execute("INSERT INTO users(username,password,role) VALUES('rowadmin','unused','system_admin')", []).unwrap();
+        conn.execute("INSERT INTO users(username,password,role) VALUES('rowclerk','unused','archive_officer')", []).unwrap();
+        conn
+    }
+
+    fn data(value: serde_json::Value) -> EmployeeData {
+        let mut base = serde_json::json!({ "full_name": "موظف تجريبي", "gender": "ذكر", "marital_status": "متزوج" });
+        base.as_object_mut().unwrap().extend(value.as_object().unwrap().clone());
+        serde_json::from_value(base).unwrap()
+    }
+
+    fn file(conn: &Connection, path: &str) {
+        conn.execute("INSERT INTO document_metadata(stored_path,original_name,mime_type,size_bytes) VALUES(?1,'card.jpg','image/jpeg',10)", [path]).unwrap();
+    }
+
+    fn has_file(conn: &Connection, path: &str) -> bool {
+        conn.query_row("SELECT COUNT(*) FROM document_metadata WHERE stored_path=?1", [path], |r| r.get::<_, i64>(0)).unwrap() == 1
+    }
+
+    #[test]
+    fn a_family_or_spouse_path_the_employee_never_had_is_not_stored() {
+        let conn = conn();
+        let other = "Files/Employees/99/Family/1/NationalCard/x.jpg";
+        let saved = create_employee(&conn, &data(serde_json::json!({
+            "family_members": serde_json::json!([{ "name": "ابن", "national_card_front_path": other }]).to_string(),
+            "spouses": serde_json::json!([{ "name": "زوجة", "national_card_back_path": other }]).to_string(),
+        })), "rowadmin").unwrap();
+        let paths = employee_row_paths(&conn, saved.id).unwrap();
+        assert!(paths.is_empty(), "{paths:?}");
+    }
+
+    #[test]
+    fn removing_a_vehicle_deletes_its_images_and_a_moved_row_keeps_its_own() {
+        let conn = conn();
+        let saved = create_employee(&conn, &data(serde_json::json!({
+            "vehicles": serde_json::json!([{ "plate": "111" }, { "plate": "222" }]).to_string(),
+        })), "rowadmin").unwrap();
+        let (first, second) = ("Files/Employees/1/Vehicles/1/Annual/a.jpg", "Files/Employees/1/Vehicles/2/Annual/b.jpg");
+        file(&conn, first);
+        file(&conn, second);
+        conn.execute("UPDATE employee_vehicles SET annual_front_path=?1 WHERE employee_id=?2 AND sort_order=0", params![first, saved.id]).unwrap();
+        conn.execute("UPDATE employee_vehicles SET annual_front_path=?1 WHERE employee_id=?2 AND sort_order=1", params![second, saved.id]).unwrap();
+
+        // The first vehicle is removed: the second moves up with its image.
+        let keep = data(serde_json::json!({ "vehicles": serde_json::json!([{ "plate": "222", "annual_front_path": second }]).to_string() }));
+        // «موظف» may not delete images, so not a row that has them either.
+        let refused = update_employee(&conn, saved.id, &keep, "rowclerk").unwrap_err().to_string();
+        assert!(refused.contains("مسؤول"), "{refused}");
+        assert!(has_file(&conn, first));
+        update_employee(&conn, saved.id, &keep, "rowadmin").unwrap();
+        assert!(!has_file(&conn, first));
+        assert!(has_file(&conn, second));
+        let moved: Option<String> = conn.query_row("SELECT annual_front_path FROM employee_vehicles WHERE employee_id=?1 AND sort_order=0", [saved.id], |r| r.get(0)).unwrap();
+        assert_eq!(moved.as_deref(), Some(second));
+    }
+
+    #[test]
+    fn a_clerk_may_remove_a_row_without_attachments() {
+        let conn = conn();
+        let saved = create_employee(&conn, &data(serde_json::json!({
+            "family_members": serde_json::json!([{ "name": "علي" }, { "name": "مريم" }]).to_string(),
+        })), "rowadmin").unwrap();
+        update_employee(&conn, saved.id, &data(serde_json::json!({
+            "family_members": serde_json::json!([{ "name": "مريم" }]).to_string(),
+        })), "rowclerk").unwrap();
+        let count: i64 = conn.query_row("SELECT COUNT(*) FROM employee_family_members WHERE employee_id=?1", [saved.id], |r| r.get(0)).unwrap();
+        assert_eq!(count, 1);
+    }
+
+    #[test]
+    fn too_many_spouses_for_the_gender_is_refused_in_arabic() {
+        let conn = conn();
+        let two = serde_json::json!([{ "name": "أ" }, { "name": "ب" }]).to_string();
+        let error = create_employee(&conn, &data(serde_json::json!({ "gender": "أنثى", "marital_status": "مطلق", "spouses": two })), "rowadmin")
+            .unwrap_err().to_string();
+        assert!(error.contains("زوج واحد"), "{error}");
+    }
+
+    #[test]
+    fn the_old_single_vehicle_columns_are_not_written() {
+        let conn = conn();
+        let saved = create_employee(&conn, &data(serde_json::json!({ "vehicle_plate": "111", "vehicle_annual_expiry_date": "2020-01-01" })), "rowadmin").unwrap();
+        let old: Option<String> = conn.query_row("SELECT COALESCE(vehicle_plate,vehicle_annual_expiry_date) FROM employees WHERE id=?1", [saved.id], |r| r.get(0)).unwrap();
+        assert_eq!(old, None);
     }
 }

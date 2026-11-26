@@ -104,20 +104,25 @@ export function documentStatus({ values, expiry, maxDays, attached, expected, to
   return { tone: "ok", label: "مكتمل" };
 }
 
-/** The expiry dates to watch for one document type. Vehicles are kept in the «المركبات» list
- *  (each with its own annual registration); the older single-vehicle field is read too. */
-function expiryDates(employee, documentType) {
-  if (documentType.key !== "vehicle") return [employee[documentType.field]];
+/** The expiry dates to watch for one document type, each with the name shown in the alert.
+ *  Vehicles are kept in the «المركبات» list, each with its own annual registration: the alert
+ *  names the plate, so two vehicles of one employee are told apart (and both are kept even
+ *  when they expire the same day). */
+function expiryEntries(employee, documentType) {
+  if (documentType.key !== "vehicle") return [{ date: employee[documentType.field], name: documentType.type, ref: "" }];
   let vehicles = [];
   try { vehicles = JSON.parse(employee.vehicles ?? "[]"); } catch { /* no list */ }
-  const dates = (Array.isArray(vehicles) ? vehicles : []).map(vehicle => vehicle?.expiry_date);
-  return [...new Set([employee[documentType.field], ...dates].filter(Boolean))];
+  return (Array.isArray(vehicles) ? vehicles : []).map((vehicle, index) => {
+    const plate = String(vehicle?.plate ?? "").trim();
+    return { date: vehicle?.expiry_date, name: plate ? `${documentType.type} \u2068${plate}\u2069` : `${documentType.type} ${index + 1}`, ref: plate || String(index + 1) };
+  });
 }
 
 export function buildDocumentAlerts(employees, rules = cachedRules, today = new Date()) {
   const alerts = [];
   employees.filter(e => e.is_active).forEach(employee => {
-    ALERT_DOCUMENT_TYPES.forEach(documentType => expiryDates(employee, documentType).forEach(expiryDate => {
+    ALERT_DOCUMENT_TYPES.forEach(documentType => expiryEntries(employee, documentType).forEach(({ date: expiryDate, name, ref }) => {
+      if (!expiryDate) return;
       const rule = ruleFor(documentType.key, rules);
       if (!rule?.enabled || !rule.days?.length) return;
       const days = daysLeft(expiryDate, today);
@@ -130,7 +135,9 @@ export function buildDocumentAlerts(employees, rules = cachedRules, today = new 
         employeeName: employee.full_name,
         employeeNumber: employee.employee_number,
         documentKey: documentType.key,
-        documentName: documentType.type,
+        documentName: name,
+        documentType: documentType.type,
+        documentRef: ref,
         expiryDate,
         days,
         expired: days < 0,
@@ -144,7 +151,9 @@ export function buildDocumentAlerts(employees, rules = cachedRules, today = new 
 /** Identifies the reminder an alert has reached, so each one is announced only once. */
 export function alertStageKey(alert) {
   return {
-    id: `${alert.employeeId}:${alert.documentKey}:${alert.expiryDate}`,
+    id: alert.documentRef
+      ? `${alert.employeeId}:${alert.documentKey}:${alert.documentRef}:${alert.expiryDate}`
+      : `${alert.employeeId}:${alert.documentKey}:${alert.expiryDate}`,
     stage: alert.expired ? "expired" : `r${alert.reminder}`,
   };
 }
