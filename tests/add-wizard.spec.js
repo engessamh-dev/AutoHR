@@ -50,11 +50,9 @@ test("a later document does not overwrite an earlier value; the conflict can be 
   await page.click('[data-choice="docs"]');
   await pick(page, "national", "front.jpg");
   await pick(page, "national", "back.jpg", "back");
-  await page.click("[data-next]");
-  await page.click("[data-skip]");
-  await page.click("[data-skip]");
+  await page.click('.aw-stepper [data-go="6"]');
   await pick(page, "ministry", "ministry.jpg");
-  await page.click("[data-next]");
+  await page.click('.aw-stepper [data-go="5"]');
   await pick(page, "airport", "airport.jpg");
   await expect(page.locator('[data-key="job_title"]')).toHaveValue("مهندس");
   await expect(page.locator(".aw-chip")).toHaveCount(3);
@@ -87,6 +85,51 @@ test("save creates the employee with family relations, then uploads each image",
   expect(family[0].relation).toBe("ابن");
   expect(family[0].name_parts.name).toMatchObject({ father: "سامر", grandfather: "خالد", surname: "الجبوري" });
   await expect.poll(() => page.evaluate(() => window.calls.filter(c => c.command === "cmd_upload_national_card_attachment").map(c => c.args.side))).toEqual(["front", "back"]);
+});
+
+test("the summary asks for the appointment date and employee number; the start date is optional", async ({ page }) => {
+  await page.click('[data-choice="docs"]');
+  await pick(page, "national", "front.jpg");
+  await pick(page, "national", "back.jpg", "back");
+  await page.click('.aw-stepper [data-go="8"]');
+  await expect(page.locator('.aw-field:has([data-key="appointment_date"])')).toContainText("تاريخ التعيين");
+  await expect(page.locator('.aw-field:has([data-key="hire_date"])')).toContainText("تاريخ المباشرة (اختياري)");
+  await page.fill('[data-key="employee_number"]', " 1024 ");
+  await page.fill('[data-key="appointment_date"]', "2010-09-01");
+  await page.click("[data-save]");
+  await expect.poll(() => page.evaluate(() => window.calls.some(c => c.command === "cmd_create_employee"))).toBe(true);
+  const data = await page.evaluate(() => window.calls.find(c => c.command === "cmd_create_employee").args.data);
+  expect(data.employee_number).toBe("1024");
+  expect(data.appointment_date).toBe("2010-09-01");
+  expect(data.hire_date).toBeNull();
+});
+
+test("a document's status in the summary matches the employee file: same days, same words", async ({ page }) => {
+  const inDays = days => page.evaluate(n => { const t = new Date(); t.setDate(t.getDate() + n); return `${t.getFullYear()}-${String(t.getMonth() + 1).padStart(2, "0")}-${String(t.getDate()).padStart(2, "0")}`; }, days);
+  const soon = await inDays(18), past = await inDays(-3);
+  await page.evaluate(([soon, past]) => {
+    window.imageReads["airport.jpg"].fields.push({ key: "expiry_date", value: soon, confidence: .95, source: "text" });
+    window.imageReads["back.jpg"].fields.find(f => f.key === "expiry_date").value = past;
+  }, [soon, past]);
+  await page.click('[data-choice="docs"]');
+  await pick(page, "national", "front.jpg");
+  await pick(page, "national", "back.jpg", "back");
+  await page.click('.aw-stepper [data-go="5"]');
+  await pick(page, "airport", "airport.jpg");
+  await page.click('.aw-stepper [data-go="8"]');
+  const pill = title => page.locator(`.aw-sum-card:has(h4:text-is("${title}")) .emp-pill, .aw-sum-card h4:has-text("${title}") .emp-pill`).first();
+  await expect(pill("باج دخول مطار بغداد")).toHaveText("ينتهي خلال 18 يوماً");
+  await expect(pill("البطاقة الوطنية")).toHaveText("منتهٍ");
+  // The employee file shows the same words for the same dates.
+  await page.evaluate(async ([soon, past]) => {
+    document.querySelectorAll(".aw-overlay").forEach(overlay => overlay.remove());
+    window.employeePatch = { airport_badge_expiry: soon, civil_id_expiry_date: past };
+    await window.renderActual("employees");
+  }, [soon, past]);
+  await page.click("#emp-table-wrap tr[data-id]");
+  await page.click('.tab-btn[data-tab="documents"]');
+  await expect(page.locator("#emp-sec-airport .emp-sec-head .emp-pill")).toHaveText("ينتهي خلال 18 يوماً");
+  await expect(page.locator("#emp-sec-national .emp-sec-head .emp-pill")).toHaveText("منتهٍ");
 });
 
 test("an enlarged image closes with the × button, Esc, or a click outside it", async ({ page }) => {
@@ -275,9 +318,9 @@ test("the employee can be saved from any step once the national card is complete
   await expect(page.locator(".aw-overlay")).toBeVisible();
   await expect(page.locator(".aw-saved")).toBeVisible();
   await expect(saveNow).toHaveText("حفظ التعديلات");
-  await expect(page.locator("#toast-msg")).toContainText("لم تُرفع بعد: جواز السفر، هوية وزارة النقل");
+  await expect(page.locator("#toast-msg")).toContainText("لم تُرفع بعد: جواز السفر، بطاقة السكن");
   // A document added afterwards: the next save updates the same employee and uploads only it.
-  await page.locator(".aw-step").nth(3).click();
+  await page.locator(".aw-step").nth(6).click();
   await pick(page, "ministry", "ministry.jpg");
   await saveNow.click();
   await expect.poll(() => page.evaluate(() => window.calls.some(c => c.command === "cmd_update_employee"))).toBe(true);
@@ -298,9 +341,7 @@ test("ministry ID: the Arabic side fills department and job and its name is chec
   await page.click('[data-choice="docs"]');
   await pick(page, "national", "front.jpg");
   await pick(page, "national", "back.jpg", "back");
-  await page.click("[data-next]");
-  await page.click("[data-skip]");
-  await page.click("[data-skip]");
+  await page.click('.aw-stepper [data-go="6"]');
   await expect(page.locator('[data-pick="ministry"]')).toHaveCount(2);
   await expect(page.locator('.aw-drop[data-slot="ministry"] b')).toHaveText(["الوجه العربي", "الوجه الإنكليزي"]);
   await pick(page, "ministry", "mot-same.jpg");
@@ -368,7 +409,7 @@ test("a document number of another employee is flagged; a shared ration card and
   const passport = page.locator(".aw-field", { has: page.locator('[data-key="passport_no"]') });
   await page.fill('[data-key="passport_no"]', "a00000001");
   await expect(passport.locator(".aw-note.is-error")).toContainText("رقم جواز هذا مسجّل للموظف Synthetic Employee");
-  await page.locator(".aw-step").nth(5).click();
+  await page.locator(".aw-step").nth(4).click();
   await pick(page, "ration", "ration.jpg", "page");
   const ration = page.locator(".aw-field", { has: page.locator('[data-key="ration_card_no"]') });
   await expect(ration.locator(".aw-note.is-warn")).toContainText("طبيعي إن كانا من أسرة واحدة");
@@ -445,15 +486,34 @@ test("a step shows ✓ only when all its fields are filled; visiting it is not e
     await expect(steps.nth(i)).not.toHaveClass(/is-done/);
     await expect(steps.nth(i).locator("i")).not.toHaveText("✓");
   }
-  await steps.nth(3).click();
+  await steps.nth(6).click();
   await pick(page, "ministry", "mot-full.jpg");
   await steps.nth(5).click();
   // National: some fields only (front side) → a count, no ✓.
   await expect(steps.nth(0)).toHaveClass(/is-partial/);
-  await expect(steps.nth(0).locator("small")).toContainText("من 11");
+  await expect(steps.nth(0).locator("small")).toHaveText(/^ناقص \d+$/);
+  await expect(steps.nth(0)).toHaveAttribute("title", /حقول فارغة: .*اسم الأم/);
   // Ministry: every field read → ✓.
-  await expect(steps.nth(3)).toHaveClass(/is-done/);
-  await expect(steps.nth(3).locator("i")).toHaveText("✓");
+  await expect(steps.nth(6)).toHaveClass(/is-done/);
+  await expect(steps.nth(6).locator("i")).toHaveText("✓");
+});
+
+test("a passport whose birth date and gender came from the national card is complete, not «5 من 7»", async ({ page }) => {
+  await page.evaluate(() => {
+    const f = (key, value) => ({ key, value, confidence: 0.95, source: "mrz" });
+    window.imageReads["pp.jpg"] = { document: "passport", warnings: [], fields: [f("latin_given", "SAMER KHALID ABDULLAH"), f("latin_surname", "ALJUBOURI"), f("passport_no", "A00000009"), f("passport_type", "P"), f("issue_date", "2023-01-01"), f("expiry_date", "2031-01-01"), f("birthdate", "1985-03-14"), f("gender", "ذكر")] };
+  });
+  await page.click('[data-choice="docs"]');
+  const steps = page.locator(".aw-step");
+  await pick(page, "national", "front.jpg");
+  await pick(page, "national", "back.jpg", "back");
+  // Untouched: the national card's birth date does not make the passport look half-filled.
+  await expect(steps.nth(2).locator("small")).toHaveText("");
+  await steps.nth(2).click();
+  await pick(page, "passport", "pp.jpg", "page");
+  await steps.nth(3).click();
+  await expect(steps.nth(2)).toHaveClass(/is-done/);
+  await expect(steps.nth(2).locator("small")).toHaveText("مكتمل");
 });
 
 test("residence card: the printed serial is read, handwritten fields are flagged to copy from the image and saved", async ({ page }) => {
@@ -466,7 +526,7 @@ test("residence card: the printed serial is read, handwritten fields are flagged
   await page.click('[data-choice="docs"]');
   await pick(page, "national", "front.jpg");
   await pick(page, "national", "back.jpg", "back");
-  await page.locator(".aw-step").nth(6).click();
+  await page.locator(".aw-step").nth(3).click();
   await pick(page, "residence", "res-front.jpg");
   await pick(page, "residence", "res-back.jpg", "back");
   await expect(page.locator('[data-key="residence_card_no"]')).toHaveValue("1234567");

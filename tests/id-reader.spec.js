@@ -41,7 +41,7 @@ test("national card values are reviewed, then fill the form without saving", asy
   const fatherRow = dialog.locator("tr", { hasText: "اسم الأب" });
   await expect(firstRow.locator(".id-reader-pick")).not.toBeChecked();
   await expect(fatherRow.locator(".id-reader-pick")).not.toBeChecked();
-  await expect(dialog.locator("tr", { hasText: "رقم البطاقة الوطنية" }).locator(".id-reader-pick")).toBeChecked();
+  await expect(dialog.locator("tr", { hasText: "الرقم الوطني" }).locator(".id-reader-pick")).toBeChecked();
   await expect(dialog.locator("tr.is-low")).toHaveCount(1);
   await expect(dialog.locator(".id-reader-badge.is-ok")).toHaveCount(2);
   await firstRow.locator(".id-reader-pick").check();
@@ -53,7 +53,6 @@ test("national card values are reviewed, then fill the form without saving", asy
   await expect(page.locator("#f-civil_id_issue_date")).toHaveValue("2020-01-02");
   expect(await page.evaluate(() => window.calls.some(c => c.command === "cmd_update_employee"))).toBe(false);
   await page.locator("#panel-save").click();
-  await page.getByRole("button", { name: "تأكيد", exact: true }).click();
   await expect.poll(() => page.evaluate(() => window.calls.some(c => c.command === "cmd_update_employee"))).toBe(true);
   const data = await page.evaluate(() => window.calls.find(c => c.command === "cmd_update_employee").args.data);
   expect(data.full_name).toBe("أحمد علي حسين الربيعي");
@@ -150,7 +149,6 @@ test("residence card: the printed serial fills the card number", async ({ page }
   await address.locator('[data-addr="z"]').fill("22");
   await address.locator('[data-addr="gov"]').selectOption("البصرة");
   await page.click("#panel-save");
-  await page.getByRole("button", { name: "تأكيد", exact: true }).click();
   await expect.poll(() => page.evaluate(() => window.calls.find(c => c.command === "cmd_update_employee")?.args.data.residence_address)).toBe("البصرة، م 100 ز 22 د 3");
   const parts = await page.evaluate(() => JSON.parse(window.calls.find(c => c.command === "cmd_update_employee").args.data.residence_address_parts));
   expect(parts).toMatchObject({ gov: "البصرة", m: "100", z: "22", d: "3" });
@@ -241,7 +239,6 @@ test("airport badge: access zones are read into chips, edited, and saved", async
   await expect(chips).toHaveText(["S1×", "VIP×", "C×", "S2×"]);
   await expect(page.locator("#f-airport_badge_zones")).toHaveValue("S1,VIP,C,S2");
   await page.locator("#panel-save").click();
-  await page.getByRole("button", { name: "تأكيد", exact: true }).click();
   await expect.poll(() => page.evaluate(() => window.calls.some(c => c.command === "cmd_update_employee"))).toBe(true);
   const data = await page.evaluate(() => window.calls.find(c => c.command === "cmd_update_employee").args.data);
   expect(data.airport_badge_zones).toBe("S1,VIP,C,S2");
@@ -294,7 +291,6 @@ test("car registration: both sides fill the vehicle row and keep the images on s
   await expect(row.locator(".vehicle-model-year")).toHaveValue("2022");
   await expect(row.locator(".vehicle-expiry-date")).toHaveValue("2030-02-02");
   await page.locator("#panel-save").click();
-  await page.getByRole("button", { name: "تأكيد", exact: true }).click();
   await expect.poll(() => page.evaluate(() => window.calls.some(c => c.command === "cmd_update_employee"))).toBe(true);
   const data = await page.evaluate(() => window.calls.find(c => c.command === "cmd_update_employee").args.data);
   const [vehicle] = JSON.parse(data.vehicles);
@@ -308,7 +304,6 @@ test("save keeps the panel open on the same tab", async ({ page }) => {
   await page.locator("#btn-add-vehicle").click();
   await page.locator(".vehicle-row .vehicle-plate").first().fill("TEST 1");
   await page.locator("#panel-save").click();
-  await page.getByRole("button", { name: "تأكيد", exact: true }).click();
   await expect.poll(() => page.evaluate(() => window.calls.some(c => c.command === "cmd_update_employee"))).toBe(true);
   await expect(page.locator('.tab-btn[data-tab="vehicle"]')).toHaveCSS("font-weight", "700");
   await expect(page.locator("#emp-panel")).toHaveCSS("transform", "matrix(1, 0, 0, 1, 0, 0)");

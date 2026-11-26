@@ -176,7 +176,7 @@ pub fn db_path() -> PathBuf {
 /// To change the schema later: bump this constant and add an `if from < N { ... }` step in
 /// `upgrade()`. Every upgrade of an existing database runs only after a verified
 /// pre-upgrade snapshot exists, and the snapshot is restored automatically if a step fails.
-pub const SCHEMA_VERSION: i64 = 6;
+pub const SCHEMA_VERSION: i64 = 7;
 
 #[derive(Debug)]
 pub enum OpenError {
@@ -286,7 +286,10 @@ fn upgrade(conn: &Connection, from: i64) -> SqlResult<()> {
     if from < 6 {
         upgrade_to_v6(conn)?;
     }
-    // Future steps go here, for example: if from < 7 { ... }
+    if from < 7 {
+        upgrade_to_v7(conn)?;
+    }
+    // Future steps go here, for example: if from < 8 { ... }
     #[cfg(test)]
     if FAIL_UPGRADE.with(|flag| flag.get()) {
         return Err(rusqlite::Error::InvalidQuery);
@@ -320,6 +323,19 @@ fn upgrade_to_v3(conn: &Connection) -> SqlResult<()> {
     add_column_if_missing(conn, "employees", "airport_badge_zones", "TEXT")?;
     add_column_if_missing(conn, "employee_vehicles", "annual_front_path", "TEXT")?;
     add_column_if_missing(conn, "employee_vehicles", "annual_back_path", "TEXT")?;
+    Ok(())
+}
+
+/// v7: the add-employee wizard first kept its «تاريخ التعيين» in `hire_date` (the file's «تاريخ المباشرة»).
+/// For employees added since the wizard existed with only that date, move it to `appointment_date`.
+fn upgrade_to_v7(conn: &Connection) -> SqlResult<()> {
+    conn.execute(
+        "UPDATE employees SET appointment_date=hire_date, hire_date=NULL
+         WHERE TRIM(COALESCE(hire_date,''))<>'' AND TRIM(COALESCE(appointment_date,''))=''
+           AND id IN (SELECT target_id FROM activity_log
+                      WHERE action='CREATE_EMPLOYEE' AND target_type='employee' AND created_at>='2026-11-24')",
+        [],
+    )?;
     Ok(())
 }
 
@@ -1196,5 +1212,37 @@ mod v6_tests {
         conn.prepare("SELECT residence_address_parts FROM employees").unwrap();
         conn.prepare("SELECT governorate, district, subdistrict FROM address_places").unwrap();
         upgrade_to_v6(&conn).unwrap();
+    }
+}
+
+#[cfg(test)]
+mod v7_tests {
+    use super::*;
+
+    fn employee(conn: &Connection, name: &str, hire: Option<&str>, appointment: Option<&str>, created: &str) -> i64 {
+        conn.execute("INSERT INTO employees(full_name,hire_date,appointment_date) VALUES(?1,?2,?3)", rusqlite::params![name, hire, appointment]).unwrap();
+        let id = conn.last_insert_rowid();
+        conn.execute("INSERT INTO activity_log(username,action,target_type,target_id,created_at) VALUES('admin','CREATE_EMPLOYEE','employee',?1,?2)", rusqlite::params![id, created]).unwrap();
+        id
+    }
+
+    fn dates(conn: &Connection, id: i64) -> (Option<String>, Option<String>) {
+        conn.query_row("SELECT appointment_date, hire_date FROM employees WHERE id=?1", [id], |r| Ok((r.get(0)?, r.get(1)?))).unwrap()
+    }
+
+    /// Only employees added since the wizard, with the wizard's date and no appointment date, move.
+    #[test]
+    fn wizard_date_moves_to_the_appointment_date() {
+        let conn = Connection::open_in_memory().unwrap();
+        migrate_for_tests(&conn);
+        let wizard = employee(&conn, "من المعالج", Some("2015-02-01"), None, "2026-11-24 10:00:00");
+        let both = employee(&conn, "التاريخان", Some("2015-03-01"), Some("2015-01-01"), "2026-11-25 10:00:00");
+        let older = employee(&conn, "قديم", Some("2010-10-03"), None, "2026-01-05 09:00:00");
+        conn.execute_batch("PRAGMA user_version = 6;").unwrap();
+        upgrade_restored(&conn).unwrap();
+        assert_eq!(schema_version(&conn).unwrap(), SCHEMA_VERSION);
+        assert_eq!(dates(&conn, wizard), (Some("2015-02-01".into()), None));
+        assert_eq!(dates(&conn, both), (Some("2015-01-01".into()), Some("2015-03-01".into())));
+        assert_eq!(dates(&conn, older), (None, Some("2010-10-03".into())));
     }
 }

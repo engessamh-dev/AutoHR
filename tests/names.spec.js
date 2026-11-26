@@ -18,7 +18,6 @@ test("employee name is edited in national-card fields and saved as parts plus th
   }
   await expect(full.locator(".name-review-badge")).toBeHidden();
   await page.locator("#panel-save").click();
-  await page.getByRole("button", { name: "تأكيد", exact: true }).click();
   await expect.poll(() => page.evaluate(() => window.calls.some(c => c.command === "cmd_update_employee"))).toBe(true);
   const data = await page.evaluate(() => window.calls.find(c => c.command === "cmd_update_employee").args.data);
   expect(data.full_name).toBe("علي حسن كاظم الربيعي");
@@ -42,7 +41,6 @@ test("spouse and family names use the same fields", async ({ page }) => {
   await member.locator(".emp-row-head").click();
   await expect(member.locator(".emp-row-summary")).toContainText("حسن الربيعي");
   await page.locator("#panel-save").click();
-  await page.getByRole("button", { name: "تأكيد", exact: true }).click();
   await expect.poll(() => page.evaluate(() => window.calls.some(c => c.command === "cmd_update_employee"))).toBe(true);
   const data = await page.evaluate(() => window.calls.find(c => c.command === "cmd_update_employee").args.data);
   const family = JSON.parse(data.family_members);

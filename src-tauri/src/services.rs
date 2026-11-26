@@ -1276,10 +1276,29 @@ fn resolve_employee_names(conn: &Connection, id: Option<i64>, d: &EmployeeData) 
     Ok((data, serde_json::Value::Object(parts).to_string()))
 }
 
+/// The employee number is typed by hand and must belong to one employee only.
+fn check_employee_number(conn: &Connection, id: Option<i64>, d: &mut EmployeeData) -> AppResult<()> {
+    let number = d.employee_number.as_deref().map(str::trim).filter(|n| !n.is_empty()).map(str::to_string);
+    if let Some(number) = &number {
+        if number.chars().count() > 50 {
+            return Err(AppError::Validation("الرقم الوظيفي طويل جداً".into()));
+        }
+        let taken: Option<String> = conn.query_row(
+            "SELECT full_name FROM employees WHERE employee_number=?1 AND id<>?2",
+            params![number, id.unwrap_or(-1)], |r| r.get(0)).optional()?;
+        if let Some(name) = taken {
+            return Err(AppError::Validation(format!("الرقم الوظيفي {number} مسجّل للموظف {name}")));
+        }
+    }
+    d.employee_number = number;
+    Ok(())
+}
+
 pub fn create_employee(conn: &Connection, d: &EmployeeData, username: &str) -> AppResult<Employee> {
     assert_permission(conn, username, "employees.create")?;
     let (mut d, name_parts) = resolve_employee_names(conn, None, d)?;
     fix_department(conn, &mut d);
+    check_employee_number(conn, None, &mut d)?;
     let d = &d;
     validate_employee_data(d)?;
     conn.execute("INSERT INTO employees(employee_number,full_name,mother_name,father_birthplace,mother_birthplace,
@@ -1337,6 +1356,7 @@ pub fn update_employee(conn: &Connection, id: i64, d: &EmployeeData, username: &
     assert_permission(conn, username, "employees.edit")?;
     let (mut d, name_parts) = resolve_employee_names(conn, Some(id), d)?;
     fix_department(conn, &mut d);
+    check_employee_number(conn, Some(id), &mut d)?;
     let d = &d;
     validate_employee_data(d)?;
     conn.execute("UPDATE employees SET employee_number=?1,full_name=?2,mother_name=?3,father_birthplace=?4,
@@ -3581,4 +3601,44 @@ fn saving_a_document_requires_issuer_subject_number_and_date() {
         title: "مركز الوزارة".into(), issuer: Some("أمر إداري".into()), doc_count: Some("230/547".into()), ..empty
     };
     assert!(create_general_doc(&conn, &filled, "docadmin").is_ok());
+}
+
+#[cfg(test)]
+mod employee_number_tests {
+    use super::*;
+
+    fn conn_with_admin() -> Connection {
+        let conn = Connection::open_in_memory().unwrap();
+        crate::db::initialize_test(&conn).unwrap();
+        conn.execute("INSERT INTO users(username,password,role) VALUES('numadmin','unused','system_admin')", []).unwrap();
+        conn
+    }
+
+    fn data(name: &str, number: Option<&str>) -> EmployeeData {
+        serde_json::from_value(serde_json::json!({ "full_name": name, "employee_number": number })).unwrap()
+    }
+
+    #[test]
+    fn typed_number_is_trimmed_and_blank_is_stored_as_none() {
+        let conn = conn_with_admin();
+        let first = create_employee(&conn, &data("موظف أول", Some("  1024 ")), "numadmin").unwrap();
+        assert_eq!(first.employee_number.as_deref(), Some("1024"));
+        // Two employees without a number do not clash on the unique column.
+        let a = create_employee(&conn, &data("موظف ثان", Some("  ")), "numadmin").unwrap();
+        let b = create_employee(&conn, &data("موظف ثالث", None), "numadmin").unwrap();
+        assert_eq!(a.employee_number, None);
+        assert_eq!(b.employee_number, None);
+    }
+
+    #[test]
+    fn a_number_already_used_is_refused_with_the_holder_name() {
+        let conn = conn_with_admin();
+        let first = create_employee(&conn, &data("موظف أول", Some("1024")), "numadmin").unwrap();
+        let error = create_employee(&conn, &data("موظف ثان", Some("1024")), "numadmin").unwrap_err().to_string();
+        assert!(error.contains("1024") && error.contains("موظف أول"), "{error}");
+        let second = create_employee(&conn, &data("موظف ثان", Some("2048")), "numadmin").unwrap();
+        assert!(update_employee(&conn, second.id, &data("موظف ثان", Some("1024")), "numadmin").is_err());
+        // Saving an employee with their own number is fine.
+        update_employee(&conn, first.id, &data("موظف أول", Some("1024")), "numadmin").unwrap();
+    }
 }

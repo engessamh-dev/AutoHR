@@ -82,6 +82,28 @@ function daysLeft(dateStr, today = new Date()) {
   return Math.ceil((date - todayStart) / DAY_MS);
 }
 
+// Arabic number agreement: يومين، 3–10 أيام، 11+ يوماً
+function arabicDays(count) {
+  if (count === 1) return "يوم واحد";
+  if (count === 2) return "يومين";
+  const tens = count % 100;
+  return tens >= 3 && tens <= 10 ? `${count} أيام` : `${count} يوماً`;
+}
+
+/**
+ * One document's status, the same in the employee file and the add-employee wizard: expired,
+ * expiring within the reminder days of the settings, or complete / missing an attachment.
+ */
+export function documentStatus({ values, expiry, maxDays, attached, expected, today = new Date() }) {
+  const days = daysLeft(expiry, today);
+  if (days !== null && days < 0) return { tone: "bad", label: "منتهٍ" };
+  if (days !== null && days <= maxDays) return { tone: "warn", label: days === 0 ? "ينتهي اليوم" : days === 1 ? "ينتهي غداً" : `ينتهي خلال ${arabicDays(days)}` };
+  const hasData = values.some(value => String(value ?? "").trim());
+  if (!hasData && attached === 0) return { tone: "none", label: "لا توجد بيانات" };
+  if (attached < expected) return { tone: "none", label: "مرفق ناقص" };
+  return { tone: "ok", label: "مكتمل" };
+}
+
 export function buildDocumentAlerts(employees, rules = cachedRules, today = new Date()) {
   const alerts = [];
   employees.filter(e => e.is_active).forEach(employee => {
