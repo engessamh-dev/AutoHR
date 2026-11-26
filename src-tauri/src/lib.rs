@@ -1,5 +1,5 @@
 // lib.rs — GCANS v2.0
-mod backup_store; mod db; mod names; mod services; mod files; mod scanner; mod paths; mod storage; mod ai_detect; mod secure; mod ocr; mod ocr_parse; mod health; mod errlog; mod integrity;
+mod account; mod backup_store; mod db; mod names; mod services; mod files; mod scanner; mod paths; mod storage; mod ai_detect; mod secure; mod ocr; mod ocr_parse; mod health; mod errlog; mod integrity;
 mod scanner_commands;
 #[cfg(debug_assertions)]
 mod devseed;
@@ -63,9 +63,11 @@ fn suggested_roots() -> (String, String) {
         let drives: Vec<String> = ["D", "E", "F", "G"].iter()
             .filter(|d| std::path::Path::new(&format!("{d}:\\")).is_dir())
             .map(|d| d.to_string()).collect();
-        let data = drives.first().map(|d| format!("{d}:\\AutoHR-Data")).unwrap_or_default();
-        let backup = drives.get(1).map(|d| format!("{d}:\\AutoHR-Backups")).unwrap_or_default();
-        (data, backup)
+        // Data on the first drive other than C, backups on the next one. With fewer drives the
+        // setup screen still offers a folder (and warns about C or about sharing one drive).
+        let data_drive = drives.first().cloned().unwrap_or_else(|| "C".into());
+        let backup_drive = drives.get(1).cloned().unwrap_or_else(|| data_drive.clone());
+        (format!("{data_drive}:\\{}", storage::DATA_FOLDER_NAME), format!("{backup_drive}:\\{}", storage::BACKUP_FOLDER_NAME))
     }
     #[cfg(not(target_os = "windows"))]
     { (String::new(), String::new()) }
@@ -102,7 +104,8 @@ fn restrict_managed_folders() {
     std::thread::spawn(move || {
         if cfg!(target_os = "windows") {
             for root in roots {
-                if !root.is_dir() { continue; }
+                // Never lock a whole drive (a data folder chosen as «D:\\» by an older release).
+                if !root.is_dir() || storage::is_drive_root(&root) { continue; }
                 let result = match secure::folder_access(&root) {
                     Ok(secure::FolderAccess::Open(_)) => secure::restrict_folder(&root),
                     Ok(_) => Ok(()),
@@ -419,8 +422,10 @@ fn cmd_scan_document(state: State<DbState>, sess: State<SessionState>, device_id
         // does not wait for it. Only users who can upload documents ever need it.
         std::thread::spawn(|| { ai_detect::available(); });
     }
+    // The name as stored (sign-in ignores case), so the session matches the account exactly.
+    let _ = username;
     *sess.0.lock().unwrap() = Some(Session {
-        username,
+        username: user.username.clone(),
         must_change_password: user.must_change_password,
     });
     Ok(user)
@@ -444,6 +449,44 @@ fn cmd_scan_document(state: State<DbState>, sess: State<SessionState>, device_id
     let conn = state.conn()?;
     authorize(&conn, &sess, "dashboard.view")?;
     get_company_config(&conn)
+}
+// ── Accounts: first-run administrator, password policy, recovery code ───────
+#[derive(serde::Serialize)]
+struct FirstRunState { needs_admin: bool }
+#[tauri::command] fn cmd_get_first_run_state(state: State<DbState>) -> Result<FirstRunState, AppError> {
+    Ok(FirstRunState { needs_admin: account::needs_first_admin(&*state.conn()?) })
+}
+/// Allowed only while the database holds nothing but the built-in first-run account.
+#[tauri::command] fn cmd_complete_first_run(state: State<DbState>, sess: State<SessionState>, data: account::FirstRunSetup) -> Result<account::FirstRunResult, AppError> {
+    let conn = state.conn()?;
+    let result = account::complete_first_run(&conn, &data)?;
+    *sess.0.lock().unwrap() = Some(Session { username: result.user.username.clone(), must_change_password: false });
+    Ok(result)
+}
+/// Public: the rules are shown under every new-password field, before anyone has signed in.
+#[tauri::command] fn cmd_get_password_policy(state: State<DbState>) -> Result<account::PasswordPolicy, AppError> {
+    Ok(account::password_policy(&*state.conn()?))
+}
+#[tauri::command] fn cmd_set_password_policy(state: State<DbState>, sess: State<SessionState>, policy: account::PasswordPolicy) -> Result<account::PasswordPolicy, AppError> {
+    let conn = state.conn()?;
+    let user = session_user(&sess)?;
+    account::set_password_policy(&conn, &user, policy)
+}
+#[tauri::command] fn cmd_recovery_available(state: State<DbState>) -> Result<bool, AppError> {
+    Ok(account::recovery_status(&*state.conn()?).exists)
+}
+#[tauri::command] fn cmd_get_recovery_status(state: State<DbState>, sess: State<SessionState>) -> Result<account::RecoveryStatus, AppError> {
+    let conn = state.conn()?;
+    authorize(&conn, &sess, "users.assign_system_admin")?;
+    Ok(account::recovery_status(&conn))
+}
+#[tauri::command] fn cmd_regenerate_recovery_code(state: State<DbState>, sess: State<SessionState>) -> Result<String, AppError> {
+    let conn = state.conn()?;
+    let user = session_user(&sess)?;
+    account::regenerate_recovery_code(&conn, &user)
+}
+#[tauri::command] fn cmd_recover_admin_password(state: State<DbState>, code: String, new_password: String) -> Result<account::RecoveryResult, AppError> {
+    account::recover_admin_password(&*state.conn()?, &code, &new_password)
 }
 #[tauri::command] fn cmd_get_public_company_config(state: State<DbState>) -> Result<CompanyConfig, AppError> {
     get_company_config(&*state.conn()?)
@@ -1466,6 +1509,8 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             cmd_login, cmd_change_password, cmd_logout,
+            cmd_get_first_run_state, cmd_complete_first_run, cmd_get_password_policy, cmd_set_password_policy,
+            cmd_recovery_available, cmd_get_recovery_status, cmd_regenerate_recovery_code, cmd_recover_admin_password,
             cmd_get_company_config, cmd_get_public_company_config, cmd_update_company_config,
             cmd_next_employee_number,
             cmd_list_employees, cmd_get_employee,

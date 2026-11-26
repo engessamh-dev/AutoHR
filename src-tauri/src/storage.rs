@@ -53,25 +53,64 @@ pub fn storage_status() -> StorageStatus {
 #[derive(Debug, Clone, Serialize)]
 pub struct SetupCheck {
     pub warnings: Vec<String>,
-    /// The chosen data folder already holds an AutoHR database that will be used as is.
+    /// The chosen data folder already holds a CNSArch database that will be used as is.
     pub existing_database: bool,
+    /// The folders that will actually be used: a whole drive, or a folder that holds other
+    /// files, gets the program's own subfolder (see `own_folder`).
+    pub data_root: String,
+    pub backup_root: String,
+    pub adjusted: bool,
+}
+
+pub const DATA_FOLDER_NAME: &str = "CNSArch-Data";
+pub const BACKUP_FOLDER_NAME: &str = "CNSArch-Backups";
+
+/// True for a drive root such as `D:\` or a share root.
+pub fn is_drive_root(path: &Path) -> bool {
+    path.parent().is_none()
+}
+
+/// A chosen folder is used as is when it is new, empty, or already the program's own folder.
+/// A whole drive, or a folder holding other files (Documents, a shared folder), gets a subfolder
+/// named for the program: the data and backup folders are locked to this Windows user at every
+/// start, which must never happen to a whole drive or to someone else's files.
+fn own_folder(path: &Path, subfolder: &str, ours: &[&str]) -> PathBuf {
+    if is_drive_root(path) { return path.join(subfolder); }
+    let Ok(entries) = std::fs::read_dir(path) else { return path.to_path_buf() };
+    let names: Vec<String> = entries.filter_map(|e| e.ok()).map(|e| e.file_name().to_string_lossy().into_owned()).collect();
+    if names.is_empty() || names.iter().any(|n| ours.iter().any(|o| n.eq_ignore_ascii_case(o) || n.to_lowercase().ends_with(o))) {
+        return path.to_path_buf();
+    }
+    path.join(subfolder)
+}
+
+fn final_roots(data_root: &Path, backup_root: &Path, require_existing: bool) -> (PathBuf, PathBuf) {
+    let data = if require_existing { data_root.to_path_buf() } else { own_folder(data_root, DATA_FOLDER_NAME, &[DATABASE_FILE]) };
+    let backup = own_folder(backup_root, BACKUP_FOLDER_NAME, &["Daily", "Weekly", "Monthly", "Store", ".cnsarchbak", ".autohrbak"]);
+    (data, backup)
 }
 
 /// Validates the two folders chosen on first run (or after the data folder went missing).
 /// With `require_existing`, the data folder must already contain a database: used when the
 /// configured folder disappeared, so that a new empty database is never created by mistake.
-pub fn check_setup(data_root: &Path, backup_root: &Path, require_existing: bool) -> AppResult<SetupCheck> {
-    let warnings = paths::validate_pair(data_root, backup_root)?;
+pub fn check_setup(chosen_data: &Path, chosen_backup: &Path, require_existing: bool) -> AppResult<SetupCheck> {
+    paths::validate_pair(chosen_data, chosen_backup)?;
+    let (data, backup) = final_roots(chosen_data, chosen_backup, require_existing);
+    let (data_root, backup_root) = (data.as_path(), backup.as_path());
+    let mut warnings = paths::validate_pair(data_root, backup_root)?;
+    if paths::drive_of(data_root).as_deref() == Some("c:") {
+        warnings.insert(0, "مجلد البيانات على قرص النظام C. إذا أُعيد تثبيت ويندوز أو تعطل القرص قد تضيع البيانات، فيُفضّل قرص آخر مثل D.".into());
+    }
     let existing_database = data_root.join(DATABASE_FILE).is_file();
     if require_existing && !existing_database {
         return Err(AppError::Validation(format!(
-            "لم يتم العثور على قاعدة بيانات AutoHR في {}. اختر المجلد الذي يحتوي على الملف {DATABASE_FILE}.",
+            "لم يتم العثور على قاعدة بيانات البرنامج في {}. اختر المجلد الذي يحتوي على الملف «{DATABASE_FILE}»",
             data_root.display()
         )));
     }
     if !existing_database && data_root.join("Data").exists() {
         return Err(AppError::Validation(
-            "المجلد المختار يحتوي على مجلد Data بدون قاعدة بيانات. اختر مجلدًا فارغًا أو مجلد بيانات AutoHR كاملًا.".into(),
+            "المجلد المختار يحتوي على مجلد Data بدون قاعدة بيانات. اختر مجلدًا فارغًا أو مجلد بيانات البرنامج كاملًا.".into(),
         ));
     }
     if existing_database {
@@ -81,13 +120,19 @@ pub fn check_setup(data_root: &Path, backup_root: &Path, require_existing: bool)
             return Err(AppError::Validation("قاعدة البيانات الموجودة في المجلد المختار تالفة ولا يمكن استخدامها.".into()));
         }
     }
-    Ok(SetupCheck { warnings, existing_database })
+    let adjusted = data != chosen_data || backup != chosen_backup;
+    Ok(SetupCheck {
+        warnings, existing_database, adjusted,
+        data_root: data.to_string_lossy().into_owned(),
+        backup_root: backup.to_string_lossy().into_owned(),
+    })
 }
 
 /// Finishes first-run setup: creates or opens the database in the chosen folder, prepares
 /// the backup folder, then records both in config.json. Returns the open connection.
-pub fn complete_setup(data_root: &Path, backup_root: &Path, require_existing: bool) -> AppResult<Connection> {
-    check_setup(data_root, backup_root, require_existing)?;
+pub fn complete_setup(chosen_data: &Path, chosen_backup: &Path, require_existing: bool) -> AppResult<Connection> {
+    let checked = check_setup(chosen_data, chosen_backup, require_existing)?;
+    let (data_root, backup_root) = (Path::new(&checked.data_root), Path::new(&checked.backup_root));
     paths::ensure_writable(data_root)?;
     let backup_ok = paths::ensure_writable(backup_root).is_ok();
     let chosen = AppPaths { data_root: data_root.to_path_buf(), backup_root: backup_root.to_path_buf() };
@@ -328,6 +373,55 @@ mod tests {
             paths::resolve_startup().unwrap(),
             paths::StartupState::Ready(AppPaths { data_root: data, backup_root: backups })
         );
+    }
+
+    #[test]
+    fn a_folder_with_other_files_gets_the_programs_own_subfolder() {
+        let env = env();
+        let busy = env.root.join("Shared");
+        std::fs::create_dir_all(busy.join("Projects")).unwrap();
+        std::fs::write(busy.join("notes.txt"), b"x").unwrap();
+        let empty_backups = env.root.join("Backups");
+        let check = check_setup(&busy, &empty_backups, false).unwrap();
+        assert!(check.adjusted);
+        assert_eq!(PathBuf::from(&check.data_root), busy.join(DATA_FOLDER_NAME));
+        assert_eq!(PathBuf::from(&check.backup_root), empty_backups);
+        let conn = complete_setup(&busy, &empty_backups, false).unwrap();
+        drop(conn);
+        assert!(busy.join(DATA_FOLDER_NAME).join(DATABASE_FILE).is_file());
+        assert!(!busy.join(DATABASE_FILE).exists());
+        // A drive root always gets the subfolder.
+        assert!(is_drive_root(Path::new("/")));
+        assert_eq!(final_roots(Path::new("/"), &empty_backups, false).0, Path::new("/").join(DATA_FOLDER_NAME));
+    }
+
+    #[test]
+    fn first_run_wizard_replaces_the_default_account_and_recovery_code_resets_it() {
+        use crate::account::*;
+        let env = env();
+        let conn = complete_setup(&env.root.join("d"), &env.root.join("b"), false).unwrap();
+        assert!(needs_first_admin(&conn));
+        let weak = FirstRunSetup { username: "it.admin".into(), password: "12345678".into(), department_name: String::new(), division_name: String::new() };
+        assert!(complete_first_run(&conn, &weak).is_err());
+        let data = FirstRunSetup { username: "it.admin".into(), password: "Tigris7Bridge".into(), department_name: "قسم الملاحة".into(), division_name: "شعبة الحاسبة".into() };
+        let result = complete_first_run(&conn, &data).unwrap();
+        assert_eq!(result.user.username, "it.admin");
+        assert!(result.user.is_base && !result.user.must_change_password);
+        assert!(!needs_first_admin(&conn), "the wizard runs once");
+        assert!(complete_first_run(&conn, &data).is_err());
+        assert!(crate::services::login(&conn, "sysadmin", "password").is_err());
+        let company = crate::services::get_company_config(&conn).unwrap();
+        assert_eq!((company.company_name.as_str(), company.department_name.as_str()), (crate::services::COMPANY_NAME, "قسم الملاحة"));
+        // The base account keeps its protections under its new name.
+        let id: i64 = conn.query_row("SELECT id FROM users WHERE username='it.admin'", [], |r| r.get(0)).unwrap();
+        assert!(crate::services::delete_user(&conn, "it.admin", id).is_err());
+        // Recovery: a wrong code is refused, the right one sets the password once.
+        assert!(recover_admin_password(&conn, "AAAA-BBBB-CCCC-DDDD", "Nakheel2026").is_err());
+        let recovered = recover_admin_password(&conn, &result.recovery_code.to_lowercase(), "Nakheel2026").unwrap();
+        assert_eq!(recovered.username, "it.admin");
+        assert_ne!(recovered.recovery_code, result.recovery_code);
+        assert!(crate::services::login(&conn, "it.admin", "Nakheel2026").is_ok());
+        assert!(recover_admin_password(&conn, &result.recovery_code, "Another7Pass").is_err(), "a used code no longer works");
     }
 
     #[test]

@@ -1,4 +1,4 @@
--- GCANS Document Archive System — Schema v2.0
+-- CNSArch Document Archive System — Schema v2.0
 
 PRAGMA journal_mode=WAL;
 PRAGMA foreign_keys=ON;
@@ -16,8 +16,8 @@ CREATE TABLE IF NOT EXISTS users (
 
 CREATE TABLE IF NOT EXISTS company_config (
   id              INTEGER PRIMARY KEY CHECK(id = 1),
-  company_name    TEXT NOT NULL DEFAULT 'الشركة العامة لخدمات الملاحة الجوية',
-  department_name TEXT NOT NULL DEFAULT 'GCANS',
+  company_name    TEXT NOT NULL DEFAULT 'الشركة العامة لإدارة المطارات والملاحة الجوية',
+  department_name TEXT NOT NULL DEFAULT '',
   division_name   TEXT NOT NULL DEFAULT '',
   logo_path       TEXT
 );
