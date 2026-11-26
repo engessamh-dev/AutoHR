@@ -213,7 +213,7 @@ export function applyBranding(config) {
   if (loginUnit) {
     // Login screen: show the configured unit name, or a muted hint telling the admin where to set it.
     const unitName = String(config.division_name ?? "").trim();
-    loginUnit.textContent = unitName || "حدّد اسم الشعبة من الإعدادات";
+    loginUnit.textContent = unitName || "لم يُحدَّد اسم الشعبة/الوحدة";
     loginUnit.title = unitName ? unitName : "يضبطه المسؤول من الإعدادات ← الجهة والشعار";
     loginUnit.classList.toggle("is-hint", !unitName);
     fitLoginUnitName(loginUnit);

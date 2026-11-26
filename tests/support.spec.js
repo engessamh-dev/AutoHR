@@ -176,7 +176,8 @@ test("«المستخدمين والصلاحيات» is a settings tab only for u
   await expect(page.locator('[data-settings-tab="users"]')).toHaveCount(0);
   await render(["settings.manage", "users.manage"]);
   await expect(page.locator('[data-settings-tab="users"]')).toHaveAttribute("aria-selected", "true");
-  await expect(page.getByText("إدارة المستخدمين")).toBeVisible();
+  // Opens on «إدارة المستخدمين» in the side list, like «الدعم وحول النظام».
+  await expect(page.locator('.settings-subnav-item[aria-current="true"]')).toHaveText("إدارة المستخدمين");
   await expect(page.getByText("synthetic-viewer")).toBeVisible();
 });
 

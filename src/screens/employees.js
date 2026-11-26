@@ -10,7 +10,7 @@ import { showToast, formatDate, escHtml, debounce, confirmAction, confirmSaveCha
 import { addressHtml, wireAddress, readAddress, composeResidence, citySuggestions, loadAddressPlaces, addressIsEmpty } from "../address-field.js";
 import { can } from "../permissions.js";
 import { openNameReview } from "./name-review.js";
-import { employeeNameFields, recordNameFields, bindNameFields, readNameFields, readNameGroup, applyNames, joinNameParts } from "./name-fields.js";
+import { employeeNameFields, recordNameFields, bindNameFields, readNameFields, readNameGroup, applyNames, joinNameParts, ARABIC_PARTS } from "./name-fields.js";
 import { readDocumentFields } from "./id-reader.js";
 import { openAddEmployee } from "./add-wizard.js";
 import { alertWindowDays, loadAlertRules, documentStatus, buildDocumentAlerts } from "./document-alerts.js";
@@ -1431,19 +1431,41 @@ function parseJsonList(value) {
 const BLOOD_OPTIONS = ["A+","A-","B+","B-","AB+","AB-","O+","O-"].map(v => [v, `${v}\u200E`]);
 
 // ── Missing data ───────────────────────────────────────────────────────────
-/** The «البيانات الأساسية» fields every employee file should have. The rest (email, parents,
- *  start date, specialization, notes, …) are optional. Documents have their own status. */
+/** The «البيانات الأساسية» fields every employee file should have. The rest (email, start date,
+ *  specialization, the two notes fields, …) are optional. Documents have their own status. */
 export const REQUIRED_FIELDS = [
   ["employee_number", "الرقم الوظيفي"], ["full_name", "اسم الموظف"], ["mother_name", "اسم الأم"],
   ["gender", "الجنس"], ["marital_status", "الحالة الاجتماعية"], ["birthdate", "تاريخ الولادة"],
   ["birthplace", "محل الولادة"], ["blood_type", "فصيلة الدم"], ["phone", "رقم الهاتف"],
+  ["father_birthdate", "تاريخ ولادة الأب"], ["father_birthplace", "محل ولادة الأب"],
+  ["mother_birthdate", "تاريخ ولادة الأم"], ["mother_birthplace", "محل ولادة الأم"],
   ["job_title", "العنوان الوظيفي"], ["job_grade", "الدرجة الوظيفية"], ["appointment_date", "تاريخ التعيين"],
   ["contract_type", "نوع التوظيف"], ["education_level", "التحصيل الدراسي"],
 ];
 
-/** The labels of the required fields an employee record leaves empty. */
+/** Split names: each empty part (الجد، اللقب، …) counts, once the name is kept as parts. */
+const SPLIT_NAME_KEYS = new Set(["full_name", "mother_name"]);
+
+/** A name saved before it was split shows whole in its first field: it is not «ناقص» until someone splits it. */
+function isUnsplitName(group) {
+  const filled = [...group.querySelectorAll(".name-part")].map(input => Boolean(input.value.trim()));
+  return group.dataset.hasParts !== "1" && filled.filter(Boolean).length <= 1;
+}
+
+function storedNameParts(emp, key) {
+  let all = emp?.name_parts;
+  if (typeof all === "string") { try { all = JSON.parse(all); } catch { all = null; } }
+  const parts = all?.[key];
+  return parts && ARABIC_PARTS.some(([part]) => String(parts[part] ?? "").trim()) ? parts : null;
+}
+
+/** The labels of the required fields an employee record leaves empty («اسم الأم: الجد» for a name part). */
 export function missingFields(emp) {
-  return REQUIRED_FIELDS.filter(([key]) => !String(emp?.[key] ?? "").trim()).map(([, label]) => label);
+  return REQUIRED_FIELDS.flatMap(([key, label]) => {
+    const parts = SPLIT_NAME_KEYS.has(key) ? storedNameParts(emp, key) : null;
+    if (parts) return ARABIC_PARTS.filter(([part]) => !String(parts[part] ?? "").trim()).map(([, partLabel]) => `${label}: ${partLabel}`);
+    return String(emp?.[key] ?? "").trim() ? [] : [label];
+  });
 }
 
 /** «ناقص N» with the empty fields named on hover, or nothing. */
@@ -1455,11 +1477,18 @@ function missingBadge(missing, cls = "") {
 function liveMissing(panel) {
   const values = { ..._panelDraft };
   panel.querySelectorAll("#tab-content [id^='f-']").forEach(el => { values[el.id.slice(2)] = el.value; });
+  let nameParts = values.name_parts;
+  if (typeof nameParts === "string") { try { nameParts = JSON.parse(nameParts); } catch { nameParts = null; } }
+  nameParts = { ...(nameParts ?? {}) };
   panel.querySelectorAll("#tab-content .name-fields[data-name-key]").forEach(group => {
-    if (REQUIRED_FIELDS.some(([key]) => key === group.dataset.nameKey)) {
-      values[group.dataset.nameKey] = [...group.querySelectorAll(".name-part")].map(input => input.value.trim()).join(" ").trim();
-    }
+    const key = group.dataset.nameKey;
+    if (!REQUIRED_FIELDS.some(([required]) => required === key)) return;
+    const inputs = [...group.querySelectorAll(".name-part")];
+    values[key] = inputs.map(input => input.value.trim()).join(" ").trim();
+    if (isUnsplitName(group)) delete nameParts[key];
+    else nameParts[key] = Object.fromEntries(inputs.map(input => [input.dataset.part, input.value.trim()]));
   });
+  values.name_parts = nameParts;
   return missingFields(values);
 }
 
@@ -1480,8 +1509,29 @@ function refreshMissing() {
   REQUIRED_FIELDS.forEach(([key]) => {
     const target = panel.querySelector(`#tab-content #f-${key}`) ?? panel.querySelector(`#tab-content .name-fields[data-name-key="${key}"]`);
     if (!target) return;
-    const value = target.matches(".name-fields") ? [...target.querySelectorAll(".name-part")].some(input => input.value.trim()) : String(target.value ?? "").trim();
-    (target.matches(".name-fields") ? target : target.closest("div")).classList.toggle("emp-is-missing", !value);
+    if (target.matches(".name-fields")) {
+      // Each empty part is outlined on its own, and the name's label says «ناقص».
+      const inputs = [...target.querySelectorAll(".name-part")];
+      const whole = isUnsplitName(target);
+      const empty = input => !input.value.trim() && (!whole || input === inputs[0]);
+      inputs.forEach(input => input.classList.toggle("is-missing", empty(input)));
+      target.classList.toggle("emp-part-missing", inputs.some(empty));
+      return;
+    }
+    target.closest("div").classList.toggle("emp-is-missing", !String(target.value ?? "").trim());
+  });
+  // A folded section still says how much is missing inside it.
+  panel.querySelectorAll("#tab-content .emp-sec").forEach(section => {
+    const count = section.querySelectorAll(".emp-is-missing, .name-part.is-missing").length;
+    const meta = section.querySelector(".emp-sec-meta");
+    let pill = section.querySelector(".emp-sec-missing");
+    if (!count) { pill?.remove(); return; }
+    if (!pill && meta) {
+      pill = document.createElement("span");
+      pill.className = "emp-missing-badge emp-sec-missing";
+      meta.prepend(pill);
+    }
+    if (pill) pill.textContent = `ناقص ${count}`;
   });
 }
 

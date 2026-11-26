@@ -547,6 +547,19 @@ pub fn user_trusted(conn: &Connection, user_id: i64) -> bool {
     row_trusted(conn, &local.key, "users", user_id).unwrap_or(false)
 }
 
+/// False when the stored setting `key` was changed outside the program (its seal does not match).
+/// A setting that is not stored is trusted (the built-in default applies).
+pub fn setting_trusted(conn: &Connection, key: &str) -> bool {
+    if !table_exists(conn, "integrity_meta") { return true; }
+    let Ok(local) = local_key() else { return true };
+    if state(conn) != State::Verified { return true; }
+    let rid: Option<i64> = conn
+        .query_row("SELECT rowid FROM app_settings WHERE key=?1", params![key], |r| r.get(0))
+        .optional().ok().flatten();
+    let Some(rid) = rid else { return true };
+    row_trusted(conn, &local.key, "app_settings", rid).unwrap_or(false)
+}
+
 /// Shown on the sign-in screen for an account changed outside the program.
 pub const TAMPERED_ACCOUNT_MESSAGE: &str =
     "تم تعديل بيانات هذا الحساب من خارج البرنامج، لذلك أُوقف الدخول به. اطلب من المسؤول حذف الحساب وإنشاءه من جديد، أو اعتماد البيانات من «الفحص والدعم».";
@@ -919,6 +932,21 @@ mod tests {
         let result = report(&conn, false);
         assert_eq!(result.status, "fail");
         assert!(result.details.iter().any(|l| l.contains("عُدّلت") && l.contains("المستخدمون")), "{:?}", result.details);
+    }
+
+    #[test]
+    fn role_permissions_changed_outside_the_program_fall_back_to_the_built_in_ones() {
+        let conn = sealed_db();
+        let saved = crate::services::RoleGroups { archive_officer: vec!["print".into()], viewer: vec![] };
+        crate::services::set_setting(&conn, "role_permissions", &serde_json::to_string(&saved).unwrap()).unwrap();
+        assert!(setting_trusted(&conn, "role_permissions"));
+        assert_eq!(crate::services::role_groups(&conn), saved);
+        // Someone gives «مشاهد» the delete row with a database tool.
+        outside(&conn, r#"UPDATE app_settings SET value='{"archive_officer":["print"],"viewer":["delete"]}' WHERE key='role_permissions'"#);
+        assert!(!setting_trusted(&conn, "role_permissions"));
+        let groups = crate::services::role_groups(&conn);
+        assert_eq!(groups.viewer, vec!["print"], "built-in, not the outside change");
+        assert!(!crate::services::effective_permissions(&conn, "viewer").iter().any(|p| p == "employees.delete"));
     }
 
     #[test]

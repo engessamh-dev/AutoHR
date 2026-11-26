@@ -94,3 +94,96 @@ test("deleting asks on a red button that names the action", async ({ page }) => 
   await confirm.locator(".btn-danger-solid").click();
   await expect.poll(() => called(page, "cmd_delete_user")).toEqual([{ id: 3 }]);
 });
+
+test("«حفظ سياسة كلمة المرور» stays off until the policy changes, and easy passwords are allowed by default", async ({ page }) => {
+  await page.evaluate(async () => {
+    const before = window.__TAURI_INTERNALS__.invoke;
+    window.__TAURI_INTERNALS__.invoke = async (command, args) => {
+      if (command === "cmd_get_password_policy") return {};
+      if (command === "cmd_set_password_policy") { window.calls.push({ command, args }); return args.policy; }
+      return before(command, args);
+    };
+    await window.renderActual("users");
+  });
+  const save = page.locator("#btn-save-policy");
+  await expect(page.locator("#policy-common")).not.toBeChecked();
+  await expect(save).toBeDisabled();
+  await page.locator("#policy-common").check();
+  await expect(save).toBeEnabled();
+  await page.locator("#policy-common").uncheck();
+  await expect(save).toBeDisabled();
+  await page.locator("#policy-length").fill("10");
+  await expect(save).toBeEnabled();
+  await save.click();
+  await expect.poll(() => called(page, "cmd_set_password_policy")).toEqual([{ policy: expect.objectContaining({ min_length: 10, reject_common: false }) }]);
+  await expect(save).toBeDisabled();
+});
+
+test("«المستخدمين والصلاحيات» is a side list like «الدعم وحول النظام», one part at a time", async ({ page }) => {
+  await page.evaluate(async () => {
+    const before = window.__TAURI_INTERNALS__.invoke;
+    window.__TAURI_INTERNALS__.invoke = async (command, args) => {
+      if (command === "cmd_get_password_policy") return {};
+      if (command === "cmd_get_recovery_status") return { exists: true, admin: "sysadmin", created_at: "2026-11-26" };
+      return before(command, args);
+    };
+    await window.renderActual("settings");
+  });
+  await page.locator('[data-settings-tab="users"]').click();
+  const panel = page.locator('[data-settings-panel="users"]');
+  const items = panel.locator(".settings-subnav-item");
+  await expect(items).toHaveText(["إدارة المستخدمين", "ماذا يستطيع كل دور", "سياسة كلمة المرور", "رمز استعادة المسؤول"]);
+  await expect(panel.locator("#btn-add-user")).toBeVisible();
+  await expect(panel.locator(".users-matrix")).toBeHidden();
+  await items.nth(1).click();
+  await expect(panel.locator(".users-matrix")).toBeVisible();
+  await expect(panel.locator("#btn-add-user")).toBeHidden();
+  await items.nth(2).click();
+  await expect(panel.locator("#btn-save-policy")).toBeVisible();
+  await expect(panel.locator(".users-matrix")).toBeHidden();
+  await items.nth(3).click();
+  await expect(panel.locator("#btn-new-recovery")).toBeVisible();
+  await expect(panel.locator("#btn-save-policy")).toBeHidden();
+});
+
+test("«ماذا يستطيع كل دور» can be changed by a System Admin for «موظف» and «مشاهد» only", async ({ page }) => {
+  await page.evaluate(async () => {
+    const before = window.__TAURI_INTERNALS__.invoke;
+    window.__TAURI_INTERNALS__.invoke = async (command, args) => {
+      if (command === "cmd_get_role_permissions") return { archive_officer: ["print", "employees_edit", "upload"], viewer: ["print"] };
+      if (command === "cmd_set_role_permissions") { window.calls.push({ command, args }); return args.groups; }
+      return before(command, args);
+    };
+    await window.renderActual("users");
+  });
+  const matrix = page.locator(".users-matrix");
+  // «مسؤول», viewing and the admin row are fixed; six rows × two roles can be ticked.
+  await expect(matrix.locator("input[type=checkbox]")).toHaveCount(12);
+  await expect(matrix.locator('input[data-role="system_admin"]')).toHaveCount(0);
+  await expect(matrix.locator('input[data-group="view"], input[data-group="admin"]')).toHaveCount(0);
+  const save = page.locator("#btn-save-roles");
+  await expect(save).toBeDisabled();
+  await matrix.locator('input[data-role="archive_officer"][data-group="delete"]').check();
+  await matrix.locator('input[data-role="viewer"][data-group="print"]').uncheck();
+  await expect(save).toBeEnabled();
+  await save.click();
+  await expect.poll(() => called(page, "cmd_set_role_permissions")).toEqual([{ groups: {
+    archive_officer: ["print", "employees_edit", "upload", "delete"], viewer: [] } }]);
+  await expect(save).toBeDisabled();
+  // The role cards follow the new choice.
+  await page.locator("#btn-add-user").click();
+  await expect(page.locator(".role-card:has(input[value=viewer])")).toContainText("يعرض الموظفين والأرشيف فقط.");
+  await expect(page.locator(".role-card:has(input[value=archive_officer])")).toContainText("الحذف");
+});
+
+test("an admin without the System Admin permission sees the table but cannot change it", async ({ page }) => {
+  await page.evaluate(async () => {
+    window.permissionsOverride = ["users.manage", "settings.manage"];
+    const before = window.__TAURI_INTERNALS__.invoke;
+    window.__TAURI_INTERNALS__.invoke = async (command, args) => command === "cmd_get_role_permissions"
+      ? { archive_officer: ["print"], viewer: [] } : before(command, args);
+    await window.renderActual("users");
+  });
+  await expect(page.locator(".users-matrix input[type=checkbox]")).toHaveCount(0);
+  await expect(page.locator("#btn-save-roles")).toHaveCount(0);
+});

@@ -227,7 +227,8 @@ test("missing employee data: counted in the list, the header and the tab, outlin
   await page.evaluate(() => {
     window.employeePatch = { employee_number: "1001", full_name: "سامر خالد عبد الله الجبوري", mother_name: "زينب حسن", gender: "ذكر", marital_status: "متزوج",
       birthdate: "1985-03-14", birthplace: "بغداد", blood_type: "O+", phone: "", job_title: "مهندس", job_grade: "الثالثة",
-      appointment_date: "2010-09-01", contract_type: "ملاك", education_level: "", email: "" };
+      appointment_date: "2010-09-01", contract_type: "ملاك", education_level: "", email: "",
+      father_birthdate: "1950-01-01", father_birthplace: "بغداد", mother_birthdate: "1955-01-01", mother_birthplace: "بغداد" };
   });
   await page.evaluate(() => window.renderActual("employees"));
   // Phone and education are missing; email is optional.
@@ -244,4 +245,38 @@ test("missing employee data: counted in the list, the header and the tab, outlin
   // Still counted from another tab.
   await page.locator('.tab-btn[data-tab="documents"]').click();
   await expect(page.locator('.emp-tab-count[data-count-for="basic"]')).toHaveText("ناقص 1");
+});
+
+test("missing employee data: each empty part of a split name, and the parents' birth dates and places, count", async ({ page }) => {
+  await page.evaluate(() => {
+    window.employeePatch = { employee_number: "1001", full_name: "عصام حسن هاشم مياح", mother_name: "علية شخير", gender: "ذكر", marital_status: "متزوج",
+      birthdate: "1978-11-20", birthplace: "بغداد", blood_type: "A+", phone: "07700000000", job_title: "رئيس مهندسين", job_grade: "الرابعة",
+      appointment_date: "2007-07-20", contract_type: "ملاك", education_level: "بكالوريوس", email: "", notes: "", work_type_notes: "",
+      father_birthdate: "", father_birthplace: "", mother_birthdate: "", mother_birthplace: "",
+      name_parts: { full_name: { first: "عصام", father: "حسن", grandfather: "هاشم", surname: "مياح" },
+        mother_name: { first: "علية", father: "شخير", grandfather: "", surname: "" } } };
+  });
+  await page.evaluate(() => window.renderActual("employees"));
+  const badge = page.locator('.table-row[data-id="1"] .emp-missing-badge');
+  await expect(badge).toHaveText("ناقص 6");
+  await expect(badge).toHaveAttribute("title", "بيانات ناقصة: اسم الأم: الجد، اسم الأم: اللقب، تاريخ ولادة الأب، محل ولادة الأب، تاريخ ولادة الأم، محل ولادة الأم");
+  await page.locator('.table-row[data-id="1"]').click();
+  await expect(page.locator('.emp-tab-count[data-count-for="basic"]')).toHaveText("ناقص 6");
+  const mother = page.locator('.name-fields[data-name-key="mother_name"]');
+  await expect(mother).toHaveClass(/emp-part-missing/);
+  await expect(mother.locator('.name-part[data-part="grandfather"]')).toHaveClass(/is-missing/);
+  await expect(mother.locator('.name-part[data-part="first"]')).not.toHaveClass(/is-missing/);
+  await expect(page.locator('.name-fields[data-name-key="full_name"]')).not.toHaveClass(/emp-part-missing/);
+  await expect(page.locator("#f-father_birthplace").locator("xpath=..")).toHaveClass(/emp-is-missing/);
+  // Folded sections still show their count.
+  await expect(page.locator("#emp-sec-parents .emp-sec-missing")).toHaveText("ناقص 4");
+  await expect(page.locator("#emp-sec-personal .emp-sec-missing")).toHaveText("ناقص 2");
+  await expect(page.locator("#emp-sec-extra .emp-sec-missing")).toHaveCount(0);
+  // Notes stay optional.
+  await expect(page.locator("#f-notes").locator("xpath=..")).not.toHaveClass(/emp-is-missing/);
+  await mother.locator('.name-part[data-part="grandfather"]').fill("جاسم");
+  await mother.locator('.name-part[data-part="surname"]').fill("الربيعي");
+  await expect(page.locator('.emp-tab-count[data-count-for="basic"]')).toHaveText("ناقص 4");
+  await expect(mother).not.toHaveClass(/emp-part-missing/);
+  await expect(page.locator("#emp-sec-personal .emp-sec-missing")).toHaveCount(0);
 });

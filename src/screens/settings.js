@@ -678,7 +678,7 @@ export async function renderSettings(container, user, ctx) {
     if (id === "users" && !usersRendered) {
       usersRendered = true;
       const panel = container.querySelector('[data-settings-panel="users"]');
-      renderUsers(panel, user).catch(err => {
+      renderUsers(panel, user).then(() => mountSubnav(panel, "users")).catch(err => {
         panel.innerHTML = `<div class="card text-sm text-gray-400" dir="auto">${escHtml(errorText(err))}</div>`;
       });
     }

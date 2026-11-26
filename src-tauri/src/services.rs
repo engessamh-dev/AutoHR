@@ -435,6 +435,100 @@ pub fn role_permissions(role: &str) -> &'static [&'static str] {
     }
 }
 
+/// The rows of «ماذا يستطيع كل دور». A System Admin may give or take the editable ones from
+/// «موظف» and «مشاهد»; «view» stays on for everyone and «admin» stays with «مسؤول» only.
+pub const PERMISSION_GROUPS: &[(&str, &[&str])] = &[
+    ("view", &["dashboard.view", "employees.view", "documents.view"]),
+    ("print", &["documents.download", "documents.print"]),
+    ("employees_edit", &["employees.create", "employees.edit"]),
+    ("upload", &["documents.upload"]),
+    ("correspondence", &["documents.manage"]),
+    ("delete", &["employees.delete", "documents.delete"]),
+    ("audit", &["audit.view"]),
+    ("admin", &["users.manage", "settings.manage", "backups.manage"]),
+];
+pub const EDITABLE_GROUPS: &[&str] = &["print", "employees_edit", "upload", "correspondence", "delete", "audit"];
+const ROLE_PERMISSIONS_KEY: &str = "role_permissions";
+
+/// Which editable rows «موظف» and «مشاهد» have.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RoleGroups {
+    pub archive_officer: Vec<String>,
+    pub viewer: Vec<String>,
+}
+
+fn built_in_groups(role: &str) -> Vec<String> {
+    let built_in = role_permissions(role);
+    EDITABLE_GROUPS.iter()
+        .filter(|group| PERMISSION_GROUPS.iter().find(|(id, _)| id == *group)
+            .is_some_and(|(_, perms)| perms.iter().all(|p| built_in.contains(p))))
+        .map(|group| group.to_string())
+        .collect()
+}
+
+fn clean_groups(groups: &[String]) -> Vec<String> {
+    EDITABLE_GROUPS.iter().filter(|g| groups.iter().any(|x| x == *g)).map(|g| g.to_string()).collect()
+}
+
+/// The saved choice, or the built-in one when nothing is saved or the saved row was changed
+/// outside the program.
+pub fn role_groups(conn: &Connection) -> RoleGroups {
+    let saved = if crate::integrity::setting_trusted(conn, ROLE_PERMISSIONS_KEY) {
+        get_setting(conn, ROLE_PERMISSIONS_KEY).ok().flatten()
+            .and_then(|value| serde_json::from_str::<RoleGroups>(&value).ok())
+    } else { None };
+    match saved {
+        Some(groups) => RoleGroups { archive_officer: clean_groups(&groups.archive_officer), viewer: clean_groups(&groups.viewer) },
+        None => RoleGroups { archive_officer: built_in_groups("archive_officer"), viewer: built_in_groups("viewer") },
+    }
+}
+
+/// What `role` may do now: «مسؤول» always everything; «موظف» and «مشاهد» the view row plus the
+/// rows chosen in «ماذا يستطيع كل دور».
+pub fn effective_permissions(conn: &Connection, role: &str) -> Vec<String> {
+    let chosen = match role {
+        "archive_officer" => role_groups(conn).archive_officer,
+        "viewer" => role_groups(conn).viewer,
+        _ => return role_permissions(role).iter().map(|p| p.to_string()).collect(),
+    };
+    PERMISSION_GROUPS.iter()
+        .filter(|(id, _)| *id == "view" || chosen.iter().any(|g| g == id))
+        .flat_map(|(_, perms)| perms.iter().map(|p| p.to_string()))
+        .collect()
+}
+
+fn arabic_groups(groups: &[String]) -> String {
+    fn label(id: &str) -> &str {
+        match id {
+            "print" => "الطباعة وتحميل المرفقات",
+            "employees_edit" => "إضافة الموظفين وتعديلهم",
+            "upload" => "رفع المرفقات ومسحها ضوئيًا",
+            "correspondence" => "الوارد والصادر",
+            "delete" => "الحذف",
+            "audit" => "سجل النظام",
+            other => other,
+        }
+    }
+    let names: Vec<&str> = groups.iter().map(|g| label(g)).collect();
+    if names.is_empty() { "العرض فقط".into() } else { names.join("، ") }
+}
+
+pub fn set_role_groups(conn: &Connection, caller: &str, groups: RoleGroups) -> AppResult<RoleGroups> {
+    assert_permission(conn, caller, "users.assign_system_admin")?;
+    let next = RoleGroups { archive_officer: clean_groups(&groups.archive_officer), viewer: clean_groups(&groups.viewer) };
+    let before = role_groups(conn);
+    set_setting(conn, ROLE_PERMISSIONS_KEY, &serde_json::to_string(&next).map_err(|e| AppError::Other(e.to_string()))?)?;
+    // In the system log in Arabic: «موظف: الطباعة وتحميل المرفقات، …».
+    let named = |groups: &RoleGroups| serde_json::json!({
+        "موظف": arabic_groups(&groups.archive_officer),
+        "مشاهد": arabic_groups(&groups.viewer),
+    });
+    let details = audit_changes(&named(&before), &named(&next), &[]);
+    log_activity(conn, caller, "UPDATE_ROLE_PERMISSIONS", Some("users"), None, None,
+        Some(&serde_json::json!({ "changes": details }).to_string()));
+    Ok(next)
+}
+
 fn valid_role(role: &str) -> bool {
     matches!(role, "system_admin" | "archive_officer" | "viewer")
 }
@@ -447,7 +541,7 @@ pub fn assert_permission(conn: &Connection, username: &str, permission: &str) ->
     // keeps no permissions until a System Admin deals with it.
     if !crate::integrity::user_trusted(conn, id) { return Err(AppError::Unauthorized); }
     if user_disabled(conn, id) { return Err(AppError::Unauthorized); }
-    if role_permissions(&role).contains(&permission) { Ok(()) } else { Err(AppError::Unauthorized) }
+    if effective_permissions(conn, &role).iter().any(|p| p == permission) { Ok(()) } else { Err(AppError::Unauthorized) }
 }
 
 /// True for an account stopped by an admin. Databases from before v8 have no such column.
@@ -931,7 +1025,7 @@ pub fn login(conn: &Connection, username: &str, password: &str) -> AppResult<Use
     log_activity(conn, username, "LOGIN", None, None, None, None);
     Ok(User {
         id: row.0, username: row.1.clone(), role: row.3.clone(), is_master,
-        permissions: role_permissions(&row.3).iter().map(|p| p.to_string()).collect(),
+        permissions: effective_permissions(conn, &row.3),
         must_change_password: row.4, created_at: row.5,
         disabled: false, trusted: true, last_login: None, is_base,
     })
@@ -2350,7 +2444,7 @@ pub fn list_users(conn: &Connection) -> AppResult<Vec<User>> {
         let is_master = is_base || role == "system_admin";
         Ok(User {
             id:r.get(0)?, username, role: role.clone(), is_master,
-            permissions: role_permissions(&role).iter().map(|p| p.to_string()).collect(),
+            permissions: effective_permissions(conn, &role),
             must_change_password:r.get(3)?, created_at:r.get(4)?,
             disabled: r.get(5)?, trusted: true, last_login: r.get(6)?, is_base,
         })
@@ -2592,6 +2686,41 @@ mod auth_tests {
         assert!(login(&conn, "clerk", "admin-password").is_ok());
         let last = list_users(&conn).unwrap().into_iter().find(|u| u.username == "clerk").unwrap().last_login;
         assert!(last.is_some(), "the last successful sign-in is shown in the users list");
+    }
+
+    #[test]
+    fn role_permissions_can_be_changed_by_a_system_admin_and_are_enforced() {
+        let conn = auth_db();
+        conn.execute_batch("CREATE TABLE IF NOT EXISTS app_settings(key TEXT PRIMARY KEY, value TEXT NOT NULL DEFAULT '')").unwrap();
+        let _ = add_users(&conn, &[("admin", "system_admin"), ("clerk", "archive_officer")]);
+        // Built-in: «موظف» edits employees but cannot delete or see the system log.
+        assert_eq!(role_groups(&conn).archive_officer, vec!["print", "employees_edit", "upload"]);
+        assert_eq!(role_groups(&conn).viewer, vec!["print"]);
+        assert!(assert_permission(&conn, "clerk", "employees.delete").is_err());
+        assert!(assert_permission(&conn, "clerk", "audit.view").is_err());
+
+        let groups = RoleGroups {
+            archive_officer: vec!["employees_edit".into(), "delete".into(), "audit".into(), "admin".into(), "view".into(), "nonsense".into()],
+            viewer: vec![],
+        };
+        // Only a System Admin may change it.
+        assert!(set_role_groups(&conn, "clerk", groups.clone()).is_err());
+        let saved = set_role_groups(&conn, "admin", groups).unwrap();
+        // «admin», «view» and unknown rows cannot be given.
+        assert_eq!(saved.archive_officer, vec!["employees_edit", "delete", "audit"]);
+        assert!(assert_permission(&conn, "clerk", "employees.delete").is_ok());
+        assert!(assert_permission(&conn, "clerk", "audit.view").is_ok());
+        assert!(assert_permission(&conn, "clerk", "documents.upload").is_err(), "taken away");
+        assert!(assert_permission(&conn, "clerk", "users.manage").is_err());
+        assert!(assert_permission(&conn, "clerk", "employees.view").is_ok(), "viewing always stays");
+        // «مسؤول» keeps everything, and the system log names the change in Arabic.
+        assert!(assert_permission(&conn, "admin", "backups.restore").is_ok());
+        let details: String = conn.query_row(
+            "SELECT details FROM activity_log WHERE action='UPDATE_ROLE_PERMISSIONS' ORDER BY id DESC LIMIT 1", [], |r| r.get(0)).unwrap();
+        assert!(details.contains("مشاهد") && details.contains("العرض فقط"), "{details}");
+        // The user list carries the new permissions.
+        let clerk = list_users(&conn).unwrap().into_iter().find(|u| u.username == "clerk").unwrap();
+        assert!(clerk.permissions.iter().any(|p| p == "employees.delete"));
     }
 
     #[test]
