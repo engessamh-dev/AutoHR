@@ -32,7 +32,7 @@ impl Default for PasswordPolicy {
     fn default() -> Self {
         Self {
             min_length: 9, require_upper: true, require_lower: true, require_digit: true, require_symbol: false,
-            reject_common: true, max_failures: 5, lockout_minutes: 5,
+            reject_common: false, max_failures: 5, lockout_minutes: 5,
         }
     }
 }
@@ -442,7 +442,8 @@ mod tests {
 
     #[test]
     fn default_policy_rules() {
-        let p = PasswordPolicy::default();
+        assert!(!PasswordPolicy::default().reject_common, "easy-password check is off until the admin turns it on");
+        let p = PasswordPolicy { reject_common: true, ..PasswordPolicy::default() };
         let ok = |pw: &str| check_against(&p, "hr.admin", pw).is_ok();
         assert!(!ok("Abc1234"));          // short
         assert!(!ok("abcdefgh12"));       // no upper

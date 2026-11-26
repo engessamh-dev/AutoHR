@@ -94,3 +94,27 @@ test("deleting asks on a red button that names the action", async ({ page }) => 
   await confirm.locator(".btn-danger-solid").click();
   await expect.poll(() => called(page, "cmd_delete_user")).toEqual([{ id: 3 }]);
 });
+
+test("«حفظ سياسة كلمة المرور» stays off until the policy changes, and easy passwords are allowed by default", async ({ page }) => {
+  await page.evaluate(async () => {
+    const before = window.__TAURI_INTERNALS__.invoke;
+    window.__TAURI_INTERNALS__.invoke = async (command, args) => {
+      if (command === "cmd_get_password_policy") return {};
+      if (command === "cmd_set_password_policy") { window.calls.push({ command, args }); return args.policy; }
+      return before(command, args);
+    };
+    await window.renderActual("users");
+  });
+  const save = page.locator("#btn-save-policy");
+  await expect(page.locator("#policy-common")).not.toBeChecked();
+  await expect(save).toBeDisabled();
+  await page.locator("#policy-common").check();
+  await expect(save).toBeEnabled();
+  await page.locator("#policy-common").uncheck();
+  await expect(save).toBeDisabled();
+  await page.locator("#policy-length").fill("10");
+  await expect(save).toBeEnabled();
+  await save.click();
+  await expect.poll(() => called(page, "cmd_set_password_policy")).toEqual([{ policy: expect.objectContaining({ min_length: 10, reject_common: false }) }]);
+  await expect(save).toBeDisabled();
+});

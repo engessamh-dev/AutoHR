@@ -415,7 +415,7 @@ async function renderSecurity(host, user, onPolicyChange) {
         </div>
       </div>
       <p id="policy-error" class="text-autohr-red text-sm hidden" role="alert"></p>
-      <div class="settings-block-foot"><button id="btn-save-policy" type="button" class="btn-primary">حفظ سياسة كلمة المرور</button></div>
+      <div class="settings-block-foot"><button id="btn-save-policy" type="button" class="btn-primary" disabled>حفظ سياسة كلمة المرور</button></div>
     </section>
     ${canRecovery ? `
     <section class="card settings-block space-y-3" aria-labelledby="recovery-settings-title">
@@ -430,14 +430,25 @@ async function renderSecurity(host, user, onPolicyChange) {
     </section>` : ""}`;
 
   const error = host.querySelector("#policy-error");
-  host.querySelector("#btn-save-policy").addEventListener("click", async () => {
+  const saveButton = host.querySelector("#btn-save-policy");
+  const readForm = () => {
     const number = id => Number(host.querySelector(id).value);
-    const next = {
+    return {
       min_length: number("#policy-length"), max_failures: number("#policy-failures"), lockout_minutes: number("#policy-lockout"),
       require_upper: host.querySelector("#policy-upper").checked, require_lower: host.querySelector("#policy-lower").checked,
       require_digit: host.querySelector("#policy-digit").checked, require_symbol: host.querySelector("#policy-symbol").checked,
       reject_common: host.querySelector("#policy-common").checked,
     };
+  };
+  // «حفظ» stays off until something in the policy form differs from what is saved.
+  let saved = JSON.stringify(readForm());
+  const refreshSave = () => { saveButton.disabled = JSON.stringify(readForm()) === saved; };
+  host.querySelectorAll(".policy-grid input").forEach(input => {
+    input.addEventListener("input", refreshSave);
+    input.addEventListener("change", refreshSave);
+  });
+  saveButton.addEventListener("click", async () => {
+    const next = readForm();
     const problem = !(next.min_length >= 8 && next.min_length <= 64) ? "أقل عدد من الأحرف من 8 إلى 64"
       : !(next.max_failures >= 3 && next.max_failures <= 20) ? "المحاولات قبل الإيقاف من 3 إلى 20"
       : !(next.lockout_minutes >= 1 && next.lockout_minutes <= 60) ? "مدة الإيقاف من 1 إلى 60 دقيقة" : "";
@@ -446,6 +457,8 @@ async function renderSecurity(host, user, onPolicyChange) {
     if (problem) return;
     try {
       await api.setPasswordPolicy(next);
+      saved = JSON.stringify(next);
+      refreshSave();
       forgetPasswordPolicy();
       await onPolicyChange();
       showToast("تم حفظ سياسة كلمة المرور");

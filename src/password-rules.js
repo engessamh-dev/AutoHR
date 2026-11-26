@@ -10,7 +10,7 @@ import { escHtml } from "./utils.js";
 
 export const DEFAULT_POLICY = {
   min_length: 9, require_upper: true, require_lower: true, require_digit: true, require_symbol: false,
-  reject_common: true, max_failures: 5, lockout_minutes: 5,
+  reject_common: false, max_failures: 5, lockout_minutes: 5,
 };
 
 let cached = null;
