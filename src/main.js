@@ -256,11 +256,14 @@ async function runShutdownAutomaticBackups({ showProgress = true } = {}) {
  */
 async function notifyDocumentAlerts() {
   try {
-    const storageKey = "cnsarch.documentAlertStages";
+    // Kept per user: on a shared computer each person is told about each reminder once.
+    const storageKey = `cnsarch.documentAlertStages.${currentUser?.username ?? ""}`;
     const [employees, rules] = await Promise.all([api.listEmployees(), loadAlertRules()]);
     const alerts = buildDocumentAlerts(employees, rules);
     let announced = {};
-    try { announced = JSON.parse(localStorage.getItem(storageKey) || "{}") || {}; } catch (_) { announced = {}; }
+    try { announced = JSON.parse(localStorage.getItem(storageKey)
+      // Until this user's own list exists, start from the one the computer kept before (no repeats after the update).
+      ?? localStorage.getItem("cnsarch.documentAlertStages") ?? "{}") || {}; } catch (_) { announced = {}; }
 
     const current = {};
     const fresh = [];

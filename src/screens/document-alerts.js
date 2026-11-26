@@ -168,35 +168,50 @@ function remainingLabel(alert) {
   return `باقٍ ${arCount(alert.days, "day")}`;
 }
 
-function alertBadge(alert) {
-  const cls = alert.expired ? "badge-red" : alert.days <= 7 ? "badge-amber" : "badge-gray";
-  return `<span class="badge ${cls}">${remainingLabel(alert)}</span>`;
+// The same outlined pills as the employee file: red for expired, amber within a week.
+export function alertBadge(alert) {
+  const cls = alert.expired ? "emp-pill bad" : alert.days <= 7 ? "emp-pill warn" : "badge badge-gray";
+  return `<span class="${cls}">${remainingLabel(alert)}</span>`;
 }
 
 const ALERT_FILTERS = [
   { id: "all", label: "الكل", match: () => true },
   { id: "expired", label: "منتهية", match: alert => alert.expired },
-  { id: "soon", label: "خلال 30 يوماً", match: alert => !alert.expired && alert.days <= 30 },
+  // Every reminder that has not expired yet, whatever its reminder days (180 for passports).
+  { id: "soon", label: "قريبة النفاذ", match: alert => !alert.expired },
   { id: "passport", label: "جوازات", match: alert => alert.documentName === "جواز السفر" },
 ];
-let activeAlertFilter = "all";
-
-function alertRows(alerts) {
+/** One table row per alert; a click or Enter opens the employee file on the document's tab. */
+export function alertRows(alerts, { showNumber = true } = {}) {
   return alerts.map(alert => `
     <tr class="table-row alert-row" data-employee-id="${alert.employeeId}" data-employee-tab="${alert.employeeTab}"
       tabindex="0" title="فتح ملف الموظف">
       <td class="table-cell font-medium text-gray-100">${escHtml(alert.employeeName)}</td>
-      <td class="table-cell" dir="ltr">${escHtml(alert.employeeNumber || "—")}</td>
+      ${showNumber ? `<td class="table-cell" dir="ltr">${escHtml(alert.employeeNumber || "—")}</td>` : ""}
       <td class="table-cell">${escHtml(alert.documentName)}</td>
       <td class="table-cell">${formatDate(alert.expiryDate)}</td>
       <td class="table-cell">${alertBadge(alert)}</td>
     </tr>`).join("");
 }
 
+export function bindAlertRows(root, ctx) {
+  root.querySelectorAll(".alert-row").forEach(row => {
+    const open = () => ctx.navigateTo("employees", {
+      openEmployeeId: Number(row.dataset.employeeId),
+      openEmployeeTab: row.dataset.employeeTab,
+    });
+    row.addEventListener("click", open);
+    row.addEventListener("keydown", event => { if (event.key === "Enter") open(); });
+  });
+}
+
 export async function renderDocumentAlerts(container, user, ctx) {
   const [employees, rules] = await Promise.all([api.listEmployees(), loadAlertRules()]);
   const alerts = buildDocumentAlerts(employees, rules);
   const canEditTiming = can(user, "settings.manage");
+  // Each visit starts on «الكل» (or the filter the home screen asked for), so the count on the
+  // home card always matches what opens; the choice is kept only while on this page.
+  let activeAlertFilter = ALERT_FILTERS.some(item => item.id === ctx?.alertFilter) ? ctx.alertFilter : "all";
 
   const render = () => {
     const filter = ALERT_FILTERS.find(item => item.id === activeAlertFilter) ?? ALERT_FILTERS[0];
@@ -236,14 +251,7 @@ export async function renderDocumentAlerts(container, user, ctx) {
       activeAlertFilter = button.dataset.alertFilter;
       render();
     }));
-    container.querySelectorAll(".alert-row").forEach(row => {
-      const open = () => ctx.navigateTo("employees", {
-        openEmployeeId: Number(row.dataset.employeeId),
-        openEmployeeTab: row.dataset.employeeTab,
-      });
-      row.addEventListener("click", open);
-      row.addEventListener("keydown", event => { if (event.key === "Enter") open(); });
-    });
+    bindAlertRows(container, ctx);
   };
   render();
 }
