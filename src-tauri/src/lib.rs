@@ -1,6 +1,8 @@
 // lib.rs — GCANS v2.0
 mod db; mod names; mod services; mod files; mod scanner; mod paths; mod storage; mod ai_detect; mod secure; mod ocr; mod ocr_parse; mod health; mod errlog; mod integrity;
 mod scanner_commands;
+#[cfg(debug_assertions)]
+mod devseed;
 use scanner_commands::*;
 #[cfg(test)] mod scanner_tests;
 use services::*;
@@ -1276,6 +1278,8 @@ fn cmd_log_client_error(operation: String, screen: String, message: String, stac
 pub fn run() {
     errlog::init(app_data_path().join("Logs"), env!("CARGO_PKG_VERSION"));
     errlog::install_panic_hook();
+    #[cfg(debug_assertions)]
+    devseed::prepare();
     let (conn, status) = match paths::resolve_startup() {
         Ok(paths::StartupState::Ready(found)) => {
             paths::set_current(Some(found));

@@ -414,7 +414,15 @@ pub fn assert_permission(conn: &Connection, username: &str, permission: &str) ->
 pub fn app_data_path() -> std::path::PathBuf {
     #[cfg(test)]
     if let Some(root) = TEST_APP_DATA_ROOT.with(|value| value.borrow().clone()) { return root; }
-    dirs::data_dir().unwrap_or_else(|| std::path::PathBuf::from(".")).join(if cfg!(debug_assertions) { "CNSArch-Development" } else { "CNSArch" })
+    dirs::data_dir().unwrap_or_else(|| std::path::PathBuf::from(".")).join(app_folder_name())
+}
+
+/// `CNSArch` in release. Development builds use `CNSArch-Development`, or the separate
+/// `CNSArch-TestData` folder with invented data when started by `npm run test-data` (devseed.rs).
+fn app_folder_name() -> &'static str {
+    #[cfg(debug_assertions)]
+    if crate::devseed::enabled() { return crate::devseed::APP_FOLDER; }
+    if cfg!(debug_assertions) { "CNSArch-Development" } else { "CNSArch" }
 }
 
 #[cfg(test)]

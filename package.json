@@ -13,6 +13,7 @@
     "tauri:build": "tauri build",
     "tauri:release": "tauri build --config src-tauri/tauri.release.conf.json",
     "seed-db": "node scripts/seed-database.js",
+    "test-data": "node scripts/test-data.js",
     "seed-fake-employees": "node scripts/seed-fake-employees.js",
     "seed-fake-employees:dev": "node scripts/seed-fake-employees.js --dev-runtime",
     "sync-version": "node scripts/sync-version.js",
