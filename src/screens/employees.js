@@ -1722,12 +1722,18 @@ function applyEmployeePermissions(panel, isNew) {
   }
 }
 
+const _documentsViewLogged = new Set();
+
 function attachTabEvents(emp) {
   const panel = document.getElementById("emp-panel");
   if (!panel) return;
 
   if (_activeTab === "documents" && emp) {
-    api.auditDocumentView(emp.id, "employee_documents").catch(() => {});
+    // Recorded once per employee and sign-in, not on every return to the tab.
+    if (!_documentsViewLogged.has(emp.id)) {
+      _documentsViewLogged.add(emp.id);
+      api.auditDocumentView(emp.id, "employee_documents").catch(() => {});
+    }
     bindAttachmentDownloadButtons(document.getElementById("tab-content"));
     panel.querySelectorAll(".btn-upload-sided-card").forEach(btn => {
       btn.addEventListener("click", async () => {

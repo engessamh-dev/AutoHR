@@ -144,6 +144,9 @@ const fieldDefs = fieldGroups.flatMap(group =>
   group.fields.map(([key, label, type]) => ({ key, label, type, group: group.title }))
 );
 
+/** Arabic names of the employee fields, also used by «سجل النظام» to say what changed. */
+export const employeeFieldLabels = Object.fromEntries(fieldDefs.map(field => [field.key, field.label]));
+
 const defaultColumns = ["employee_number", "full_name", "job_title", "department", "civil_id", "phone", "is_active_label"];
 
 function parseJsonArray(value) {
@@ -248,6 +251,7 @@ async function downloadExcel(rows, fields) {
 }
 
 function printReport(rows, fields) {
+  api.auditReportPrint(rows.length).catch(() => {});
   const frame = document.createElement("iframe");
   frame.style.cssText = "position:fixed;width:0;height:0;border:0;right:-9999px";
   document.body.append(frame);

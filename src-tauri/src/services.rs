@@ -388,7 +388,7 @@ pub fn role_permissions(role: &str) -> &'static [&'static str] {
         ],
         "archive_officer" => &[
             "dashboard.view", "employees.view", "employees.create", "employees.edit",
-            "documents.view", "documents.upload", "documents.download", "documents.print", "audit.view",
+            "documents.view", "documents.upload", "documents.download", "documents.print",
         ],
         "viewer" => &[
             "dashboard.view", "employees.view", "documents.view", "documents.print",
@@ -582,10 +582,20 @@ pub fn log_activity(conn: &Connection, username: &str, action: &str,
 #[allow(clippy::too_many_arguments)]
 pub fn log_audit(conn: &Connection, username: Option<&str>, action: &str,
     target_type: Option<&str>, target_id: Option<i64>, target_name: Option<&str>, result: &str, details: Option<&str>) {
+    try_log_audit(conn, username, action, target_type, target_id, target_name, result, details).ok();
+}
+
+/// Writes one audit entry. Entries about an employee or an archive document carry, in `details`,
+/// a JSON object with that record's name and numbers (`employee`, `doc`), so that the entry can
+/// be read and searched by name even after the record is deleted. Other details stay as given.
+#[allow(clippy::too_many_arguments)]
+pub fn try_log_audit(conn: &Connection, username: Option<&str>, action: &str,
+    target_type: Option<&str>, target_id: Option<i64>, target_name: Option<&str>, result: &str, details: Option<&str>) -> AppResult<()> {
     let identity = username.and_then(|name| conn.query_row(
         "SELECT id,role FROM users WHERE username=?1", params![name],
         |r| Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?))
     ).ok());
+    let details = audit_details(conn, target_type, target_id, details);
     conn.execute(
         "INSERT INTO activity_log(user_id,username,role,action,target_type,target_id,target_name,result,details)
          VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9)",
@@ -594,7 +604,108 @@ pub fn log_audit(conn: &Connection, username: Option<&str>, action: &str,
             identity.as_ref().map(|v| v.1.as_str()).unwrap_or("unknown"),
             action, target_type, target_id, target_name, result, details
         ]
-    ).ok();
+    )?;
+    Ok(())
+}
+
+fn audit_details(conn: &Connection, target_type: Option<&str>, target_id: Option<i64>, details: Option<&str>) -> Option<String> {
+    let mut object = match details.map(|d| serde_json::from_str::<serde_json::Value>(d)) {
+        Some(Ok(serde_json::Value::Object(map))) => map,
+        _ => serde_json::Map::new(),
+    };
+    let given_as_text = details.filter(|_| object.is_empty());
+    if let (Some(kind), Some(id)) = (target_type, target_id) {
+        match kind {
+            "employee" if !object.contains_key("employee") => {
+                if let Ok((name, number)) = conn.query_row(
+                    "SELECT full_name,employee_number FROM employees WHERE id=?1", params![id],
+                    |r| Ok((r.get::<_, String>(0)?, r.get::<_, Option<String>>(1)?)),
+                ) {
+                    object.insert("employee".into(), serde_json::json!(name));
+                    if let Some(number) = number.filter(|n| !n.trim().is_empty()) {
+                        object.insert("employee_number".into(), serde_json::json!(number));
+                    }
+                }
+            }
+            "general_doc" | "outgoing_doc" if !object.contains_key("doc") => {
+                if let Some(doc) = archive_doc_summary(conn, kind, id) { object.insert("doc".into(), doc); }
+            }
+            _ => {}
+        }
+    }
+    if object.is_empty() { return details.map(str::to_string); }
+    if let Some(text) = given_as_text { object.insert("note".into(), serde_json::json!(text)); }
+    Some(serde_json::Value::Object(object).to_string())
+}
+
+/// The fields that tell one archive document from another, for the audit log.
+fn archive_doc_summary(conn: &Connection, kind: &str, id: i64) -> Option<serde_json::Value> {
+    let (docs, files, column) = match kind {
+        "general_doc" => ("general_docs", "general_doc_attachments", "general_doc_id"),
+        "outgoing_doc" => ("outgoing_docs", "outgoing_doc_attachments", "outgoing_doc_id"),
+        _ => return None,
+    };
+    conn.query_row(
+        &format!("SELECT title,doc_number,issuer,doc_count,issue_date,(SELECT COUNT(*) FROM {files} WHERE {column}=d.id) FROM {docs} d WHERE id=?1"),
+        params![id],
+        |r| {
+            let mut doc = serde_json::Map::new();
+            for (index, key) in ["from", "to", "subject", "number", "date"].iter().enumerate() {
+                if let Some(value) = r.get::<_, Option<String>>(index)?.filter(|v| !v.trim().is_empty()) {
+                    doc.insert((*key).into(), serde_json::json!(value));
+                }
+            }
+            doc.insert("files".into(), serde_json::json!(r.get::<_, i64>(5)?));
+            Ok(serde_json::Value::Object(doc))
+        },
+    ).ok()
+}
+
+/// The fields that differ between two versions of a record, for the audit log:
+/// `[{"field", "old", "new"}]`. Long values (lists, notes) are named without their text.
+pub fn audit_changes(before: &serde_json::Value, after: &serde_json::Value, skip: &[&str]) -> serde_json::Value {
+    fn text(value: Option<&serde_json::Value>) -> String {
+        match value {
+            None | Some(serde_json::Value::Null) => String::new(),
+            Some(serde_json::Value::String(s)) => s.trim().to_string(),
+            Some(serde_json::Value::Array(items)) if items.is_empty() => String::new(),
+            Some(other) => other.to_string(),
+        }
+    }
+    let empty = serde_json::Map::new();
+    let before_map = before.as_object().unwrap_or(&empty);
+    let after_map = after.as_object().unwrap_or(&empty);
+    let mut keys: Vec<&String> = before_map.keys().chain(after_map.keys()).collect();
+    keys.sort();
+    keys.dedup();
+    let mut changes = Vec::new();
+    for key in keys {
+        if skip.contains(&key.as_str()) || key.ends_with("_path") || key.ends_with("_full_path") { continue; }
+        let (old, new) = (text(before_map.get(key)), text(after_map.get(key)));
+        if old == new || (old == "[]" && new.is_empty()) || (new == "[]" && old.is_empty()) { continue; }
+        let long = old.chars().count() > 80 || new.chars().count() > 80 || old.starts_with('[') || old.starts_with('{') || new.starts_with('[') || new.starts_with('{');
+        changes.push(if long {
+            serde_json::json!({ "field": key })
+        } else {
+            serde_json::json!({ "field": key, "old": old, "new": new })
+        });
+    }
+    serde_json::Value::Array(changes)
+}
+
+fn changes_details(before: &serde_json::Value, after: &serde_json::Value, skip: &[&str]) -> Option<String> {
+    let changes = audit_changes(before, after, skip);
+    if changes.as_array().is_some_and(|c| c.is_empty()) { return None; }
+    Some(serde_json::json!({ "changes": changes }).to_string())
+}
+
+/// A sign-in name that matches no account is kept only as its first two characters: people
+/// sometimes type their password into the name field, and the audit log can never be edited.
+fn login_name_for_log(conn: &Connection, username: &str) -> String {
+    let exists = conn.query_row("SELECT 1 FROM users WHERE username=?1", params![username], |_| Ok(())).is_ok();
+    if exists { return username.to_string(); }
+    let start: String = username.trim().chars().take(2).collect();
+    format!("{start}…")
 }
 
 fn default_document_types() -> Vec<String> {
@@ -697,7 +808,7 @@ pub fn login(conn: &Connection, username: &str, password: &str) -> AppResult<Use
         return Err(AppError::Validation("Enter a valid username and password".into()));
     }
     if let Some(remaining) = login_locked_remaining(conn, username) {
-        log_audit(conn, Some(username), "LOGIN", Some("session"), None, None, "Failure", Some("Account temporarily locked"));
+        log_audit(conn, Some(&login_name_for_log(conn, username)), "LOGIN", Some("session"), None, None, "Failure", Some("Account temporarily locked"));
         let minutes = remaining.as_secs().div_ceil(60).max(1);
         return Err(AppError::Validation(format!(
             "تم إيقاف تسجيل الدخول لهذا الحساب مؤقتًا بسبب تكرار المحاولات الفاشلة. حاول بعد {}.",
@@ -716,7 +827,7 @@ pub fn login(conn: &Connection, username: &str, password: &str) -> AppResult<Use
         Err(_) => {
             let _ = verify_password(password, dummy_password_hash());
             record_login_failure(conn, username);
-            log_audit(conn, Some(username), "LOGIN", Some("session"), None, None, "Failure", Some("Unknown username"));
+            log_audit(conn, Some(&login_name_for_log(conn, username)), "LOGIN", Some("session"), None, None, "Failure", Some("Unknown username"));
             return Err(AppError::Unauthorized);
         }
     };
@@ -785,10 +896,16 @@ pub fn get_company_config(conn: &Connection) -> AppResult<CompanyConfig> {
 
 pub fn update_company_config(conn: &Connection, user: &str, data: &CompanyConfigData) -> AppResult<CompanyConfig> {
     assert_permission(conn, user, "settings.manage")?;
+    let names = |c: &CompanyConfig| serde_json::json!({
+        "company_name": c.company_name, "department_name": c.department_name, "division_name": c.division_name,
+    });
+    let before = get_company_config(conn).map(|c| names(&c)).unwrap_or_default();
     conn.execute("UPDATE company_config SET company_name=?1,department_name=?2,division_name=?3 WHERE id=1",
         params![data.company_name, data.department_name.as_deref().unwrap_or(""), data.division_name.as_deref().unwrap_or("")])?;
-    log_activity(conn, user, "CHANGE_SETTING", Some("settings"), Some(1), Some("company_config"), None);
-    get_company_config(conn)
+    let after = get_company_config(conn)?;
+    let changes = changes_details(&before, &names(&after), &[]);
+    log_activity(conn, user, "CHANGE_SETTING", Some("settings"), Some(1), Some("company_config"), changes.as_deref());
+    Ok(after)
 }
 
 // The company logo is a fixed asset bundled with the frontend (src/assets/branding).
@@ -1360,8 +1477,12 @@ fn address_parts(d: &EmployeeData) -> Option<String> {
     value.is_object().then(|| value.to_string())
 }
 
+/// Fields kept out of the audit log's list of changes: bookkeeping and derived values.
+const EMPLOYEE_AUDIT_SKIP: &[&str] = &["id", "created_at", "updated_at", "name_parts", "residence_address_parts"];
+
 pub fn update_employee(conn: &Connection, id: i64, d: &EmployeeData, username: &str) -> AppResult<Employee> {
     assert_permission(conn, username, "employees.edit")?;
+    let before = get_employee(conn, id).ok().and_then(|e| serde_json::to_value(e).ok()).unwrap_or_default();
     let (mut d, name_parts) = resolve_employee_names(conn, Some(id), d)?;
     fix_department(conn, &mut d);
     check_employee_number(conn, Some(id), &mut d)?;
@@ -1405,8 +1526,10 @@ pub fn update_employee(conn: &Connection, id: i64, d: &EmployeeData, username: &
       d.spouses.as_deref().unwrap_or("[]"),d.appointment_date,d.father_birthdate,d.mother_birthdate,d.airport_badge_zones,id])?;
     conn.execute("UPDATE employees SET name_parts=?1, residence_address_parts=?2 WHERE id=?3", params![name_parts, address_parts(d), id])?;
     replace_employee_repeating_data(conn, id, d)?;
-    log_activity(conn, username, "UPDATE_EMPLOYEE", Some("employee"), Some(id), Some(d.full_name.trim()), None);
-    get_employee(conn, id)
+    let after = get_employee(conn, id)?;
+    let changes = changes_details(&before, &serde_json::to_value(&after).unwrap_or_default(), EMPLOYEE_AUDIT_SKIP);
+    log_activity(conn, username, "UPDATE_EMPLOYEE", Some("employee"), Some(id), Some(d.full_name.trim()), changes.as_deref());
+    Ok(after)
 }
 
 /// Names whose automatic split is unsure, for the "مراجعة الأسماء" screen.
@@ -1427,11 +1550,12 @@ pub fn delete_employee(conn: &Connection, id: i64, username: &str) -> AppResult<
     assert_permission(conn, username, "employees.delete")?;
     let name: String = conn.query_row("SELECT full_name FROM employees WHERE id=?1", params![id], |r| r.get(0))
         .unwrap_or_default();
+    let details = audit_details(conn, Some("employee"), Some(id), None);
     conn.execute("DELETE FROM employees WHERE id=?1", params![id])?;
     if conn.changes() == 0 { return Err(AppError::NotFound); }
     crate::scanner::remove_metadata_prefix(conn,&format!("Files/Employees/{id}/"))?;
     std::fs::remove_dir_all(storage_path(conn).join("Files").join("Employees").join(id.to_string())).ok();
-    log_activity(conn, username, "DELETE_EMPLOYEE", Some("employee"), Some(id), Some(&name), None);
+    log_activity(conn, username, "DELETE_EMPLOYEE", Some("employee"), Some(id), Some(&name), details.as_deref());
     Ok(())
 }
 
@@ -1519,8 +1643,12 @@ pub fn add_grade_history(conn: &Connection, employee_id: i64, data: &GradeHistor
         .map_err(Into::into)
 }
 
-pub fn delete_grade_history(conn: &Connection, id: i64) -> AppResult<()> {
+pub fn delete_grade_history(conn: &Connection, id: i64, username: &str) -> AppResult<()> {
+    let (employee_id, grade): (i64, String) = conn.query_row(
+        "SELECT employee_id,grade FROM grade_history WHERE id=?1", params![id], |r| Ok((r.get(0)?, r.get(1)?)),
+    ).map_err(|_| AppError::NotFound)?;
     conn.execute("DELETE FROM grade_history WHERE id=?1", params![id])?;
+    log_activity(conn, username, "DELETE_GRADE", Some("employee"), Some(employee_id), Some(&grade), None);
     Ok(())
 }
 
@@ -1652,9 +1780,13 @@ pub fn create_general_doc(conn: &Connection, data: &GeneralDocData, username: &s
     get_general_doc(conn, id)
 }
 
+/// Fields kept out of the audit log's list of changes; `employee_names` stands for `employee_ids`.
+const DOC_AUDIT_SKIP: &[&str] = &["id", "created_at", "updated_at", "employee_ids", "attachment_paths", "attachment_count", "file_path"];
+
 pub fn update_general_doc(conn: &Connection, id: i64, data: &GeneralDocData, username: &str) -> AppResult<GeneralDoc> {
     assert_permission(conn, username, "documents.manage")?;
     validate_document_data(data, false)?;
+    let before = get_general_doc(conn, id).ok().and_then(|d| serde_json::to_value(d).ok()).unwrap_or_default();
     let tx = conn.unchecked_transaction()?;
     // The HR effect fields are no longer edited from the UI. They are intentionally left out of
     // this UPDATE so that values already stored on existing documents are preserved.
@@ -1663,20 +1795,23 @@ pub fn update_general_doc(conn: &Connection, id: i64, data: &GeneralDocData, use
             data.notes,id])?;
     if tx.changes() == 0 { return Err(AppError::NotFound); }
     replace_general_doc_employees(&tx, id, &data.employee_ids)?;
-    log_activity(&tx, username, "UPDATE_DOC", Some("general_doc"), Some(id), Some(data.title.trim()), None);
+    let after = get_general_doc(&tx, id)?;
+    let changes = changes_details(&before, &serde_json::to_value(&after).unwrap_or_default(), DOC_AUDIT_SKIP);
+    log_activity(&tx, username, "UPDATE_DOC", Some("general_doc"), Some(id), Some(data.title.trim()), changes.as_deref());
     tx.commit()?;
-    get_general_doc(conn, id)
+    Ok(after)
 }
 
 pub fn delete_general_doc(conn: &Connection, id: i64, username: &str) -> AppResult<()> {
     assert_permission(conn, username, "documents.delete")?;
     let title: String = conn.query_row("SELECT title FROM general_docs WHERE id=?1", params![id], |r| r.get(0)).unwrap_or_default();
+    let details = audit_details(conn, Some("general_doc"), Some(id), None);
     conn.execute("DELETE FROM general_doc_attachments WHERE general_doc_id=?1", params![id])?;
     conn.execute("DELETE FROM general_doc_employees WHERE general_doc_id=?1", params![id])?;
     conn.execute("DELETE FROM general_docs WHERE id=?1", params![id])?;
     crate::scanner::remove_metadata_prefix(conn,&format!("Files/GeneralDocs/{id}/"))?;
     std::fs::remove_dir_all(storage_path(conn).join("Files").join("GeneralDocs").join(id.to_string())).ok();
-    log_activity(conn, username, "DELETE_DOC", Some("general_doc"), Some(id), Some(&title), None);
+    log_activity(conn, username, "DELETE_DOC", Some("general_doc"), Some(id), Some(&title), details.as_deref());
     Ok(())
 }
 
@@ -1857,6 +1992,7 @@ pub fn create_outgoing_doc(conn: &Connection, data: &GeneralDocData, username: &
 pub fn update_outgoing_doc(conn: &Connection, id: i64, data: &GeneralDocData, username: &str) -> AppResult<GeneralDoc> {
     assert_permission(conn, username, "documents.manage")?;
     validate_document_data(data, true)?;
+    let before = get_outgoing_doc(conn, id).ok().and_then(|d| serde_json::to_value(d).ok()).unwrap_or_default();
     let tx = conn.unchecked_transaction()?;
     tx.execute(
         "UPDATE outgoing_docs SET title=?1,doc_type=NULL,doc_number=?2,issue_date=?3,issuer=?4,doc_count=?5,margin=?6,is_internal_memo=?7,notes=?8,updated_at=datetime('now') WHERE id=?9",
@@ -1864,21 +2000,24 @@ pub fn update_outgoing_doc(conn: &Connection, id: i64, data: &GeneralDocData, us
     )?;
     if tx.changes() == 0 { return Err(AppError::NotFound); }
     replace_outgoing_doc_employees(&tx, id, &data.employee_ids)?;
-    log_activity(&tx, username, "UPDATE_OUTGOING_DOC", Some("outgoing_doc"), Some(id), Some(data.title.trim()), None);
+    let after = get_outgoing_doc(&tx, id)?;
+    let changes = changes_details(&before, &serde_json::to_value(&after).unwrap_or_default(), DOC_AUDIT_SKIP);
+    log_activity(&tx, username, "UPDATE_OUTGOING_DOC", Some("outgoing_doc"), Some(id), Some(data.title.trim()), changes.as_deref());
     tx.commit()?;
-    get_outgoing_doc(conn, id)
+    Ok(after)
 }
 
 pub fn delete_outgoing_doc(conn: &Connection, id: i64, username: &str) -> AppResult<()> {
     assert_permission(conn, username, "documents.delete")?;
     let title: String = conn.query_row("SELECT title FROM outgoing_docs WHERE id=?1", params![id], |r| r.get(0))
         .unwrap_or_default();
+    let details = audit_details(conn, Some("outgoing_doc"), Some(id), None);
     conn.execute("DELETE FROM outgoing_doc_attachments WHERE outgoing_doc_id=?1", params![id])?;
     conn.execute("DELETE FROM outgoing_doc_employees WHERE outgoing_doc_id=?1", params![id])?;
     conn.execute("DELETE FROM outgoing_docs WHERE id=?1", params![id])?;
     crate::scanner::remove_metadata_prefix(conn,&format!("Files/OutgoingDocs/{id}/"))?;
     std::fs::remove_dir_all(storage_path(conn).join("Files").join("OutgoingDocs").join(id.to_string())).ok();
-    log_activity(conn, username, "DELETE_OUTGOING_DOC", Some("outgoing_doc"), Some(id), Some(&title), None);
+    log_activity(conn, username, "DELETE_OUTGOING_DOC", Some("outgoing_doc"), Some(id), Some(&title), details.as_deref());
     Ok(())
 }
 
@@ -1930,6 +2069,106 @@ pub fn list_activity_log(conn: &Connection, limit: i64) -> AppResult<Vec<Activit
         target_id:r.get(6)?,target_name:r.get(7)?,result:r.get(8)?,details:r.get(9)?,created_at:r.get(10)?,
     }))?.collect::<rusqlite::Result<_>>()?;
     Ok(result)
+}
+
+/// What the «سجل النظام» screen asks for. Dates are UTC "YYYY-MM-DD HH:MM:SS" bounds, worked out
+/// by the screen from the local days chosen. `search_actions` are the actions whose Arabic name
+/// contains the search text (the names live in the frontend).
+#[derive(Debug, Default, Deserialize)]
+#[serde(default)]
+pub struct ActivityLogFilter {
+    pub search: Option<String>,
+    pub search_actions: Vec<String>,
+    pub username: Option<String>,
+    pub actions: Vec<String>,
+    pub exclude_actions: Vec<String>,
+    pub result: Option<String>,
+    pub from: Option<String>,
+    pub to: Option<String>,
+    pub offset: i64,
+    pub limit: i64,
+}
+
+#[derive(Debug, Serialize)]
+pub struct ActivityLogPage {
+    pub rows: Vec<ActivityLog>,
+    /// Entries matching the filter, in the whole log.
+    pub total: i64,
+    /// Every user name and action in the whole log, for the screen's lists.
+    pub users: Vec<String>,
+    pub actions: Vec<String>,
+}
+
+pub const AUDIT_EXPORT_LIMIT: i64 = 50_000;
+
+/// Searches the whole audit log in the database, newest first, one page at a time.
+pub fn search_activity_log(conn: &Connection, filter: &ActivityLogFilter) -> AppResult<ActivityLogPage> {
+    let mut clauses: Vec<String> = Vec::new();
+    let mut values: Vec<rusqlite::types::Value> = Vec::new();
+    let mut bind = |values: &mut Vec<rusqlite::types::Value>, value: String| {
+        values.push(rusqlite::types::Value::Text(value));
+        format!("?{}", values.len())
+    };
+    let list = |values: &mut Vec<rusqlite::types::Value>, items: &[String], bind: &mut dyn FnMut(&mut Vec<rusqlite::types::Value>, String) -> String| {
+        items.iter().map(|item| bind(values, item.clone())).collect::<Vec<_>>().join(",")
+    };
+    if let Some(name) = filter.username.as_deref().filter(|v| !v.is_empty()) {
+        let p = bind(&mut values, name.to_string());
+        clauses.push(format!("username={p}"));
+    }
+    if !filter.actions.is_empty() {
+        let items = list(&mut values, &filter.actions, &mut bind);
+        clauses.push(format!("action IN ({items})"));
+    }
+    if !filter.exclude_actions.is_empty() {
+        let items = list(&mut values, &filter.exclude_actions, &mut bind);
+        // Routine entries are hidden only when they succeeded: a failed sign-in always shows.
+        clauses.push(format!("NOT (action IN ({items}) AND result='Success')"));
+    }
+    if let Some(result) = filter.result.as_deref().filter(|v| !v.is_empty()) {
+        let p = bind(&mut values, result.to_string());
+        clauses.push(format!("result={p}"));
+    }
+    if let Some(from) = filter.from.as_deref().filter(|v| !v.is_empty()) {
+        let p = bind(&mut values, from.to_string());
+        clauses.push(format!("created_at>={p}"));
+    }
+    if let Some(to) = filter.to.as_deref().filter(|v| !v.is_empty()) {
+        let p = bind(&mut values, to.to_string());
+        clauses.push(format!("created_at<{p}"));
+    }
+    if let Some(search) = filter.search.as_deref().map(str::trim).filter(|v| !v.is_empty()) {
+        let escaped = search.replace('\\', "\\\\").replace('%', "\\%").replace('_', "\\_");
+        let p = bind(&mut values, format!("%{escaped}%"));
+        let mut parts: Vec<String> = ["username", "target_name", "details"].iter()
+            .map(|column| format!("{column} LIKE {p} ESCAPE '\\'")).collect();
+        if !filter.search_actions.is_empty() {
+            let items = list(&mut values, &filter.search_actions, &mut bind);
+            parts.push(format!("action IN ({items})"));
+        }
+        clauses.push(format!("({})", parts.join(" OR ")));
+    }
+    let condition = if clauses.is_empty() { String::new() } else { format!("WHERE {}", clauses.join(" AND ")) };
+    let total: i64 = conn.query_row(&format!("SELECT COUNT(*) FROM activity_log {condition}"),
+        rusqlite::params_from_iter(values.iter()), |r| r.get(0))?;
+    let limit = filter.limit.clamp(1, AUDIT_EXPORT_LIMIT);
+    let offset = filter.offset.max(0);
+    let mut stmt = conn.prepare(&format!(
+        "SELECT id,user_id,username,role,action,target_type,target_id,target_name,result,details,created_at
+         FROM activity_log {condition} ORDER BY id DESC LIMIT {limit} OFFSET {offset}"))?;
+    let rows = stmt.query_map(rusqlite::params_from_iter(values.iter()), |r| Ok(ActivityLog {
+        id:r.get(0)?,user_id:r.get(1)?,username:r.get(2)?,role:r.get(3)?,action:r.get(4)?,target_type:r.get(5)?,
+        target_id:r.get(6)?,target_name:r.get(7)?,result:r.get(8)?,details:r.get(9)?,created_at:r.get(10)?,
+    }))?.collect::<rusqlite::Result<_>>()?;
+    let distinct = |sql: &str| -> AppResult<Vec<String>> {
+        let mut stmt = conn.prepare(sql)?;
+        let items = stmt.query_map([], |r| r.get(0))?.collect::<rusqlite::Result<_>>()?;
+        Ok(items)
+    };
+    // Names typed at a failed sign-in that match no account are not offered as users.
+    let users = distinct("SELECT DISTINCT username FROM activity_log WHERE role<>'unknown' OR username='system' ORDER BY username")?;
+    let actions = distinct("SELECT DISTINCT action FROM activity_log ORDER BY action")?;
+    Ok(ActivityLogPage { rows, total, users, actions })
 }
 
 // ── Users ──────────────────────────────────────────────────────────────────
@@ -2447,6 +2686,25 @@ type AuditSnapshotRow = (
     Option<i64>, String, String, String, Option<String>, Option<i64>,
     Option<String>, String, Option<String>, Option<String>,
 );
+
+fn read_audit_rows(conn: &Connection) -> AppResult<Vec<AuditSnapshotRow>> {
+    let mut stmt = conn.prepare("SELECT user_id,username,role,action,target_type,target_id,target_name,result,details,created_at FROM activity_log ORDER BY id")?;
+    let rows = stmt.query_map([], |r| Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?,r.get(5)?,r.get(6)?,r.get(7)?,r.get(8)?,r.get(9)?)))?
+        .collect::<rusqlite::Result<_>>()?;
+    Ok(rows)
+}
+
+/// After a restore, the log of the restored database already holds every entry up to the day of
+/// the backup. Of the log kept from before the restore, only the entries it does not hold are
+/// added back, so that nothing is lost and nothing appears twice.
+fn audit_rows_to_restore(conn: &Connection, kept: Vec<AuditSnapshotRow>) -> AppResult<Vec<AuditSnapshotRow>> {
+    let mut present: std::collections::HashMap<AuditSnapshotRow, usize> = std::collections::HashMap::new();
+    for row in read_audit_rows(conn)? { *present.entry(row).or_default() += 1; }
+    Ok(kept.into_iter().filter(|row| match present.get_mut(row) {
+        Some(count) if *count > 0 => { *count -= 1; false }
+        _ => true,
+    }).collect())
+}
 
 #[derive(Debug, Serialize, Deserialize)]
 struct BackupManifest {
@@ -3082,12 +3340,7 @@ where
     let staging = tempfile::tempdir_in(crate::paths::data_root()).map_err(|e| AppError::Other(e.to_string()))?;
     extract_and_validate_backup(&plaintext, staging.path())?;
     progress(backup_progress(40, "جاري حفظ سجل التدقيق الحالي..."));
-    let audit: Vec<AuditSnapshotRow> = {
-        let mut stmt = conn.prepare("SELECT user_id,username,role,action,target_type,target_id,target_name,result,details,created_at FROM activity_log ORDER BY id")?;
-        let rows = stmt.query_map([], |r| Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?,r.get(5)?,r.get(6)?,r.get(7)?,r.get(8)?,r.get(9)?)))?
-            .collect::<rusqlite::Result<_>>()?;
-        rows
-    };
+    let audit: Vec<AuditSnapshotRow> = read_audit_rows(conn)?;
     progress(backup_progress(45, "جاري إنشاء نسخة أمان قبل الاستعادة..."));
     let mut backup_progress_mapper = |step: BackupProgress| {
         let mapped = 45 + (((step.percent as u16) * 18) / 100) as u8;
@@ -3136,7 +3389,7 @@ where
         crate::integrity::approve(conn, user, "restore")?;
     }
     progress(backup_progress(94, "جاري إعادة ربط سجل التدقيق..."));
-    for row in audit {
+    for row in audit_rows_to_restore(conn, audit)? {
         conn.execute(
             "INSERT INTO activity_log(user_id,username,role,action,target_type,target_id,target_name,result,details,created_at)
              VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10)",
@@ -3664,5 +3917,150 @@ mod employee_number_tests {
         assert!(update_employee(&conn, second.id, &data("موظف ثان", Some("1024")), "numadmin").is_err());
         // Saving an employee with their own number is fine.
         update_employee(&conn, first.id, &data("موظف أول", Some("1024")), "numadmin").unwrap();
+    }
+}
+
+#[cfg(test)]
+mod audit_log_tests {
+    use super::*;
+
+    fn conn() -> Connection {
+        let conn = Connection::open_in_memory().unwrap();
+        crate::db::initialize_test(&conn).unwrap();
+        conn.execute("INSERT INTO users(username,password,role) VALUES('logadmin','unused','system_admin')", []).unwrap();
+        conn
+    }
+
+    fn employee(name: &str, number: &str) -> EmployeeData {
+        serde_json::from_value(serde_json::json!({ "full_name": name, "employee_number": number })).unwrap()
+    }
+
+    fn doc(from: &str, number: &str) -> GeneralDocData {
+        serde_json::from_value(serde_json::json!({ "title": from, "issuer": "تعميم", "doc_count": number,
+            "issue_date": "2026-10-08", "is_internal_memo": false, "employee_ids": [] })).unwrap()
+    }
+
+    fn last(conn: &Connection) -> (String, String, Option<String>, Option<String>) {
+        conn.query_row("SELECT username,action,target_name,details FROM activity_log ORDER BY id DESC LIMIT 1", [],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?))).unwrap()
+    }
+
+    fn details(conn: &Connection) -> serde_json::Value {
+        serde_json::from_str(&last(conn).3.expect("details")).unwrap()
+    }
+
+    #[test]
+    fn search_reaches_the_whole_log_and_counts_it() {
+        let conn = conn();
+        for i in 0..1500 {
+            log_activity(&conn, "logadmin", if i == 3 { "DELETE_EMPLOYEE" } else { "LOGIN" }, None, None, Some(&format!("entry {i}")), None);
+        }
+        let page = search_activity_log(&conn, &ActivityLogFilter { limit: 100, ..Default::default() }).unwrap();
+        assert_eq!((page.total, page.rows.len()), (1500, 100));
+        // The fourth entry is far beyond the last 1000 and is still found.
+        let found = search_activity_log(&conn, &ActivityLogFilter { actions: vec!["DELETE_EMPLOYEE".into()], limit: 100, ..Default::default() }).unwrap();
+        assert_eq!((found.total, found.rows[0].target_name.as_deref()), (1, Some("entry 3")));
+        let searched = search_activity_log(&conn, &ActivityLogFilter { search: Some("entry 14".into()), limit: 100, ..Default::default() }).unwrap();
+        assert_eq!(searched.total, 1 + 10 + 100); // 14, 140–149, 1400–1499
+        let last_page = search_activity_log(&conn, &ActivityLogFilter { offset: 1400, limit: 100, ..Default::default() }).unwrap();
+        assert_eq!(last_page.rows.last().unwrap().target_name.as_deref(), Some("entry 0"));
+    }
+
+    #[test]
+    fn routine_entries_hide_only_when_they_succeeded() {
+        let conn = conn();
+        log_activity(&conn, "logadmin", "LOGIN", None, None, None, None);
+        log_audit(&conn, Some("logadmin"), "LOGIN", Some("session"), None, None, "Failure", Some("Invalid password"));
+        log_activity(&conn, "logadmin", "CREATE_BACKUP", None, None, None, None);
+        let page = search_activity_log(&conn, &ActivityLogFilter { exclude_actions: vec!["LOGIN".into()], limit: 10, ..Default::default() }).unwrap();
+        assert_eq!(page.total, 2);
+        let failed = search_activity_log(&conn, &ActivityLogFilter { result: Some("Failure".into()), limit: 10, ..Default::default() }).unwrap();
+        assert_eq!(failed.total, 1);
+    }
+
+    #[test]
+    fn a_name_that_matches_no_account_is_masked() {
+        let conn = conn();
+        assert!(login(&conn, "MySecret123", "whatever").is_err());
+        let (username, action, _, reason) = last(&conn);
+        assert_eq!((username.as_str(), action.as_str(), reason.as_deref()), ("My…", "LOGIN", Some("Unknown username")));
+        assert!(login(&conn, "logadmin", "wrong").is_err());
+        assert_eq!(last(&conn).0, "logadmin");
+        let page = search_activity_log(&conn, &ActivityLogFilter { limit: 10, ..Default::default() }).unwrap();
+        assert_eq!(page.users, vec!["logadmin".to_string()]);
+    }
+
+    #[test]
+    fn employee_entries_name_the_employee_and_edits_say_what_changed() {
+        let conn = conn();
+        let e = create_employee(&conn, &employee("علي حسن كاظم", "1024"), "logadmin").unwrap();
+        log_activity(&conn, "logadmin", "UPLOAD_MINISTRY_BADGE_ATTACHMENT", Some("employee"), Some(e.id), Some("Files/Employees/1/x.jpg"), Some("back"));
+        let d = details(&conn);
+        assert_eq!((d["employee"].as_str(), d["employee_number"].as_str(), d["note"].as_str()), (Some("علي حسن كاظم"), Some("1024"), Some("back")));
+
+        update_employee(&conn, e.id, &employee("علي حسن كاظم", "1042"), "logadmin").unwrap();
+        let d = details(&conn);
+        let changes = d["changes"].as_array().unwrap();
+        assert_eq!(changes.len(), 1, "{changes:?}");
+        assert_eq!(changes[0], serde_json::json!({ "field": "employee_number", "old": "1024", "new": "1042" }));
+
+        delete_employee(&conn, e.id, "logadmin").unwrap();
+        let (_, action, name, _) = last(&conn);
+        assert_eq!((action.as_str(), name.as_deref()), ("DELETE_EMPLOYEE", Some("علي حسن كاظم")));
+        assert_eq!(details(&conn)["employee_number"], "1042");
+    }
+
+    #[test]
+    fn grade_deletion_and_department_change_are_recorded() {
+        let conn = conn();
+        let e = create_employee(&conn, &employee("موظف", "7"), "logadmin").unwrap();
+        let grade: GradeHistoryData = serde_json::from_value(serde_json::json!({ "grade": "الخامسة", "effective_date": "2026-01-01" })).unwrap();
+        let g = add_grade_history(&conn, e.id, &grade, "logadmin").unwrap();
+        delete_grade_history(&conn, g.id, "logadmin").unwrap();
+        let (_, action, name, _) = last(&conn);
+        assert_eq!((action.as_str(), name.as_deref()), ("DELETE_GRADE", Some("الخامسة")));
+
+        update_company_config(&conn, "logadmin", &CompanyConfigData { company_name: "الجهة".into(), department_name: Some("قسم الاتصالات".into()), division_name: None }).unwrap();
+        update_company_config(&conn, "logadmin", &CompanyConfigData { company_name: "الجهة".into(), department_name: Some("قسم الصيانة".into()), division_name: None }).unwrap();
+        assert_eq!(details(&conn)["changes"], serde_json::json!([{ "field": "department_name", "old": "قسم الاتصالات", "new": "قسم الصيانة" }]));
+    }
+
+    #[test]
+    fn archive_deletion_describes_the_document() {
+        let conn = conn();
+        let a = create_general_doc(&conn, &doc("وزارة النقل", "م/4133"), "logadmin").unwrap();
+        update_general_doc(&conn, a.id, &doc("وزارة النقل", "م/4134"), "logadmin").unwrap();
+        assert_eq!(details(&conn)["changes"], serde_json::json!([{ "field": "doc_count", "old": "م/4133", "new": "م/4134" }]));
+        delete_general_doc(&conn, a.id, "logadmin").unwrap();
+        let d = details(&conn);
+        assert_eq!((d["doc"]["from"].as_str(), d["doc"]["number"].as_str(), d["doc"]["subject"].as_str(), d["doc"]["files"].as_i64()),
+            (Some("وزارة النقل"), Some("م/4134"), Some("تعميم"), Some(0)));
+    }
+
+    #[test]
+    fn restored_log_keeps_each_entry_once() {
+        let conn = conn();
+        log_activity(&conn, "logadmin", "LOGIN", None, None, Some("before backup"), None);
+        log_activity(&conn, "logadmin", "CREATE_BACKUP", None, None, Some("b.autohrbak"), None);
+        let backup = read_audit_rows(&conn).unwrap();
+        log_activity(&conn, "logadmin", "DELETE_EMPLOYEE", None, None, Some("after backup"), None);
+        let kept = read_audit_rows(&conn).unwrap();
+        // The restored database holds the log as it was at backup time.
+        let restored = Connection::open_in_memory().unwrap();
+        crate::db::initialize_test(&restored).unwrap();
+        for row in &backup {
+            restored.execute("INSERT INTO activity_log(user_id,username,role,action,target_type,target_id,target_name,result,details,created_at) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10)",
+                params![row.0,row.1,row.2,row.3,row.4,row.5,row.6,row.7,row.8,row.9]).unwrap();
+        }
+        let added = audit_rows_to_restore(&restored, kept).unwrap();
+        assert_eq!(added.len(), 1);
+        assert_eq!(added[0].6.as_deref(), Some("after backup"));
+    }
+
+    #[test]
+    fn archive_clerk_cannot_open_the_log() {
+        assert!(!role_permissions("archive_officer").contains(&"audit.view"));
+        assert!(!role_permissions("viewer").contains(&"audit.view"));
+        assert!(role_permissions("system_admin").contains(&"audit.view"));
     }
 }
