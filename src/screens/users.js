@@ -19,8 +19,16 @@ function dateTime(value) {
 }
 
 export async function renderUsers(host, user) {
-  // The list re-renders on every search; the security settings below it stay put.
-  host.innerHTML = `<div data-users-list></div><div data-users-security class="users-security"></div>`;
+  // Each part is its own item in the side list of «المستخدمين والصلاحيات» (settings.js mounts the list,
+  // as in «الدعم وحول النظام»). The users list re-renders on every search; the other parts stay put.
+  const canManageUsers = can(user, "users.manage");
+  const canRecovery = canManageUsers && can(user, "users.assign_system_admin");
+  host.innerHTML = `<div class="settings-stack">
+    <div data-sub="list" data-sub-label="إدارة المستخدمين" data-users-list></div>
+    <div data-sub="roles" data-sub-label="ماذا يستطيع كل دور" data-users-roles></div>
+    ${canManageUsers ? `<div data-sub="policy" data-sub-label="سياسة كلمة المرور" data-users-policy></div>` : ""}
+    ${canRecovery ? `<div data-sub="recovery" data-sub-label="رمز استعادة المسؤول" data-users-recovery></div>` : ""}
+  </div>`;
   const container = host.querySelector("[data-users-list]");
   let users = await api.listUsers();
   let policy = await loadPasswordPolicy({ fresh: true });
@@ -314,20 +322,6 @@ export async function renderUsers(host, user) {
             </table>
           </div>
         </div>
-
-        <details class="card users-help">
-          <summary>ماذا يستطيع كل دور</summary>
-          <div class="overflow-auto mt-3">
-            <table class="users-matrix">
-              <thead><tr><th></th>${roles.map(role => `<th><span class="role-badge is-${role}">${escHtml(roleLabels[role])}</span></th>`).join("")}</tr></thead>
-              <tbody>
-                ${permissionMatrix.map(([label, allowed]) => `<tr><td>${escHtml(label)}</td>${roles.map(role => allowed.includes(role)
-                  ? `<td class="yes" aria-label="نعم">✓</td>` : `<td class="no" aria-label="لا">—</td>`).join("")}</tr>`).join("")}
-              </tbody>
-            </table>
-            <p class="field-help mt-2">البرنامج يتحقق من الدور مع كل عملية، فتغيير الدور يسري فورًا. وكل إضافة وحذف وتغيير دور وإعادة كلمة مرور وإيقاف تُسجل في سجل النظام.</p>
-          </div>
-        </details>
       </div>`;
     attach();
   }
@@ -366,16 +360,32 @@ export async function renderUsers(host, user) {
   }
 
   render();
-  if (can(user, "users.manage")) {
-    renderSecurity(host.querySelector("[data-users-security]"), user, () => loadPasswordPolicy({ fresh: true }).then(p => { policy = p; }))
-      .catch(err => { host.querySelector("[data-users-security]").innerHTML = `<div class="card text-sm text-gray-400" dir="auto">${escHtml(errorText(err))}</div>`; });
+  host.querySelector("[data-users-roles]").innerHTML = `
+    <section class="card settings-block users-help" aria-labelledby="roles-title">
+      <div class="settings-block-head"><p id="roles-title" class="settings-block-title">ماذا يستطيع كل دور</p></div>
+      <div class="overflow-auto">
+        <table class="users-matrix">
+          <thead><tr><th></th>${roles.map(role => `<th><span class="role-badge is-${role}">${escHtml(roleLabels[role])}</span></th>`).join("")}</tr></thead>
+          <tbody>
+            ${permissionMatrix.map(([label, allowed]) => `<tr><td>${escHtml(label)}</td>${roles.map(role => allowed.includes(role)
+              ? `<td class="yes" aria-label="نعم">✓</td>` : `<td class="no" aria-label="لا">—</td>`).join("")}</tr>`).join("")}
+          </tbody>
+        </table>
+        <p class="field-help mt-2">البرنامج يتحقق من الدور مع كل عملية، فتغيير الدور يسري فورًا. وكل إضافة وحذف وتغيير دور وإعادة كلمة مرور وإيقاف تُسجل في سجل النظام.</p>
+      </div>
+    </section>`;
+  if (canManageUsers) {
+    const policyHost = host.querySelector("[data-users-policy]");
+    const recoveryHost = host.querySelector("[data-users-recovery]");
+    renderSecurity(policyHost, recoveryHost, () => loadPasswordPolicy({ fresh: true }).then(p => { policy = p; }))
+      .catch(err => { policyHost.innerHTML = `<div class="card text-sm text-gray-400" dir="auto">${escHtml(errorText(err))}</div>`; });
   }
 }
 
-/** «سياسة كلمة المرور» and «رمز استعادة حساب المسؤول», under the users list. */
-async function renderSecurity(host, user, onPolicyChange) {
+/** «سياسة كلمة المرور» into `host`, and «رمز استعادة حساب المسؤول» into `recoveryHost` when the admin may see it. */
+async function renderSecurity(host, recoveryHost, onPolicyChange) {
   const policy = await loadPasswordPolicy({ fresh: true });
-  const canRecovery = can(user, "users.assign_system_admin");
+  const canRecovery = Boolean(recoveryHost);
   let recovery = null;
   if (canRecovery) { try { recovery = await api.getRecoveryStatus(); } catch { recovery = null; } }
   const check = (id, label, on) => `<label class="policy-check"><input type="checkbox" id="${id}" ${on ? "checked" : ""} /> ${escHtml(label)}</label>`;
@@ -416,8 +426,8 @@ async function renderSecurity(host, user, onPolicyChange) {
       </div>
       <p id="policy-error" class="text-autohr-red text-sm hidden" role="alert"></p>
       <div class="settings-block-foot"><button id="btn-save-policy" type="button" class="btn-primary" disabled>حفظ سياسة كلمة المرور</button></div>
-    </section>
-    ${canRecovery ? `
+    </section>`;
+  if (canRecovery) recoveryHost.innerHTML = `
     <section class="card settings-block space-y-3" aria-labelledby="recovery-settings-title">
       <div class="settings-block-head">
         <p id="recovery-settings-title" class="settings-block-title">رمز استعادة حساب المسؤول</p>
@@ -427,7 +437,7 @@ async function renderSecurity(host, user, onPolicyChange) {
         ? `يوجد رمز للحساب <bdi dir="ltr">${escHtml(recovery.admin)}</bdi>، أُنشئ في <bdi dir="ltr">${escHtml(String(recovery.created_at ?? "").replaceAll("-", "/"))}</bdi>.`
         : `<span class="setup-note is-warn" style="display:inline-block">لا يوجد رمز استعادة بعد. أنشئ واحدًا واحفظه مطبوعًا.</span>`}</p>
       <div class="settings-block-foot"><button id="btn-new-recovery" type="button" class="btn-secondary">إنشاء رمز جديد</button></div>
-    </section>` : ""}`;
+    </section>`;
 
   const error = host.querySelector("#policy-error");
   const saveButton = host.querySelector("#btn-save-policy");
@@ -468,7 +478,7 @@ async function renderSecurity(host, user, onPolicyChange) {
     }
   });
 
-  host.querySelector("#btn-new-recovery")?.addEventListener("click", async () => {
+  recoveryHost?.querySelector("#btn-new-recovery")?.addEventListener("click", async () => {
     const ok = await confirmAction("سيتوقف الرمز القديم فورًا، ويُعرض رمز جديد مرة واحدة فقط. هل تريد المتابعة؟",
       { title: "رمز استعادة جديد", confirmLabel: "إنشاء رمز جديد" });
     if (!ok) return;
@@ -490,7 +500,7 @@ async function renderSecurity(host, user, onPolicyChange) {
       overlay.querySelector("[data-print]").addEventListener("click", () => printRecoveryCode(status.admin, code));
       overlay.querySelector("[data-copy]").addEventListener("click", () => copyText(code));
       overlay.querySelector("[data-saved]").addEventListener("change", e => { overlay.querySelector("[data-done]").disabled = !e.target.checked; });
-      overlay.querySelector("[data-done]").addEventListener("click", () => { overlay.remove(); renderSecurity(host, user, onPolicyChange); });
+      overlay.querySelector("[data-done]").addEventListener("click", () => { overlay.remove(); renderSecurity(host, recoveryHost, onPolicyChange); });
     } catch (err) {
       showToast(errorText(err), "error");
     }

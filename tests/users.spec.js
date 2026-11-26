@@ -118,3 +118,30 @@ test("«حفظ سياسة كلمة المرور» stays off until the policy cha
   await expect.poll(() => called(page, "cmd_set_password_policy")).toEqual([{ policy: expect.objectContaining({ min_length: 10, reject_common: false }) }]);
   await expect(save).toBeDisabled();
 });
+
+test("«المستخدمين والصلاحيات» is a side list like «الدعم وحول النظام», one part at a time", async ({ page }) => {
+  await page.evaluate(async () => {
+    const before = window.__TAURI_INTERNALS__.invoke;
+    window.__TAURI_INTERNALS__.invoke = async (command, args) => {
+      if (command === "cmd_get_password_policy") return {};
+      if (command === "cmd_get_recovery_status") return { exists: true, admin: "sysadmin", created_at: "2026-11-26" };
+      return before(command, args);
+    };
+    await window.renderActual("settings");
+  });
+  await page.locator('[data-settings-tab="users"]').click();
+  const panel = page.locator('[data-settings-panel="users"]');
+  const items = panel.locator(".settings-subnav-item");
+  await expect(items).toHaveText(["إدارة المستخدمين", "ماذا يستطيع كل دور", "سياسة كلمة المرور", "رمز استعادة المسؤول"]);
+  await expect(panel.locator("#btn-add-user")).toBeVisible();
+  await expect(panel.locator(".users-matrix")).toBeHidden();
+  await items.nth(1).click();
+  await expect(panel.locator(".users-matrix")).toBeVisible();
+  await expect(panel.locator("#btn-add-user")).toBeHidden();
+  await items.nth(2).click();
+  await expect(panel.locator("#btn-save-policy")).toBeVisible();
+  await expect(panel.locator(".users-matrix")).toBeHidden();
+  await items.nth(3).click();
+  await expect(panel.locator("#btn-new-recovery")).toBeVisible();
+  await expect(panel.locator("#btn-save-policy")).toBeHidden();
+});
