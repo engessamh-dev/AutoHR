@@ -1122,3 +1122,18 @@ html[data-ui-scale] #app-shell { height: calc(100vh / var(--ui-scale)); }
 .users-matrix .yes{color:var(--ui-ok);font-weight:700}
 .users-matrix .no{color:var(--ui-text-muted)}
 .users-help summary{cursor:pointer;font-weight:600;color:var(--ui-text-strong);font-size:14px}
+
+/* ── Home screen («الرئيسية») ── */
+.stat-sub{font-size:12px;color:var(--ui-text-muted)}
+.stat-card.is-warn{border-color:var(--ui-warn-line)}
+.stat-card.is-warn .stat-value{color:var(--ui-warn)}
+.stat-card.is-bad{border-color:var(--ui-danger-line)}
+.stat-card.is-bad .stat-value{color:var(--ui-danger)}
+.dashboard-actions{justify-content:center;gap:8px}
+.dashboard-actions>button{width:100%}
+.dashboard-table .table-cell{padding-block:.45rem}
+.dashboard-start-steps{display:flex;flex-direction:column;gap:10px;margin:0;padding:0;list-style:none}
+.dashboard-start-steps li{display:flex;align-items:center;gap:12px;flex-wrap:wrap}
+.dash-kind{display:inline-block;padding:0 8px;border-radius:999px;font-size:11px;line-height:20px;white-space:nowrap;border:1px solid var(--ui-line-strong);color:var(--ui-text-muted)}
+.dash-kind.is-out{border-color:color-mix(in srgb, var(--ui-accent) 55%, transparent);color:var(--ui-accent)}
+.dashboard-doc-row:focus-visible,.alert-row:focus-visible{outline:2px solid var(--ui-accent);outline-offset:-2px}

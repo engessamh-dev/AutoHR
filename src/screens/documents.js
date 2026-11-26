@@ -1499,5 +1499,8 @@ export async function renderDocuments(container, user, ctx) {
     const doc = currentDocs().find(item => item.id === initialManageAttachmentDocId);
     if (doc) openAttachmentManager(doc.id);
     else showToast("تعذر العثور على الوثيقة المطلوبة", "warn");
+  } else if (ctx?.addDoc && can(user, "documents.manage")) {
+    // «+ إضافة وثيقة واردة» on the home screen.
+    showDocForm();
   }
 }

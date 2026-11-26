@@ -356,9 +356,13 @@ export function friendlyTime(text) {
     : `${date.getDate()} ${AR_MONTHS[date.getMonth()]}${date.getFullYear() !== today.getFullYear() ? ` ${date.getFullYear()}` : ""}`;
   return `${prefix} ${clockText(date)}`;
 }
-/** Whole days since a local «YYYY-MM-DD HH:MM», or null. */
+/** Calendar days from a local «YYYY-MM-DD HH:MM» to today (the time of day is ignored), or null. */
 export function daysSince(text) {
   if (!text) return null;
   const date = new Date(String(text).replace(" ", "T"));
-  return Number.isNaN(date.getTime()) ? null : Math.floor((Date.now() - date.getTime()) / 86400000);
+  if (Number.isNaN(date.getTime())) return null;
+  const day = new Date(date.getFullYear(), date.getMonth(), date.getDate());
+  const now = new Date();
+  const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+  return Math.round((today - day) / 86400000);
 }

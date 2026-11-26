@@ -82,7 +82,8 @@ export async function renderEmployees(container, user, ctx) {
   _employees = employees;
   _companyConfig = companyConfig;
   _filter = "";
-  _statusFilter = "all";
+  // Opened from a home-screen card: start on the list that card counted.
+  _statusFilter = ["active", "inactive", "incomplete"].includes(ctx?.statusFilter) ? ctx.statusFilter : "all";
 
   container.innerHTML = `
     <div id="emp-screen" class="flex flex-col gap-4 h-full">
@@ -93,6 +94,7 @@ export async function renderEmployees(container, user, ctx) {
           <option value="all">كل الموظفين</option>
           <option value="active">النشطون فقط</option>
           <option value="inactive">غير النشطين فقط</option>
+          <option value="incomplete">بيانات ناقصة</option>
         </select>
         <span id="emp-count" class="badge badge-gray"></span>
         <button id="btn-name-review" class="btn-review-names whitespace-nowrap" hidden title="أسماء قُسّمت تلقائيًا وتحتاج تأكيدًا">
@@ -108,6 +110,7 @@ export async function renderEmployees(container, user, ctx) {
       background:var(--ui-surface);border-left:1px solid var(--ui-line);box-shadow:-8px 0 32px rgba(0,0,0,0.5);
       display:flex;flex-direction:column;transform:translateX(calc(100% + 40px));transition:transform 0.3s ease"></div>`;
 
+  container.querySelector("#emp-status-filter").value = _statusFilter;
   renderTable();
   container.querySelector("#emp-search").addEventListener("input",
     debounce(e => { _filter = e.target.value.trim().toLowerCase(); renderTable(); }, 250));
@@ -143,8 +146,10 @@ export async function renderEmployees(container, user, ctx) {
     refreshReviewCount();
   } else container.querySelector("#btn-name-review")?.remove();
 
+  // «+ إضافة موظف» on the home screen opens the same add dialog as the button here.
+  if (ctx?.openAdd && can(user, "employees.create")) container.querySelector("#btn-add-emp")?.click();
   // Opened from another screen (e.g. a document alert): jump straight to that employee's tab.
-  if (ctx?.openEmployeeId != null) {
+  else if (ctx?.openEmployeeId != null) {
     const target = _employees.find(e => Number(e.id) === Number(ctx.openEmployeeId));
     if (target) {
       openPanel(target, ctx.openEmployeeTab ?? "basic");
@@ -155,7 +160,10 @@ export async function renderEmployees(container, user, ctx) {
 function filtered() {
   const byStatus = _statusFilter === "all"
     ? _employees
-    : _employees.filter(e => (_statusFilter === "active") === Boolean(e.is_active));
+    : _statusFilter === "incomplete"
+      // The same count as the home screen: active employees with an empty required field.
+      ? _employees.filter(e => e.is_active && missingFields(e).length)
+      : _employees.filter(e => (_statusFilter === "active") === Boolean(e.is_active));
   if (!_filter) return byStatus;
   return byStatus.filter(e =>
     e.full_name?.toLowerCase().includes(_filter) ||
