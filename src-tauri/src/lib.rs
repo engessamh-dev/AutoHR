@@ -1,5 +1,5 @@
 // lib.rs — GCANS v2.0
-mod db; mod names; mod services; mod files; mod scanner; mod paths; mod storage; mod ai_detect; mod secure; mod ocr; mod ocr_parse; mod health; mod errlog; mod integrity;
+mod account; mod backup_store; mod db; mod names; mod services; mod files; mod scanner; mod paths; mod storage; mod ai_detect; mod secure; mod ocr; mod ocr_parse; mod health; mod errlog; mod integrity;
 mod scanner_commands;
 #[cfg(debug_assertions)]
 mod devseed;
@@ -63,9 +63,11 @@ fn suggested_roots() -> (String, String) {
         let drives: Vec<String> = ["D", "E", "F", "G"].iter()
             .filter(|d| std::path::Path::new(&format!("{d}:\\")).is_dir())
             .map(|d| d.to_string()).collect();
-        let data = drives.first().map(|d| format!("{d}:\\AutoHR-Data")).unwrap_or_default();
-        let backup = drives.get(1).map(|d| format!("{d}:\\AutoHR-Backups")).unwrap_or_default();
-        (data, backup)
+        // Data on the first drive other than C, backups on the next one. With fewer drives the
+        // setup screen still offers a folder (and warns about C or about sharing one drive).
+        let data_drive = drives.first().cloned().unwrap_or_else(|| "C".into());
+        let backup_drive = drives.get(1).cloned().unwrap_or_else(|| data_drive.clone());
+        (format!("{data_drive}:\\{}", storage::DATA_FOLDER_NAME), format!("{backup_drive}:\\{}", storage::BACKUP_FOLDER_NAME))
     }
     #[cfg(not(target_os = "windows"))]
     { (String::new(), String::new()) }
@@ -102,7 +104,8 @@ fn restrict_managed_folders() {
     std::thread::spawn(move || {
         if cfg!(target_os = "windows") {
             for root in roots {
-                if !root.is_dir() { continue; }
+                // Never lock a whole drive (a data folder chosen as «D:\\» by an older release).
+                if !root.is_dir() || storage::is_drive_root(&root) { continue; }
                 let result = match secure::folder_access(&root) {
                     Ok(secure::FolderAccess::Open(_)) => secure::restrict_folder(&root),
                     Ok(_) => Ok(()),
@@ -135,6 +138,22 @@ struct SessionState(Mutex<Option<Session>>);
 
 fn session_identity(sess: &State<SessionState>) -> Result<String, AppError> {
     sess.0.lock().unwrap().as_ref().map(|s| s.username.clone()).ok_or(AppError::Unauthorized)
+}
+
+/// Records a refused or failed change in the audit log, with the reason, and passes the result on.
+/// A refused permission is already recorded by `authorize` as ACCESS_DENIED.
+fn logged_failure<T>(conn: &Connection, user: &str, action: &str, target_type: Option<&str>, target_id: Option<i64>,
+    target_name: Option<&str>, result: Result<T, AppError>) -> Result<T, AppError> {
+    if let Err(error) = &result {
+        let reason = match error {
+            AppError::Unauthorized => "You are not authorized to perform this action".to_string(),
+            AppError::NotFound => "The requested item was not found".to_string(),
+            AppError::Validation(message) | AppError::Other(message) => message.clone(),
+            AppError::Db(_) => "The database operation could not be completed".to_string(),
+        };
+        log_audit(conn, Some(user), action, target_type, target_id, target_name, "Failure", Some(&reason));
+    }
+    result
 }
 
 fn authorize(conn: &Connection, sess: &State<SessionState>, permission: &str) -> Result<String, AppError> {
@@ -174,12 +193,28 @@ fn xlsx_cell(row: usize, col: usize, value: &str, style: Option<u8>) -> String {
     )
 }
 
-fn build_report_xlsx(headers: &[String], rows: &[Vec<String>]) -> AppResult<Vec<u8>> {
+/// Excel's day number for a `YYYY-MM-DD` date (days since 1899-12-30), or None for anything else.
+fn excel_date_serial(value: &str) -> Option<i64> {
+    let date = chrono::NaiveDate::parse_from_str(value.trim(), "%Y-%m-%d").ok()?;
+    let base = chrono::NaiveDate::from_ymd_opt(1899, 12, 30)?;
+    Some((date - base).num_days())
+}
+
+/// A column wide enough for its longest value (in characters), within limits.
+fn report_column_width(header: &str, rows: &[Vec<String>], col: usize) -> usize {
+    let longest = rows.iter().filter_map(|row| row.get(col)).map(|v| v.chars().count()).max().unwrap_or(0);
+    (longest.max(header.chars().count()) + 3).clamp(8, 60)
+}
+
+/// The report workbook. Columns listed in `date_columns` hold `YYYY-MM-DD` dates: those become
+/// real Excel dates shown as 2026/12/7 (so they sort and calculate); any other text stays text.
+/// Empty values are left as empty cells.
+fn build_report_xlsx(headers: &[String], rows: &[Vec<String>], date_columns: &[usize]) -> AppResult<Vec<u8>> {
     if headers.is_empty() {
-        return Err(AppError::Validation("Select at least one report field".into()));
+        return Err(AppError::Validation("اختر عموداً واحداً على الأقل".into()));
     }
     if headers.len() > 16_384 || rows.len() > 1_048_575 {
-        return Err(AppError::Validation("The report is too large for Excel".into()));
+        return Err(AppError::Validation("التقرير أكبر مما يتسع له ملف Excel".into()));
     }
 
     let mut sheet_rows = String::new();
@@ -195,32 +230,46 @@ fn build_report_xlsx(headers: &[String], rows: &[Vec<String>]) -> AppResult<Vec<
         sheet_rows.push_str(&format!("<row r=\"{excel_row}\" spans=\"1:{}\">", headers.len()));
         for col_index in 0..headers.len() {
             let value = row.get(col_index).map(String::as_str).unwrap_or("");
-            sheet_rows.push_str(&xlsx_cell(excel_row, col_index + 1, value, None));
+            if value.trim().is_empty() { continue; }
+            match excel_date_serial(value).filter(|_| date_columns.contains(&col_index)) {
+                Some(serial) => sheet_rows.push_str(&format!(
+                    "<c r=\"{}{excel_row}\" s=\"2\"><v>{serial}</v></c>", excel_column_name(col_index + 1))),
+                None => sheet_rows.push_str(&xlsx_cell(excel_row, col_index + 1, value, None)),
+            }
         }
         sheet_rows.push_str("</row>");
     }
 
-    let dimension = format!("A1:{}{}", excel_column_name(headers.len()), rows.len() + 1);
-    let cols = (1..=headers.len())
-        .map(|index| format!("<col min=\"{index}\" max=\"{index}\" width=\"24\" customWidth=\"1\"/>"))
+    let last_column = excel_column_name(headers.len());
+    let dimension = format!("A1:{last_column}{}", rows.len() + 1);
+    let cols = headers.iter().enumerate()
+        .map(|(index, header)| format!("<col min=\"{0}\" max=\"{0}\" width=\"{1}\" customWidth=\"1\"/>", index + 1, report_column_width(header, rows, index)))
         .collect::<String>();
+    // Landscape, as wide as one page, with the heading row repeated on every printed page.
     let sheet = format!(
         r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">
+<sheetPr><pageSetUpPr fitToPage="1"/></sheetPr>
 <dimension ref="{dimension}"/>
 <sheetViews><sheetView workbookViewId="0" rightToLeft="1"><pane ySplit="1" topLeftCell="A2" activePane="bottomLeft" state="frozen"/></sheetView></sheetViews>
 <sheetFormatPr defaultRowHeight="18"/>
 <cols>{cols}</cols>
 <sheetData>{sheet_rows}</sheetData>
-<pageMargins left="0.7" right="0.7" top="0.75" bottom="0.75" header="0.3" footer="0.3"/>
+<autoFilter ref="{dimension}"/>
+<pageMargins left="0.4" right="0.4" top="0.5" bottom="0.5" header="0.3" footer="0.3"/>
+<pageSetup paperSize="9" orientation="landscape" fitToWidth="1" fitToHeight="0"/>
 </worksheet>"#
     );
+    let defined_names = format!(
+        "<definedNames><definedName name=\"_xlnm._FilterDatabase\" localSheetId=\"0\" hidden=\"1\">'تقرير الموظفين'!$A$1:${last_column}${0}</definedName><definedName name=\"_xlnm.Print_Titles\" localSheetId=\"0\">'تقرير الموظفين'!$1:$1</definedName></definedNames>",
+        rows.len() + 1);
 
-    let workbook = r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+    let workbook = format!(r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">
 <bookViews><workbookView/></bookViews>
 <sheets><sheet name="تقرير الموظفين" sheetId="1" r:id="rId1"/></sheets>
-</workbook>"#;
+{defined_names}
+</workbook>"#);
     let workbook_rels = r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
 <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet1.xml"/>
@@ -240,11 +289,12 @@ fn build_report_xlsx(headers: &[String], rows: &[Vec<String>]) -> AppResult<Vec<
 </Types>"#;
     let styles = r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <styleSheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">
+<numFmts count="1"><numFmt numFmtId="164" formatCode="yyyy/m/d"/></numFmts>
 <fonts count="2"><font><sz val="11"/><name val="Arial"/></font><font><b/><sz val="11"/><name val="Arial"/></font></fonts>
 <fills count="2"><fill><patternFill patternType="none"/></fill><fill><patternFill patternType="gray125"/></fill></fills>
 <borders count="1"><border><left/><right/><top/><bottom/><diagonal/></border></borders>
 <cellStyleXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" borderId="0"/></cellStyleXfs>
-<cellXfs count="2"><xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0" applyAlignment="1"><alignment horizontal="right" readingOrder="2"/></xf><xf numFmtId="0" fontId="1" fillId="0" borderId="0" xfId="0" applyFont="1" applyAlignment="1"><alignment horizontal="right" readingOrder="2"/></xf></cellXfs>
+<cellXfs count="3"><xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0" applyAlignment="1"><alignment horizontal="right" readingOrder="2"/></xf><xf numFmtId="0" fontId="1" fillId="0" borderId="0" xfId="0" applyFont="1" applyAlignment="1"><alignment horizontal="right" readingOrder="2"/></xf><xf numFmtId="164" fontId="0" fillId="0" borderId="0" xfId="0" applyNumberFormat="1" applyAlignment="1"><alignment horizontal="right"/></xf></cellXfs>
 <cellStyles count="1"><cellStyle name="Normal" xfId="0" builtinId="0"/></cellStyles>
 </styleSheet>"#;
 
@@ -256,7 +306,7 @@ fn build_report_xlsx(headers: &[String], rows: &[Vec<String>]) -> AppResult<Vec<
         for (name, content) in [
             ("[Content_Types].xml", content_types),
             ("_rels/.rels", root_rels),
-            ("xl/workbook.xml", workbook),
+            ("xl/workbook.xml", workbook.as_str()),
             ("xl/_rels/workbook.xml.rels", workbook_rels),
             ("xl/styles.xml", styles),
             ("xl/worksheets/sheet1.xml", sheet.as_str()),
@@ -372,8 +422,10 @@ fn cmd_scan_document(state: State<DbState>, sess: State<SessionState>, device_id
         // does not wait for it. Only users who can upload documents ever need it.
         std::thread::spawn(|| { ai_detect::available(); });
     }
+    // The name as stored (sign-in ignores case), so the session matches the account exactly.
+    let _ = username;
     *sess.0.lock().unwrap() = Some(Session {
-        username,
+        username: user.username.clone(),
         must_change_password: user.must_change_password,
     });
     Ok(user)
@@ -398,12 +450,57 @@ fn cmd_scan_document(state: State<DbState>, sess: State<SessionState>, device_id
     authorize(&conn, &sess, "dashboard.view")?;
     get_company_config(&conn)
 }
+// ── Accounts: first-run administrator, password policy, recovery code ───────
+#[derive(serde::Serialize)]
+struct FirstRunState { needs_admin: bool }
+#[tauri::command] fn cmd_get_first_run_state(state: State<DbState>) -> Result<FirstRunState, AppError> {
+    Ok(FirstRunState { needs_admin: account::needs_first_admin(&*state.conn()?) })
+}
+/// Allowed only while the database holds nothing but the built-in first-run account.
+#[tauri::command] fn cmd_complete_first_run(state: State<DbState>, sess: State<SessionState>, data: account::FirstRunSetup) -> Result<account::FirstRunResult, AppError> {
+    let conn = state.conn()?;
+    let result = account::complete_first_run(&conn, &data)?;
+    *sess.0.lock().unwrap() = Some(Session { username: result.user.username.clone(), must_change_password: false });
+    Ok(result)
+}
+/// Public: the rules are shown under every new-password field, before anyone has signed in.
+#[tauri::command] fn cmd_get_password_policy(state: State<DbState>) -> Result<account::PasswordPolicy, AppError> {
+    Ok(account::password_policy(&*state.conn()?))
+}
+#[tauri::command] fn cmd_set_password_policy(state: State<DbState>, sess: State<SessionState>, policy: account::PasswordPolicy) -> Result<account::PasswordPolicy, AppError> {
+    let conn = state.conn()?;
+    let user = session_user(&sess)?;
+    account::set_password_policy(&conn, &user, policy)
+}
+#[tauri::command] fn cmd_get_recovery_options(state: State<DbState>) -> Result<account::RecoveryOptions, AppError> {
+    Ok(account::recovery_options(&*state.conn()?))
+}
+#[tauri::command] fn cmd_new_unlock_challenge(state: State<DbState>) -> Result<String, AppError> {
+    account::new_unlock_challenge(&*state.conn()?)
+}
+#[tauri::command] fn cmd_unlock_admin(state: State<DbState>, unlock_code: String, new_password: String) -> Result<String, AppError> {
+    account::unlock_admin(&*state.conn()?, &unlock_code, &new_password)
+}
+#[tauri::command] fn cmd_get_recovery_status(state: State<DbState>, sess: State<SessionState>) -> Result<account::RecoveryStatus, AppError> {
+    let conn = state.conn()?;
+    authorize(&conn, &sess, "users.assign_system_admin")?;
+    Ok(account::recovery_status(&conn))
+}
+#[tauri::command] fn cmd_regenerate_recovery_code(state: State<DbState>, sess: State<SessionState>) -> Result<String, AppError> {
+    let conn = state.conn()?;
+    let user = session_user(&sess)?;
+    account::regenerate_recovery_code(&conn, &user)
+}
+#[tauri::command] fn cmd_recover_admin_password(state: State<DbState>, code: String, new_password: String) -> Result<account::RecoveryResult, AppError> {
+    account::recover_admin_password(&*state.conn()?, &code, &new_password)
+}
 #[tauri::command] fn cmd_get_public_company_config(state: State<DbState>) -> Result<CompanyConfig, AppError> {
     get_company_config(&*state.conn()?)
 }
 #[tauri::command] fn cmd_update_company_config(state: State<DbState>, sess: State<SessionState>, data: CompanyConfigData) -> Result<CompanyConfig, AppError> {
     let user = session_user(&sess)?;
-    update_company_config(&*state.conn()?, &user, &data)
+    let conn = state.conn()?;
+    logged_failure(&conn, &user, "CHANGE_SETTING", Some("settings"), None, Some("company_config"), update_company_config(&conn, &user, &data))
 }
 #[tauri::command] fn cmd_next_employee_number(state: State<DbState>, sess: State<SessionState>) -> Result<String, AppError> {
     let conn = state.conn()?;
@@ -423,12 +520,12 @@ fn cmd_scan_document(state: State<DbState>, sess: State<SessionState>, device_id
 #[tauri::command] fn cmd_create_employee(state: State<DbState>, sess: State<SessionState>, data: EmployeeData) -> Result<Employee, AppError> {
     let conn = state.conn()?;
     let user = authorize(&conn, &sess, "employees.create")?;
-    create_employee(&conn, &data, &user)
+    logged_failure(&conn, &user, "CREATE_EMPLOYEE", Some("employee"), None, Some(data.full_name.trim()), create_employee(&conn, &data, &user))
 }
 #[tauri::command] fn cmd_update_employee(state: State<DbState>, sess: State<SessionState>, id: i64, data: EmployeeData) -> Result<Employee, AppError> {
     let conn = state.conn()?;
     let user = authorize(&conn, &sess, "employees.edit")?;
-    update_employee(&conn, id, &data, &user)
+    logged_failure(&conn, &user, "UPDATE_EMPLOYEE", Some("employee"), Some(id), Some(data.full_name.trim()), update_employee(&conn, id, &data, &user))
 }
 #[tauri::command] fn cmd_list_name_review(state: State<DbState>, sess: State<SessionState>) -> Result<Vec<names::ReviewItem>, AppError> {
     let conn = state.conn()?;
@@ -443,7 +540,7 @@ fn cmd_scan_document(state: State<DbState>, sess: State<SessionState>, device_id
 #[tauri::command] fn cmd_delete_employee(state: State<DbState>, sess: State<SessionState>, id: i64) -> Result<(), AppError> {
     let conn = state.conn()?;
     let user = authorize(&conn, &sess, "employees.delete")?;
-    delete_employee(&conn, id, &user)
+    logged_failure(&conn, &user, "DELETE_EMPLOYEE", Some("employee"), Some(id), None, delete_employee(&conn, id, &user))
 }
 #[tauri::command] fn cmd_upload_employee_photo(state: State<DbState>, sess: State<SessionState>, employee_id: i64, source_path: String) -> Result<String, AppError> {
     let conn = state.conn()?;
@@ -624,8 +721,8 @@ fn cmd_scan_document(state: State<DbState>, sess: State<SessionState>, device_id
 }
 #[tauri::command] fn cmd_delete_grade_history(state: State<DbState>, sess: State<SessionState>, id: i64) -> Result<(), AppError> {
     let conn = state.conn()?;
-    authorize(&conn, &sess, "employees.edit")?;
-    delete_grade_history(&conn, id)
+    let user = authorize(&conn, &sess, "employees.edit")?;
+    delete_grade_history(&conn, id, &user)
 }
 #[tauri::command] fn cmd_list_general_docs(state: State<DbState>, sess: State<SessionState>) -> Result<Vec<GeneralDoc>, AppError> {
     let conn = state.conn()?;
@@ -635,17 +732,17 @@ fn cmd_scan_document(state: State<DbState>, sess: State<SessionState>, device_id
 #[tauri::command] fn cmd_create_general_doc(state: State<DbState>, sess: State<SessionState>, data: GeneralDocData) -> Result<GeneralDoc, AppError> {
     let conn = state.conn()?;
     let user = authorize(&conn, &sess, "documents.manage")?;
-    create_general_doc(&conn, &data, &user)
+    logged_failure(&conn, &user, "CREATE_DOC", Some("general_doc"), None, Some(data.title.trim()), create_general_doc(&conn, &data, &user))
 }
 #[tauri::command] fn cmd_update_general_doc(state: State<DbState>, sess: State<SessionState>, id: i64, data: GeneralDocData) -> Result<GeneralDoc, AppError> {
     let conn = state.conn()?;
     let user = authorize(&conn, &sess, "documents.manage")?;
-    update_general_doc(&conn, id, &data, &user)
+    logged_failure(&conn, &user, "UPDATE_DOC", Some("general_doc"), Some(id), Some(data.title.trim()), update_general_doc(&conn, id, &data, &user))
 }
 #[tauri::command] fn cmd_delete_general_doc(state: State<DbState>, sess: State<SessionState>, id: i64) -> Result<(), AppError> {
     let conn = state.conn()?;
     let user = authorize(&conn, &sess, "documents.delete")?;
-    delete_general_doc(&conn, id, &user)
+    logged_failure(&conn, &user, "DELETE_DOC", Some("general_doc"), Some(id), None, delete_general_doc(&conn, id, &user))
 }
 #[tauri::command] fn cmd_upload_general_doc_file(state: State<DbState>, sess: State<SessionState>, doc_id: i64, source_path: String) -> Result<String, AppError> {
     let conn = state.conn()?;
@@ -676,17 +773,17 @@ fn cmd_scan_document(state: State<DbState>, sess: State<SessionState>, device_id
 #[tauri::command] fn cmd_create_outgoing_doc(state: State<DbState>, sess: State<SessionState>, data: GeneralDocData) -> Result<GeneralDoc, AppError> {
     let conn = state.conn()?;
     let user = authorize(&conn, &sess, "documents.manage")?;
-    create_outgoing_doc(&conn, &data, &user)
+    logged_failure(&conn, &user, "CREATE_OUTGOING_DOC", Some("outgoing_doc"), None, Some(data.title.trim()), create_outgoing_doc(&conn, &data, &user))
 }
 #[tauri::command] fn cmd_update_outgoing_doc(state: State<DbState>, sess: State<SessionState>, id: i64, data: GeneralDocData) -> Result<GeneralDoc, AppError> {
     let conn = state.conn()?;
     let user = authorize(&conn, &sess, "documents.manage")?;
-    update_outgoing_doc(&conn, id, &data, &user)
+    logged_failure(&conn, &user, "UPDATE_OUTGOING_DOC", Some("outgoing_doc"), Some(id), Some(data.title.trim()), update_outgoing_doc(&conn, id, &data, &user))
 }
 #[tauri::command] fn cmd_delete_outgoing_doc(state: State<DbState>, sess: State<SessionState>, id: i64) -> Result<(), AppError> {
     let conn = state.conn()?;
     let user = authorize(&conn, &sess, "documents.delete")?;
-    delete_outgoing_doc(&conn, id, &user)
+    logged_failure(&conn, &user, "DELETE_OUTGOING_DOC", Some("outgoing_doc"), Some(id), None, delete_outgoing_doc(&conn, id, &user))
 }
 #[tauri::command] fn cmd_upload_outgoing_doc_file(state: State<DbState>, sess: State<SessionState>, doc_id: i64, source_path: String) -> Result<String, AppError> {
     let conn = state.conn()?;
@@ -721,21 +818,28 @@ fn cmd_scan_document(state: State<DbState>, sess: State<SessionState>, device_id
 }
 #[tauri::command] fn cmd_create_user(state: State<DbState>, sess: State<SessionState>, data: UserData) -> Result<User, AppError> {
     let user = session_user(&sess)?;
-    create_user(&*state.conn()?, &user, &data)
+    let conn = state.conn()?;
+    logged_failure(&conn, &user, "CREATE_USER", Some("user"), None, Some(data.username.trim()), create_user(&conn, &user, &data))
 }
 #[tauri::command] fn cmd_delete_user(state: State<DbState>, sess: State<SessionState>, id: i64) -> Result<(), AppError> {
     let user = session_user(&sess)?;
-    delete_user(&*state.conn()?, &user, id)
+    let conn = state.conn()?;
+    logged_failure(&conn, &user, "DELETE_USER", Some("user"), Some(id), None, delete_user(&conn, &user, id))
 }
 #[tauri::command] fn cmd_update_user_role(state: State<DbState>, sess: State<SessionState>, id: i64, data: UserRoleData) -> Result<User, AppError> {
     let conn = state.conn()?;
     let user = authorize(&conn, &sess, "users.manage")?;
-    update_user_role(&conn, &user, id, &data.role)
+    logged_failure(&conn, &user, "CHANGE_USER_ROLE", Some("user"), Some(id), None, update_user_role(&conn, &user, id, &data.role))
+}
+#[tauri::command] fn cmd_set_user_disabled(state: State<DbState>, sess: State<SessionState>, id: i64, data: UserDisabledData) -> Result<User, AppError> {
+    let conn = state.conn()?;
+    let user = authorize(&conn, &sess, "users.manage")?;
+    set_user_disabled(&conn, &user, id, data.disabled)
 }
 #[tauri::command] fn cmd_reset_user_password(state: State<DbState>, sess: State<SessionState>, id: i64, data: PasswordResetData) -> Result<(), AppError> {
     let conn = state.conn()?;
     let user = authorize(&conn, &sess, "users.manage")?;
-    reset_user_password(&conn, &user, id, &data.password)
+    logged_failure(&conn, &user, "RESET_USER_PASSWORD", Some("user"), Some(id), None, reset_user_password(&conn, &user, id, &data.password))
 }
 #[tauri::command] fn cmd_get_storage_path(state: State<DbState>, sess: State<SessionState>) -> Result<String, AppError> {
     let conn = state.conn()?;
@@ -902,6 +1006,12 @@ async fn cmd_move_data_folder(window: Window, state: State<'_, DbState>, sess: S
     let user = authorize(&conn, &sess, "settings.manage")?;
     set_document_alert_rules(&conn, &user, &rules)
 }
+/// For the home-screen reminder: when a full backup was last exported (None: never).
+#[tauri::command] fn cmd_last_full_export(state: State<DbState>, sess: State<SessionState>) -> Result<Option<String>, AppError> {
+    let conn = state.conn()?;
+    authorize(&conn, &sess, "backups.manage")?;
+    get_setting(&conn, "backup_last_export")
+}
 #[tauri::command] fn cmd_get_auto_backup_settings(state: State<DbState>, sess: State<SessionState>) -> Result<AutoBackupSettings, AppError> {
     let conn = state.conn()?;
     let user = authorize(&conn, &sess, "backups.manage")?;
@@ -913,7 +1023,7 @@ async fn cmd_move_data_folder(window: Window, state: State<'_, DbState>, sess: S
     set_auto_backup_settings(&conn, &user, &data)
 }
 #[tauri::command]
-async fn cmd_run_due_auto_backups(window: Window, sess: State<'_, SessionState>) -> Result<Vec<String>, AppError> {
+async fn cmd_run_due_auto_backups(window: Window, sess: State<'_, SessionState>, in_session: Option<bool>) -> Result<Vec<String>, AppError> {
     // Only a signed-in session can trigger backups. Without one nothing could have changed
     // since the last run, so there is nothing due and the call quietly does nothing.
     if session_identity(&sess).is_err() { return Ok(Vec::new()); }
@@ -923,7 +1033,10 @@ async fn cmd_run_due_auto_backups(window: Window, sess: State<'_, SessionState>)
         // up-to-date database, and quietly does nothing during setup.
         if !db::db_path().is_file() { return Ok(Vec::new()); }
         let conn = db::open_existing().map_err(AppError::from)?;
-        match run_due_automatic_backups_with_progress(&conn, move |progress| {
+        // The regular check while someone works is quiet: no progress window.
+        let quiet = in_session.unwrap_or(false);
+        match run_due_automatic_backups_with_progress(&conn, quiet, move |progress| {
+            if quiet { return; }
             let _ = progress_window.emit("auto-backup-progress", progress);
         }) {
             Ok(created) => Ok(created),
@@ -939,6 +1052,40 @@ async fn cmd_run_due_auto_backups(window: Window, sess: State<'_, SessionState>)
 #[tauri::command]
 fn cmd_exit_app(app: AppHandle) {
     app.exit(0);
+}
+/// Opens and checks a backup before a restore and says what it holds (date, employees, files).
+#[tauri::command]
+async fn cmd_inspect_backup(state: State<'_, DbState>, sess: State<'_, SessionState>, source_path: String, password: String) -> Result<BackupSummary, AppError> {
+    {
+        let conn = state.conn()?;
+        authorize(&conn, &sess, "backups.restore")?;
+    }
+    tauri::async_runtime::spawn_blocking(move || inspect_backup(&source_path, &password))
+        .await
+        .map_err(|error| AppError::Other(error.to_string()))?
+}
+#[tauri::command]
+async fn cmd_list_backups(state: State<'_, DbState>, sess: State<'_, SessionState>) -> Result<Vec<backup_store::BackupListItem>, AppError> {
+    {
+        let conn = state.conn()?;
+        authorize(&conn, &sess, "backups.restore")?;
+    }
+    tauri::async_runtime::spawn_blocking(move || {
+        let conn = db::open_existing().map_err(AppError::from)?;
+        Ok(backup_store::list_backups(&conn))
+    })
+    .await
+    .map_err(|error| AppError::Other(error.to_string()))?
+}
+#[tauri::command] fn cmd_get_job_lists(state: State<DbState>, sess: State<SessionState>) -> Result<JobLists, AppError> {
+    let conn = state.conn()?;
+    authorize(&conn, &sess, "employees.view")?;
+    get_job_lists(&conn)
+}
+#[tauri::command] fn cmd_set_job_lists(state: State<DbState>, sess: State<SessionState>, lists: JobLists) -> Result<JobLists, AppError> {
+    let conn = state.conn()?;
+    let user = authorize(&conn, &sess, "settings.manage")?;
+    set_job_lists(&conn, &user, &lists)
 }
 #[tauri::command] fn cmd_get_document_types(state: State<DbState>, sess: State<SessionState>) -> Result<Vec<String>, AppError> {
     let conn = state.conn()?;
@@ -968,14 +1115,14 @@ async fn cmd_create_backup(window: Window, state: State<'_, DbState>, sess: Stat
     .map_err(|error| AppError::Other(error.to_string()))?
 }
 #[tauri::command]
-async fn cmd_restore_backup(window: Window, state: State<'_, DbState>, sess: State<'_, SessionState>, source_path: String, password: String) -> Result<(), AppError> {
+async fn cmd_restore_backup(window: Window, state: State<'_, DbState>, sess: State<'_, SessionState>, source_path: String, password: String) -> Result<String, AppError> {
     let user = {
         let conn = state.conn()?;
         authorize(&conn, &sess, "backups.restore")?
     };
     let app = window.app_handle().clone();
     let progress_window = window.clone();
-    tauri::async_runtime::spawn_blocking(move || {
+    let safety_copy = tauri::async_runtime::spawn_blocking(move || {
         let state = app.state::<DbState>();
         let mut conn = state.conn()?;
         restore_backup_with_progress(&mut conn, &user, &source_path, &password, move |progress| {
@@ -985,7 +1132,7 @@ async fn cmd_restore_backup(window: Window, state: State<'_, DbState>, sess: Sta
     .await
     .map_err(|error| AppError::Other(error.to_string()))??;
     *sess.0.lock().unwrap() = None;
-    Ok(())
+    Ok(safety_copy)
 }
 #[tauri::command] fn cmd_audit_document_view(state: State<DbState>, sess: State<SessionState>, employee_id: i64, document_name: String) -> Result<(), AppError> {
     let conn = state.conn()?; let user = authorize(&conn, &sess, "documents.view")?;
@@ -1017,11 +1164,65 @@ async fn cmd_restore_backup(window: Window, state: State<'_, DbState>, sess: Sta
     let conn = state.conn()?; let user = authorize(&conn, &sess, "documents.print")?;
     log_activity(&conn, &user, "PRINT_DOCUMENT", Some("employee"), Some(employee_id), Some(&document_names.join(", ")), None); Ok(())
 }
-#[tauri::command] fn cmd_save_report_xlsx(state: State<DbState>, sess: State<SessionState>, destination_path: String, headers: Vec<String>, rows: Vec<Vec<String>>) -> Result<(), AppError> {
+/// Saves the employees report as Excel and records it in the system log (who, how many
+/// employees and columns, which file): the report carries personal data.
+#[tauri::command] fn cmd_save_report_xlsx(state: State<DbState>, sess: State<SessionState>, destination_path: String, headers: Vec<String>, rows: Vec<Vec<String>>, date_columns: Option<Vec<usize>>) -> Result<(), AppError> {
     let conn = state.conn()?;
-    authorize(&conn, &sess, "employees.view")?;
-    let workbook = build_report_xlsx(&headers, &rows)?;
-    std::fs::write(destination_path, workbook).map_err(|e| AppError::Other(e.to_string()))
+    let user = authorize(&conn, &sess, "employees.view")?;
+    let workbook = build_report_xlsx(&headers, &rows, &date_columns.unwrap_or_default())?;
+    std::fs::write(&destination_path, workbook).map_err(|e| AppError::Other(e.to_string()))?;
+    log_activity(&conn, &user, "EXPORT_REPORT", Some("report"), None, file_name_of(&destination_path).as_deref(),
+        Some(&report_log_details(rows.len(), &headers)));
+    Ok(())
+}
+
+fn file_name_of(path: &str) -> Option<String> {
+    std::path::Path::new(path).file_name().map(|n| n.to_string_lossy().into_owned())
+}
+
+// ── سجل النظام ──────────────────────────────────────────────────────────────
+#[tauri::command] fn cmd_search_activity_log(state: State<DbState>, sess: State<SessionState>, filter: ActivityLogFilter) -> Result<ActivityLogPage, AppError> {
+    let conn = state.conn()?;
+    authorize(&conn, &sess, "audit.view")?;
+    search_activity_log(&conn, &filter)
+}
+/// Saves the log entries the screen shows (already in Arabic) to an Excel file, and records it.
+#[tauri::command] fn cmd_export_activity_log(state: State<DbState>, sess: State<SessionState>, destination_path: String, headers: Vec<String>, rows: Vec<Vec<String>>) -> Result<(), AppError> {
+    let conn = state.conn()?;
+    let user = authorize(&conn, &sess, "audit.view")?;
+    if rows.len() as i64 > AUDIT_EXPORT_LIMIT { return Err(AppError::Validation("Too many rows to export".into())); }
+    let workbook = build_report_xlsx(&headers, &rows, &[])?;
+    std::fs::write(&destination_path, workbook).map_err(|e| AppError::Other(e.to_string()))?;
+    log_activity(&conn, &user, "EXPORT_AUDIT_LOG", Some("audit"), None, file_name_of(&destination_path).as_deref(),
+        Some(&serde_json::json!({ "rows": rows.len() }).to_string()));
+    Ok(())
+}
+/// Printing (or saving as PDF) the employees report happens in the window; it is recorded here.
+#[tauri::command] fn cmd_audit_report_print(state: State<DbState>, sess: State<SessionState>, employee_count: usize, headers: Vec<String>) -> Result<(), AppError> {
+    let conn = state.conn()?;
+    let user = authorize(&conn, &sess, "employees.view")?;
+    log_activity(&conn, &user, "PRINT_REPORT", Some("report"), None, None, Some(&report_log_details(employee_count, &headers)));
+    Ok(())
+}
+
+/// «14 موظفاً، 7 أعمدة: الرقم الوظيفي، الاسم …» for the system log.
+fn report_log_details(employees: usize, headers: &[String]) -> String {
+    format!("{employees} موظفاً، {} أعمدة: {}", headers.len(), headers.join("، "))
+}
+/// The archive's preview reads files with `cmd_read_document`, which also feeds thumbnails and so
+/// does not log. Opening an attachment to look at it is recorded here, once per opening.
+#[tauri::command] fn cmd_audit_archive_view(state: State<DbState>, sess: State<SessionState>, relative_path: String) -> Result<(), AppError> {
+    let conn = state.conn()?;
+    let user = authorize(&conn, &sess, "documents.view")?;
+    let found = |table: &str, column: &str| conn.query_row(
+        &format!("SELECT {column} FROM {table} WHERE file_path=?1"), rusqlite::params![relative_path], |r| r.get::<_, i64>(0)).ok();
+    let (kind, id) = match found("general_doc_attachments", "general_doc_id") {
+        Some(id) => ("general_doc", Some(id)),
+        None => ("outgoing_doc", found("outgoing_doc_attachments", "outgoing_doc_id")),
+    };
+    if id.is_none() { return Err(AppError::NotFound); }
+    log_activity(&conn, &user, "VIEW_DOCUMENT", Some(kind), id, Some(&relative_path), None);
+    Ok(())
 }
 
 
@@ -1354,6 +1555,8 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             cmd_login, cmd_change_password, cmd_logout,
+            cmd_get_first_run_state, cmd_complete_first_run, cmd_get_password_policy, cmd_set_password_policy,
+            cmd_get_recovery_options, cmd_new_unlock_challenge, cmd_unlock_admin, cmd_get_recovery_status, cmd_regenerate_recovery_code, cmd_recover_admin_password,
             cmd_get_company_config, cmd_get_public_company_config, cmd_update_company_config,
             cmd_next_employee_number,
             cmd_list_employees, cmd_get_employee,
@@ -1380,7 +1583,11 @@ pub fn run() {
             cmd_upload_outgoing_doc_file, cmd_delete_outgoing_doc_attachment, cmd_move_outgoing_doc_attachment,
             cmd_select_scanner_device, cmd_scan_document,
             cmd_list_activity_log,
-            cmd_list_users, cmd_create_user, cmd_delete_user, cmd_update_user_role, cmd_reset_user_password,
+            cmd_search_activity_log,
+            cmd_export_activity_log,
+            cmd_audit_archive_view,
+            cmd_audit_report_print,
+            cmd_list_users, cmd_create_user, cmd_delete_user, cmd_update_user_role, cmd_reset_user_password, cmd_set_user_disabled,
             cmd_get_storage_path, cmd_get_backup_path, cmd_open_managed_folder,
             cmd_get_startup_status, cmd_check_setup_folders, cmd_complete_setup, cmd_retry_data_folder,
             cmd_get_storage_status, cmd_change_backup_folder, cmd_export_backup_to, cmd_move_data_folder,
@@ -1390,6 +1597,7 @@ pub fn run() {
             cmd_get_document_alert_rules, cmd_set_document_alert_rules,
             cmd_run_due_auto_backups, cmd_exit_app,
             cmd_get_document_types, cmd_set_document_types,
+            cmd_inspect_backup, cmd_list_backups, cmd_last_full_export, cmd_get_job_lists, cmd_set_job_lists,
             cmd_create_backup, cmd_restore_backup, cmd_audit_document_view, cmd_audit_document_download, cmd_download_document,
             cmd_get_document_preview_path, cmd_read_document, cmd_print_document, cmd_print_employee_documents, cmd_save_report_xlsx,
         ])
@@ -1446,6 +1654,7 @@ mod report_export_tests {
         let bytes = build_report_xlsx(
             &["الاسم الرباعي".to_string(), "الهاتف".to_string()],
             &[vec!["سيف ناظم كريم".to_string(), "07700000001".to_string()]],
+            &[],
         ).unwrap();
         let cursor = std::io::Cursor::new(bytes);
         let mut archive = zip::ZipArchive::new(cursor).unwrap();
@@ -1454,5 +1663,36 @@ mod report_export_tests {
         archive.by_name("xl/worksheets/sheet1.xml").unwrap().read_to_string(&mut sheet).unwrap();
         assert!(sheet.contains("rightToLeft=\"1\""));
         assert!(sheet.contains("الاسم الرباعي"));
+    }
+
+    #[test]
+    fn report_xlsx_writes_real_dates_and_leaves_empty_cells_empty() {
+        let bytes = build_report_xlsx(
+            &["الاسم".to_string(), "تاريخ النفاذ".to_string(), "الهاتف".to_string()],
+            &[vec!["سيف".to_string(), "2026-12-07".to_string(), "".to_string()],
+              vec!["مريم".to_string(), "2026-12-07، 2027-01-02".to_string(), "07700000001".to_string()]],
+            &[1],
+        ).unwrap();
+        let mut archive = zip::ZipArchive::new(std::io::Cursor::new(bytes)).unwrap();
+        let mut sheet = String::new();
+        archive.by_name("xl/worksheets/sheet1.xml").unwrap().read_to_string(&mut sheet).unwrap();
+        // 2026-12-07 is day 46363 in Excel, shown with the yyyy/m/d style.
+        assert!(sheet.contains(r#"<c r="B2" s="2"><v>46363</v></c>"#));
+        // Two dates in one cell stay text; the empty phone has no cell; the phone keeps its 0.
+        assert!(sheet.contains("2026-12-07، 2027-01-02"));
+        assert!(!sheet.contains(r#"r="C2""#));
+        assert!(sheet.contains("07700000001"));
+        assert!(sheet.contains("<autoFilter"));
+        let mut styles = String::new();
+        archive.by_name("xl/styles.xml").unwrap().read_to_string(&mut styles).unwrap();
+        assert!(styles.contains(r#"formatCode="yyyy/m/d""#));
+        let mut workbook = String::new();
+        archive.by_name("xl/workbook.xml").unwrap().read_to_string(&mut workbook).unwrap();
+        assert!(workbook.contains("_xlnm.Print_Titles"));
+    }
+
+    #[test]
+    fn report_log_details_name_the_count_and_columns() {
+        assert_eq!(report_log_details(14, &["الاسم".to_string(), "الهاتف".to_string()]), "14 موظفاً، 2 أعمدة: الاسم، الهاتف");
     }
 }

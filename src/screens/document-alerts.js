@@ -104,13 +104,28 @@ export function documentStatus({ values, expiry, maxDays, attached, expected, to
   return { tone: "ok", label: "مكتمل" };
 }
 
+/** The expiry dates to watch for one document type, each with the name shown in the alert.
+ *  Vehicles are kept in the «المركبات» list, each with its own annual registration: the alert
+ *  names the plate, so two vehicles of one employee are told apart (and both are kept even
+ *  when they expire the same day). */
+function expiryEntries(employee, documentType) {
+  if (documentType.key !== "vehicle") return [{ date: employee[documentType.field], name: documentType.type, ref: "" }];
+  let vehicles = [];
+  try { vehicles = JSON.parse(employee.vehicles ?? "[]"); } catch { /* no list */ }
+  return (Array.isArray(vehicles) ? vehicles : []).map((vehicle, index) => {
+    const plate = String(vehicle?.plate ?? "").trim();
+    return { date: vehicle?.expiry_date, name: plate ? `${documentType.type} \u2068${plate}\u2069` : `${documentType.type} ${index + 1}`, ref: plate || String(index + 1) };
+  });
+}
+
 export function buildDocumentAlerts(employees, rules = cachedRules, today = new Date()) {
   const alerts = [];
   employees.filter(e => e.is_active).forEach(employee => {
-    ALERT_DOCUMENT_TYPES.forEach(documentType => {
+    ALERT_DOCUMENT_TYPES.forEach(documentType => expiryEntries(employee, documentType).forEach(({ date: expiryDate, name, ref }) => {
+      if (!expiryDate) return;
       const rule = ruleFor(documentType.key, rules);
       if (!rule?.enabled || !rule.days?.length) return;
-      const days = daysLeft(employee[documentType.field], today);
+      const days = daysLeft(expiryDate, today);
       if (days === null || days > Math.max(...rule.days)) return;
       // The reminder reached: the smallest reminder day that is still ≥ the days left.
       const reminder = days < 0 ? null : Math.min(...rule.days.filter(day => day >= days));
@@ -120,13 +135,15 @@ export function buildDocumentAlerts(employees, rules = cachedRules, today = new 
         employeeName: employee.full_name,
         employeeNumber: employee.employee_number,
         documentKey: documentType.key,
-        documentName: documentType.type,
-        expiryDate: employee[documentType.field],
+        documentName: name,
+        documentType: documentType.type,
+        documentRef: ref,
+        expiryDate,
         days,
         expired: days < 0,
         reminder,
       });
-    });
+    }));
   });
   return alerts.sort((a, b) => a.days - b.days);
 }
@@ -134,7 +151,9 @@ export function buildDocumentAlerts(employees, rules = cachedRules, today = new 
 /** Identifies the reminder an alert has reached, so each one is announced only once. */
 export function alertStageKey(alert) {
   return {
-    id: `${alert.employeeId}:${alert.documentKey}:${alert.expiryDate}`,
+    id: alert.documentRef
+      ? `${alert.employeeId}:${alert.documentKey}:${alert.documentRef}:${alert.expiryDate}`
+      : `${alert.employeeId}:${alert.documentKey}:${alert.expiryDate}`,
     stage: alert.expired ? "expired" : `r${alert.reminder}`,
   };
 }
@@ -149,35 +168,50 @@ function remainingLabel(alert) {
   return `باقٍ ${arCount(alert.days, "day")}`;
 }
 
-function alertBadge(alert) {
-  const cls = alert.expired ? "badge-red" : alert.days <= 7 ? "badge-amber" : "badge-gray";
-  return `<span class="badge ${cls}">${remainingLabel(alert)}</span>`;
+// The same outlined pills as the employee file: red for expired, amber within a week.
+export function alertBadge(alert) {
+  const cls = alert.expired ? "emp-pill bad" : alert.days <= 7 ? "emp-pill warn" : "badge badge-gray";
+  return `<span class="${cls}">${remainingLabel(alert)}</span>`;
 }
 
 const ALERT_FILTERS = [
   { id: "all", label: "الكل", match: () => true },
   { id: "expired", label: "منتهية", match: alert => alert.expired },
-  { id: "soon", label: "خلال 30 يوماً", match: alert => !alert.expired && alert.days <= 30 },
+  // Every reminder that has not expired yet, whatever its reminder days (180 for passports).
+  { id: "soon", label: "قريبة النفاذ", match: alert => !alert.expired },
   { id: "passport", label: "جوازات", match: alert => alert.documentName === "جواز السفر" },
 ];
-let activeAlertFilter = "all";
-
-function alertRows(alerts) {
+/** One table row per alert; a click or Enter opens the employee file on the document's tab. */
+export function alertRows(alerts, { showNumber = true } = {}) {
   return alerts.map(alert => `
     <tr class="table-row alert-row" data-employee-id="${alert.employeeId}" data-employee-tab="${alert.employeeTab}"
       tabindex="0" title="فتح ملف الموظف">
       <td class="table-cell font-medium text-gray-100">${escHtml(alert.employeeName)}</td>
-      <td class="table-cell" dir="ltr">${escHtml(alert.employeeNumber || "—")}</td>
+      ${showNumber ? `<td class="table-cell" dir="ltr">${escHtml(alert.employeeNumber || "—")}</td>` : ""}
       <td class="table-cell">${escHtml(alert.documentName)}</td>
       <td class="table-cell">${formatDate(alert.expiryDate)}</td>
       <td class="table-cell">${alertBadge(alert)}</td>
     </tr>`).join("");
 }
 
+export function bindAlertRows(root, ctx) {
+  root.querySelectorAll(".alert-row").forEach(row => {
+    const open = () => ctx.navigateTo("employees", {
+      openEmployeeId: Number(row.dataset.employeeId),
+      openEmployeeTab: row.dataset.employeeTab,
+    });
+    row.addEventListener("click", open);
+    row.addEventListener("keydown", event => { if (event.key === "Enter") open(); });
+  });
+}
+
 export async function renderDocumentAlerts(container, user, ctx) {
   const [employees, rules] = await Promise.all([api.listEmployees(), loadAlertRules()]);
   const alerts = buildDocumentAlerts(employees, rules);
   const canEditTiming = can(user, "settings.manage");
+  // Each visit starts on «الكل» (or the filter the home screen asked for), so the count on the
+  // home card always matches what opens; the choice is kept only while on this page.
+  let activeAlertFilter = ALERT_FILTERS.some(item => item.id === ctx?.alertFilter) ? ctx.alertFilter : "all";
 
   const render = () => {
     const filter = ALERT_FILTERS.find(item => item.id === activeAlertFilter) ?? ALERT_FILTERS[0];
@@ -217,14 +251,7 @@ export async function renderDocumentAlerts(container, user, ctx) {
       activeAlertFilter = button.dataset.alertFilter;
       render();
     }));
-    container.querySelectorAll(".alert-row").forEach(row => {
-      const open = () => ctx.navigateTo("employees", {
-        openEmployeeId: Number(row.dataset.employeeId),
-        openEmployeeTab: row.dataset.employeeTab,
-      });
-      row.addEventListener("click", open);
-      row.addEventListener("keydown", event => { if (event.key === "Enter") open(); });
-    });
+    bindAlertRows(container, ctx);
   };
   render();
 }

@@ -269,7 +269,7 @@ fn days_since(timestamp: &str) -> Option<i64> {
     Some((chrono::Local::now().naive_local() - parsed).num_days())
 }
 
-/// Counts the backup files (.autohrbak) under the backup folder and finds the newest one.
+/// Counts the backup files (.cnsarchbak, and .autohrbak from earlier releases) under the backup folder and finds the newest one.
 /// The folder holds Manual, PreUpdate, Daily, Weekly and Monthly, each split by year.
 fn scan_backup_files(root: &Path) -> (usize, Option<chrono::DateTime<chrono::Local>>) {
     fn walk(dir: &Path, depth: usize, count: &mut usize, newest: &mut Option<std::time::SystemTime>) {
@@ -278,7 +278,7 @@ fn scan_backup_files(root: &Path) -> (usize, Option<chrono::DateTime<chrono::Loc
             let path = entry.path();
             if path.is_dir() {
                 if depth < 4 { walk(&path, depth + 1, count, newest); }
-            } else if path.extension().and_then(|e| e.to_str()).is_some_and(|e| e.eq_ignore_ascii_case("autohrbak")) {
+            } else if crate::backup_store::is_backup_extension(&path) {
                 *count += 1;
                 if let Ok(modified) = entry.metadata().and_then(|m| m.modified()) {
                     if newest.is_none_or(|n| modified > n) { *newest = Some(modified); }
@@ -318,26 +318,26 @@ fn check_backups(conn: &Connection) -> HealthItem {
         }
     };
 
-    let enabled: Vec<&str> = [("auto_backup_daily_enabled", "يومي"), ("auto_backup_weekly_enabled", "أسبوعي"), ("auto_backup_monthly_enabled", "شهري")]
-        .into_iter()
-        .filter(|(key, _)| setting(conn, key).as_deref() == Some("1"))
-        .map(|(_, label)| label)
-        .collect();
-    if enabled.is_empty() {
+    if !crate::services::auto_backup_enabled(conn).unwrap_or(false) {
         if status == "ok" { status = "warn"; }
         details.push("النسخ التلقائي: غير مفعّل".into());
     } else {
-        details.push(format!("النسخ التلقائي: {}", enabled.join("، ")));
+        let interval = crate::services::backup_interval_minutes(conn).unwrap_or(60);
+        details.push(if interval == 0 {
+            "النسخ التلقائي: نسخة لكل يوم عند الخروج".to_string()
+        } else {
+            format!("النسخ التلقائي: نسخة لكل يوم، تُحدَّث كل {interval} دقيقة أثناء العمل وعند الخروج")
+        });
         if setting(conn, "auto_backup_password").is_none() {
             if status == "ok" { status = "warn"; }
             details.push("النسخ التلقائي مفعّل لكن كلمة مروره غير محفوظة".into());
         }
     }
-    for (key, label) in [("auto_backup_last_daily", "آخر نسخة يومية"), ("auto_backup_last_weekly", "آخر نسخة أسبوعية"), ("auto_backup_last_monthly", "آخر نسخة شهرية")] {
-        if let Some(value) = setting(conn, key) {
-            details.push(format!("{label}: {value}"));
-        }
+    if let Some(value) = setting(conn, "auto_backup_last_time").or_else(|| setting(conn, "auto_backup_last_daily")) {
+        details.push(format!("آخر نسخة تلقائية: {value}"));
     }
+    let usage = crate::backup_store::usage(&crate::paths::backup_root());
+    details.push(format!("المساحة التي يشغلها مجلد النسخ: {:.1} MB", usage.bytes as f64 / 1_048_576.0));
     item("backups", "النسخ الاحتياطية", status, details)
 }
 

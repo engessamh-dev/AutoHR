@@ -1,4 +1,4 @@
--- GCANS Document Archive System — Schema v2.0
+-- CNSArch Document Archive System — Schema v2.0
 
 PRAGMA journal_mode=WAL;
 PRAGMA foreign_keys=ON;
@@ -9,13 +9,15 @@ CREATE TABLE IF NOT EXISTS users (
   password   TEXT NOT NULL,
   role       TEXT NOT NULL DEFAULT 'viewer' CHECK(role IN ('system_admin','archive_admin','archive_officer','viewer')),
   must_change_password INTEGER NOT NULL DEFAULT 0 CHECK(must_change_password IN (0,1)),
-  created_at TEXT DEFAULT (datetime('now'))
+  created_at TEXT DEFAULT (datetime('now')),
+  -- Added in schema v8: an account stopped by an admin (cannot sign in).
+  disabled INTEGER NOT NULL DEFAULT 0 CHECK(disabled IN (0,1))
 );
 
 CREATE TABLE IF NOT EXISTS company_config (
   id              INTEGER PRIMARY KEY CHECK(id = 1),
-  company_name    TEXT NOT NULL DEFAULT 'الشركة العامة لخدمات الملاحة الجوية',
-  department_name TEXT NOT NULL DEFAULT 'GCANS',
+  company_name    TEXT NOT NULL DEFAULT 'الشركة العامة لإدارة المطارات والملاحة الجوية',
+  department_name TEXT NOT NULL DEFAULT '',
   division_name   TEXT NOT NULL DEFAULT '',
   logo_path       TEXT
 );
@@ -47,6 +49,7 @@ CREATE TABLE IF NOT EXISTS employees (
   workplace                 TEXT,
   job_title                 TEXT,
   job_grade                 TEXT,
+  job_step                  TEXT,
   hire_date                 TEXT,
   appointment_date          TEXT,
   contract_type             TEXT DEFAULT 'ملاك',

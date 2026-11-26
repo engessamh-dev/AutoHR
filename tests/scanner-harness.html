@@ -11,6 +11,8 @@ import { renderAbout } from "../src/screens/about.js";
 import { renderSettings } from "../src/screens/settings.js";
 import { renderSupport } from "../src/screens/support.js";
 import { showWhatsNewIfUpdated, markWhatsNewSeen } from "../src/whats-new.js";
+import { renderReports } from "../src/screens/reports.js";
+import { renderUsers } from "../src/screens/users.js";
 const canvas=document.createElement("canvas");canvas.width=640;canvas.height=480;
 const ctx=canvas.getContext("2d");ctx.fillStyle="#334155";ctx.fillRect(0,0,640,480);ctx.fillStyle="#fff";ctx.fillRect(100,70,440,340);ctx.fillStyle="#111";ctx.font="24px sans-serif";ctx.fillText("SYNTHETIC DOCUMENT",125,130);
 const bytes=Array.from(new Uint8Array(await (await fetch(canvas.toDataURL("image/jpeg"))).arrayBuffer()));
@@ -71,7 +73,9 @@ window.renderActual=async screen=>{
   const root=document.querySelector("#root"),user={permissions:window.permissionsOverride ?? permissions};
   if(screen==="employees")await renderEmployees(root,user,{});
   else if(screen==="about")await renderAbout(root,user,{});
+  else if(screen==="reports")await renderReports(root,user,{});
   else if(screen==="settings")await renderSettings(root,user,{});
+  else if(screen==="users")await renderUsers(root,{id:1,...user},{});
   else if(screen==="support")await renderSupport(root,user,{navigateTo:(target,options)=>{window.navigated={target,options};}});
   else await renderDocuments(root,user,window.plainArchive?{archiveTab:screen}:{archiveTab:screen,initialManageAttachmentDocId:1,manageAttachmentDocId:1});
 };

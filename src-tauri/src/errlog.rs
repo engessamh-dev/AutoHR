@@ -210,7 +210,7 @@ fn clean_word(text: &str) -> String {
 
 const FILE_EXTENSIONS: &[&str] = &[
     "pdf", "jpg", "jpeg", "png", "webp", "bmp", "gif", "tif", "tiff", "heic", "doc", "docx", "xls",
-    "xlsx", "csv", "txt", "json", "db", "sqlite", "autohrbak", "zip", "log", "exe", "msi",
+    "xlsx", "csv", "txt", "json", "db", "sqlite", "autohrbak", "cnsarchbak", "zip", "log", "exe", "msi",
 ];
 
 fn extension_of(text: &str) -> Option<String> {

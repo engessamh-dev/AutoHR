@@ -11,6 +11,18 @@ export const api = {
   changePassword: (currentPassword, newPassword) => invoke("cmd_change_password", { currentPassword, newPassword }),
   logout: ()                   => invoke("cmd_logout"),
 
+  // Accounts: first-run administrator, password policy, recovery code
+  getFirstRunState: ()            => invoke("cmd_get_first_run_state"),
+  completeFirstRun: (data)        => invoke("cmd_complete_first_run", { data }),
+  getPasswordPolicy: ()           => invoke("cmd_get_password_policy"),
+  setPasswordPolicy: (policy)     => invoke("cmd_set_password_policy", { policy }),
+  getRecoveryOptions: ()          => invoke("cmd_get_recovery_options"),
+  newUnlockChallenge: ()          => invoke("cmd_new_unlock_challenge"),
+  unlockAdmin: (unlockCode, newPassword) => invoke("cmd_unlock_admin", { unlockCode, newPassword }),
+  getRecoveryStatus: ()           => invoke("cmd_get_recovery_status"),
+  regenerateRecoveryCode: ()      => invoke("cmd_regenerate_recovery_code"),
+  recoverAdminPassword: (code, newPassword) => invoke("cmd_recover_admin_password", { code, newPassword }),
+
   // Company config
   getCompanyConfig:    ()           => invoke("cmd_get_company_config"),
   getPublicCompanyConfig: ()        => invoke("cmd_get_public_company_config"),
@@ -93,6 +105,9 @@ export const api = {
   // Activity log
   openManagedFolder: (kind) => invoke("cmd_open_managed_folder", { kind }),
   listActivityLog: (limit) => invoke("cmd_list_activity_log", { limit: limit ?? 50 }),
+  searchActivityLog: (filter) => invoke("cmd_search_activity_log", { filter }),
+  exportActivityLog: (destinationPath, headers, rows) => invoke("cmd_export_activity_log", { destinationPath, headers, rows }),
+  auditArchiveView: (relativePath) => invoke("cmd_audit_archive_view", { relativePath }),
 
   // Users
   listUsers:  ()              => invoke("cmd_list_users"),
@@ -100,6 +115,7 @@ export const api = {
   deleteUser: (id)            => invoke("cmd_delete_user",  { id }),
   updateUserRole: (id, role)  => invoke("cmd_update_user_role", { id, data: { role } }),
   resetUserPassword: (id, password) => invoke("cmd_reset_user_password", { id, data: { password } }),
+  setUserDisabled: (id, disabled) => invoke("cmd_set_user_disabled", { id, data: { disabled } }),
 
   getScannerSettings: () => invoke("cmd_scanner_settings"),
   setScannerSettings: (settings) => invoke("cmd_set_scanner_settings", { settings }),
@@ -139,7 +155,15 @@ export const api = {
   setDocumentAlertRules: (rules) => invoke("cmd_set_document_alert_rules", { rules }),
   getAutoBackupSettings: () => invoke("cmd_get_auto_backup_settings"),
   setAutoBackupSettings: (data) => invoke("cmd_set_auto_backup_settings", { data }),
-  runDueAutoBackups: () => invoke("cmd_run_due_auto_backups"),
+  // inSession: the quiet check while someone works (waits for the chosen interval); otherwise sign-out/close.
+  runDueAutoBackups: (inSession = false) => invoke("cmd_run_due_auto_backups", { inSession }),
+  // Opens and checks a backup before a restore; says its date and what it holds.
+  inspectBackup: (path, password) => invoke("cmd_inspect_backup", { sourcePath: path, password }),
+  listBackups: () => invoke("cmd_list_backups"),
+  lastFullExport: () => invoke("cmd_last_full_export"),
+  // «الدرجة الوظيفية» and «رقم المرحلة» lists (read: employees.view; save: settings.manage)
+  getJobLists: () => invoke("cmd_get_job_lists"),
+  setJobLists: (lists) => invoke("cmd_set_job_lists", { lists }),
   exitApp: () => invoke("cmd_exit_app"),
   createBackup: (password)       => invoke("cmd_create_backup", { password }),
   restoreBackup: (path, password)  => invoke("cmd_restore_backup", { sourcePath: path, password }),
@@ -147,7 +171,8 @@ export const api = {
   setDocumentTypes: (types)  => invoke("cmd_set_document_types", { types }),
 
   printEmployeeDocuments: (employeeId, documentNames) => invoke("cmd_print_employee_documents", { employeeId, documentNames }),
-  saveReportXlsx: (destinationPath, headers, rows) => invoke("cmd_save_report_xlsx", { destinationPath, headers, rows }),
+  saveReportXlsx: (destinationPath, headers, rows, dateColumns) => invoke("cmd_save_report_xlsx", { destinationPath, headers, rows, dateColumns }),
+  auditReportPrint: (employeeCount, headers) => invoke("cmd_audit_report_print", { employeeCount, headers }),
   auditDocumentView: (employeeId, documentName) => invoke("cmd_audit_document_view", { employeeId, documentName }),
   auditDocumentDownload: (employeeId, documentName) => invoke("cmd_audit_document_download", { employeeId, documentName }),
   downloadDocument: (relativePath, destinationPath) => invoke("cmd_download_document", { relativePath, destinationPath }),

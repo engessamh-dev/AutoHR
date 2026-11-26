@@ -31,7 +31,7 @@
       </form>
       <button id="btn-forgot-password" type="button" class="login-hit login-hit-forgot" aria-label="نسيت كلمة المرور؟"></button>
       <ul id="login-suggestions" class="login-suggestions hidden" role="listbox" aria-label="أسماء مستخدمين سابقة"></ul>
-      <span id="login-unit-name" class="login-unit-name is-hint">لم يُحدَّد اسم الشعبة/الوحدة</span>
+      <span id="login-unit-name" class="login-unit-name is-hint">حدّد اسم الشعبة من الإعدادات</span>
       <p id="login-error" class="login-message hidden" role="alert" aria-live="assertive"></p>
     </main>
     <footer class="login-footer">
@@ -39,35 +39,123 @@
     </footer>
   </div>
 
-  <div id="setup-screen" class="hidden min-h-screen flex items-center justify-center" dir="rtl">
-    <div class="card w-full max-w-2xl mx-4 shadow-2xl space-y-4">
-      <div>
-        <h1 id="setup-title" class="text-xl font-bold mb-2">إعداد مواقع حفظ البيانات</h1>
-        <p id="setup-intro" class="text-sm text-gray-400 leading-7">اختر أين تُحفظ قاعدة البيانات والمرفقات، وأين تُحفظ النسخ الاحتياطية. يُفضّل أن يكون مجلد البيانات على قرص غير قرص النظام C، وأن تكون النسخ الاحتياطية على قرص آخر أو مجلد شبكة. يمكن تغيير الموقعين لاحقًا من الإعدادات.</p>
-      </div>
-      <form id="setup-form" class="space-y-4">
+  <div id="setup-screen" class="setup-screen hidden" dir="rtl">
+    <div class="card setup-card shadow-2xl">
+      <header class="setup-brand">
+        <img src="/src/assets/branding/company-logo-128.png" class="company-logo-tile setup-logo" alt="" />
+        <div class="min-w-0">
+          <p class="setup-product">CNSArch</p>
+          <p class="setup-product-sub">نظام الأرشفة الإلكتروني وإدارة معلومات الموظفين</p>
+        </div>
+      </header>
+      <ol id="setup-steps" class="setup-steps" aria-label="خطوات الإعداد الأول">
+        <li data-step="folders"><span>1</span> مواقع الحفظ</li>
+        <li data-step="admin"><span>2</span> حساب المسؤول</li>
+        <li data-step="unit"><span>3</span> القسم والشعبة</li>
+      </ol>
+
+      <section id="setup-step-folders" class="setup-step space-y-4">
         <div>
-          <label class="section-title" for="setup-data-root">مجلد البيانات والمرفقات</label>
-          <div class="flex gap-2">
-            <input id="setup-data-root" class="input-field flex-1" dir="ltr" placeholder="D:\CNSArch-Data" autocomplete="off" />
-            <button id="setup-pick-data" type="button" class="btn-secondary whitespace-nowrap">اختيار…</button>
-          </div>
+          <h1 id="setup-title" class="text-xl font-bold mb-2">إعداد مواقع حفظ البيانات</h1>
+          <p id="setup-intro" class="text-sm text-gray-400 leading-7">اختر أين تُحفظ قاعدة البيانات والمرفقات، وأين تُحفظ النسخ الاحتياطية. يُفضّل أن يكون مجلد البيانات على قرص غير قرص النظام C، وأن تكون النسخ الاحتياطية على قرص آخر أو مجلد شبكة. يمكن تغيير الموقعين لاحقًا من الإعدادات.</p>
         </div>
-        <div id="setup-backup-group">
-          <label class="section-title" for="setup-backup-root">مجلد النسخ الاحتياطية</label>
-          <div class="flex gap-2">
-            <input id="setup-backup-root" class="input-field flex-1" dir="ltr" placeholder="E:\CNSArch-Backups" autocomplete="off" />
-            <button id="setup-pick-backup" type="button" class="btn-secondary whitespace-nowrap">اختيار…</button>
+        <form id="setup-form" class="space-y-4" novalidate>
+          <div>
+            <label class="section-title" for="setup-data-root">مجلد البيانات والمرفقات</label>
+            <div class="flex gap-2">
+              <input id="setup-data-root" class="input-field flex-1" dir="ltr" placeholder="D:\CNSArch-Data" autocomplete="off" />
+              <button id="setup-pick-data" type="button" class="btn-secondary whitespace-nowrap">اختيار…</button>
+            </div>
           </div>
+          <div id="setup-backup-group">
+            <label class="section-title" for="setup-backup-root">مجلد النسخ الاحتياطية</label>
+            <div class="flex gap-2">
+              <input id="setup-backup-root" class="input-field flex-1" dir="ltr" placeholder="E:\CNSArch-Backups" autocomplete="off" />
+              <button id="setup-pick-backup" type="button" class="btn-secondary whitespace-nowrap">اختيار…</button>
+            </div>
+          </div>
+          <div id="setup-warnings" class="space-y-2"></div>
+          <p id="setup-error" class="text-autohr-red text-sm hidden" role="alert"></p>
+          <div class="flex gap-3 flex-wrap">
+            <button id="setup-submit" type="submit" class="btn-primary px-6">حفظ ومتابعة</button>
+            <button id="setup-retry" type="button" class="btn-secondary hidden">إعادة المحاولة</button>
+            <button id="setup-exit" type="button" class="btn-secondary">إغلاق البرنامج</button>
+          </div>
+        </form>
+      </section>
+
+      <section id="setup-step-admin" class="setup-step space-y-4 hidden">
+        <div>
+          <h1 class="text-xl font-bold mb-2">حساب المسؤول</h1>
+          <p class="text-sm text-gray-400 leading-7">هذا حسابك لإدارة البرنامج: المستخدمين والإعدادات والنسخ الاحتياطية. اختر اسم مستخدم وكلمة مرور لا يعرفها غيرك.</p>
         </div>
-        <div id="setup-warnings" class="space-y-2"></div>
-        <p id="setup-error" class="text-autohr-red text-sm hidden" role="alert"></p>
+        <form id="setup-admin-form" class="space-y-3" novalidate>
+          <div>
+            <label class="section-title" for="setup-admin-username">اسم المستخدم</label>
+            <input id="setup-admin-username" class="input-field" dir="ltr" style="text-align:left" autocomplete="off" spellcheck="false" placeholder="it.admin" maxlength="64" />
+            <p class="field-help">بالإنجليزية: أحرف وأرقام و . - _ فقط، من 3 أحرف على الأقل.</p>
+          </div>
+          <div class="grid grid-cols-1 md:grid-cols-2 gap-3">
+            <div>
+              <label class="section-title" for="setup-admin-password">كلمة المرور</label>
+              <input id="setup-admin-password" class="input-field" type="password" dir="ltr" autocomplete="new-password" />
+            </div>
+            <div>
+              <label class="section-title" for="setup-admin-confirm">تأكيد كلمة المرور</label>
+              <input id="setup-admin-confirm" class="input-field" type="password" dir="ltr" autocomplete="new-password" />
+            </div>
+          </div>
+          <p id="setup-admin-caps" class="field-warning hidden">تنبيه: مفتاح Caps Lock مفعّل</p>
+          <div id="setup-admin-rules"></div>
+          <p id="setup-admin-error" class="text-autohr-red text-sm hidden" role="alert"></p>
+          <div class="flex gap-3 flex-wrap">
+            <button type="submit" class="btn-primary px-6">التالي</button>
+          </div>
+        </form>
+      </section>
+
+      <section id="setup-step-unit" class="setup-step space-y-4 hidden">
+        <div>
+          <h1 class="text-xl font-bold mb-2">القسم والشعبة</h1>
+          <p class="text-sm text-gray-400 leading-7">يظهر اسم القسم في رأس الصفحات والتقارير، واسم الشعبة في شاشة الدخول. يمكن تركهما فارغين وكتابتهما لاحقًا من الإعدادات.</p>
+        </div>
+        <form id="setup-unit-form" class="space-y-3" novalidate>
+          <div>
+            <label class="section-title" for="setup-department">اسم القسم</label>
+            <input id="setup-department" class="input-field" maxlength="40" placeholder="مثل: قسم الموارد البشرية" />
+          </div>
+          <div>
+            <label class="section-title" for="setup-division">اسم الشعبة/الوحدة</label>
+            <input id="setup-division" class="input-field" maxlength="40" placeholder="مثل: شعبة الحاسبة" />
+            <p class="field-help">40 حرفًا على الأكثر.</p>
+          </div>
+          <p id="setup-unit-error" class="text-autohr-red text-sm hidden" role="alert"></p>
+          <div class="flex gap-3 flex-wrap">
+            <button id="setup-unit-submit" type="submit" class="btn-primary px-6">إنهاء الإعداد</button>
+            <button id="setup-unit-back" type="button" class="btn-secondary">رجوع</button>
+          </div>
+        </form>
+      </section>
+
+      <section id="setup-step-code" class="setup-step space-y-4 hidden">
+        <div>
+          <h1 class="text-xl font-bold mb-2">رمز الاستعادة</h1>
+          <p class="text-sm text-gray-400 leading-7">إذا نسيت كلمة المرور، اضغط «نسيت كلمة المرور؟» في شاشة الدخول واكتب هذا الرمز لتضع كلمة جديدة. اطبعه أو اكتبه واحفظه في مكان آمن (درج مقفل أو خزنة). <strong>لن يظهر مرة أخرى.</strong></p>
+        </div>
+        <div class="recovery-code-box">
+          <p class="recovery-code-user">الحساب: <bdi id="setup-code-user" dir="ltr"></bdi></p>
+          <p id="setup-code" class="recovery-code" dir="ltr"></p>
+        </div>
         <div class="flex gap-3 flex-wrap">
-          <button id="setup-submit" type="submit" class="btn-primary px-6">حفظ ومتابعة</button>
-          <button id="setup-retry" type="button" class="btn-secondary hidden">إعادة المحاولة</button>
-          <button id="setup-exit" type="button" class="btn-secondary">إغلاق البرنامج</button>
+          <button id="setup-code-print" type="button" class="btn-secondary">طباعة</button>
+          <button id="setup-code-copy" type="button" class="btn-secondary">نسخ</button>
         </div>
-      </form>
+        <label class="role-card" style="align-items:center">
+          <input type="checkbox" id="setup-code-saved" style="margin-top:0" />
+          <span class="role-card-name">حفظت الرمز في مكان آمن</span>
+        </label>
+        <button id="setup-code-done" type="button" class="btn-primary px-6" disabled>الدخول إلى البرنامج</button>
+      </section>
     </div>
   </div>
 
@@ -75,11 +163,13 @@
     <div class="card w-full max-w-md mx-4 shadow-2xl">
       <h1 class="text-xl font-bold mb-2">تغيير كلمة المرور مطلوب</h1>
       <p class="text-sm text-gray-400 mb-6">يجب تغيير كلمة المرور المؤقتة قبل استخدام النظام.</p>
-      <form id="password-change-form" class="space-y-4">
-        <input id="current-password" type="password" class="input-field" placeholder="كلمة المرور الحالية" dir="ltr" autocomplete="current-password" />
-        <input id="new-password" type="password" class="input-field" placeholder="كلمة المرور الجديدة (8 أحرف على الأقل)" dir="ltr" autocomplete="new-password" />
-        <input id="confirm-password" type="password" class="input-field" placeholder="تأكيد كلمة المرور الجديدة" dir="ltr" autocomplete="new-password" />
-        <p id="password-change-error" class="text-autohr-red text-sm hidden"></p>
+      <form id="password-change-form" class="space-y-4" novalidate>
+        <input id="current-password" type="password" class="input-field" placeholder="كلمة المرور الحالية" aria-label="كلمة المرور الحالية" dir="ltr" autocomplete="current-password" />
+        <input id="new-password" type="password" class="input-field" placeholder="كلمة المرور الجديدة" aria-label="كلمة المرور الجديدة" dir="ltr" autocomplete="new-password" />
+        <input id="confirm-password" type="password" class="input-field" placeholder="تأكيد كلمة المرور الجديدة" aria-label="تأكيد كلمة المرور الجديدة" dir="ltr" autocomplete="new-password" />
+        <p id="password-change-caps" class="field-warning hidden">تنبيه: مفتاح Caps Lock مفعّل</p>
+        <div id="password-change-rules"></div>
+        <p id="password-change-error" class="text-autohr-red text-sm hidden" role="alert"></p>
         <button type="submit" class="btn-primary w-full py-3">تغيير كلمة المرور والمتابعة</button>
         <button id="btn-password-change-logout" type="button" class="btn-secondary w-full py-2">تسجيل الخروج</button>
       </form>
@@ -149,7 +239,7 @@
     <button type="button" id="btn-sidebar-edge" class="sidebar-edge-toggle" aria-controls="app-sidebar" aria-expanded="true" title="طي القائمة الجانبية (Ctrl+B)" aria-label="طي القائمة الجانبية"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 6l6 6-6 6"/></svg></button>
   </div>
 
-  <div id="toast" role="status" aria-live="polite" class="fixed bottom-6 start-6 card shadow-xl opacity-0 translate-y-4 transition-all duration-300 z-[100] pointer-events-none">
+  <div id="toast" role="status" aria-live="polite" class="fixed bottom-6 end-6 card shadow-xl opacity-0 translate-y-4 transition-all duration-300 z-[100] pointer-events-none">
     <p id="toast-msg" class="text-sm"></p>
   </div>
 

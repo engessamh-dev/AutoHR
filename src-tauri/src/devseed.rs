@@ -294,7 +294,8 @@ fn employee_json(index: usize, p: &Person) -> Value {
     }
     if d.ration {
         set(&mut v, "ration_card_no", json!(format!("88{n:05}")));
-        set(&mut v, "ration_center_name", json!(format!("وكيل تموين {city} التجريبي")));
+        // The field holds the ration card's «اسم رب الأسرة» (as the screens label it).
+        set(&mut v, "ration_center_name", json!(p.name));
         set(&mut v, "ration_center_no", json!(format!("{}", 40 + n)));
         set(&mut v, "ration_card_date", json!(day(-700)));
     }
@@ -311,10 +312,6 @@ fn employee_json(index: usize, p: &Person) -> Value {
     }
     if let Some(offset) = d.vehicle {
         let plate = format!("{} أ بغداد", 10000 + n * 137);
-        set(&mut v, "vehicle_plate", json!(plate));
-        set(&mut v, "vehicle_annual_no", json!(format!("A{n:06}")));
-        set(&mut v, "vehicle_annual_issue_date", json!(day(offset - 365)));
-        set(&mut v, "vehicle_annual_expiry_date", json!(day(offset)));
         set(&mut v, "vehicles", json!(json!([{
             "plate": plate, "brand": if n % 2 == 0 { "تويوتا" } else { "كيا" }, "type": "صالون",
             "color": "أبيض", "annual_no": format!("A{n:06}"), "issue_date": day(offset - 365), "expiry_date": day(offset),

@@ -2,7 +2,7 @@
  * main.js — Auth, navigation, RBAC, i18n
  */
 import { api }           from "./api.js";
-import { applyBranding, showToast, confirmAction, escHtml } from "./utils.js";
+import { applyBranding, showToast, confirmAction, escHtml, errorText, busyTaskLabel } from "./utils.js";
 import { renderDashboard }  from "./screens/dashboard.js";
 import { alertStageKey, buildDocumentAlerts, loadAlertRules, renderDocumentAlerts } from "./screens/document-alerts.js";
 import { renderEmployees }  from "./screens/employees.js";
@@ -23,6 +23,8 @@ import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { initTheme, mountThemeMenu } from "./theme.js";
 import { installErrorReporting, setErrorScreen } from "./error-log.js";
+import { loadPasswordPolicy, mountPasswordRules, passwordProblem, addPasswordToggle, watchCapsLock } from "./password-rules.js";
+import { openForgotPassword } from "./recovery.js";
 
 // Apply the saved light/dark choice before anything is shown.
 installErrorReporting();
@@ -103,7 +105,7 @@ function toggleSidebar() {
 
 function renderSidebarUser(user) {
   document.getElementById("current-user").textContent = user.username;
-  const role = user.username === "sysadmin" ? "مسؤول النظام" : (roleLabels[user.role] ?? user.role ?? "");
+  const role = roleLabels[user.role] ?? user.role ?? "";
   document.getElementById("current-user-role").textContent = role;
   document.getElementById("sidebar-user-avatar").textContent = (user.username || "?").trim().charAt(0).toUpperCase();
   document.getElementById("sidebar-user").title = role ? `${user.username} · ${role}` : user.username;
@@ -162,40 +164,49 @@ function openAutomaticBackupProgress() {
   };
 }
 
-async function runShutdownAutomaticBackupsOld({ showProgress = true } = {}) {
-  if (automaticBackupPromise) return automaticBackupPromise;
-  automaticBackupPromise = (async () => {
-  const progress = showProgress ? openAutomaticBackupProgress() : null;
-  let unlisten = null;
-  try {
-    if (progress) {
-      unlisten = await listen("auto-backup-progress", event => progress.update(event.payload));
-      await new Promise(resolve => requestAnimationFrame(() => setTimeout(resolve, 0)));
-    }
-    const created = await api.runDueAutoBackups();
-    if (created.length) {
-      const createdTypes = created.join("، ");
-      await notifyWindows(
-        "\u0646\u0633\u062e \u0627\u062d\u062a\u064a\u0627\u0637\u064a \u062a\u0644\u0642\u0627\u0626\u064a",
-        `\u062a\u0645 \u0625\u0646\u0634\u0627\u0621 \u0646\u0633\u062e \u062a\u0644\u0642\u0627\u0626\u064a \u0628\u0646\u062c\u0627\u062d: ${createdTypes}.`,
-      );
-    }
-  } catch (err) {
-    await notifyWindows(
-      "\u0641\u0634\u0644 \u0627\u0644\u0646\u0633\u062e \u0627\u0644\u062a\u0644\u0642\u0627\u0626\u064a",
-      err?.message ?? "\u062a\u0639\u0630\u0631 \u0625\u0646\u0634\u0627\u0621 \u0627\u0644\u0646\u0633\u062e\u0629 \u0627\u0644\u0627\u062d\u062a\u064a\u0627\u0637\u064a\u0629 \u0627\u0644\u062a\u0644\u0642\u0627\u0626\u064a\u0629.",
-    );
-  } finally {
-    if (unlisten) unlisten();
-    if (progress) setTimeout(() => progress.close(), 450);
-    automaticBackupPromise = null;
-  }
-  })();
-  return automaticBackupPromise;
+// While someone works, today's automatic backup is refreshed quietly. Rust decides whether one is
+// due (the interval chosen in Settings, and only when something changed), so checking often is cheap.
+const IN_SESSION_BACKUP_CHECK_MS = 5 * 60 * 1000;
+let inSessionBackupTimer = null;
+let inSessionBackupPromise = null;
+
+function startInSessionBackups() {
+  stopInSessionBackups();
+  inSessionBackupTimer = setInterval(() => {
+    if (!currentUser || automaticBackupPromise || inSessionBackupPromise) return;
+    // Not marked busy: signing out or closing waits for it, then refreshes today's backup itself.
+    inSessionBackupPromise = (async () => {
+      try {
+        await api.runDueAutoBackups(true);
+      } catch (err) {
+        // Rust records the failure in the log; one quiet line here is enough.
+        console.warn("automatic backup", errorText(err));
+      } finally {
+        inSessionBackupPromise = null;
+      }
+    })();
+  }, IN_SESSION_BACKUP_CHECK_MS);
+}
+
+function stopInSessionBackups() {
+  if (inSessionBackupTimer) clearInterval(inSessionBackupTimer);
+  inSessionBackupTimer = null;
+}
+
+/** Asks before closing or signing out while a backup, restore, export, move or update runs. */
+async function confirmLeaveWhileBusy(action) {
+  const label = busyTaskLabel();
+  if (!label) return true;
+  return confirmAction(
+    `ما زالت عملية «${label}» جارية. ${action} الآن قد يقطعها ويترك ملفًا غير مكتمل. يُنصح بالانتظار حتى تنتهي.`,
+    { title: "عملية جارية", confirmLabel: `${action} على أي حال`, danger: true },
+  );
 }
 
 // ── Screen routing ─────────────────────────────────────────────────────────
 async function runShutdownAutomaticBackups({ showProgress = true } = {}) {
+  if (automaticBackupPromise) return automaticBackupPromise;
+  if (inSessionBackupPromise) await inSessionBackupPromise;
   if (automaticBackupPromise) return automaticBackupPromise;
   automaticBackupPromise = (async () => {
     let progress = null;
@@ -246,11 +257,14 @@ async function runShutdownAutomaticBackups({ showProgress = true } = {}) {
  */
 async function notifyDocumentAlerts() {
   try {
-    const storageKey = "cnsarch.documentAlertStages";
+    // Kept per user: on a shared computer each person is told about each reminder once.
+    const storageKey = `cnsarch.documentAlertStages.${currentUser?.username ?? ""}`;
     const [employees, rules] = await Promise.all([api.listEmployees(), loadAlertRules()]);
     const alerts = buildDocumentAlerts(employees, rules);
     let announced = {};
-    try { announced = JSON.parse(localStorage.getItem(storageKey) || "{}") || {}; } catch (_) { announced = {}; }
+    try { announced = JSON.parse(localStorage.getItem(storageKey)
+      // Until this user's own list exists, start from the one the computer kept before (no repeats after the update).
+      ?? localStorage.getItem("cnsarch.documentAlertStages") ?? "{}") || {}; } catch (_) { announced = {}; }
 
     const current = {};
     const fresh = [];
@@ -381,6 +395,7 @@ function bindUiScalePicker() {
 
 async function enterApp(user) {
   currentUser = user;
+  startInSessionBackups();
   applyUiScale(savedUiScale());
   renderSidebarUser(user);
   const canViewAudit = can(user, "audit.view");
@@ -443,7 +458,11 @@ async function offerAvailableUpdate(user) {
 // One fixed slot at the bottom of the card, under the unit name, so a message
 // never covers the fields, the login button or the "forgot password" link.
 let loginLockoutTimer = null;
+// The name the countdown is for: another name on the same computer can still sign in.
+let lockedLoginName = "";
 let loginBusy = false;
+const typedLoginName = () => (document.getElementById("login-username")?.value || "").trim().toLowerCase();
+const lockoutApplies = () => Boolean(loginLockoutTimer) && typedLoginName() === lockedLoginName;
 
 function showLoginMessage(text, kind = "error", field = null) {
   const slot = document.getElementById("login-error");
@@ -460,7 +479,7 @@ function showLoginMessage(text, kind = "error", field = null) {
 }
 
 function clearLoginMessage() {
-  if (loginLockoutTimer) return;
+  if (lockoutApplies()) return;
   const slot = document.getElementById("login-error");
   slot.classList.add("hidden");
   slot.textContent = "";
@@ -470,7 +489,7 @@ function clearLoginMessage() {
 function setLoginBusy(busy) {
   loginBusy = busy;
   const submit = document.querySelector(".login-hit-submit");
-  if (submit) submit.disabled = busy || Boolean(loginLockoutTimer);
+  if (submit) submit.disabled = busy || lockoutApplies();
   document.getElementById("login-form")?.setAttribute("aria-busy", String(busy));
 }
 
@@ -482,10 +501,12 @@ function lockoutMinutes(message) {
 
 function startLoginLockout(minutes) {
   let remaining = Math.max(1, minutes) * 60;
+  lockedLoginName = typedLoginName();
   const tick = () => {
     const mm = String(Math.floor(remaining / 60)).padStart(2, "0");
     const ss = String(remaining % 60).padStart(2, "0");
-    showLoginMessage(`الحساب موقوف مؤقتاً. حاول بعد ${mm}:${ss}`, "error");
+    // Shown only while the paused name is in the field.
+    if (lockoutApplies()) showLoginMessage(`تم إيقاف الدخول مؤقتًا. حاول بعد ${mm}:${ss}`, "error");
     remaining -= 1;
   };
   if (loginLockoutTimer) clearInterval(loginLockoutTimer);
@@ -494,6 +515,7 @@ function startLoginLockout(minutes) {
     if (remaining < 0) {
       clearInterval(loginLockoutTimer);
       loginLockoutTimer = null;
+      lockedLoginName = "";
       clearLoginMessage();
       setLoginBusy(false);
       document.getElementById("login-password")?.focus();
@@ -502,6 +524,11 @@ function startLoginLockout(minutes) {
     tick();
   }, 1000);
   setLoginBusy(false);
+}
+
+/** Back on the paused name: show its countdown again at once (the timer keeps running). */
+function startLoginLockoutDisplay() {
+  showLoginMessage("تم إيقاف الدخول مؤقتًا بسبب تكرار المحاولات الخاطئة.", "error");
 }
 
 // ── Recent usernames ──────────────────────────────────────────────────────
@@ -568,29 +595,32 @@ function bindLoginUsernameSuggestions() {
 }
 
 async function doLogin(username, password) {
-  if (loginBusy || loginLockoutTimer) return;
+  if (loginBusy || lockoutApplies()) return;
   setLoginBusy(true);
   showLoginMessage("جارٍ التحقق…", "info");
   try {
     const user = await api.login(username, password);
     currentUser = user;
-    rememberLoginUsername(username);
+    rememberLoginUsername(user.username);
     clearLoginMessage();
     document.getElementById("login-screen").classList.add("hidden");
     if (user.must_change_password) {
       document.getElementById("password-change-screen").classList.remove("hidden");
+      await window.autohrShowPasswordChange?.();
       document.getElementById("current-password").focus();
       return;
     }
     await enterApp(user);
   } catch (err) {
     const message = typeof err === "string" ? err : String(err?.message ?? err ?? "");
-    if (message.startsWith("تم تعديل بيانات هذا الحساب")) {
+    if (message.startsWith("تم تعديل بيانات هذا الحساب") || message.startsWith("هذا الحساب موقوف")) {
       showLoginMessage(message, "error");
-    } else if (message.startsWith("تم إيقاف تسجيل الدخول")) {
+    } else if (message.startsWith("تم إيقاف الدخول مؤقتًا")) {
       startLoginLockout(lockoutMinutes(message));
-    } else if (message === "You are not authorized to perform this action") {
-      showLoginMessage(t("loginError"), "error", "password");
+      document.getElementById("login-password").value = "";
+    } else if (message === "You are not authorized to perform this action" || message.startsWith(t("loginError"))) {
+      // A wrong name or password; near the limit Rust adds how many attempts are left.
+      showLoginMessage(message.startsWith(t("loginError")) ? message : t("loginError"), "error", "password");
       const password = document.getElementById("login-password");
       password.value = "";
       password.focus();
@@ -606,7 +636,9 @@ async function doLogout() {
   if (window.autohrCanLeaveCurrentScreen && !(await window.autohrCanLeaveCurrentScreen())) {
     return;
   }
+  if (!(await confirmLeaveWhileBusy("تسجيل الخروج"))) return;
   if (!(await confirmAction("تأكيد تسجيل الخروج؟"))) return;
+  stopInSessionBackups();
 
   await runShutdownAutomaticBackups();
 
@@ -636,7 +668,9 @@ document.addEventListener("DOMContentLoaded", async () => {
     if (window.autohrCanLeaveCurrentScreen && !(await window.autohrCanLeaveCurrentScreen())) {
       return;
     }
+    if (!(await confirmLeaveWhileBusy("إغلاق البرنامج"))) return;
     isClosingWindow = true;
+    stopInSessionBackups();
     try {
       await runShutdownAutomaticBackups();
     } finally {
@@ -645,7 +679,7 @@ document.addEventListener("DOMContentLoaded", async () => {
   });
 
   // First run or unavailable data folder: choose folders before the login screen.
-  await runStartupGate();
+  const firstRunUser = await runStartupGate();
   applyLoginBranding();
 
   // Login form
@@ -684,7 +718,14 @@ document.addEventListener("DOMContentLoaded", async () => {
   loginPassword.addEventListener("keyup", syncCapsLock);
 
   document.getElementById("btn-forgot-password").addEventListener("click", () => {
-    showLoginMessage("تواصل مع مسؤول النظام لإعادة تعيين كلمة المرور", "info");
+    openForgotPassword((username, note) => {
+      const name = document.getElementById("login-username");
+      name.value = username;
+      name.dispatchEvent(new Event("input"));
+      document.getElementById("login-password").value = "";
+      document.getElementById("login-password").focus();
+      showLoginMessage(note || "تم تعيين كلمة المرور الجديدة. ادخل بها الآن.", "info");
+    });
   });
 
   document.querySelectorAll("#login-username, #login-password").forEach(input => {
@@ -695,10 +736,24 @@ document.addEventListener("DOMContentLoaded", async () => {
     input.addEventListener("input", () => {
       syncPlaceholder();
       clearLoginMessage();
+      if (lockoutApplies()) startLoginLockoutDisplay();
+      setLoginBusy(loginBusy);
     });
     input.addEventListener("change", syncPlaceholder);
     syncPlaceholder();
   });
+
+  const newPasswordInput = document.getElementById("new-password");
+  ["current-password", "new-password", "confirm-password"].forEach(id => addPasswordToggle(document.getElementById(id)));
+  watchCapsLock(["current-password", "new-password", "confirm-password"].map(id => document.getElementById(id)), document.getElementById("password-change-caps"));
+  let changePolicy = null;
+  const refreshChangeRules = async () => {
+    changePolicy = await loadPasswordPolicy({ fresh: true });
+    const holder = document.getElementById("password-change-rules");
+    const clone = newPasswordInput; // rules follow this field as it is typed
+    mountPasswordRules(holder, clone, changePolicy, () => currentUser?.username ?? "");
+  };
+  window.autohrShowPasswordChange = refreshChangeRules;
 
   document.getElementById("password-change-form").addEventListener("submit", async e => {
     e.preventDefault();
@@ -706,8 +761,11 @@ document.addEventListener("DOMContentLoaded", async () => {
     const newPassword = document.getElementById("new-password").value;
     const confirmPassword = document.getElementById("confirm-password").value;
     const error = document.getElementById("password-change-error");
-    if (newPassword !== confirmPassword) {
-      error.textContent = "كلمتا المرور الجديدتان غير متطابقتين";
+    const problem = !currentPassword ? "اكتب كلمة المرور الحالية"
+      : (changePolicy && passwordProblem(changePolicy, newPassword, currentUser?.username ?? ""))
+      || (newPassword !== confirmPassword ? "كلمتا المرور الجديدتان غير متطابقتين" : "");
+    if (problem) {
+      error.textContent = problem;
       error.classList.remove("hidden");
       return;
     }
@@ -716,8 +774,12 @@ document.addEventListener("DOMContentLoaded", async () => {
       error.classList.add("hidden");
       document.getElementById("password-change-form").reset();
       await enterApp(user);
+      showToast("تم تغيير كلمة المرور");
     } catch (err) {
-      error.textContent = err?.message ?? String(err || "تعذر تغيير كلمة المرور");
+      // A wrong current password comes back as «not authorized».
+      error.textContent = errorText(err, "تعذر تغيير كلمة المرور") === "ليست لديك صلاحية لهذا الإجراء"
+        ? "كلمة المرور الحالية غير صحيحة"
+        : errorText(err, "تعذر تغيير كلمة المرور");
       error.classList.remove("hidden");
     }
   });
@@ -745,4 +807,11 @@ document.addEventListener("DOMContentLoaded", async () => {
     const item = e.target.closest(".nav-item[data-screen]");
     if (item) navigateTo(item.dataset.screen);
   });
+
+  // The first-run wizard has just made the administrator's account: open the program signed in.
+  if (firstRunUser) {
+    rememberLoginUsername(firstRunUser.username);
+    await enterApp(firstRunUser);
+    showToast("اكتمل الإعداد. مرحبًا بك في CNSArch");
+  }
 });

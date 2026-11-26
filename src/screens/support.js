@@ -146,7 +146,7 @@ export async function renderSupport(container, user, ctx) {
           <button type="button" id="btn-support-go-install" class="btn-primary text-sm hidden">التثبيت من الإعدادات</button>
         </div>
         <p id="support-update-status" class="text-sm mt-2 support-card-status" dir="auto"></p>`
-        : `<p class="text-sm text-gray-400 mt-3">تثبيت التحديثات متاح لمسؤول النظام.</p>`}
+        : `<p class="text-sm text-gray-400 mt-3">تثبيت التحديثات متاح للمسؤول.</p>`}
       </section>` : ""}
       </div>
     </div>`;

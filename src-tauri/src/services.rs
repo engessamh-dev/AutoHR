@@ -11,7 +11,6 @@ use std::{
 use bcrypt::{hash, verify, DEFAULT_COST};
 use aes_gcm::{aead::{Aead, KeyInit}, Aes256Gcm, Nonce};
 use argon2::Argon2;
-use chrono::Datelike;
 use rand::{rngs::OsRng, RngCore};
 
 #[derive(Debug, thiserror::Error)]
@@ -48,7 +47,17 @@ pub struct User {
     pub id: i64, pub username: String, pub role: String,
     pub is_master: bool, pub permissions: Vec<String>,
     pub must_change_password: bool, pub created_at: Option<String>,
+    /// Account stopped by an admin («إيقاف الحساب»): cannot sign in, keeps its name in the log.
+    #[serde(default)] pub disabled: bool,
+    /// False when the account was changed outside the program (integrity check).
+    #[serde(default = "default_true")] pub trusted: bool,
+    /// Time of the last successful sign-in, from the audit log.
+    #[serde(default)] pub last_login: Option<String>,
+    /// The base administrator (made by the first-run wizard): cannot be deleted, stopped or demoted.
+    #[serde(default)] pub is_base: bool,
 }
+
+fn default_true() -> bool { true }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct CompanyConfig {
@@ -76,6 +85,9 @@ pub struct Employee {
     pub workplace: Option<String>,
     pub job_title: Option<String>,
     pub job_grade: Option<String>,
+    /// «رقم المرحلة» within the grade (1–11 in the civil-service scale), from the settings list.
+    #[serde(default)]
+    pub job_step: Option<String>,
     pub hire_date: Option<String>,
     pub appointment_date: Option<String>,
     pub contract_type: Option<String>,
@@ -183,6 +195,9 @@ pub struct EmployeeData {
     pub workplace: Option<String>,
     pub job_title: Option<String>,
     pub job_grade: Option<String>,
+    /// «رقم المرحلة» within the grade (1–11 in the civil-service scale), from the settings list.
+    #[serde(default)]
+    pub job_step: Option<String>,
     pub hire_date: Option<String>,
     pub appointment_date: Option<String>,
     pub contract_type: Option<String>,
@@ -310,7 +325,7 @@ pub struct ActivityLog {
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct CompanyConfigData {
-    pub company_name: String, pub department_name: Option<String>, pub division_name: Option<String>,
+    #[serde(default)] pub company_name: String, pub department_name: Option<String>, pub division_name: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -324,39 +339,65 @@ pub struct UserRoleData { pub role: String }
 #[derive(Debug, Serialize, Deserialize)]
 pub struct PasswordResetData { pub password: String }
 
+#[derive(Debug, Serialize, Deserialize)]
+pub struct UserDisabledData { pub disabled: bool }
+
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct AutoBackupSettings {
-    pub daily_enabled: bool,
-    pub weekly_enabled: bool,
-    pub monthly_enabled: bool,
+    /// One automatic backup per day, refreshed during work and on sign-out.
+    pub enabled: bool,
     pub has_password: bool,
-    pub last_daily: Option<String>,
-    pub last_weekly: Option<String>,
-    pub last_monthly: Option<String>,
-    pub last_daily_path: Option<String>,
-    pub last_weekly_path: Option<String>,
-    pub last_monthly_path: Option<String>,
+    /// False when a password is saved but cannot be read on this computer or Windows account.
+    pub password_works: bool,
+    /// Minutes between backups while someone works (0 = only on sign-out and close).
+    pub interval_minutes: u32,
+    pub keep_daily: u32,
+    pub keep_weekly: u32,
+    pub keep_monthly: u32,
+    pub auto_delete: bool,
+    /// Local time of the last automatic backup («2026-11-25 14:12»).
+    pub last_backup: Option<String>,
+    pub last_backup_path: Option<String>,
+    /// Everything in the backup folder: backup files and the attachment store.
+    pub used_bytes: u64,
+    pub backup_files: u64,
+    /// The backup folder is on the same disk as the data: a disk failure would take both.
+    pub same_drive: bool,
+    /// Last «تصدير نسخة كاملة» (local time), for the reminder to keep a copy elsewhere.
+    pub last_export: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct AutoBackupSettingsData {
-    pub daily_enabled: bool,
-    #[serde(default)]
-    pub weekly_enabled: bool,
-    pub monthly_enabled: bool,
+    pub enabled: bool,
     pub password: Option<String>,
+    #[serde(default = "default_backup_interval")]
+    pub interval_minutes: u32,
+    #[serde(default = "default_keep_daily")]
+    pub keep_daily: u32,
+    #[serde(default = "default_keep_weekly")]
+    pub keep_weekly: u32,
+    #[serde(default = "default_keep_monthly")]
+    pub keep_monthly: u32,
+    #[serde(default = "default_true")]
+    pub auto_delete: bool,
 }
+
+pub(crate) fn default_backup_interval() -> u32 { 60 }
+pub(crate) fn default_keep_daily() -> u32 { 7 }
+pub(crate) fn default_keep_weekly() -> u32 { 4 }
+pub(crate) fn default_keep_monthly() -> u32 { 12 }
 
 // ── Helpers ────────────────────────────────────────────────────────────────
 fn legacy_hash_password(plain: &str) -> String {
     let mut h = Sha256::new(); h.update(plain.as_bytes()); hex::encode(h.finalize())
 }
 
-fn hash_password(plain: &str) -> AppResult<String> {
+pub(crate) fn hash_password(plain: &str) -> AppResult<String> {
     hash(plain, DEFAULT_COST).map_err(|e| AppError::Other(format!("Password hashing failed: {e}")))
 }
 
-fn verify_password(plain: &str, stored: &str) -> AppResult<bool> {
+pub(crate) fn verify_password(plain: &str, stored: &str) -> AppResult<bool> {
     if stored.starts_with("$2") {
         return verify(plain, stored)
             .map_err(|e| AppError::Other(format!("Password verification failed: {e}")));
@@ -364,12 +405,12 @@ fn verify_password(plain: &str, stored: &str) -> AppResult<bool> {
     Ok(stored.len() == 64 && stored.bytes().all(|b| b.is_ascii_hexdigit()) && legacy_hash_password(plain) == stored)
 }
 
-fn validate_new_password(password: &str) -> AppResult<()> {
-    if password.len() < 8 {
-        return Err(AppError::Validation("Password must be at least 8 characters".into()));
+pub(crate) fn validate_new_password(password: &str) -> AppResult<()> {
+    if password.chars().count() < 8 {
+        return Err(AppError::Validation("كلمة المرور يجب أن تكون 8 أحرف على الأقل".into()));
     }
     if password.len() > 72 {
-        return Err(AppError::Validation("Password must be at most 72 bytes".into()));
+        return Err(AppError::Validation("كلمة المرور طويلة جدًا (الحد 72 حرفًا إنجليزيًا أو 36 حرفًا عربيًا)".into()));
     }
     Ok(())
 }
@@ -381,24 +422,21 @@ pub fn role_permissions(role: &str) -> &'static [&'static str] {
             "documents.view", "documents.manage", "documents.upload", "documents.download", "documents.delete", "documents.print",
             "users.manage", "users.assign_system_admin", "audit.view", "settings.manage", "backups.manage", "backups.restore",
         ],
-        "archive_admin" => &[
-            "dashboard.view", "employees.view", "employees.create", "employees.edit", "employees.delete",
-            "documents.view", "documents.manage", "documents.upload", "documents.download", "documents.delete", "documents.print",
-            "users.manage", "audit.view", "settings.manage", "backups.manage",
-        ],
+        // Three roles since v8: «مسؤول» (system_admin), «موظف» (archive_officer), «مشاهد» (viewer).
+        // The former «مسؤول الأرشيف» (archive_admin) became «مسؤول»; see db::upgrade_to_v8.
         "archive_officer" => &[
             "dashboard.view", "employees.view", "employees.create", "employees.edit",
-            "documents.view", "documents.upload", "documents.download", "documents.print", "audit.view",
+            "documents.view", "documents.upload", "documents.download", "documents.print",
         ],
         "viewer" => &[
-            "dashboard.view", "employees.view", "documents.view", "documents.print",
+            "dashboard.view", "employees.view", "documents.view", "documents.download", "documents.print",
         ],
         _ => &[],
     }
 }
 
 fn valid_role(role: &str) -> bool {
-    matches!(role, "system_admin" | "archive_admin" | "archive_officer" | "viewer")
+    matches!(role, "system_admin" | "archive_officer" | "viewer")
 }
 
 pub fn assert_permission(conn: &Connection, username: &str, permission: &str) -> AppResult<()> {
@@ -408,7 +446,13 @@ pub fn assert_permission(conn: &Connection, username: &str, permission: &str) ->
     // An account changed outside the program (for example its role raised with a database tool)
     // keeps no permissions until a System Admin deals with it.
     if !crate::integrity::user_trusted(conn, id) { return Err(AppError::Unauthorized); }
+    if user_disabled(conn, id) { return Err(AppError::Unauthorized); }
     if role_permissions(&role).contains(&permission) { Ok(()) } else { Err(AppError::Unauthorized) }
+}
+
+/// True for an account stopped by an admin. Databases from before v8 have no such column.
+fn user_disabled(conn: &Connection, id: i64) -> bool {
+    conn.query_row("SELECT disabled FROM users WHERE id=?1", params![id], |r| r.get::<_, bool>(0)).unwrap_or(false)
 }
 
 pub fn app_data_path() -> std::path::PathBuf {
@@ -582,10 +626,20 @@ pub fn log_activity(conn: &Connection, username: &str, action: &str,
 #[allow(clippy::too_many_arguments)]
 pub fn log_audit(conn: &Connection, username: Option<&str>, action: &str,
     target_type: Option<&str>, target_id: Option<i64>, target_name: Option<&str>, result: &str, details: Option<&str>) {
+    try_log_audit(conn, username, action, target_type, target_id, target_name, result, details).ok();
+}
+
+/// Writes one audit entry. Entries about an employee or an archive document carry, in `details`,
+/// a JSON object with that record's name and numbers (`employee`, `doc`), so that the entry can
+/// be read and searched by name even after the record is deleted. Other details stay as given.
+#[allow(clippy::too_many_arguments)]
+pub fn try_log_audit(conn: &Connection, username: Option<&str>, action: &str,
+    target_type: Option<&str>, target_id: Option<i64>, target_name: Option<&str>, result: &str, details: Option<&str>) -> AppResult<()> {
     let identity = username.and_then(|name| conn.query_row(
         "SELECT id,role FROM users WHERE username=?1", params![name],
         |r| Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?))
     ).ok());
+    let details = audit_details(conn, target_type, target_id, details);
     conn.execute(
         "INSERT INTO activity_log(user_id,username,role,action,target_type,target_id,target_name,result,details)
          VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9)",
@@ -594,7 +648,108 @@ pub fn log_audit(conn: &Connection, username: Option<&str>, action: &str,
             identity.as_ref().map(|v| v.1.as_str()).unwrap_or("unknown"),
             action, target_type, target_id, target_name, result, details
         ]
-    ).ok();
+    )?;
+    Ok(())
+}
+
+fn audit_details(conn: &Connection, target_type: Option<&str>, target_id: Option<i64>, details: Option<&str>) -> Option<String> {
+    let mut object = match details.map(|d| serde_json::from_str::<serde_json::Value>(d)) {
+        Some(Ok(serde_json::Value::Object(map))) => map,
+        _ => serde_json::Map::new(),
+    };
+    let given_as_text = details.filter(|_| object.is_empty());
+    if let (Some(kind), Some(id)) = (target_type, target_id) {
+        match kind {
+            "employee" if !object.contains_key("employee") => {
+                if let Ok((name, number)) = conn.query_row(
+                    "SELECT full_name,employee_number FROM employees WHERE id=?1", params![id],
+                    |r| Ok((r.get::<_, String>(0)?, r.get::<_, Option<String>>(1)?)),
+                ) {
+                    object.insert("employee".into(), serde_json::json!(name));
+                    if let Some(number) = number.filter(|n| !n.trim().is_empty()) {
+                        object.insert("employee_number".into(), serde_json::json!(number));
+                    }
+                }
+            }
+            "general_doc" | "outgoing_doc" if !object.contains_key("doc") => {
+                if let Some(doc) = archive_doc_summary(conn, kind, id) { object.insert("doc".into(), doc); }
+            }
+            _ => {}
+        }
+    }
+    if object.is_empty() { return details.map(str::to_string); }
+    if let Some(text) = given_as_text { object.insert("note".into(), serde_json::json!(text)); }
+    Some(serde_json::Value::Object(object).to_string())
+}
+
+/// The fields that tell one archive document from another, for the audit log.
+fn archive_doc_summary(conn: &Connection, kind: &str, id: i64) -> Option<serde_json::Value> {
+    let (docs, files, column) = match kind {
+        "general_doc" => ("general_docs", "general_doc_attachments", "general_doc_id"),
+        "outgoing_doc" => ("outgoing_docs", "outgoing_doc_attachments", "outgoing_doc_id"),
+        _ => return None,
+    };
+    conn.query_row(
+        &format!("SELECT title,doc_number,issuer,doc_count,issue_date,(SELECT COUNT(*) FROM {files} WHERE {column}=d.id) FROM {docs} d WHERE id=?1"),
+        params![id],
+        |r| {
+            let mut doc = serde_json::Map::new();
+            for (index, key) in ["from", "to", "subject", "number", "date"].iter().enumerate() {
+                if let Some(value) = r.get::<_, Option<String>>(index)?.filter(|v| !v.trim().is_empty()) {
+                    doc.insert((*key).into(), serde_json::json!(value));
+                }
+            }
+            doc.insert("files".into(), serde_json::json!(r.get::<_, i64>(5)?));
+            Ok(serde_json::Value::Object(doc))
+        },
+    ).ok()
+}
+
+/// The fields that differ between two versions of a record, for the audit log:
+/// `[{"field", "old", "new"}]`. Long values (lists, notes) are named without their text.
+pub fn audit_changes(before: &serde_json::Value, after: &serde_json::Value, skip: &[&str]) -> serde_json::Value {
+    fn text(value: Option<&serde_json::Value>) -> String {
+        match value {
+            None | Some(serde_json::Value::Null) => String::new(),
+            Some(serde_json::Value::String(s)) => s.trim().to_string(),
+            Some(serde_json::Value::Array(items)) if items.is_empty() => String::new(),
+            Some(other) => other.to_string(),
+        }
+    }
+    let empty = serde_json::Map::new();
+    let before_map = before.as_object().unwrap_or(&empty);
+    let after_map = after.as_object().unwrap_or(&empty);
+    let mut keys: Vec<&String> = before_map.keys().chain(after_map.keys()).collect();
+    keys.sort();
+    keys.dedup();
+    let mut changes = Vec::new();
+    for key in keys {
+        if skip.contains(&key.as_str()) || key.ends_with("_path") || key.ends_with("_full_path") { continue; }
+        let (old, new) = (text(before_map.get(key)), text(after_map.get(key)));
+        if old == new || (old == "[]" && new.is_empty()) || (new == "[]" && old.is_empty()) { continue; }
+        let long = old.chars().count() > 80 || new.chars().count() > 80 || old.starts_with('[') || old.starts_with('{') || new.starts_with('[') || new.starts_with('{');
+        changes.push(if long {
+            serde_json::json!({ "field": key })
+        } else {
+            serde_json::json!({ "field": key, "old": old, "new": new })
+        });
+    }
+    serde_json::Value::Array(changes)
+}
+
+fn changes_details(before: &serde_json::Value, after: &serde_json::Value, skip: &[&str]) -> Option<String> {
+    let changes = audit_changes(before, after, skip);
+    if changes.as_array().is_some_and(|c| c.is_empty()) { return None; }
+    Some(serde_json::json!({ "changes": changes }).to_string())
+}
+
+/// A sign-in name that matches no account is kept only as its first two characters: people
+/// sometimes type their password into the name field, and the audit log can never be edited.
+fn login_name_for_log(conn: &Connection, username: &str) -> String {
+    let exists = conn.query_row("SELECT 1 FROM users WHERE username=?1", params![username], |_| Ok(())).is_ok();
+    if exists { return username.to_string(); }
+    let start: String = username.trim().chars().take(2).collect();
+    format!("{start}…")
 }
 
 fn default_document_types() -> Vec<String> {
@@ -621,8 +776,12 @@ fn normalize_document_types(types: &[String]) -> Vec<String> {
 }
 
 // ── Auth ───────────────────────────────────────────────────────────────────
-const LOGIN_MAX_FAILURES: u32 = 5;
-const LOGIN_LOCKOUT: std::time::Duration = std::time::Duration::from_secs(5 * 60);
+/// Wrong sign-ins older than this are forgotten: only a burst of failures pauses an account.
+const LOGIN_FAILURE_WINDOW_SECS: i64 = 15 * 60;
+/// Shown for a wrong name or password (the same text for both).
+pub const WRONG_CREDENTIALS: &str = "اسم المستخدم أو كلمة المرور غير صحيحة";
+/// Start of the message for a paused account; the sign-in screen recognises it.
+pub const LOCKOUT_PREFIX: &str = "تم إيقاف الدخول مؤقتًا";
 
 /// Failed sign-in attempts per username, kept in the database so that restarting the
 /// application does not reset a lockout.
@@ -641,34 +800,67 @@ fn login_key(username: &str) -> String {
     username.trim().to_lowercase()
 }
 
-fn login_locked_remaining(conn: &Connection, username: &str) -> Option<std::time::Duration> {
+/// Failure count and time of the last failure for a name (a stale count restarts in `record_login_failure`).
+fn recent_failures(conn: &Connection, username: &str) -> (i64, i64) {
     login_failures_table(conn);
-    let key = login_key(username);
-    let (count, last): (i64, i64) = conn.query_row(
-        "SELECT failures,last_failure FROM login_failures WHERE username_key=?1", params![key], |r| Ok((r.get(0)?, r.get(1)?)),
-    ).ok()?;
-    if count < LOGIN_MAX_FAILURES as i64 { return None; }
+    let Some((count, last)) = conn.query_row(
+        "SELECT failures,last_failure FROM login_failures WHERE username_key=?1", params![login_key(username)], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)?)),
+    ).ok() else { return (0, 0) };
+    (count, last)
+}
+
+fn login_locked_remaining(conn: &Connection, username: &str) -> Option<std::time::Duration> {
+    let policy = crate::account::password_policy(conn);
+    let (count, last) = recent_failures(conn, username);
+    if count < policy.max_failures as i64 { return None; }
+    let lockout = std::time::Duration::from_secs(policy.lockout_minutes as u64 * 60);
     // A clock moved backwards counts as "just now" rather than unlocking early.
     let elapsed = std::time::Duration::from_secs(now_secs().saturating_sub(last).max(0) as u64);
-    if elapsed >= LOGIN_LOCKOUT {
+    if elapsed >= lockout {
         clear_login_failures(conn, username);
         return None;
     }
-    Some(LOGIN_LOCKOUT - elapsed)
+    Some(lockout - elapsed)
 }
 
-fn record_login_failure(conn: &Connection, username: &str) {
+/// The Arabic lockout message while `key` is paused, with the time left.
+pub(crate) fn lockout_message(conn: &Connection, key: &str) -> Option<String> {
+    login_locked_remaining(conn, key).map(|remaining| {
+        let minutes = remaining.as_secs().div_ceil(60).max(1);
+        format!("{LOCKOUT_PREFIX} بسبب تكرار المحاولات الخاطئة. حاول بعد {}.", arabic_minutes(minutes))
+    })
+}
+
+pub(crate) fn record_login_failure(conn: &Connection, username: &str) {
     login_failures_table(conn);
+    let now = now_secs();
+    // A failure long after the previous one starts a new count.
     conn.execute(
         "INSERT INTO login_failures(username_key,failures,last_failure) VALUES(?1,1,?2)
-         ON CONFLICT(username_key) DO UPDATE SET failures=failures+1, last_failure=excluded.last_failure",
-        params![login_key(username), now_secs()],
+         ON CONFLICT(username_key) DO UPDATE SET
+           failures = CASE WHEN ?2 - last_failure > ?3 THEN 1 ELSE failures + 1 END,
+           last_failure = excluded.last_failure",
+        params![login_key(username), now, LOGIN_FAILURE_WINDOW_SECS],
     ).ok();
 }
 
-fn clear_login_failures(conn: &Connection, username: &str) {
+pub(crate) fn clear_login_failures(conn: &Connection, username: &str) {
     login_failures_table(conn);
     conn.execute("DELETE FROM login_failures WHERE username_key=?1", params![login_key(username)]).ok();
+}
+
+/// After a wrong sign-in: the lockout message if this failure paused the account, a warning
+/// when two or fewer attempts are left, otherwise the plain «wrong name or password».
+fn failed_login(conn: &Connection, username: &str) -> AppError {
+    record_login_failure(conn, username);
+    if let Some(message) = lockout_message(conn, username) { return AppError::Validation(message); }
+    let policy = crate::account::password_policy(conn);
+    let left = (policy.max_failures as i64 - recent_failures(conn, username).0).max(0);
+    match left {
+        1 => AppError::Validation(format!("{WRONG_CREDENTIALS}. بقيت محاولة واحدة قبل إيقاف الدخول {}.", arabic_minutes(policy.lockout_minutes as u64))),
+        2 => AppError::Validation(format!("{WRONG_CREDENTIALS}. بقيت محاولتان قبل إيقاف الدخول {}.", arabic_minutes(policy.lockout_minutes as u64))),
+        _ => AppError::Unauthorized,
+    }
 }
 
 /// A bcrypt hash of a random value, checked when the username does not exist so that the
@@ -693,19 +885,17 @@ fn arabic_minutes(minutes: u64) -> String {
 }
 
 pub fn login(conn: &Connection, username: &str, password: &str) -> AppResult<User> {
-    if username.trim().is_empty() || username.len() > 64 || password.is_empty() || password.len() > 256 {
-        return Err(AppError::Validation("Enter a valid username and password".into()));
+    let username = username.trim();
+    if username.is_empty() || username.len() > 64 || password.is_empty() || password.len() > 256 {
+        return Err(AppError::Unauthorized);
     }
-    if let Some(remaining) = login_locked_remaining(conn, username) {
-        log_audit(conn, Some(username), "LOGIN", Some("session"), None, None, "Failure", Some("Account temporarily locked"));
-        let minutes = remaining.as_secs().div_ceil(60).max(1);
-        return Err(AppError::Validation(format!(
-            "تم إيقاف تسجيل الدخول لهذا الحساب مؤقتًا بسبب تكرار المحاولات الفاشلة. حاول بعد {}.",
-            arabic_minutes(minutes)
-        )));
+    if let Some(message) = lockout_message(conn, username) {
+        log_audit(conn, Some(&login_name_for_log(conn, username)), "LOGIN", Some("session"), None, None, "Failure", Some("Account temporarily locked"));
+        return Err(AppError::Validation(message));
     }
+    // Names are matched without case, like «إضافة مستخدم» which refuses «HR.admin» next to «hr.admin».
     let row = match conn.query_row(
-        "SELECT id,username,password,role,must_change_password,created_at FROM users WHERE username=?1",
+        "SELECT id,username,password,role,must_change_password,created_at FROM users WHERE username=?1 COLLATE NOCASE ORDER BY username=?1 DESC LIMIT 1",
         params![username],
         |r| Ok((
             r.get::<_,i64>(0)?, r.get::<_,String>(1)?, r.get::<_,String>(2)?,
@@ -715,37 +905,42 @@ pub fn login(conn: &Connection, username: &str, password: &str) -> AppResult<Use
         Ok(row) => row,
         Err(_) => {
             let _ = verify_password(password, dummy_password_hash());
-            record_login_failure(conn, username);
-            log_audit(conn, Some(username), "LOGIN", Some("session"), None, None, "Failure", Some("Unknown username"));
-            return Err(AppError::Unauthorized);
+            log_audit(conn, Some(&login_name_for_log(conn, username)), "LOGIN", Some("session"), None, None, "Failure", Some("Unknown username"));
+            return Err(failed_login(conn, username));
         }
     };
+    let username = row.1.as_str();
     if !verify_password(password, &row.2)? {
-        record_login_failure(conn, username);
         log_audit(conn, Some(username), "LOGIN", Some("session"), None, None, "Failure", Some("Invalid password"));
-        return Err(AppError::Unauthorized);
+        return Err(failed_login(conn, username));
     }
     if !crate::integrity::user_trusted(conn, row.0) {
         log_audit(conn, Some(username), "LOGIN", Some("session"), None, None, "Failure", Some("Account modified outside the program"));
         return Err(AppError::Validation(crate::integrity::TAMPERED_ACCOUNT_MESSAGE.into()));
     }
+    if user_disabled(conn, row.0) {
+        log_audit(conn, Some(username), "LOGIN", Some("session"), None, None, "Failure", Some("Account disabled"));
+        return Err(AppError::Validation(DISABLED_ACCOUNT_MESSAGE.into()));
+    }
     clear_login_failures(conn, username);
     if !row.2.starts_with("$2") {
         conn.execute("UPDATE users SET password=?1 WHERE id=?2", params![hash_password(password)?, row.0])?;
     }
-    let is_master = row.1 == "sysadmin" || row.3 == "system_admin";
+    let is_base = crate::account::is_base_admin(conn, username);
+    let is_master = is_base || row.3 == "system_admin";
     log_activity(conn, username, "LOGIN", None, None, None, None);
     Ok(User {
-        id: row.0, username: row.1, role: row.3.clone(), is_master,
+        id: row.0, username: row.1.clone(), role: row.3.clone(), is_master,
         permissions: role_permissions(&row.3).iter().map(|p| p.to_string()).collect(),
         must_change_password: row.4, created_at: row.5,
+        disabled: false, trusted: true, last_login: None, is_base,
     })
 }
 
 pub fn change_password(conn: &Connection, username: &str, current_password: &str, new_password: &str) -> AppResult<User> {
-    validate_new_password(new_password)?;
+    crate::account::validate_account_password(conn, username, new_password)?;
     if current_password == new_password {
-        return Err(AppError::Validation("New password must be different".into()));
+        return Err(AppError::Validation("كلمة المرور الجديدة يجب أن تختلف عن الحالية".into()));
     }
     let stored: String = conn.query_row(
         "SELECT password FROM users WHERE username=?1", params![username], |r| r.get(0)
@@ -767,13 +962,16 @@ pub fn logout(conn: &Connection, username: &str) -> AppResult<()> {
 }
 
 // ── Company ────────────────────────────────────────────────────────────────
+/// The organisation's name is fixed, like the bundled logo, and matches it.
+pub const COMPANY_NAME: &str = "الشركة العامة لإدارة المطارات والملاحة الجوية";
+
 pub fn get_company_config(conn: &Connection) -> AppResult<CompanyConfig> {
     conn.query_row("SELECT company_name,department_name,division_name,logo_path FROM company_config WHERE id=1",
         [], |r| {
             let logo_path: Option<String> = r.get(3)?;
             let logo_full_path = logo_path.as_ref().map(|p| crate::scanner::effective_path(conn,p).unwrap_or_else(|_|storage_path(conn).join(p)).to_string_lossy().into_owned());
             Ok(CompanyConfig {
-                company_name:r.get(0)?,
+                company_name: { let _stored: String = r.get(0)?; COMPANY_NAME.into() },
                 department_name:r.get(1)?,
                 division_name:r.get(2)?,
                 logo_path,
@@ -785,10 +983,20 @@ pub fn get_company_config(conn: &Connection) -> AppResult<CompanyConfig> {
 
 pub fn update_company_config(conn: &Connection, user: &str, data: &CompanyConfigData) -> AppResult<CompanyConfig> {
     assert_permission(conn, user, "settings.manage")?;
+    let names = |c: &CompanyConfig| serde_json::json!({
+        "company_name": c.company_name, "department_name": c.department_name, "division_name": c.division_name,
+    });
+    let before = get_company_config(conn).map(|c| names(&c)).unwrap_or_default();
+    let department = data.department_name.as_deref().unwrap_or("").trim();
+    let division = data.division_name.as_deref().unwrap_or("").trim();
+    crate::account::check_unit_names(department, division)?;
+    // The organisation's name is fixed (COMPANY_NAME); only the section and unit change here.
     conn.execute("UPDATE company_config SET company_name=?1,department_name=?2,division_name=?3 WHERE id=1",
-        params![data.company_name, data.department_name.as_deref().unwrap_or(""), data.division_name.as_deref().unwrap_or("")])?;
-    log_activity(conn, user, "CHANGE_SETTING", Some("settings"), Some(1), Some("company_config"), None);
-    get_company_config(conn)
+        params![COMPANY_NAME, department, division])?;
+    let after = get_company_config(conn)?;
+    let changes = changes_details(&before, &names(&after), &[]);
+    log_activity(conn, user, "CHANGE_SETTING", Some("settings"), Some(1), Some("company_config"), changes.as_deref());
+    Ok(after)
 }
 
 // The company logo is a fixed asset bundled with the frontend (src/assets/branding).
@@ -827,7 +1035,7 @@ const EMP_COLS: &str = "id,employee_number,photo_path,full_name,mother_name,fath
   airport_badge_issue_date,airport_badge_front_path,airport_badge_back_path,
   ministry_badge_issue_date,ministry_badge_front_path,ministry_badge_back_path,
   vehicle_color,vehicle_manufacture_year,vehicle_type,vehicle_annual_issue_date,vehicle_annual_expiry_date,vehicles,spouses,
-  appointment_date,father_birthdate,mother_birthdate,name_parts,airport_badge_zones,residence_address_parts";
+  appointment_date,father_birthdate,mother_birthdate,name_parts,airport_badge_zones,residence_address_parts,job_step";
 
 fn map_emp(r: &rusqlite::Row) -> rusqlite::Result<Employee> {
     Ok(Employee {
@@ -883,6 +1091,7 @@ fn map_emp(r: &rusqlite::Row) -> rusqlite::Result<Employee> {
         name_parts:r.get::<_, Option<String>>(88)?.and_then(|value| serde_json::from_str(&value).ok()),
         airport_badge_zones:r.get(89)?,
         residence_address_parts:r.get(90)?,
+        job_step:r.get(91)?,
         residence_card_front_full_path:None,
         residence_card_back_full_path:None,
         airport_badge_front_full_path:None,
@@ -1085,17 +1294,26 @@ fn validate_spouses(data: &EmployeeData) -> AppResult<()> {
     let Some(value) = data.spouses.as_deref() else { return Ok(()); };
     let spouses: Vec<serde_json::Value> = serde_json::from_str(value)
         .map_err(|_| AppError::Validation("spouses must be a valid JSON array".into()))?;
-    let has_spouse_section = matches!(data.marital_status.as_deref(), Some("متزوج" | "أرمل" | "ارمل"));
+    // Same statuses as the «الزوج / الزوجات» section of the employee file (spouseSectionConfig).
+    let has_spouse_section = matches!(data.marital_status.as_deref(), Some("متزوج" | "أرمل" | "ارمل" | "مطلق"));
     let max = if has_spouse_section && data.gender.as_deref() == Some("أنثى") {
         1
     } else {
         4
     };
     if spouses.len() > max {
-        return Err(AppError::Validation(format!("spouses cannot contain more than {max} record(s)")));
+        return Err(AppError::Validation(if max == 1 {
+            "للموظفة زوج واحد فقط. احذف السجل الزائد في «أفراد الأسرة» ثم احفظ".into()
+        } else {
+            format!("لا يمكن تسجيل أكثر من {max} زوجات")
+        }));
     }
     Ok(())
 }
+
+/// The single-vehicle columns of `employees` stay empty: vehicles live in `employee_vehicles`
+/// (moved there by schema v10). Whatever an older form sends for them is not stored.
+const NO_TEXT: Option<&str> = None;
 
 fn validate_employee_data(data: &EmployeeData) -> AppResult<()> {
     if data.full_name.trim().is_empty() || data.full_name.chars().count() > 200 {
@@ -1141,8 +1359,52 @@ fn resolve_row_names(record: &serde_json::Value, stored: Option<&serde_json::Map
     (names, (!parts.is_empty()).then(|| serde_json::Value::Object(parts).to_string()))
 }
 
+/// Attachment paths the rows of one table of this employee hold now.
+fn stored_row_paths(conn: &Connection, table: &str, columns: [&str; 2], employee_id: i64) -> AppResult<Vec<String>> {
+    let mut stmt = conn.prepare(&format!(
+        "SELECT {a} FROM {table} WHERE employee_id=?1 AND {a} IS NOT NULL UNION SELECT {b} FROM {table} WHERE employee_id=?1 AND {b} IS NOT NULL",
+        a = columns[0], b = columns[1]))?;
+    let paths = stmt.query_map(params![employee_id], |r| r.get::<_, String>(0))?.collect::<rusqlite::Result<Vec<_>>>()?;
+    Ok(paths)
+}
+
+const SPOUSE_FILES: (&str, [&str; 2]) = ("employee_spouses", ["national_card_front_path", "national_card_back_path"]);
+const FAMILY_FILES: (&str, [&str; 2]) = ("employee_family_members", ["national_card_front_path", "national_card_back_path"]);
+const VEHICLE_FILES: (&str, [&str; 2]) = ("employee_vehicles", ["annual_front_path", "annual_back_path"]);
+
+/// Every spouse / family / vehicle attachment path of one employee.
+fn employee_row_paths(conn: &Connection, employee_id: i64) -> AppResult<std::collections::HashSet<String>> {
+    let mut paths = std::collections::HashSet::new();
+    for (table, columns) in [SPOUSE_FILES, FAMILY_FILES, VEHICLE_FILES] {
+        paths.extend(stored_row_paths(conn, table, columns, employee_id)?);
+    }
+    Ok(paths)
+}
+
+/// The stored attachment paths that the form's spouse / family / vehicle lists no longer hold:
+/// their rows were removed. (A path moves with its row when an earlier row is removed.)
+fn removed_row_paths(conn: &Connection, employee_id: i64, d: &EmployeeData) -> AppResult<Vec<String>> {
+    let stored = employee_row_paths(conn, employee_id)?;
+    let mut sent = std::collections::HashSet::new();
+    for (json, keys) in [
+        (d.spouses.as_deref(), SPOUSE_FILES.1), (d.family_members.as_deref(), FAMILY_FILES.1), (d.vehicles.as_deref(), VEHICLE_FILES.1),
+    ] {
+        let rows: Vec<serde_json::Value> = serde_json::from_str(json.unwrap_or("[]")).unwrap_or_default();
+        for row in &rows {
+            for key in keys { if let Some(path) = value_string(row, key) { sent.insert(path); } }
+        }
+    }
+    let mut removed: Vec<String> = stored.into_iter().filter(|path| !sent.contains(path)).collect();
+    removed.sort();
+    Ok(removed)
+}
+
 fn replace_employee_spouses(conn: &Connection, employee_id: i64, spouses_json: &str) -> AppResult<()> {
     let stored = stored_row_parts(conn, "employee_spouses", employee_id)?;
+    // Card images are uploaded by their own command: a row keeps only a path this employee's
+    // spouses already had (as for vehicles); anything else the form sends is dropped.
+    let files = stored_row_paths(conn, SPOUSE_FILES.0, SPOUSE_FILES.1, employee_id)?;
+    let kept = |row: &serde_json::Value, key: &str| value_string(row, key).filter(|path| files.contains(path));
     conn.execute("DELETE FROM employee_spouses WHERE employee_id=?1", params![employee_id])?;
     let spouses: Vec<serde_json::Value> = serde_json::from_str(spouses_json).unwrap_or_default();
     for (index, spouse) in spouses.iter().enumerate() {
@@ -1156,7 +1418,7 @@ fn replace_employee_spouses(conn: &Connection, employee_id: i64, spouses_json: &
                 value_string(spouse, "gender"), value_string(spouse, "birthplace"), value_string(spouse, "birthdate"),
                 value_string(spouse, "issue_date"), value_string(spouse, "expiry_date"), value_string(spouse, "issuer"),
                 value_string(spouse, "blood_type"), value_string(spouse, "marriage_date"),
-                value_string(spouse, "national_card_front_path"), value_string(spouse, "national_card_back_path"),
+                kept(spouse, "national_card_front_path"), kept(spouse, "national_card_back_path"),
                 name_parts,
             ],
         )?;
@@ -1175,6 +1437,8 @@ fn replace_employee_spouses(conn: &Connection, employee_id: i64, spouses_json: &
 
 fn replace_employee_family_members(conn: &Connection, employee_id: i64, family_json: &str) -> AppResult<()> {
     let stored = stored_row_parts(conn, "employee_family_members", employee_id)?;
+    let files = stored_row_paths(conn, FAMILY_FILES.0, FAMILY_FILES.1, employee_id)?;
+    let kept = |row: &serde_json::Value, key: &str| value_string(row, key).filter(|path| files.contains(path));
     conn.execute("DELETE FROM employee_family_members WHERE employee_id=?1", params![employee_id])?;
     let members: Vec<serde_json::Value> = serde_json::from_str(family_json).unwrap_or_default();
     for (index, member) in members.iter().enumerate() {
@@ -1187,7 +1451,7 @@ fn replace_employee_family_members(conn: &Connection, employee_id: i64, family_j
                 value_string(member, "civil_id"), names[0], value_string(member, "gender"),
                 value_string(member, "birthplace"), value_string(member, "birthdate"), value_string(member, "issue_date"),
                 value_string(member, "expiry_date"), value_string(member, "issuer"), value_string(member, "blood_type"),
-                value_string(member, "national_card_front_path"), value_string(member, "national_card_back_path"),
+                kept(member, "national_card_front_path"), kept(member, "national_card_back_path"),
                 name_parts, value_string(member, "relation"),
             ],
         )?;
@@ -1199,13 +1463,7 @@ fn replace_employee_vehicles(conn: &Connection, employee_id: i64, vehicles_json:
     // Registration images are uploaded by their own command. A saved row may only keep a path
     // this employee's vehicles already had (rows can move when one is removed); anything else
     // the form sends is dropped.
-    let stored: Vec<String> = {
-        let mut stmt = conn.prepare(
-            "SELECT annual_front_path FROM employee_vehicles WHERE employee_id=?1 AND annual_front_path IS NOT NULL
-             UNION SELECT annual_back_path FROM employee_vehicles WHERE employee_id=?1 AND annual_back_path IS NOT NULL")?;
-        let paths = stmt.query_map(params![employee_id], |r| r.get::<_, String>(0))?.collect::<rusqlite::Result<Vec<_>>>()?;
-        paths
-    };
+    let stored = stored_row_paths(conn, VEHICLE_FILES.0, VEHICLE_FILES.1, employee_id)?;
     let kept = |vehicle: &serde_json::Value, key: &str| value_string(vehicle, key).filter(|path| stored.contains(path));
     conn.execute("DELETE FROM employee_vehicles WHERE employee_id=?1", params![employee_id])?;
     let vehicles: Vec<serde_json::Value> = serde_json::from_str(vehicles_json).unwrap_or_default();
@@ -1228,9 +1486,18 @@ fn replace_employee_vehicles(conn: &Connection, employee_id: i64, vehicles_json:
 }
 
 fn replace_employee_repeating_data(conn: &Connection, employee_id: i64, data: &EmployeeData) -> AppResult<()> {
+    let before = employee_row_paths(conn, employee_id)?;
     replace_employee_spouses(conn, employee_id, data.spouses.as_deref().unwrap_or("[]"))?;
     replace_employee_family_members(conn, employee_id, data.family_members.as_deref().unwrap_or("[]"))?;
     replace_employee_vehicles(conn, employee_id, data.vehicles.as_deref().unwrap_or("[]"))?;
+    // The images of a removed spouse, family member or vehicle go with it (as when one image is
+    // deleted), so no card image stays on disk after its row is gone.
+    let after = employee_row_paths(conn, employee_id)?;
+    for path in before.difference(&after) {
+        if let Ok(relative) = crate::files::safe_relative_path(path) {
+            crate::scanner::cleanup_metadata_file(conn, &relative.to_string_lossy());
+        }
+    }
     Ok(())
 }
 
@@ -1339,16 +1606,17 @@ pub fn create_employee(conn: &Connection, d: &EmployeeData, username: &str) -> A
       d.ration_card_no,d.ration_center_name,d.ration_center_no,d.ration_card_date,
       d.passport_no,d.passport_name,d.passport_issue_date,d.passport_expiry_date,
       d.airport_badge_no,d.airport_badge_expiry,d.ministry_badge_no,d.ministry_badge_expiry,
-      d.vehicle_plate,d.vehicle_name,d.vehicle_color_model,d.vehicle_annual_no,
+      NO_TEXT,NO_TEXT,NO_TEXT,NO_TEXT,
       d.spouse_name,d.spouse_mother_name,d.spouse_birthdate,d.marriage_date,
       d.family_members.as_deref().unwrap_or("[]"),d.notes,d.is_active.unwrap_or(1),d.work_type_notes,d.work_schedule,
       d.civil_id_birthplace,d.civil_id_birthdate,d.civil_id_family_number,d.passport_type,
       d.residence_card_issue_date,d.residence_head_name,d.residence_form_no,
-      d.airport_badge_issue_date,d.ministry_badge_issue_date,d.vehicle_color,d.vehicle_manufacture_year,d.vehicle_type,
-      d.vehicle_annual_issue_date,d.vehicle_annual_expiry_date,d.vehicles.as_deref().unwrap_or("[]"),
+      d.airport_badge_issue_date,d.ministry_badge_issue_date,NO_TEXT,NO_TEXT,NO_TEXT,
+      NO_TEXT,NO_TEXT,d.vehicles.as_deref().unwrap_or("[]"),
       d.spouses.as_deref().unwrap_or("[]"),d.appointment_date,d.father_birthdate,d.mother_birthdate,d.airport_badge_zones])?;
     let id = conn.last_insert_rowid();
-    conn.execute("UPDATE employees SET name_parts=?1, residence_address_parts=?2 WHERE id=?3", params![name_parts, address_parts(d), id])?;
+    conn.execute("UPDATE employees SET name_parts=?1, residence_address_parts=?2, job_step=?3 WHERE id=?4",
+        params![name_parts, address_parts(d), d.job_step.as_deref().map(str::trim).filter(|v| !v.is_empty()), id])?;
     replace_employee_repeating_data(conn, id, d)?;
     log_activity(conn, username, "CREATE_EMPLOYEE", Some("employee"), Some(id), Some(d.full_name.trim()), None);
     get_employee(conn, id)
@@ -1360,13 +1628,22 @@ fn address_parts(d: &EmployeeData) -> Option<String> {
     value.is_object().then(|| value.to_string())
 }
 
+/// Fields kept out of the audit log's list of changes: bookkeeping and derived values.
+const EMPLOYEE_AUDIT_SKIP: &[&str] = &["id", "created_at", "updated_at", "name_parts", "residence_address_parts"];
+
 pub fn update_employee(conn: &Connection, id: i64, d: &EmployeeData, username: &str) -> AppResult<Employee> {
     assert_permission(conn, username, "employees.edit")?;
+    let before = get_employee(conn, id).ok().and_then(|e| serde_json::to_value(e).ok()).unwrap_or_default();
     let (mut d, name_parts) = resolve_employee_names(conn, Some(id), d)?;
     fix_department(conn, &mut d);
     check_employee_number(conn, Some(id), &mut d)?;
     let d = &d;
     validate_employee_data(d)?;
+    // Removing a spouse, family member or vehicle that has attachments deletes those images,
+    // so it needs the same permission as deleting an attachment.
+    if !removed_row_paths(conn, id, d)?.is_empty() && assert_permission(conn, username, "documents.delete").is_err() {
+        return Err(AppError::Validation("حذف زوج/زوجة أو فرد أو مركبة لها مرفقات يحتاج إلى «مسؤول». أعد الصف أو اطلب ذلك من المسؤول".into()));
+    }
     conn.execute("UPDATE employees SET employee_number=?1,full_name=?2,mother_name=?3,father_birthplace=?4,
       mother_birthplace=?5,gender=?6,birthdate=?7,birthplace=?8,marital_status=?9,blood_type=?10,
       workplace=?11,job_title=?12,job_grade=?13,hire_date=?14,contract_type=?15,
@@ -1395,18 +1672,21 @@ pub fn update_employee(conn: &Connection, id: i64, d: &EmployeeData, username: &
       d.ration_card_no,d.ration_center_name,d.ration_center_no,d.ration_card_date,
       d.passport_no,d.passport_name,d.passport_issue_date,d.passport_expiry_date,
       d.airport_badge_no,d.airport_badge_expiry,d.ministry_badge_no,d.ministry_badge_expiry,
-      d.vehicle_plate,d.vehicle_name,d.vehicle_color_model,d.vehicle_annual_no,
+      NO_TEXT,NO_TEXT,NO_TEXT,NO_TEXT,
       d.spouse_name,d.spouse_mother_name,d.spouse_birthdate,d.marriage_date,
       d.family_members.as_deref().unwrap_or("[]"),d.notes,d.is_active.unwrap_or(1),d.work_type_notes,d.work_schedule,
       d.civil_id_birthplace,d.civil_id_birthdate,d.civil_id_family_number,d.passport_type,
       d.residence_card_issue_date,d.residence_head_name,d.residence_form_no,
-      d.airport_badge_issue_date,d.ministry_badge_issue_date,d.vehicle_color,d.vehicle_manufacture_year,d.vehicle_type,
-      d.vehicle_annual_issue_date,d.vehicle_annual_expiry_date,d.vehicles.as_deref().unwrap_or("[]"),
+      d.airport_badge_issue_date,d.ministry_badge_issue_date,NO_TEXT,NO_TEXT,NO_TEXT,
+      NO_TEXT,NO_TEXT,d.vehicles.as_deref().unwrap_or("[]"),
       d.spouses.as_deref().unwrap_or("[]"),d.appointment_date,d.father_birthdate,d.mother_birthdate,d.airport_badge_zones,id])?;
-    conn.execute("UPDATE employees SET name_parts=?1, residence_address_parts=?2 WHERE id=?3", params![name_parts, address_parts(d), id])?;
+    conn.execute("UPDATE employees SET name_parts=?1, residence_address_parts=?2, job_step=?3 WHERE id=?4",
+        params![name_parts, address_parts(d), d.job_step.as_deref().map(str::trim).filter(|v| !v.is_empty()), id])?;
     replace_employee_repeating_data(conn, id, d)?;
-    log_activity(conn, username, "UPDATE_EMPLOYEE", Some("employee"), Some(id), Some(d.full_name.trim()), None);
-    get_employee(conn, id)
+    let after = get_employee(conn, id)?;
+    let changes = changes_details(&before, &serde_json::to_value(&after).unwrap_or_default(), EMPLOYEE_AUDIT_SKIP);
+    log_activity(conn, username, "UPDATE_EMPLOYEE", Some("employee"), Some(id), Some(d.full_name.trim()), changes.as_deref());
+    Ok(after)
 }
 
 /// Names whose automatic split is unsure, for the "مراجعة الأسماء" screen.
@@ -1427,11 +1707,12 @@ pub fn delete_employee(conn: &Connection, id: i64, username: &str) -> AppResult<
     assert_permission(conn, username, "employees.delete")?;
     let name: String = conn.query_row("SELECT full_name FROM employees WHERE id=?1", params![id], |r| r.get(0))
         .unwrap_or_default();
+    let details = audit_details(conn, Some("employee"), Some(id), None);
     conn.execute("DELETE FROM employees WHERE id=?1", params![id])?;
     if conn.changes() == 0 { return Err(AppError::NotFound); }
     crate::scanner::remove_metadata_prefix(conn,&format!("Files/Employees/{id}/"))?;
     std::fs::remove_dir_all(storage_path(conn).join("Files").join("Employees").join(id.to_string())).ok();
-    log_activity(conn, username, "DELETE_EMPLOYEE", Some("employee"), Some(id), Some(&name), None);
+    log_activity(conn, username, "DELETE_EMPLOYEE", Some("employee"), Some(id), Some(&name), details.as_deref());
     Ok(())
 }
 
@@ -1519,8 +1800,12 @@ pub fn add_grade_history(conn: &Connection, employee_id: i64, data: &GradeHistor
         .map_err(Into::into)
 }
 
-pub fn delete_grade_history(conn: &Connection, id: i64) -> AppResult<()> {
+pub fn delete_grade_history(conn: &Connection, id: i64, username: &str) -> AppResult<()> {
+    let (employee_id, grade): (i64, String) = conn.query_row(
+        "SELECT employee_id,grade FROM grade_history WHERE id=?1", params![id], |r| Ok((r.get(0)?, r.get(1)?)),
+    ).map_err(|_| AppError::NotFound)?;
     conn.execute("DELETE FROM grade_history WHERE id=?1", params![id])?;
+    log_activity(conn, username, "DELETE_GRADE", Some("employee"), Some(employee_id), Some(&grade), None);
     Ok(())
 }
 
@@ -1652,9 +1937,13 @@ pub fn create_general_doc(conn: &Connection, data: &GeneralDocData, username: &s
     get_general_doc(conn, id)
 }
 
+/// Fields kept out of the audit log's list of changes; `employee_names` stands for `employee_ids`.
+const DOC_AUDIT_SKIP: &[&str] = &["id", "created_at", "updated_at", "employee_ids", "attachment_paths", "attachment_count", "file_path"];
+
 pub fn update_general_doc(conn: &Connection, id: i64, data: &GeneralDocData, username: &str) -> AppResult<GeneralDoc> {
     assert_permission(conn, username, "documents.manage")?;
     validate_document_data(data, false)?;
+    let before = get_general_doc(conn, id).ok().and_then(|d| serde_json::to_value(d).ok()).unwrap_or_default();
     let tx = conn.unchecked_transaction()?;
     // The HR effect fields are no longer edited from the UI. They are intentionally left out of
     // this UPDATE so that values already stored on existing documents are preserved.
@@ -1663,20 +1952,23 @@ pub fn update_general_doc(conn: &Connection, id: i64, data: &GeneralDocData, use
             data.notes,id])?;
     if tx.changes() == 0 { return Err(AppError::NotFound); }
     replace_general_doc_employees(&tx, id, &data.employee_ids)?;
-    log_activity(&tx, username, "UPDATE_DOC", Some("general_doc"), Some(id), Some(data.title.trim()), None);
+    let after = get_general_doc(&tx, id)?;
+    let changes = changes_details(&before, &serde_json::to_value(&after).unwrap_or_default(), DOC_AUDIT_SKIP);
+    log_activity(&tx, username, "UPDATE_DOC", Some("general_doc"), Some(id), Some(data.title.trim()), changes.as_deref());
     tx.commit()?;
-    get_general_doc(conn, id)
+    Ok(after)
 }
 
 pub fn delete_general_doc(conn: &Connection, id: i64, username: &str) -> AppResult<()> {
     assert_permission(conn, username, "documents.delete")?;
     let title: String = conn.query_row("SELECT title FROM general_docs WHERE id=?1", params![id], |r| r.get(0)).unwrap_or_default();
+    let details = audit_details(conn, Some("general_doc"), Some(id), None);
     conn.execute("DELETE FROM general_doc_attachments WHERE general_doc_id=?1", params![id])?;
     conn.execute("DELETE FROM general_doc_employees WHERE general_doc_id=?1", params![id])?;
     conn.execute("DELETE FROM general_docs WHERE id=?1", params![id])?;
     crate::scanner::remove_metadata_prefix(conn,&format!("Files/GeneralDocs/{id}/"))?;
     std::fs::remove_dir_all(storage_path(conn).join("Files").join("GeneralDocs").join(id.to_string())).ok();
-    log_activity(conn, username, "DELETE_DOC", Some("general_doc"), Some(id), Some(&title), None);
+    log_activity(conn, username, "DELETE_DOC", Some("general_doc"), Some(id), Some(&title), details.as_deref());
     Ok(())
 }
 
@@ -1857,6 +2149,7 @@ pub fn create_outgoing_doc(conn: &Connection, data: &GeneralDocData, username: &
 pub fn update_outgoing_doc(conn: &Connection, id: i64, data: &GeneralDocData, username: &str) -> AppResult<GeneralDoc> {
     assert_permission(conn, username, "documents.manage")?;
     validate_document_data(data, true)?;
+    let before = get_outgoing_doc(conn, id).ok().and_then(|d| serde_json::to_value(d).ok()).unwrap_or_default();
     let tx = conn.unchecked_transaction()?;
     tx.execute(
         "UPDATE outgoing_docs SET title=?1,doc_type=NULL,doc_number=?2,issue_date=?3,issuer=?4,doc_count=?5,margin=?6,is_internal_memo=?7,notes=?8,updated_at=datetime('now') WHERE id=?9",
@@ -1864,21 +2157,24 @@ pub fn update_outgoing_doc(conn: &Connection, id: i64, data: &GeneralDocData, us
     )?;
     if tx.changes() == 0 { return Err(AppError::NotFound); }
     replace_outgoing_doc_employees(&tx, id, &data.employee_ids)?;
-    log_activity(&tx, username, "UPDATE_OUTGOING_DOC", Some("outgoing_doc"), Some(id), Some(data.title.trim()), None);
+    let after = get_outgoing_doc(&tx, id)?;
+    let changes = changes_details(&before, &serde_json::to_value(&after).unwrap_or_default(), DOC_AUDIT_SKIP);
+    log_activity(&tx, username, "UPDATE_OUTGOING_DOC", Some("outgoing_doc"), Some(id), Some(data.title.trim()), changes.as_deref());
     tx.commit()?;
-    get_outgoing_doc(conn, id)
+    Ok(after)
 }
 
 pub fn delete_outgoing_doc(conn: &Connection, id: i64, username: &str) -> AppResult<()> {
     assert_permission(conn, username, "documents.delete")?;
     let title: String = conn.query_row("SELECT title FROM outgoing_docs WHERE id=?1", params![id], |r| r.get(0))
         .unwrap_or_default();
+    let details = audit_details(conn, Some("outgoing_doc"), Some(id), None);
     conn.execute("DELETE FROM outgoing_doc_attachments WHERE outgoing_doc_id=?1", params![id])?;
     conn.execute("DELETE FROM outgoing_doc_employees WHERE outgoing_doc_id=?1", params![id])?;
     conn.execute("DELETE FROM outgoing_docs WHERE id=?1", params![id])?;
     crate::scanner::remove_metadata_prefix(conn,&format!("Files/OutgoingDocs/{id}/"))?;
     std::fs::remove_dir_all(storage_path(conn).join("Files").join("OutgoingDocs").join(id.to_string())).ok();
-    log_activity(conn, username, "DELETE_OUTGOING_DOC", Some("outgoing_doc"), Some(id), Some(&title), None);
+    log_activity(conn, username, "DELETE_OUTGOING_DOC", Some("outgoing_doc"), Some(id), Some(&title), details.as_deref());
     Ok(())
 }
 
@@ -1932,55 +2228,175 @@ pub fn list_activity_log(conn: &Connection, limit: i64) -> AppResult<Vec<Activit
     Ok(result)
 }
 
+/// What the «سجل النظام» screen asks for. Dates are UTC "YYYY-MM-DD HH:MM:SS" bounds, worked out
+/// by the screen from the local days chosen. `search_actions` are the actions whose Arabic name
+/// contains the search text (the names live in the frontend).
+#[derive(Debug, Default, Deserialize)]
+#[serde(default)]
+pub struct ActivityLogFilter {
+    pub search: Option<String>,
+    pub search_actions: Vec<String>,
+    pub username: Option<String>,
+    pub actions: Vec<String>,
+    pub exclude_actions: Vec<String>,
+    pub result: Option<String>,
+    pub from: Option<String>,
+    pub to: Option<String>,
+    pub offset: i64,
+    pub limit: i64,
+}
+
+#[derive(Debug, Serialize)]
+pub struct ActivityLogPage {
+    pub rows: Vec<ActivityLog>,
+    /// Entries matching the filter, in the whole log.
+    pub total: i64,
+    /// Every user name and action in the whole log, for the screen's lists.
+    pub users: Vec<String>,
+    pub actions: Vec<String>,
+}
+
+pub const AUDIT_EXPORT_LIMIT: i64 = 50_000;
+
+/// Searches the whole audit log in the database, newest first, one page at a time.
+pub fn search_activity_log(conn: &Connection, filter: &ActivityLogFilter) -> AppResult<ActivityLogPage> {
+    let mut clauses: Vec<String> = Vec::new();
+    let mut values: Vec<rusqlite::types::Value> = Vec::new();
+    let mut bind = |values: &mut Vec<rusqlite::types::Value>, value: String| {
+        values.push(rusqlite::types::Value::Text(value));
+        format!("?{}", values.len())
+    };
+    let list = |values: &mut Vec<rusqlite::types::Value>, items: &[String], bind: &mut dyn FnMut(&mut Vec<rusqlite::types::Value>, String) -> String| {
+        items.iter().map(|item| bind(values, item.clone())).collect::<Vec<_>>().join(",")
+    };
+    if let Some(name) = filter.username.as_deref().filter(|v| !v.is_empty()) {
+        let p = bind(&mut values, name.to_string());
+        clauses.push(format!("username={p}"));
+    }
+    if !filter.actions.is_empty() {
+        let items = list(&mut values, &filter.actions, &mut bind);
+        clauses.push(format!("action IN ({items})"));
+    }
+    if !filter.exclude_actions.is_empty() {
+        let items = list(&mut values, &filter.exclude_actions, &mut bind);
+        // Routine entries are hidden only when they succeeded: a failed sign-in always shows.
+        clauses.push(format!("NOT (action IN ({items}) AND result='Success')"));
+    }
+    if let Some(result) = filter.result.as_deref().filter(|v| !v.is_empty()) {
+        let p = bind(&mut values, result.to_string());
+        clauses.push(format!("result={p}"));
+    }
+    if let Some(from) = filter.from.as_deref().filter(|v| !v.is_empty()) {
+        let p = bind(&mut values, from.to_string());
+        clauses.push(format!("created_at>={p}"));
+    }
+    if let Some(to) = filter.to.as_deref().filter(|v| !v.is_empty()) {
+        let p = bind(&mut values, to.to_string());
+        clauses.push(format!("created_at<{p}"));
+    }
+    if let Some(search) = filter.search.as_deref().map(str::trim).filter(|v| !v.is_empty()) {
+        let escaped = search.replace('\\', "\\\\").replace('%', "\\%").replace('_', "\\_");
+        let p = bind(&mut values, format!("%{escaped}%"));
+        let mut parts: Vec<String> = ["username", "target_name", "details"].iter()
+            .map(|column| format!("{column} LIKE {p} ESCAPE '\\'")).collect();
+        if !filter.search_actions.is_empty() {
+            let items = list(&mut values, &filter.search_actions, &mut bind);
+            parts.push(format!("action IN ({items})"));
+        }
+        clauses.push(format!("({})", parts.join(" OR ")));
+    }
+    let condition = if clauses.is_empty() { String::new() } else { format!("WHERE {}", clauses.join(" AND ")) };
+    let total: i64 = conn.query_row(&format!("SELECT COUNT(*) FROM activity_log {condition}"),
+        rusqlite::params_from_iter(values.iter()), |r| r.get(0))?;
+    let limit = filter.limit.clamp(1, AUDIT_EXPORT_LIMIT);
+    let offset = filter.offset.max(0);
+    let mut stmt = conn.prepare(&format!(
+        "SELECT id,user_id,username,role,action,target_type,target_id,target_name,result,details,created_at
+         FROM activity_log {condition} ORDER BY id DESC LIMIT {limit} OFFSET {offset}"))?;
+    let rows = stmt.query_map(rusqlite::params_from_iter(values.iter()), |r| Ok(ActivityLog {
+        id:r.get(0)?,user_id:r.get(1)?,username:r.get(2)?,role:r.get(3)?,action:r.get(4)?,target_type:r.get(5)?,
+        target_id:r.get(6)?,target_name:r.get(7)?,result:r.get(8)?,details:r.get(9)?,created_at:r.get(10)?,
+    }))?.collect::<rusqlite::Result<_>>()?;
+    let distinct = |sql: &str| -> AppResult<Vec<String>> {
+        let mut stmt = conn.prepare(sql)?;
+        let items = stmt.query_map([], |r| r.get(0))?.collect::<rusqlite::Result<_>>()?;
+        Ok(items)
+    };
+    // Names typed at a failed sign-in that match no account are not offered as users.
+    let users = distinct("SELECT DISTINCT username FROM activity_log WHERE role<>'unknown' OR username='system' ORDER BY username")?;
+    let actions = distinct("SELECT DISTINCT action FROM activity_log ORDER BY action")?;
+    Ok(ActivityLogPage { rows, total, users, actions })
+}
+
 // ── Users ──────────────────────────────────────────────────────────────────
+pub const DISABLED_ACCOUNT_MESSAGE: &str = "هذا الحساب موقوف. اطلب من المسؤول إعادة تفعيله.";
+pub const MAX_USERS: i64 = 10;
+
+fn has_disabled_column(conn: &Connection) -> bool {
+    conn.prepare("SELECT disabled FROM users LIMIT 0").is_ok()
+}
+
 pub fn list_users(conn: &Connection) -> AppResult<Vec<User>> {
-    let mut stmt = conn.prepare("SELECT id,username,role,must_change_password,created_at FROM users ORDER BY id")?;
-    let result = stmt.query_map([], |r| {
+    let disabled = if has_disabled_column(conn) { "u.disabled" } else { "0" };
+    let base = crate::account::base_admin(conn);
+    let mut stmt = conn.prepare(&format!(
+        "SELECT u.id,u.username,u.role,u.must_change_password,u.created_at,{disabled},
+                (SELECT MAX(l.created_at) FROM activity_log l WHERE l.user_id=u.id AND l.action='LOGIN' AND l.result='Success')
+         FROM users u ORDER BY u.id"
+    ))?;
+    let rows = stmt.query_map([], |r| {
         let username: String = r.get(1)?; let role: String = r.get(2)?;
-        let is_master = username == "sysadmin" || role == "system_admin";
+        let is_base = username.eq_ignore_ascii_case(&base);
+        let is_master = is_base || role == "system_admin";
         Ok(User {
             id:r.get(0)?, username, role: role.clone(), is_master,
             permissions: role_permissions(&role).iter().map(|p| p.to_string()).collect(),
             must_change_password:r.get(3)?, created_at:r.get(4)?,
+            disabled: r.get(5)?, trusted: true, last_login: r.get(6)?, is_base,
         })
-    })?.collect::<rusqlite::Result<_>>()?;
-    Ok(result)
+    })?.collect::<rusqlite::Result<Vec<_>>>()?;
+    Ok(rows.into_iter().map(|mut user| { user.trusted = crate::integrity::user_trusted(conn, user.id); user }).collect())
+}
+
+fn find_user(conn: &Connection, id: i64) -> AppResult<User> {
+    list_users(conn)?.into_iter().find(|u| u.id == id).ok_or(AppError::NotFound)
+}
+
+fn caller_id(conn: &Connection, caller: &str) -> Option<i64> {
+    conn.query_row("SELECT id FROM users WHERE username=?1", params![caller], |r| r.get(0)).ok()
 }
 
 pub fn create_user(conn: &Connection, caller: &str, data: &UserData) -> AppResult<User> {
     assert_permission(conn, caller, "users.manage")?;
     let username = data.username.trim();
-    if username.len() < 3 || username.len() > 64 || !username.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '-' | '.')) {
-        return Err(AppError::Validation("Username must be 3-64 letters, numbers, dots, dashes, or underscores".into()));
-    }
-    if !valid_role(&data.role) { return Err(AppError::Validation("Invalid role".into())); }
+    crate::account::valid_username(username)?;
+    if !valid_role(&data.role) { return Err(AppError::Validation("اختر دورًا للمستخدم".into())); }
     if data.role == "system_admin" {
         assert_permission(conn, caller, "users.assign_system_admin")?;
     }
-    validate_new_password(&data.password)?;
+    crate::account::validate_account_password(conn, username, &data.password)?;
     let count: i64 = conn.query_row("SELECT COUNT(*) FROM users", [], |r| r.get(0))?;
-    if count >= 10 { return Err(AppError::Validation("Max 10 users".into())); }
+    if count >= MAX_USERS { return Err(AppError::Validation(format!("وصلت إلى الحد الأقصى ({MAX_USERS} مستخدمين). احذف مستخدمًا لإضافة آخر."))); }
+    // Sign-in ignores case, so «HR.admin» next to «hr.admin» would be the same account.
+    let taken: i64 = conn.query_row("SELECT COUNT(*) FROM users WHERE username=?1 COLLATE NOCASE", params![username], |r| r.get(0))?;
+    if taken > 0 { return Err(AppError::Validation(format!("اسم المستخدم «{username}» موجود"))); }
     conn.execute("INSERT INTO users(username,password,role,must_change_password) VALUES(?1,?2,?3,1)",
-        params![data.username.trim(), hash_password(&data.password)?, data.role])?;
+        params![username, hash_password(&data.password)?, data.role])?;
     let id = conn.last_insert_rowid();
-    log_activity(conn, caller, "CREATE_USER", Some("user"), Some(id), Some(data.username.trim()), None);
-    conn.query_row("SELECT id,username,role,must_change_password,created_at FROM users WHERE id=?1", params![id], |r| {
-        let username: String = r.get(1)?; let role: String = r.get(2)?;
-        let is_master = username == "sysadmin" || role == "system_admin";
-        Ok(User {
-            id:r.get(0)?, username, role: role.clone(), is_master,
-            permissions: role_permissions(&role).iter().map(|p| p.to_string()).collect(),
-            must_change_password:r.get(3)?, created_at:r.get(4)?,
-        })
-    }).map_err(Into::into)
+    log_activity(conn, caller, "CREATE_USER", Some("user"), Some(id), Some(username), Some(&data.role));
+    find_user(conn, id)
+}
+
+fn target_user(conn: &Connection, id: i64) -> AppResult<(String, String)> {
+    conn.query_row("SELECT username,role FROM users WHERE id=?1", params![id], |r| Ok((r.get(0)?, r.get(1)?)))
+        .map_err(|_| AppError::NotFound)
 }
 
 pub fn delete_user(conn: &Connection, caller: &str, id: i64) -> AppResult<()> {
     assert_permission(conn, caller, "users.manage")?;
-    let (username, role): (String, String) = conn.query_row(
-        "SELECT username,role FROM users WHERE id=?1", params![id], |r| Ok((r.get(0)?, r.get(1)?))
-    ).map_err(|_| AppError::NotFound)?;
-    if username == "sysadmin" { return Err(AppError::Validation("Cannot delete sysadmin".into())); }
+    let (username, role) = target_user(conn, id)?;
+    if crate::account::is_base_admin(conn, &username) { return Err(AppError::Validation("لا يمكن حذف مستخدم النظام الأساسي".into())); }
+    if caller_id(conn, caller) == Some(id) { return Err(AppError::Validation("لا يمكنك حذف حسابك".into())); }
     if role == "system_admin" { assert_permission(conn, caller, "users.assign_system_admin")?; }
     conn.execute("DELETE FROM users WHERE id=?1", params![id])?;
     log_activity(conn, caller, "DELETE_USER", Some("user"), Some(id), Some(&username), None);
@@ -1995,31 +2411,47 @@ pub fn get_storage_path(conn: &Connection) -> AppResult<String> {
 
 pub fn update_user_role(conn: &Connection, caller: &str, id: i64, role: &str) -> AppResult<User> {
     assert_permission(conn, caller, "users.manage")?;
-    if !valid_role(role) { return Err(AppError::Validation("Invalid role".into())); }
-    let (username, old_role): (String, String) = conn.query_row(
-        "SELECT username,role FROM users WHERE id=?1", params![id], |r| Ok((r.get(0)?, r.get(1)?))
-    ).map_err(|_| AppError::NotFound)?;
-    if username == "sysadmin" || old_role == "system_admin" || role == "system_admin" {
+    if !valid_role(role) { return Err(AppError::Validation("اختر دورًا للمستخدم".into())); }
+    let (username, old_role) = target_user(conn, id)?;
+    let base = crate::account::is_base_admin(conn, &username);
+    if base && role != "system_admin" {
+        return Err(AppError::Validation("لا يمكن تغيير دور مستخدم النظام الأساسي".into()));
+    }
+    // An admin who lowers their own role loses the screen they are on; another admin does it.
+    if caller_id(conn, caller) == Some(id) && role != old_role {
+        return Err(AppError::Validation("لا يمكنك تغيير دورك. يغيّره مسؤول آخر.".into()));
+    }
+    if base || old_role == "system_admin" || role == "system_admin" {
         assert_permission(conn, caller, "users.assign_system_admin")?;
     }
-    if username == "sysadmin" && role != "system_admin" {
-        return Err(AppError::Validation("Cannot change sysadmin role".into()));
+    if role != old_role {
+        conn.execute("UPDATE users SET role=?1 WHERE id=?2", params![role, id])?;
+        log_activity(conn, caller, "CHANGE_USER_ROLE", Some("user"), Some(id), Some(&username), Some(&format!("{old_role} -> {role}")));
     }
-    conn.execute("UPDATE users SET role=?1 WHERE id=?2", params![role, id])?;
-    log_activity(conn, caller, "CHANGE_USER_ROLE", Some("user"), Some(id), Some(&username), Some(&format!("{old_role} -> {role}")));
-    list_users(conn)?.into_iter().find(|u| u.id == id).ok_or(AppError::NotFound)
+    find_user(conn, id)
 }
 
 pub fn reset_user_password(conn: &Connection, caller: &str, id: i64, password: &str) -> AppResult<()> {
     assert_permission(conn, caller, "users.manage")?;
-    validate_new_password(password)?;
-    let (username, role): (String, String) = conn.query_row(
-        "SELECT username,role FROM users WHERE id=?1", params![id], |r| Ok((r.get(0)?, r.get(1)?))
-    ).map_err(|_| AppError::NotFound)?;
+    let (username, role) = target_user(conn, id)?;
+    crate::account::validate_account_password(conn, &username, password)?;
     if role == "system_admin" { assert_permission(conn, caller, "users.assign_system_admin")?; }
     conn.execute("UPDATE users SET password=?1,must_change_password=1 WHERE id=?2", params![hash_password(password)?, id])?;
+    clear_login_failures(conn, &username);
     log_activity(conn, caller, "RESET_USER_PASSWORD", Some("user"), Some(id), Some(&username), None);
     Ok(())
+}
+
+/// «إيقاف الحساب» / «تفعيل الحساب»: a stopped account cannot sign in or act, and keeps its name in the log.
+pub fn set_user_disabled(conn: &Connection, caller: &str, id: i64, disabled: bool) -> AppResult<User> {
+    assert_permission(conn, caller, "users.manage")?;
+    let (username, role) = target_user(conn, id)?;
+    if crate::account::is_base_admin(conn, &username) { return Err(AppError::Validation("لا يمكن إيقاف مستخدم النظام الأساسي".into())); }
+    if caller_id(conn, caller) == Some(id) { return Err(AppError::Validation("لا يمكنك إيقاف حسابك".into())); }
+    if role == "system_admin" { assert_permission(conn, caller, "users.assign_system_admin")?; }
+    conn.execute("UPDATE users SET disabled=?1 WHERE id=?2", params![disabled, id])?;
+    log_activity(conn, caller, if disabled { "DISABLE_USER" } else { "ENABLE_USER" }, Some("user"), Some(id), Some(&username), None);
+    find_user(conn, id)
 }
 
 #[cfg(test)]
@@ -2035,7 +2467,8 @@ mod auth_tests {
                 password TEXT NOT NULL,
                 role TEXT NOT NULL,
                 must_change_password INTEGER NOT NULL DEFAULT 0,
-                created_at TEXT DEFAULT (datetime('now'))
+                created_at TEXT DEFAULT (datetime('now')),
+                disabled INTEGER NOT NULL DEFAULT 0
             );
             CREATE TABLE activity_log (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -2088,15 +2521,15 @@ mod auth_tests {
             params![hash_password("temporary-password").unwrap()],
         ).unwrap();
 
-        let user = change_password(&conn, "sysadmin", "temporary-password", "new-secure-password").unwrap();
+        let user = change_password(&conn, "sysadmin", "temporary-password", "Tigris7Bridge").unwrap();
 
         assert!(!user.must_change_password);
         assert!(login(&conn, "sysadmin", "temporary-password").is_err());
-        assert!(login(&conn, "sysadmin", "new-secure-password").is_ok());
+        assert!(login(&conn, "sysadmin", "Tigris7Bridge").is_ok());
     }
 
     #[test]
-    fn viewer_can_view_and_print_but_cannot_download_export_or_modify() {
+    fn viewer_can_view_print_and_download_but_cannot_modify() {
         let conn = auth_db();
         conn.execute(
             "INSERT INTO users(username,password,role) VALUES('viewer',?1,'viewer')",
@@ -2104,55 +2537,110 @@ mod auth_tests {
         ).unwrap();
         assert!(assert_permission(&conn, "viewer", "documents.print").is_ok());
         assert!(assert_permission(&conn, "viewer", "documents.view").is_ok());
-        assert!(assert_permission(&conn, "viewer", "documents.download").is_err());
+        assert!(assert_permission(&conn, "viewer", "documents.download").is_ok());
         assert!(assert_permission(&conn, "viewer", "documents.upload").is_err());
         assert!(assert_permission(&conn, "viewer", "documents.delete").is_err());
+        assert!(assert_permission(&conn, "viewer", "audit.view").is_err());
         assert!(assert_permission(&conn, "viewer", "reports.export").is_err());
     }
 
-    #[test]
-    fn archive_admin_cannot_assign_system_admin() {
-        let conn = auth_db();
-        conn.execute(
-            "INSERT INTO users(username,password,role) VALUES('archiveadmin',?1,'archive_admin')",
-            params![hash_password("admin-password").unwrap()],
-        ).unwrap();
-        assert!(assert_permission(&conn, "archiveadmin", "users.manage").is_ok());
-        assert!(assert_permission(&conn, "archiveadmin", "users.assign_system_admin").is_err());
-        // A restore replaces the users table, so it would let an Archive Admin promote themselves.
-        assert!(assert_permission(&conn, "archiveadmin", "backups.restore").is_err());
-    }
-
-    #[test]
-    fn archive_admin_cannot_delete_system_admin() {
-        let conn = auth_db();
-        for (name, role) in [("archiveadmin2", "archive_admin"), ("secondadmin", "system_admin"), ("officer1", "archive_officer")] {
+    fn add_users<'a>(conn: &'a Connection, users: &[(&str, &str)]) -> impl Fn(&str) -> i64 + 'a {
+        for (name, role) in users {
             conn.execute(
                 "INSERT INTO users(username,password,role) VALUES(?1,?2,?3)",
                 params![name, hash_password("admin-password").unwrap(), role],
             ).unwrap();
         }
-        let id = |name: &str| conn.query_row("SELECT id FROM users WHERE username=?1", params![name], |r| r.get::<_, i64>(0)).unwrap();
-        assert!(matches!(delete_user(&conn, "archiveadmin2", id("secondadmin")), Err(AppError::Unauthorized)));
-        assert!(delete_user(&conn, "archiveadmin2", id("officer1")).is_ok());
-        let remaining: i64 = conn.query_row("SELECT COUNT(*) FROM users WHERE username='secondadmin'", [], |r| r.get(0)).unwrap();
-        assert_eq!(remaining, 1);
+        move |name: &str| conn.query_row("SELECT id FROM users WHERE username=?1", params![name], |r| r.get::<_, i64>(0)).unwrap()
     }
 
     #[test]
-    fn repeated_failed_logins_lock_the_username_temporarily() {
+    fn the_former_archive_admin_role_has_no_permissions_and_cannot_be_assigned() {
+        let conn = auth_db();
+        let id = add_users(&conn, &[("admin", "system_admin"), ("old", "archive_admin"), ("clerk", "archive_officer")]);
+        assert!(role_permissions("archive_admin").is_empty());
+        assert!(assert_permission(&conn, "old", "users.manage").is_err());
+        assert!(update_user_role(&conn, "admin", id("clerk"), "archive_admin").is_err());
+        assert!(create_user(&conn, "admin", &UserData { username: "x.user".into(), password: "12345678".into(), role: "archive_admin".into() }).is_err());
+    }
+
+    #[test]
+    fn an_admin_cannot_change_their_own_role_or_delete_or_stop_their_own_account() {
+        let conn = auth_db();
+        let id = add_users(&conn, &[("sysadmin", "system_admin"), ("admin2", "system_admin"), ("clerk", "archive_officer")]);
+        assert!(matches!(update_user_role(&conn, "admin2", id("admin2"), "viewer"), Err(AppError::Validation(_))));
+        assert!(matches!(delete_user(&conn, "admin2", id("admin2")), Err(AppError::Validation(_))));
+        assert!(matches!(set_user_disabled(&conn, "admin2", id("admin2"), true), Err(AppError::Validation(_))));
+        assert!(matches!(update_user_role(&conn, "admin2", id("sysadmin"), "viewer"), Err(AppError::Validation(_))));
+        assert!(matches!(delete_user(&conn, "admin2", id("sysadmin")), Err(AppError::Validation(_))));
+        // Saving the same role again changes and logs nothing.
+        update_user_role(&conn, "admin2", id("admin2"), "system_admin").unwrap();
+        let logged: i64 = conn.query_row("SELECT COUNT(*) FROM activity_log WHERE action='CHANGE_USER_ROLE'", [], |r| r.get(0)).unwrap();
+        assert_eq!(logged, 0);
+        assert_eq!(update_user_role(&conn, "admin2", id("clerk"), "viewer").unwrap().role, "viewer");
+        assert!(delete_user(&conn, "admin2", id("clerk")).is_ok());
+    }
+
+    #[test]
+    fn a_stopped_account_cannot_sign_in_or_act_until_enabled_again() {
+        let conn = auth_db();
+        let id = add_users(&conn, &[("admin", "system_admin"), ("clerk", "archive_officer")]);
+        assert!(set_user_disabled(&conn, "admin", id("clerk"), true).unwrap().disabled);
+        assert!(matches!(login(&conn, "clerk", "admin-password"), Err(AppError::Validation(m)) if m == DISABLED_ACCOUNT_MESSAGE));
+        assert!(assert_permission(&conn, "clerk", "documents.view").is_err());
+        assert!(!set_user_disabled(&conn, "admin", id("clerk"), false).unwrap().disabled);
+        assert!(login(&conn, "clerk", "admin-password").is_ok());
+        let last = list_users(&conn).unwrap().into_iter().find(|u| u.username == "clerk").unwrap().last_login;
+        assert!(last.is_some(), "the last successful sign-in is shown in the users list");
+    }
+
+    #[test]
+    fn a_username_that_differs_only_in_letter_case_is_refused_in_arabic() {
+        let conn = auth_db();
+        add_users(&conn, &[("admin", "system_admin"), ("hr.clerk", "archive_officer")]);
+        let error = create_user(&conn, "admin", &UserData { username: "HR.Clerk".into(), password: "Tigris7Bridge".into(), role: "viewer".into() }).unwrap_err();
+        assert!(matches!(error, AppError::Validation(ref m) if m.contains("موجود")));
+        let error = create_user(&conn, "admin", &UserData { username: "أحمد".into(), password: "Tigris7Bridge".into(), role: "viewer".into() }).unwrap_err();
+        assert!(matches!(error, AppError::Validation(ref m) if m.contains("أحرف إنجليزية")));
+    }
+
+    #[test]
+    fn repeated_failed_logins_warn_then_lock_the_username_temporarily() {
         let conn = auth_db();
         conn.execute(
             "INSERT INTO users(username,password,role) VALUES('lockme',?1,'viewer')",
             params![hash_password("correct-password").unwrap()],
         ).unwrap();
-        for _ in 0..LOGIN_MAX_FAILURES {
-            assert!(matches!(login(&conn, "lockme", "wrong-password"), Err(AppError::Unauthorized)));
-        }
-        // Even the correct password is refused while locked.
-        assert!(matches!(login(&conn, "LockMe", "correct-password"), Err(AppError::Validation(_))));
+        let message = |r: AppResult<User>| match r { Err(AppError::Validation(m)) => m, Err(AppError::Unauthorized) => "wrong".into(), other => panic!("{other:?}") };
+        assert_eq!(message(login(&conn, "lockme", "x")), "wrong");
+        assert_eq!(message(login(&conn, "lockme", "x")), "wrong");
+        assert!(message(login(&conn, "lockme", "x")).contains("بقيت محاولتان"));
+        assert!(message(login(&conn, "lockme", "x")).contains("بقيت محاولة واحدة"));
+        // The failure that pauses the account says so at once.
+        assert!(message(login(&conn, "lockme", "x")).starts_with(LOCKOUT_PREFIX));
+        // Even the correct password is refused while locked, under any letter case.
+        assert!(message(login(&conn, "LockMe", "correct-password")).starts_with(LOCKOUT_PREFIX));
         clear_login_failures(&conn, "lockme");
         assert!(login(&conn, "lockme", "correct-password").is_ok());
+    }
+
+    #[test]
+    fn old_failures_are_forgotten() {
+        let conn = auth_db();
+        conn.execute("INSERT INTO users(username,password,role) VALUES('slow',?1,'viewer')", params![hash_password("correct-password").unwrap()]).unwrap();
+        for _ in 0..4 { let _ = login(&conn, "slow", "x"); }
+        conn.execute("UPDATE login_failures SET last_failure=last_failure-86400", []).unwrap();
+        assert!(matches!(login(&conn, "slow", "x"), Err(AppError::Unauthorized)), "a day later the count starts again");
+        assert!(login(&conn, "slow", "correct-password").is_ok());
+    }
+
+    #[test]
+    fn sign_in_ignores_letter_case_and_keeps_the_stored_name() {
+        let conn = auth_db();
+        conn.execute("INSERT INTO users(username,password,role) VALUES('it.manager',?1,'viewer')", params![hash_password("correct-password").unwrap()]).unwrap();
+        let user = login(&conn, " IT.Manager ", "correct-password").unwrap();
+        assert_eq!(user.username, "it.manager");
+        assert!(matches!(login(&conn, &"a".repeat(65), "x"), Err(AppError::Unauthorized)));
     }
 
     #[test]
@@ -2170,7 +2658,7 @@ mod auth_tests {
             "INSERT INTO users(username,password,role) VALUES('resetme',?1,'viewer')",
             params![hash_password("correct-password").unwrap()],
         ).unwrap();
-        for _ in 0..LOGIN_MAX_FAILURES - 1 {
+        for _ in 0..4 {
             assert!(login(&conn, "resetme", "wrong-password").is_err());
         }
         assert!(login(&conn, "resetme", "correct-password").is_ok());
@@ -2189,6 +2677,7 @@ mod auth_tests {
         assert!(!permissions.contains(&"users.manage"));
         assert!(!permissions.contains(&"settings.manage"));
         assert!(!permissions.contains(&"backups.manage"));
+        assert!(!permissions.contains(&"audit.view"), "the system log is for admins only");
     }
 }
 
@@ -2197,7 +2686,7 @@ pub fn get_backup_path(conn: &Connection) -> AppResult<String> {
     Ok(backup_path(conn).to_string_lossy().into_owned())
 }
 
-fn get_setting(conn: &Connection, key: &str) -> AppResult<Option<String>> {
+pub(crate) fn get_setting(conn: &Connection, key: &str) -> AppResult<Option<String>> {
     conn.query_row("SELECT value FROM app_settings WHERE key=?1", params![key], |r| r.get(0))
         .optional()
         .map_err(Into::into)
@@ -2205,7 +2694,7 @@ fn get_setting(conn: &Connection, key: &str) -> AppResult<Option<String>> {
 
 /// The automatic-backup password, unwrapped from DPAPI. A plain-text value left by an older
 /// release is re-saved protected the first time it is read.
-fn auto_backup_password(conn: &Connection) -> AppResult<String> {
+pub(crate) fn auto_backup_password(conn: &Connection) -> AppResult<String> {
     let Some(stored) = get_setting(conn, "auto_backup_password")?.filter(|value| !value.is_empty()) else {
         return Ok(String::new());
     };
@@ -2220,7 +2709,7 @@ fn set_auto_backup_password(conn: &Connection, password: &str) -> AppResult<()> 
     set_setting(conn, "auto_backup_password", &crate::secure::protect_secret(password)?)
 }
 
-fn set_setting(conn: &Connection, key: &str, value: &str) -> AppResult<()> {
+pub(crate) fn set_setting(conn: &Connection, key: &str, value: &str) -> AppResult<()> {
     conn.execute(
         "INSERT INTO app_settings(key,value) VALUES(?1,?2)
          ON CONFLICT(key) DO UPDATE SET value=excluded.value",
@@ -2398,43 +2887,95 @@ mod document_alert_rule_tests {
     }
 }
 
-fn setting_bool(conn: &Connection, key: &str) -> AppResult<bool> {
+pub(crate) fn setting_bool(conn: &Connection, key: &str) -> AppResult<bool> {
     Ok(matches!(get_setting(conn, key)?.as_deref(), Some("1") | Some("true")))
+}
+
+/// Automatic backups are on when switched on in 1.0.7, or when any of the daily, weekly or
+/// monthly toggles of earlier releases was on.
+pub(crate) fn auto_backup_enabled(conn: &Connection) -> AppResult<bool> {
+    if let Some(value) = get_setting(conn, "auto_backup_enabled")? {
+        return Ok(matches!(value.as_str(), "1" | "true"));
+    }
+    Ok(setting_bool(conn, "auto_backup_daily_enabled")?
+        || setting_bool(conn, "auto_backup_weekly_enabled")?
+        || setting_bool(conn, "auto_backup_monthly_enabled")?)
+}
+
+pub(crate) fn setting_u32(conn: &Connection, key: &str, default: u32) -> AppResult<u32> {
+    Ok(get_setting(conn, key)?.and_then(|value| value.parse::<u32>().ok()).unwrap_or(default))
+}
+
+pub(crate) fn backup_interval_minutes(conn: &Connection) -> AppResult<u32> {
+    setting_u32(conn, "backup_interval_minutes", default_backup_interval())
+}
+
+pub(crate) fn backup_retention(conn: &Connection) -> AppResult<crate::backup_store::Retention> {
+    Ok(crate::backup_store::Retention {
+        keep_daily: setting_u32(conn, "backup_keep_daily", default_keep_daily())?.max(crate::backup_store::MIN_KEEP_DAILY),
+        keep_weekly: setting_u32(conn, "backup_keep_weekly", default_keep_weekly())?,
+        keep_monthly: setting_u32(conn, "backup_keep_monthly", default_keep_monthly())?,
+        auto_delete: get_setting(conn, "backup_auto_delete")?.is_none_or(|value| matches!(value.as_str(), "1" | "true")),
+    })
 }
 
 pub fn get_auto_backup_settings(conn: &Connection, user: &str) -> AppResult<AutoBackupSettings> {
     assert_permission(conn, user, "backups.manage")?;
+    let has_password = get_setting(conn, "auto_backup_password")?.is_some_and(|value| !value.is_empty());
+    let retention = backup_retention(conn)?;
+    let usage = crate::backup_store::usage(&backup_path(conn));
     Ok(AutoBackupSettings {
-        daily_enabled: setting_bool(conn, "auto_backup_daily_enabled")?,
-        weekly_enabled: setting_bool(conn, "auto_backup_weekly_enabled")?,
-        monthly_enabled: setting_bool(conn, "auto_backup_monthly_enabled")?,
-        has_password: get_setting(conn, "auto_backup_password")?.is_some_and(|value| !value.is_empty()),
-        last_daily: get_setting(conn, "auto_backup_last_daily")?,
-        last_weekly: get_setting(conn, "auto_backup_last_weekly")?,
-        last_monthly: get_setting(conn, "auto_backup_last_monthly")?,
-        last_daily_path: get_setting(conn, "auto_backup_last_daily_path")?,
-        last_weekly_path: get_setting(conn, "auto_backup_last_weekly_path")?,
-        last_monthly_path: get_setting(conn, "auto_backup_last_monthly_path")?,
+        enabled: auto_backup_enabled(conn)?,
+        has_password,
+        password_works: has_password && auto_backup_password(conn).is_ok_and(|value| !value.is_empty()),
+        interval_minutes: backup_interval_minutes(conn)?,
+        keep_daily: retention.keep_daily,
+        keep_weekly: retention.keep_weekly,
+        keep_monthly: retention.keep_monthly,
+        auto_delete: retention.auto_delete,
+        last_backup: get_setting(conn, "auto_backup_last_time")?.or(get_setting(conn, "auto_backup_last_daily")?),
+        last_backup_path: get_setting(conn, "auto_backup_last_daily_path")?,
+        used_bytes: usage.bytes,
+        backup_files: usage.backup_files,
+        same_drive: matches!((crate::paths::drive_of(&crate::paths::data_root()), crate::paths::drive_of(&backup_path(conn))), (Some(a), Some(b)) if a == b),
+        last_export: get_setting(conn, "backup_last_export")?,
     })
 }
 
 pub fn set_auto_backup_settings(conn: &Connection, user: &str, data: &AutoBackupSettingsData) -> AppResult<AutoBackupSettings> {
     assert_permission(conn, user, "backups.manage")?;
+    if !matches!(data.interval_minutes, 0 | 30 | 60 | 120) {
+        return Err(AppError::Validation("اختر مدة النسخ أثناء العمل من القائمة".into()));
+    }
+    if !(crate::backup_store::MIN_KEEP_DAILY..=365).contains(&data.keep_daily) {
+        return Err(AppError::Validation(format!("عدد النسخ اليومية يجب أن يكون بين {} و365", crate::backup_store::MIN_KEEP_DAILY)));
+    }
+    if data.keep_weekly > 104 || data.keep_monthly > 120 {
+        return Err(AppError::Validation("الحد الأعلى 104 نسخة أسبوعية و120 نسخة شهرية".into()));
+    }
     let existing_password = get_setting(conn, "auto_backup_password")?.unwrap_or_default();
     // Moves a legacy plain-text password to DPAPI even when only the toggles change.
     if !existing_password.is_empty() { auto_backup_password(conn).ok(); }
     let password = data.password.as_deref().unwrap_or("").trim();
-    if (data.daily_enabled || data.weekly_enabled || data.monthly_enabled) && password.is_empty() && existing_password.is_empty() {
-        return Err(AppError::Validation("Enter an automatic backup password before enabling automatic backups".into()));
+    if data.enabled && password.is_empty() && existing_password.is_empty() {
+        return Err(AppError::Validation("أدخل كلمة مرور للنسخ التلقائية قبل التفعيل".into()));
     }
     if !password.is_empty() {
         validate_new_password(password)?;
         set_auto_backup_password(conn, password)?;
     }
-    set_setting(conn, "auto_backup_daily_enabled", if data.daily_enabled { "1" } else { "0" })?;
-    set_setting(conn, "auto_backup_weekly_enabled", if data.weekly_enabled { "1" } else { "0" })?;
-    set_setting(conn, "auto_backup_monthly_enabled", if data.monthly_enabled { "1" } else { "0" })?;
-    log_activity(conn, user, "CHANGE_SETTING", Some("settings"), None, Some("automatic_backups"), None);
+    set_setting(conn, "auto_backup_enabled", if data.enabled { "1" } else { "0" })?;
+    set_setting(conn, "backup_interval_minutes", &data.interval_minutes.to_string())?;
+    set_setting(conn, "backup_keep_daily", &data.keep_daily.to_string())?;
+    set_setting(conn, "backup_keep_weekly", &data.keep_weekly.to_string())?;
+    set_setting(conn, "backup_keep_monthly", &data.keep_monthly.to_string())?;
+    set_setting(conn, "backup_auto_delete", if data.auto_delete { "1" } else { "0" })?;
+    let details = format!(
+        "enabled={} interval={}m keep daily={} weekly={} monthly={} auto_delete={}{}",
+        data.enabled, data.interval_minutes, data.keep_daily, data.keep_weekly, data.keep_monthly, data.auto_delete,
+        if password.is_empty() { "" } else { " password changed" },
+    );
+    log_activity(conn, user, "CHANGE_SETTING", Some("settings"), None, Some("automatic_backups"), Some(&details));
     get_auto_backup_settings(conn, user)
 }
 
@@ -2448,18 +2989,37 @@ type AuditSnapshotRow = (
     Option<String>, String, Option<String>, Option<String>,
 );
 
+fn read_audit_rows(conn: &Connection) -> AppResult<Vec<AuditSnapshotRow>> {
+    let mut stmt = conn.prepare("SELECT user_id,username,role,action,target_type,target_id,target_name,result,details,created_at FROM activity_log ORDER BY id")?;
+    let rows = stmt.query_map([], |r| Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?,r.get(5)?,r.get(6)?,r.get(7)?,r.get(8)?,r.get(9)?)))?
+        .collect::<rusqlite::Result<_>>()?;
+    Ok(rows)
+}
+
+/// After a restore, the log of the restored database already holds every entry up to the day of
+/// the backup. Of the log kept from before the restore, only the entries it does not hold are
+/// added back, so that nothing is lost and nothing appears twice.
+fn audit_rows_to_restore(conn: &Connection, kept: Vec<AuditSnapshotRow>) -> AppResult<Vec<AuditSnapshotRow>> {
+    let mut present: std::collections::HashMap<AuditSnapshotRow, usize> = std::collections::HashMap::new();
+    for row in read_audit_rows(conn)? { *present.entry(row).or_default() += 1; }
+    Ok(kept.into_iter().filter(|row| match present.get_mut(row) {
+        Some(count) if *count > 0 => { *count -= 1; false }
+        _ => true,
+    }).collect())
+}
+
 #[derive(Debug, Serialize, Deserialize)]
-struct BackupManifest {
+pub(crate) struct BackupManifest {
     format_version: u32,
     created_at: String,
     files: Vec<BackupManifestFile>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
-struct BackupManifestFile {
-    path: String,
-    size: u64,
-    sha256: String,
+pub(crate) struct BackupManifestFile {
+    pub(crate) path: String,
+    pub(crate) size: u64,
+    pub(crate) sha256: String,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -2472,14 +3032,14 @@ pub(crate) fn backup_progress(percent: u8, message: &str) -> BackupProgress {
     BackupProgress { percent, message: message.to_string() }
 }
 
-fn backup_key(password: &str, salt: &[u8]) -> AppResult<[u8; 32]> {
+pub(crate) fn backup_key(password: &str, salt: &[u8]) -> AppResult<[u8; 32]> {
     validate_new_password(password)?;
     let mut key = [0u8; 32];
     Argon2::default().hash_password_into(password.as_bytes(), salt, &mut key).map_err(|e| AppError::Other(e.to_string()))?;
     Ok(key)
 }
 
-fn encrypt_backup(plaintext: &[u8], password: &str, magic: &[u8; 9]) -> AppResult<Vec<u8>> {
+pub(crate) fn encrypt_backup(plaintext: &[u8], password: &str, magic: &[u8; 9]) -> AppResult<Vec<u8>> {
     let mut salt = [0u8; 16]; let mut nonce_bytes = [0u8; 12];
     OsRng.fill_bytes(&mut salt); OsRng.fill_bytes(&mut nonce_bytes);
     let key = backup_key(password, &salt)?;
@@ -2493,21 +3053,35 @@ fn encrypt_backup(plaintext: &[u8], password: &str, magic: &[u8; 9]) -> AppResul
 fn decrypt_backup(encrypted: &[u8], password: &str) -> AppResult<(bool, Vec<u8>)> {
     let header = BACKUP_MAGIC_V2.len() + 16 + 12;
     if encrypted.len() <= header {
-        return Err(AppError::Validation("This is not a valid encrypted CNSArch backup".into()));
+        return Err(AppError::Validation("هذا الملف ليس نسخة احتياطية مشفرة من CNSArch، أو أنه تالف".into()));
     }
     let magic = if &encrypted[..9] == BACKUP_MAGIC_V2 {
         BACKUP_MAGIC_V2
     } else if &encrypted[..9] == BACKUP_MAGIC_V1 {
         BACKUP_MAGIC_V1
     } else {
-        return Err(AppError::Validation("This is not a valid encrypted CNSArch backup".into()));
+        return Err(AppError::Validation("هذا الملف ليس نسخة احتياطية مشفرة من CNSArch، أو أنه تالف".into()));
     };
     let key = backup_key(password, &encrypted[magic.len()..magic.len() + 16])?;
     let plaintext = Aes256Gcm::new_from_slice(&key).map_err(|e| AppError::Other(e.to_string()))?
         .decrypt(Nonce::from_slice(&encrypted[magic.len() + 16..header]), &encrypted[header..])
-        .map_err(|_| AppError::Validation("The backup password is incorrect or the backup is damaged".into()))?;
+        .map_err(|_| AppError::Validation(WRONG_BACKUP_PASSWORD.into()))?;
     Ok((magic == BACKUP_MAGIC_V1, plaintext))
 }
+
+/// Decrypts a backup written by `encrypt_backup` with the given header (format 3 snapshots).
+pub(crate) fn decrypt_with_magic(encrypted: &[u8], password: &str, magic: &[u8; 9]) -> AppResult<Vec<u8>> {
+    let header = magic.len() + 16 + 12;
+    if encrypted.len() <= header || &encrypted[..magic.len()] != magic {
+        return Err(AppError::Validation("هذا الملف ليس نسخة احتياطية صالحة للبرنامج".into()));
+    }
+    let key = backup_key(password, &encrypted[magic.len()..magic.len() + 16])?;
+    Aes256Gcm::new_from_slice(&key).map_err(|e| AppError::Other(e.to_string()))?
+        .decrypt(Nonce::from_slice(&encrypted[magic.len() + 16..header]), &encrypted[header..])
+        .map_err(|_| AppError::Validation(WRONG_BACKUP_PASSWORD.into()))
+}
+
+pub(crate) const WRONG_BACKUP_PASSWORD: &str = "كلمة مرور النسخة الاحتياطية خاطئة، أو أن الملف تالف";
 
 pub(crate) fn sha256_file(path: &Path) -> AppResult<(u64, String)> {
     let mut file = File::open(path).map_err(|e| AppError::Other(e.to_string()))?;
@@ -2523,7 +3097,7 @@ pub(crate) fn sha256_file(path: &Path) -> AppResult<(u64, String)> {
     Ok((size, hex::encode(hash.finalize())))
 }
 
-fn collect_backup_files(root: &Path, relative: &Path, files: &mut Vec<(String, PathBuf)>) -> AppResult<()> {
+pub(crate) fn collect_backup_files(root: &Path, relative: &Path, files: &mut Vec<(String, PathBuf)>) -> AppResult<()> {
     let current = root.join(relative);
     if !current.exists() { return Ok(()); }
     for entry in std::fs::read_dir(&current).map_err(|e| AppError::Other(e.to_string()))? {
@@ -2558,38 +3132,35 @@ fn collect_relative_file_paths(root: &Path, relative: &Path, files: &mut Vec<Str
     Ok(())
 }
 
-pub(crate) fn create_backup_archive(
+/// Writes the plain (unencrypted) full archive: `database.db` from `db_snapshot`, every file of the
+/// data folder under `Data/`, and `manifest.json` (format 2). Used inside a full export and, in
+/// tests, inside a format-2 backup.
+pub(crate) fn write_plain_archive(
     conn: &Connection,
-    password: &str,
-    path: &Path,
+    db_snapshot: &Path,
+    out: File,
     progress: &mut dyn FnMut(BackupProgress),
 ) -> AppResult<()> {
-    progress(backup_progress(3, "جاري تجهيز ملف النسخة الاحتياطية..."));
-    let work_dir = crate::paths::data_root();
-    std::fs::create_dir_all(&work_dir).map_err(|e| AppError::Other(e.to_string()))?;
-    let db_snapshot = tempfile::NamedTempFile::new_in(&work_dir).map_err(|e| AppError::Other(e.to_string()))?;
-    progress(backup_progress(8, "جاري نسخ قاعدة البيانات..."));
-    conn.backup(rusqlite::MAIN_DB, db_snapshot.path(), None::<fn(rusqlite::backup::Progress)>)?;
-    let archive = tempfile::NamedTempFile::new_in(&work_dir).map_err(|e| AppError::Other(e.to_string()))?;
-    let mut zip = zip::ZipWriter::new(archive.reopen().map_err(|e| AppError::Other(e.to_string()))?);
+    let mut zip = zip::ZipWriter::new(out);
     let options = zip::write::SimpleFileOptions::default()
-        .compression_method(zip::CompressionMethod::Deflated);
-    let mut files = vec![("database.db".to_string(), db_snapshot.path().to_path_buf())];
+        .compression_method(zip::CompressionMethod::Deflated)
+        .large_file(true);
+    let mut files = vec![("database.db".to_string(), db_snapshot.to_path_buf())];
     progress(backup_progress(15, "جاري جمع الملفات والمرفقات..."));
     collect_backup_files(&storage_path(conn), Path::new(""), &mut files)?;
     files.sort_by(|a, b| a.0.cmp(&b.0));
     let mut manifest_files = Vec::with_capacity(files.len());
     let total_files = files.len().max(1);
     for (index, (archive_path, source_path)) in files.into_iter().enumerate() {
-        let file_percent = 20 + (((index as u64) * 60) / (total_files as u64)) as u8;
-        progress(backup_progress(file_percent.min(80), "جاري ضغط الملفات داخل النسخة..."));
+        let file_percent = 20 + (((index as u64) * 50) / (total_files as u64)) as u8;
+        progress(backup_progress(file_percent.min(70), "جاري ضغط الملفات داخل النسخة..."));
         let (size, sha256) = sha256_file(&source_path)?;
         zip.start_file(&archive_path, options).map_err(|e| AppError::Other(e.to_string()))?;
         let mut source = File::open(&source_path).map_err(|e| AppError::Other(e.to_string()))?;
         std::io::copy(&mut source, &mut zip).map_err(|e| AppError::Other(e.to_string()))?;
         manifest_files.push(BackupManifestFile { path: archive_path, size, sha256 });
     }
-    progress(backup_progress(84, "جاري كتابة فهرس النسخة..."));
+    progress(backup_progress(72, "جاري كتابة فهرس النسخة..."));
     let manifest = BackupManifest {
         format_version: BACKUP_FORMAT_VERSION,
         created_at: chrono::Utc::now().to_rfc3339(),
@@ -2598,22 +3169,36 @@ pub(crate) fn create_backup_archive(
     zip.start_file("manifest.json", options).map_err(|e| AppError::Other(e.to_string()))?;
     zip.write_all(&serde_json::to_vec_pretty(&manifest).map_err(|e| AppError::Other(e.to_string()))?)
         .map_err(|e| AppError::Other(e.to_string()))?;
-    zip.finish().map_err(|e| AppError::Other(e.to_string()))?;
-    progress(backup_progress(90, "جاري تشفير النسخة الاحتياطية..."));
-    let plaintext = std::fs::read(archive.path()).map_err(|e| AppError::Other(e.to_string()))?;
-    // Verify bytes read back from the destination volume before publishing the backup.
-    let mut pending = tempfile::NamedTempFile::new_in(path.parent().ok_or_else(|| AppError::Validation("Invalid backup destination".into()))?)
-        .map_err(|e| AppError::Other(e.to_string()))?;
-    pending.write_all(&encrypt_backup(&plaintext, password, BACKUP_MAGIC_V2)?)
-        .map_err(|e| AppError::Other(e.to_string()))?;
-    pending.as_file().sync_all().map_err(|e| AppError::Other(e.to_string()))?;
-    progress(backup_progress(94, "جاري فحص SHA-256 وفك الضغط وتجربة الاستعادة المؤقتة..."));
-    verify_written_backup(pending.path(), password)?;
-    pending.persist_noclobber(path).map_err(|e| AppError::Other(e.to_string()))?;
-    progress(backup_progress(100, "اكتمل إنشاء النسخة الاحتياطية"));
+    zip.finish().map_err(|e| AppError::Other(e.to_string()))?.sync_all().map_err(|e| AppError::Other(e.to_string()))?;
     Ok(())
 }
 
+/// A format-2 backup (1.0.6 and earlier): the whole archive encrypted in one piece. Only tests
+/// write it now, to prove such backups can still be restored.
+#[cfg(test)]
+pub(crate) fn create_backup_archive(
+    conn: &Connection,
+    password: &str,
+    path: &Path,
+    progress: &mut dyn FnMut(BackupProgress),
+) -> AppResult<()> {
+    let work_dir = crate::paths::data_root();
+    std::fs::create_dir_all(&work_dir).map_err(|e| AppError::Other(e.to_string()))?;
+    let db_snapshot = tempfile::NamedTempFile::new_in(&work_dir).map_err(|e| AppError::Other(e.to_string()))?;
+    conn.backup(rusqlite::MAIN_DB, db_snapshot.path(), None::<fn(rusqlite::backup::Progress)>)?;
+    let archive = tempfile::NamedTempFile::new_in(&work_dir).map_err(|e| AppError::Other(e.to_string()))?;
+    write_plain_archive(conn, db_snapshot.path(), archive.reopen().map_err(|e| AppError::Other(e.to_string()))?, progress)?;
+    let plaintext = std::fs::read(archive.path()).map_err(|e| AppError::Other(e.to_string()))?;
+    let mut pending = tempfile::NamedTempFile::new_in(path.parent().ok_or_else(|| AppError::Validation("Invalid backup destination".into()))?)
+        .map_err(|e| AppError::Other(e.to_string()))?;
+    pending.write_all(&encrypt_backup(&plaintext, password, BACKUP_MAGIC_V2)?).map_err(|e| AppError::Other(e.to_string()))?;
+    verify_written_backup(pending.path(), password)?;
+    pending.persist_noclobber(path).map_err(|e| AppError::Other(e.to_string()))?;
+    Ok(())
+}
+
+/// A backup in the backup folder (manual, or the safety copy before a restore, move or update):
+/// a small encrypted file with the database, whose attachments go to the shared store once.
 pub(crate) fn create_backup_at(
     conn: &Connection,
     user: &str,
@@ -2626,9 +3211,13 @@ pub(crate) fn create_backup_at(
     let now = chrono::Local::now();
     let dir = backup_path(conn).join(category).join(now.format("%Y").to_string());
     std::fs::create_dir_all(&dir).map_err(|e| AppError::Other(e.to_string()))?;
-    let path = dir.join(format!("autohr_{}_{}.autohrbak", category.to_lowercase(), now.format("%Y-%m-%d_%H%M%S")));
-    create_backup_archive(conn, password, &path, progress)?;
-    log_activity(conn, user, "CREATE_BACKUP", Some("backup"), None, path.file_name().and_then(|n| n.to_str()), None);
+    let stem = format!("cnsarch_{}_{}", category.to_lowercase(), now.format("%Y-%m-%d_%H%M%S"));
+    // Two backups in the same second (a restore right after another) get distinct names.
+    let path = (1..).map(|n| if n == 1 { dir.join(format!("{stem}.{}", crate::backup_store::BACKUP_EXTENSION)) } else { dir.join(format!("{stem}_{n}.{}", crate::backup_store::BACKUP_EXTENSION)) })
+        .find(|candidate| !candidate.exists())
+        .expect("a free name");
+    crate::backup_store::create_snapshot(conn, password, &path, false, progress)?;
+    log_activity(conn, user, "CREATE_BACKUP", Some("backup"), None, path.file_name().and_then(|n| n.to_str()), Some(category));
     Ok(path.to_string_lossy().into_owned())
 }
 
@@ -2639,73 +3228,20 @@ where
     create_backup_at(conn, user, password, "Manual", &mut progress)
 }
 
-fn create_automatic_backup(
-    conn: &Connection,
-    password: &str,
-    category: &str,
-    progress: &mut dyn FnMut(BackupProgress),
-) -> AppResult<String> {
-    ensure_backup_layout(conn)?;
-    let now = chrono::Local::now();
-    let dir = backup_path(conn).join(category).join(now.format("%Y").to_string());
-    std::fs::create_dir_all(&dir).map_err(|e| AppError::Other(e.to_string()))?;
-    let path = dir.join(format!("cnsarch_{}_{}.autohrbak", category.to_lowercase(), now.format("%Y-%m-%d_%H%M%S")));
-    create_backup_archive(conn, password, &path, progress)?;
-    log_activity(conn, "system", "CREATE_AUTO_BACKUP", Some("backup"), None, path.file_name().and_then(|n| n.to_str()), Some(category));
-    Ok(path.to_string_lossy().into_owned())
-}
-
-fn stored_backup_file_exists(conn: &Connection, path_key: &str) -> AppResult<bool> {
-    Ok(get_setting(conn, path_key)?
-        .as_deref()
-        .map(Path::new)
-        .is_some_and(Path::is_file))
-}
-
-fn dated_automatic_backup_exists(conn: &Connection, category: &str, marker: &str) -> AppResult<bool> {
-    let year = marker.get(..4).unwrap_or(marker);
-    let dir = backup_path(conn).join(category).join(year);
-    if !dir.is_dir() {
-        return Ok(false);
-    }
-    let prefix = if category == "Monthly" {
-        format!("cnsarch_{}_{}", category.to_lowercase(), marker)
-    } else {
-        format!("cnsarch_{}_{}_", category.to_lowercase(), marker)
-    };
-    for entry in std::fs::read_dir(&dir).map_err(|e| AppError::Other(e.to_string()))? {
-        let entry = entry.map_err(|e| AppError::Other(e.to_string()))?;
-        let name = entry.file_name();
-        let Some(name) = name.to_str() else { continue; };
-        if entry.path().is_file() && name.starts_with(&prefix) && name.ends_with(".autohrbak") {
-            return Ok(true);
-        }
-    }
-    Ok(false)
-}
-
-fn automatic_backup_is_current(conn: &Connection, date_key: &str, path_key: &str, marker: &str, category: &str) -> AppResult<bool> {
-    if get_setting(conn, date_key)?.as_deref() != Some(marker) {
-        return Ok(false);
-    }
-    if stored_backup_file_exists(conn, path_key)? {
-        return Ok(true);
-    }
-    dated_automatic_backup_exists(conn, category, marker)
-}
-
 /// Logged actions that do not change employees, documents, attachments, users or company data.
 /// An automatic backup is taken only when something else happened since the last one.
 const NON_DATA_ACTIONS: &[&str] = &[
     "LOGIN", "LOGOUT", "VIEW_DOCUMENT", "DOWNLOAD_DOCUMENT", "PRINT_DOCUMENT",
-    "CREATE_BACKUP", "CREATE_AUTO_BACKUP", "EXPORT_BACKUP",
+    "CREATE_BACKUP", "CREATE_AUTO_BACKUP", "EXPORT_BACKUP", "EXPORT_REPORT", "PRINT_REPORT",
     // Reading a card's text fills the form only; saving the form is logged separately.
     "DOCUMENT_TEXT_READ",
     "SAVE_HEALTH_REPORT", "ACCESS_DENIED", "INSTALL_UPDATE", "UPDATE_AUTO_UPDATE_SETTING",
     "CHANGE_BACKUP_FOLDER", "MOVE_DATA_FOLDER", "APPROVE_DATA_INTEGRITY",
+    // Old automatic backups removed by the keep rule (7 daily / 4 weekly / 12 monthly).
+    "DELETE_OLD_BACKUPS",
 ];
 
-fn latest_data_change_activity_id(conn: &Connection) -> AppResult<Option<i64>> {
+pub(crate) fn latest_data_change_activity_id(conn: &Connection) -> AppResult<Option<i64>> {
     let excluded = NON_DATA_ACTIONS.iter().map(|a| format!("'{a}'")).collect::<Vec<_>>().join(",");
     conn.query_row(
         &format!("SELECT MAX(id) FROM activity_log
@@ -2719,162 +3255,18 @@ fn latest_data_change_activity_id(conn: &Connection) -> AppResult<Option<i64>> {
     ).map_err(Into::into)
 }
 
-fn parse_setting_i64(conn: &Connection, key: &str) -> AppResult<Option<i64>> {
+pub(crate) fn parse_setting_i64(conn: &Connection, key: &str) -> AppResult<Option<i64>> {
     Ok(get_setting(conn, key)?.and_then(|value| value.parse::<i64>().ok()))
 }
 
-fn last_automatic_backup_activity_id(conn: &Connection, category: &str) -> AppResult<Option<i64>> {
-    conn.query_row(
-        "SELECT MAX(id) FROM activity_log
-         WHERE result='Success' AND action='CREATE_AUTO_BACKUP' AND details=?1",
-        params![category],
-        |row| row.get(0),
-    ).map_err(Into::into)
-}
-
-fn last_recorded_backup_change_id(conn: &Connection, change_key: &str, category: &str) -> AppResult<Option<i64>> {
-    match parse_setting_i64(conn, change_key)? {
-        Some(id) => Ok(Some(id)),
-        None => last_automatic_backup_activity_id(conn, category),
-    }
-}
-
-fn automatic_backup_needs_creation(
-    conn: &Connection,
-    date_key: &str,
-    path_key: &str,
-    change_key: &str,
-    marker: &str,
-    category: &str,
-    latest_change_id: Option<i64>,
-) -> AppResult<bool> {
-    let Some(latest_change_id) = latest_change_id else {
-        return Ok(false);
-    };
-    if last_recorded_backup_change_id(conn, change_key, category)?
-        .is_some_and(|backup_change_id| backup_change_id >= latest_change_id)
-    {
-        return Ok(false);
-    }
-    Ok(!automatic_backup_is_current(conn, date_key, path_key, marker, category)? || latest_change_id > 0)
-}
-
-fn create_and_record_automatic_backup(
-    conn: &Connection,
-    password: &str,
-    category: &str,
-    date_key: &str,
-    path_key: &str,
-    change_key: &str,
-    marker: &str,
-    latest_change_id: i64,
-    progress: &mut dyn FnMut(BackupProgress),
-) -> AppResult<String> {
-    let path = create_automatic_backup(conn, password, category, progress)?;
-    set_setting(conn, date_key, marker)?;
-    set_setting(conn, path_key, &path)?;
-    set_setting(conn, change_key, &latest_change_id.to_string())?;
-    Ok(path)
-}
-
-pub fn run_due_automatic_backups_with_progress<F>(conn: &Connection, mut progress: F) -> AppResult<Vec<String>>
+pub fn run_due_automatic_backups_with_progress<F>(conn: &Connection, in_session: bool, mut progress: F) -> AppResult<Vec<String>>
 where
     F: FnMut(BackupProgress),
 {
-    let password = auto_backup_password(conn)?;
-    if password.is_empty() {
-        return Ok(Vec::new());
-    }
-
-    let today = chrono::Local::now().format("%Y-%m-%d").to_string();
-    let iso_week = chrono::Local::now().iso_week();
-    let week = format!("{}-W{:02}", iso_week.year(), iso_week.week());
-    let month = chrono::Local::now().format("%Y-%m").to_string();
-    let latest_change_id = latest_data_change_activity_id(conn)?;
-    let mut created = Vec::new();
-
-    if setting_bool(conn, "auto_backup_daily_enabled")?
-        && automatic_backup_needs_creation(
-            conn,
-            "auto_backup_last_daily",
-            "auto_backup_last_daily_path",
-            "auto_backup_last_daily_change_id",
-            &today,
-            "Daily",
-            latest_change_id,
-        )?
-    {
-        progress(backup_progress(2, "جاري إنشاء النسخة اليومية التلقائية..."));
-        create_and_record_automatic_backup(
-            conn,
-            &password,
-            "Daily",
-            "auto_backup_last_daily",
-            "auto_backup_last_daily_path",
-            "auto_backup_last_daily_change_id",
-            &today,
-            latest_change_id.unwrap_or_default(),
-            &mut progress,
-        )?;
-        created.push("يومي".to_string());
-    }
-
-    if setting_bool(conn, "auto_backup_weekly_enabled")?
-        && automatic_backup_needs_creation(
-            conn,
-            "auto_backup_last_weekly",
-            "auto_backup_last_weekly_path",
-            "auto_backup_last_weekly_change_id",
-            &week,
-            "Weekly",
-            latest_change_id,
-        )?
-    {
-        progress(backup_progress(2, "جاري إنشاء النسخة الأسبوعية التلقائية..."));
-        create_and_record_automatic_backup(
-            conn,
-            &password,
-            "Weekly",
-            "auto_backup_last_weekly",
-            "auto_backup_last_weekly_path",
-            "auto_backup_last_weekly_change_id",
-            &week,
-            latest_change_id.unwrap_or_default(),
-            &mut progress,
-        )?;
-        created.push("أسبوعي".to_string());
-    }
-
-    if setting_bool(conn, "auto_backup_monthly_enabled")?
-        && automatic_backup_needs_creation(
-            conn,
-            "auto_backup_last_monthly",
-            "auto_backup_last_monthly_path",
-            "auto_backup_last_monthly_change_id",
-            &month,
-            "Monthly",
-            latest_change_id,
-        )?
-    {
-        progress(backup_progress(2, "جاري إنشاء النسخة الشهرية التلقائية..."));
-        create_and_record_automatic_backup(
-            conn,
-            &password,
-            "Monthly",
-            "auto_backup_last_monthly",
-            "auto_backup_last_monthly_path",
-            "auto_backup_last_monthly_change_id",
-            &month,
-            latest_change_id.unwrap_or_default(),
-            &mut progress,
-        )?;
-        created.push("شهري".to_string());
-    }
-
-    Ok(created)
+    crate::backup_store::run_due_automatic_backups(conn, in_session, &mut progress)
 }
 
-fn validate_database(path: &Path) -> AppResult<()> {
+pub(crate) fn validate_database(path: &Path) -> AppResult<()> {
     let source_conn = Connection::open_with_flags(path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)?;
     validate_database_connection(&source_conn)
 }
@@ -2885,19 +3277,25 @@ fn validate_database_connection(source_conn: &Connection) -> AppResult<()> {
     let required_tables: i64 = source_conn.query_row(
         "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name IN ('users','employees','company_config','app_settings','activity_log')",
         [], |r| r.get(0),
-    ).map_err(|_| AppError::Validation("Backup is from an unsupported CNSArch version".into()))?;
-    if required_tables != 5 { return Err(AppError::Validation("Backup is missing required CNSArch data".into())); }
+    ).map_err(|_| AppError::Validation("النسخة الاحتياطية من إصدار غير مدعوم من البرنامج".into()))?;
+    if required_tables != 5 { return Err(AppError::Validation("النسخة الاحتياطية ناقصة ولا تحتوي على بيانات البرنامج الأساسية".into())); }
     let foreign_key_errors: i64 = source_conn.query_row("SELECT COUNT(*) FROM pragma_foreign_key_check", [], |r| r.get(0))
         .map_err(|_| AppError::Validation("Backup relationships could not be validated".into()))?;
     if foreign_key_errors > 0 { return Err(AppError::Validation("Backup contains inconsistent relationships".into())); }
     let invalid_roles: i64 = source_conn.query_row(
         "SELECT COUNT(*) FROM users WHERE role NOT IN ('system_admin','archive_admin','archive_officer','viewer')", [], |r| r.get(0)
-    ).map_err(|_| AppError::Validation("Backup is from an unsupported CNSArch version".into()))?;
+    ).map_err(|_| AppError::Validation("النسخة الاحتياطية من إصدار غير مدعوم من البرنامج".into()))?;
     if invalid_roles > 0 { return Err(AppError::Validation("Backup contains unsupported roles".into())); }
     Ok(())
 }
 
-fn validate_backup_references(database_path: &Path, staging: &Path) -> AppResult<()> {
+pub(crate) fn validate_backup_references(database_path: &Path, staging: &Path) -> AppResult<()> {
+    validate_backup_references_with(database_path, &|relative| staging.join("Data").join(relative).is_file())
+}
+
+/// Every file the database points to must be in the backup; `present` answers for a path
+/// relative to the data folder.
+pub(crate) fn validate_backup_references_with(database_path: &Path, present: &dyn Fn(&Path) -> bool) -> AppResult<()> {
     let conn = Connection::open(database_path)?;
     let mut references = Vec::<String>::new();
     let metadata_columns: Vec<String> = {
@@ -2967,17 +3365,23 @@ fn validate_backup_references(database_path: &Path, staging: &Path) -> AppResult
     }
     for reference in references {
         let relative = crate::files::safe_relative_path(&reference)?;
-        if !staging.join("Data").join(relative).is_file() {
-            return Err(AppError::Validation(format!("Backup is missing referenced file {reference}")));
+        if !present(&relative) {
+            return Err(AppError::Validation(format!("النسخة ينقصها ملف مرفق: {reference}")));
         }
     }
     Ok(())
 }
 
+#[cfg(test)]
 fn extract_and_validate_backup(plaintext: &[u8], staging: &Path) -> AppResult<BackupManifest> {
+    extract_and_validate_archive(std::io::Cursor::new(plaintext), staging)
+}
+
+/// Unpacks a full archive (format 2, or the inside of a format-4 export) into `staging` and
+/// checks it completely before anything live is touched.
+pub(crate) fn extract_and_validate_archive<R: Read + std::io::Seek>(reader: R, staging: &Path) -> AppResult<BackupManifest> {
     std::fs::create_dir_all(staging.join("Data")).map_err(|e| AppError::Other(e.to_string()))?;
-    let cursor = std::io::Cursor::new(plaintext);
-    let mut archive = zip::ZipArchive::new(cursor).map_err(|_| AppError::Validation("Backup archive is damaged".into()))?;
+    let mut archive = zip::ZipArchive::new(reader).map_err(|_| AppError::Validation("Backup archive is damaged".into()))?;
     if archive.len() > MAX_BACKUP_FILES + 1 {
         return Err(AppError::Validation("Backup contains too many files".into()));
     }
@@ -3030,7 +3434,7 @@ fn extract_and_validate_backup(plaintext: &[u8], staging: &Path) -> AppResult<Ba
 }
 
 // Exercise the real SQLite restore API in isolation before touching live data.
-fn trial_restore_database(source: &Path) -> AppResult<()> {
+pub(crate) fn trial_restore_database(source: &Path) -> AppResult<()> {
     let trial = tempfile::tempdir().map_err(|e| AppError::Other(e.to_string()))?;
     let mut conn = Connection::open(trial.path().join("trial.db"))?;
     conn.restore(rusqlite::MAIN_DB, source, None::<fn(rusqlite::backup::Progress)>)?;
@@ -3040,60 +3444,127 @@ fn trial_restore_database(source: &Path) -> AppResult<()> {
     validate_database_connection(&conn)
 }
 
+/// Which kind of backup a file is, from its first bytes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum BackupKind { DatabaseOnly, Full, Snapshot, FullExport }
+
+pub(crate) fn backup_kind(path: &Path) -> AppResult<BackupKind> {
+    let mut magic = [0u8; 9];
+    File::open(path).and_then(|mut file| file.read_exact(&mut magic))
+        .map_err(|_| AppError::Validation("تعذرت قراءة ملف النسخة الاحتياطية".into()))?;
+    match &magic {
+        m if m == BACKUP_MAGIC_V1 => Ok(BackupKind::DatabaseOnly),
+        m if m == BACKUP_MAGIC_V2 => Ok(BackupKind::Full),
+        m if m == crate::backup_store::SNAPSHOT_MAGIC => Ok(BackupKind::Snapshot),
+        m if m == crate::backup_store::STREAM_MAGIC => Ok(BackupKind::FullExport),
+        _ => Err(AppError::Validation("هذا الملف ليس نسخة احتياطية صالحة للبرنامج".into())),
+    }
+}
+
+/// Opens a backup of any supported kind into `staging` (database.db and Data/) and checks it
+/// completely: hashes, database integrity, every referenced file, and a trial restore.
+pub(crate) fn stage_backup(path: &Path, password: &str, staging: &Path) -> AppResult<()> {
+    match backup_kind(path)? {
+        BackupKind::DatabaseOnly => Err(AppError::Validation(
+            "هذه نسخة قديمة جدًا فيها قاعدة البيانات فقط بدون المرفقات، ولا يمكن استعادتها بأمان.".into(),
+        )),
+        BackupKind::Full => {
+            let size = std::fs::metadata(path).map_err(|e| AppError::Other(e.to_string()))?.len();
+            if size == 0 || size > MAX_BACKUP_SIZE {
+                return Err(AppError::Validation("ملف النسخة فارغ أو أكبر من المسموح لهذا النوع القديم من النسخ".into()));
+            }
+            let encrypted = std::fs::read(path).map_err(|e| AppError::Other(e.to_string()))?;
+            let (_, plaintext) = decrypt_backup(&encrypted, password)?;
+            extract_and_validate_archive(std::io::Cursor::new(plaintext), staging).map(|_| ())
+        }
+        BackupKind::Snapshot => crate::backup_store::materialize_snapshot(path, password, staging),
+        BackupKind::FullExport => {
+            // Next to the staging folder, not inside it: everything inside must be listed in the backup.
+            let plain = tempfile::NamedTempFile::new_in(staging.parent().unwrap_or(staging)).map_err(|e| AppError::Other(e.to_string()))?;
+            crate::backup_store::decrypt_stream_file(path, plain.as_file(), password)?;
+            let reader = plain.reopen().map_err(|e| AppError::Other(e.to_string()))?;
+            let result = extract_and_validate_archive(std::io::BufReader::new(reader), staging).map(|_| ());
+            drop(plain);
+            result
+        }
+    }
+}
+
 pub(crate) fn verify_written_backup(path: &Path, password: &str) -> AppResult<()> {
-    let size = std::fs::metadata(path).map_err(|e| AppError::Other(e.to_string()))?.len();
-    if size == 0 || size > MAX_BACKUP_SIZE {
-        return Err(AppError::Validation("The backup file is empty or too large".into()));
+    match backup_kind(path)? {
+        BackupKind::Snapshot => crate::backup_store::verify_snapshot_file(path, password),
+        BackupKind::DatabaseOnly => Err(AppError::Validation("Full backup verification requires a v2 backup".into())),
+        _ => {
+            let staging = tempfile::tempdir().map_err(|e| AppError::Other(e.to_string()))?;
+            stage_backup(path, password, staging.path())
+        }
     }
-    let encrypted = std::fs::read(path).map_err(|e| AppError::Other(e.to_string()))?;
-    let (legacy, plaintext) = decrypt_backup(&encrypted, password)?;
-    if legacy {
-        return Err(AppError::Validation("Full backup verification requires a v2 backup".into()));
+}
+
+/// Settings that belong to this computer's backups, not to the data: they are kept as they are
+/// when a backup is restored, so a restore never switches automatic backups off or loses the
+/// attachment store key. The marker of the last backed-up change is cleared, so the restored
+/// data is backed up again at the next opportunity.
+fn backup_settings_to_keep(conn: &Connection) -> AppResult<Vec<(String, String)>> {
+    let mut stmt = conn.prepare(
+        r"SELECT key,value FROM app_settings
+          WHERE (key LIKE 'auto\_backup\_%' ESCAPE '\' OR key LIKE 'backup\_%' ESCAPE '\')
+            AND key NOT LIKE '%change\_id' ESCAPE '\'",
+    )?;
+    let rows = stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?.collect::<rusqlite::Result<_>>()?;
+    Ok(rows)
+}
+
+fn put_back_backup_settings(conn: &Connection, kept: &[(String, String)]) -> AppResult<()> {
+    conn.execute(
+        r"DELETE FROM app_settings WHERE key LIKE 'auto\_backup\_%' ESCAPE '\' OR key LIKE 'backup\_%' ESCAPE '\'",
+        [],
+    )?;
+    for (key, value) in kept {
+        set_setting(conn, key, value)?;
     }
-    let staging = tempfile::tempdir().map_err(|e| AppError::Other(e.to_string()))?;
-    extract_and_validate_backup(&plaintext, staging.path())?;
     Ok(())
 }
 
-pub fn restore_backup_with_progress<F>(conn: &mut Connection, user: &str, source_path: &str, password: &str, mut progress: F) -> AppResult<()>
+pub fn restore_backup_with_progress<F>(conn: &mut Connection, user: &str, source_path: &str, password: &str, mut progress: F) -> AppResult<String>
 where
     F: FnMut(BackupProgress),
 {
     // A restore replaces the users table too, so it is limited to System Admins.
     assert_permission(conn, user, "backups.restore")?;
-    progress(backup_progress(2, "جاري تجهيز عملية الاستعادة..."));
     let source = Path::new(source_path);
-    if source.extension().and_then(|e| e.to_str()).is_none_or(|e| !e.eq_ignore_ascii_case("autohrbak")) {
-        return Err(AppError::Validation("Select an encrypted .autohrbak backup file".into()));
-    }
-    progress(backup_progress(6, "جاري فحص ملف النسخة الاحتياطية..."));
-    let metadata = std::fs::metadata(source).map_err(|_| AppError::Validation("The backup file could not be read".into()))?;
-    if !metadata.is_file() || metadata.len() == 0 || metadata.len() > MAX_BACKUP_SIZE {
-        return Err(AppError::Validation("The backup file is empty or too large".into()));
-    }
-    progress(backup_progress(10, "جاري قراءة ملف النسخة الاحتياطية..."));
-    let encrypted = std::fs::read(source).map_err(|_| AppError::Validation("The backup file could not be read".into()))?;
-    progress(backup_progress(18, "جاري فك تشفير النسخة الاحتياطية..."));
-    let (is_legacy, plaintext) = decrypt_backup(&encrypted, password)?;
-    if is_legacy {
-        return Err(AppError::Validation("This legacy database-only backup cannot safely restore attachments. Use a CNSArch v2 full backup.".into()));
-    }
-    progress(backup_progress(28, "جاري فحص SHA-256 وفك الضغط وتجربة الاستعادة المؤقتة..."));
-    let staging = tempfile::tempdir_in(crate::paths::data_root()).map_err(|e| AppError::Other(e.to_string()))?;
-    extract_and_validate_backup(&plaintext, staging.path())?;
-    progress(backup_progress(40, "جاري حفظ سجل التدقيق الحالي..."));
-    let audit: Vec<AuditSnapshotRow> = {
-        let mut stmt = conn.prepare("SELECT user_id,username,role,action,target_type,target_id,target_name,result,details,created_at FROM activity_log ORDER BY id")?;
-        let rows = stmt.query_map([], |r| Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?,r.get(5)?,r.get(6)?,r.get(7)?,r.get(8)?,r.get(9)?)))?
-            .collect::<rusqlite::Result<_>>()?;
-        rows
+    progress(backup_progress(2, "جاري تجهيز عملية الاستعادة..."));
+    let result = if !crate::backup_store::is_backup_extension(source) {
+        Err(AppError::Validation("اختر ملف نسخة احتياطية بامتداد .cnsarchbak (أو .autohrbak للنسخ القديمة)".into()))
+    } else {
+        restore_inner(conn, user, source, password, &mut progress)
     };
+    if let Err(error) = &result {
+        // A failed restore is recorded too: it is the most sensitive operation in the program.
+        let reason = serde_json::to_string(error).unwrap_or_default();
+        log_audit(conn, Some(user), "RESTORE_BACKUP", Some("backup"), None, source.file_name().and_then(|n| n.to_str()), "Failure", Some(reason.trim_matches('"')));
+    }
+    result
+}
+
+/// Returns where the safety copy taken just before the restore was saved.
+fn restore_inner(conn: &mut Connection, user: &str, source: &Path, password: &str, progress: &mut dyn FnMut(BackupProgress)) -> AppResult<String> {
+    progress(backup_progress(6, "جاري فحص ملف النسخة الاحتياطية..."));
+    if !source.is_file() {
+        return Err(AppError::Validation("تعذرت قراءة ملف النسخة الاحتياطية".into()));
+    }
+    progress(backup_progress(12, "جاري فك التشفير وفحص الملفات وتجربة الاستعادة المؤقتة..."));
+    let staging = tempfile::tempdir_in(crate::paths::data_root()).map_err(|e| AppError::Other(e.to_string()))?;
+    stage_backup(source, password, staging.path())?;
     progress(backup_progress(45, "جاري إنشاء نسخة أمان قبل الاستعادة..."));
     let mut backup_progress_mapper = |step: BackupProgress| {
         let mapped = 45 + (((step.percent as u16) * 18) / 100) as u8;
         progress(backup_progress(mapped.min(63), "جاري إنشاء نسخة أمان قبل الاستعادة..."));
     };
-    create_backup_at(conn, user, password, "PreRestore", &mut backup_progress_mapper)?;
+    let safety_copy = create_backup_at(conn, user, password, "PreRestore", &mut backup_progress_mapper)?;
+    // Kept after the safety copy, so that its own entry is not lost.
+    let audit: Vec<AuditSnapshotRow> = read_audit_rows(conn)?;
+    let kept_settings = backup_settings_to_keep(conn)?;
     progress(backup_progress(65, "جاري تجهيز ملفات الاستعادة..."));
     let current_data = storage_path(conn);
     let data_root = crate::paths::data_root();
@@ -3105,16 +3576,23 @@ where
     progress(backup_progress(70, "جاري حفظ نسخة تراجع من قاعدة البيانات الحالية..."));
     conn.backup(rusqlite::MAIN_DB, &rollback_database, None::<fn(rusqlite::backup::Progress)>)?;
     std::fs::write(&restore_marker, b"AutoHR restore in progress").map_err(|e| AppError::Other(e.to_string()))?;
+    // From here on, any early exit must remove the marker: otherwise the next start would roll
+    // the database back over work done after this failed attempt.
+    let give_up = |error: AppError| {
+        std::fs::remove_file(&rollback_database).ok();
+        std::fs::remove_file(&restore_marker).ok();
+        error
+    };
     let staged_data = staging.path().join("Data");
     progress(backup_progress(76, "جاري استبدال المرفقات والملفات..."));
     if current_data.exists() {
-        std::fs::rename(&current_data, &rollback_data).map_err(|e| AppError::Other(e.to_string()))?;
+        std::fs::rename(&current_data, &rollback_data).map_err(|error| give_up(AppError::Validation(format!(
+            "تعذر استبدال مجلد المرفقات، ولم يتغير شيء. أغلق أي ملف مرفق مفتوح في برنامج آخر وأي نافذة لمجلد البيانات، ثم أعد المحاولة. ({error})"
+        ))))?;
     }
     if let Err(error) = std::fs::rename(&staged_data, &current_data) {
         if rollback_data.exists() { std::fs::rename(&rollback_data, &current_data).ok(); }
-        std::fs::remove_file(&rollback_database).ok();
-        std::fs::remove_file(&restore_marker).ok();
-        return Err(AppError::Other(error.to_string()));
+        return Err(give_up(AppError::Other(error.to_string())));
     }
     progress(backup_progress(86, "جاري استعادة قاعدة البيانات..."));
     // The seal triggers belong to the database being replaced; they are put back afterwards.
@@ -3126,17 +3604,16 @@ where
         if rollback_data.exists() { std::fs::rename(&rollback_data, &current_data).ok(); }
         conn.restore(rusqlite::MAIN_DB, &rollback_database, None::<fn(rusqlite::backup::Progress)>).ok();
         crate::integrity::attach(conn, false);
-        std::fs::remove_file(&rollback_database).ok();
-        std::fs::remove_file(&restore_marker).ok();
-        return Err(error);
+        return Err(give_up(error));
     }
     // A backup made on another computer, or before seals existed, is accepted by the System Admin
     // who restores it; a backup sealed on this computer keeps its own seals and is checked as is.
     if crate::integrity::attach(conn, false) == crate::integrity::State::Unapproved {
         crate::integrity::approve(conn, user, "restore")?;
     }
+    put_back_backup_settings(conn, &kept_settings)?;
     progress(backup_progress(94, "جاري إعادة ربط سجل التدقيق..."));
-    for row in audit {
+    for row in audit_rows_to_restore(conn, audit)? {
         conn.execute(
             "INSERT INTO activity_log(user_id,username,role,action,target_type,target_id,target_name,result,details,created_at)
              VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10)",
@@ -3148,7 +3625,7 @@ where
     std::fs::remove_file(&rollback_database).ok();
     std::fs::remove_file(&restore_marker).ok();
     progress(backup_progress(100, "اكتملت استعادة النسخة الاحتياطية"));
-    Ok(())
+    Ok(safety_copy)
 }
 
 pub(crate) fn stored_document_path(conn: &Connection, relative_path: &str) -> AppResult<std::path::PathBuf> {
@@ -3224,6 +3701,124 @@ pub fn download_document(conn: &Connection, user: &str, relative_path: &str, des
     Ok(destination.to_string_lossy().into_owned())
 }
 
+// ── Job grades and steps («الدرجة الوظيفية» و«رقم المرحلة») ─────────────────
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct JobLists {
+    pub grades: Vec<String>,
+    pub steps: Vec<String>,
+}
+
+/// The civil-service grades (قانون رواتب موظفي الدولة) as a starting list; the settings can change it.
+fn default_job_grades() -> Vec<String> {
+    ["الدرجة العليا (أ)", "الدرجة العليا (ب)", "الدرجة الأولى", "الدرجة الثانية", "الدرجة الثالثة", "الدرجة الرابعة",
+     "الدرجة الخامسة", "الدرجة السادسة", "الدرجة السابعة", "الدرجة الثامنة", "الدرجة التاسعة", "الدرجة العاشرة"]
+        .iter().map(|v| v.to_string()).collect()
+}
+
+fn default_job_steps() -> Vec<String> {
+    (1..=11).map(|n| n.to_string()).collect()
+}
+
+fn normalize_list(values: &[String]) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    for value in values {
+        let value = value.split_whitespace().collect::<Vec<_>>().join(" ");
+        if !value.is_empty() && !out.contains(&value) {
+            out.push(value);
+        }
+    }
+    out
+}
+
+/// The lists offered in the employee file. Until they are saved once, the grades are the standard
+/// list plus any grade already typed in an employee record, so nothing existing disappears.
+pub fn get_job_lists(conn: &Connection) -> AppResult<JobLists> {
+    let read = |key: &str| -> AppResult<Option<Vec<String>>> {
+        Ok(get_setting(conn, key)?.and_then(|json| serde_json::from_str::<Vec<String>>(&json).ok()).map(|v| normalize_list(&v)).filter(|v| !v.is_empty()))
+    };
+    let grades = match read("job_grades")? {
+        Some(saved) => saved,
+        None => {
+            let mut grades = default_job_grades();
+            let mut stmt = conn.prepare("SELECT DISTINCT TRIM(job_grade) FROM employees WHERE TRIM(IFNULL(job_grade,''))<>'' ORDER BY 1")?;
+            let typed: Vec<String> = stmt.query_map([], |r| r.get(0))?.collect::<rusqlite::Result<_>>()?;
+            grades.extend(typed);
+            normalize_list(&grades)
+        }
+    };
+    Ok(JobLists { grades, steps: read("job_steps")?.unwrap_or_else(default_job_steps) })
+}
+
+pub fn set_job_lists(conn: &Connection, user: &str, lists: &JobLists) -> AppResult<JobLists> {
+    assert_permission(conn, user, "settings.manage")?;
+    let grades = normalize_list(&lists.grades);
+    let steps = normalize_list(&lists.steps);
+    if grades.is_empty() || steps.is_empty() {
+        return Err(AppError::Validation("أضف درجة واحدة ومرحلة واحدة على الأقل".into()));
+    }
+    if grades.len() > 60 || steps.len() > 60 || grades.iter().chain(&steps).any(|v| v.chars().count() > 60) {
+        return Err(AppError::Validation("القائمة طويلة جدًا (الحد 60 عنصرًا، وكل عنصر 60 حرفًا)".into()));
+    }
+    set_setting(conn, "job_grades", &serde_json::to_string(&grades).map_err(|e| AppError::Other(e.to_string()))?)?;
+    set_setting(conn, "job_steps", &serde_json::to_string(&steps).map_err(|e| AppError::Other(e.to_string()))?)?;
+    log_activity(conn, user, "CHANGE_SETTING", Some("settings"), None, Some("job_lists"),
+        Some(&format!("{} grades, {} steps", grades.len(), steps.len())));
+    Ok(JobLists { grades, steps })
+}
+
+// ── What a backup holds (shown before a restore) ────────────────────────────
+
+#[derive(Debug, Clone, Serialize)]
+pub struct BackupSummary {
+    /// «نسخة يومية»، «نسخة يدوية»، «نسخة كاملة»...
+    pub kind: String,
+    /// The last recorded change in the backup's log (local time), roughly when it was made.
+    pub last_change: Option<String>,
+    pub file_time: Option<String>,
+    pub employees: i64,
+    pub archive_documents: i64,
+    pub users: i64,
+    pub attachments: i64,
+    pub size_bytes: u64,
+}
+
+/// Opens and fully checks a backup without changing anything, and says what it holds.
+/// The caller checks `backups.restore` first.
+pub fn inspect_backup(source_path: &str, password: &str) -> AppResult<BackupSummary> {
+    let source = Path::new(source_path);
+    let kind = backup_kind(source)?;
+    let staging = tempfile::tempdir_in(crate::paths::data_root()).map_err(|e| AppError::Other(e.to_string()))?;
+    stage_backup(source, password, staging.path())?;
+    let db = Connection::open_with_flags(staging.path().join("database.db"), rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)?;
+    let count = |sql: &str| db.query_row(sql, [], |r| r.get::<_, i64>(0)).unwrap_or(0);
+    let mut files = Vec::new();
+    collect_relative_file_paths(&staging.path().join("Data"), Path::new(""), &mut files).ok();
+    let name = source.file_name().and_then(|n| n.to_str()).unwrap_or_default().to_lowercase();
+    let label = match kind {
+        BackupKind::FullExport => "نسخة كاملة (ملف واحد)",
+        _ if name.contains("_daily_") => "نسخة تلقائية يومية",
+        _ if name.contains("_weekly_") || name.contains("_monthly_") => "نسخة تلقائية",
+        _ if name.contains("_prerestore_") => "نسخة أمان قبل استعادة",
+        _ if name.contains("_premove_") => "نسخة أمان قبل نقل المجلد",
+        _ if name.contains("_preupdate_") => "نسخة أمان قبل تحديث",
+        _ if name.contains("_export_") => "نسخة مصدّرة",
+        _ => "نسخة يدوية",
+    };
+    let metadata = std::fs::metadata(source).ok();
+    Ok(BackupSummary {
+        kind: label.into(),
+        last_change: db.query_row("SELECT datetime(MAX(created_at),'localtime') FROM activity_log", [], |r| r.get(0)).ok().flatten(),
+        file_time: metadata.as_ref().and_then(|m| m.modified().ok())
+            .map(|time| chrono::DateTime::<chrono::Local>::from(time).format("%Y-%m-%d %H:%M").to_string()),
+        employees: count("SELECT COUNT(*) FROM employees"),
+        archive_documents: count("SELECT COUNT(*) FROM general_docs"),
+        users: count("SELECT COUNT(*) FROM users"),
+        attachments: files.len() as i64,
+        size_bytes: metadata.map(|m| m.len()).unwrap_or(0),
+    })
+}
+
 pub fn get_document_types(conn: &Connection) -> AppResult<Vec<String>> {
     let val: String = conn.query_row(
         "SELECT value FROM app_settings WHERE key='document_types'", [], |r| r.get(0)
@@ -3295,10 +3890,10 @@ mod phase3_security_tests {
         set_setting(&conn, "auto_backup_daily_enabled", "1").unwrap();
         set_setting(&conn, "auto_backup_password", "strong-password").unwrap();
         // No data changes means no backup.
-        assert!(run_due_automatic_backups_with_progress(&conn, |_| {}).unwrap().is_empty());
+        assert!(run_due_automatic_backups_with_progress(&conn, false, |_| {}).unwrap().is_empty());
         conn.execute("INSERT INTO employees(id,full_name) VALUES(1,'Before change')", []).unwrap();
         log_activity(&conn, "testadmin", "CREATE_EMPLOYEE", Some("employee"), Some(1), None, None);
-        assert_eq!(run_due_automatic_backups_with_progress(&conn, |_| {}).unwrap(), vec!["يومي"]);
+        assert_eq!(run_due_automatic_backups_with_progress(&conn, false, |_| {}).unwrap(), vec!["يومي"]);
         // A plain-text password from an older release is re-saved protected once read.
         assert_ne!(get_setting(&conn, "auto_backup_password").unwrap().unwrap(), "strong-password");
         assert_eq!(auto_backup_password(&conn).unwrap(), "strong-password");
@@ -3310,29 +3905,37 @@ mod phase3_security_tests {
             log_activity(&conn, "testadmin", action, Some("employee"), Some(1), None, None);
         }
         log_activity(&conn, "testadmin", "CHANGE_SETTING", Some("settings"), None, Some("automatic_backups"), None);
-        assert!(run_due_automatic_backups_with_progress(&conn, |_| {}).unwrap().is_empty());
-        std::thread::sleep(std::time::Duration::from_millis(1100));
+        assert!(run_due_automatic_backups_with_progress(&conn, false, |_| {}).unwrap().is_empty());
         conn.execute("UPDATE employees SET full_name='After change' WHERE id=1", []).unwrap();
         log_activity(&conn, "testadmin", "UPDATE_EMPLOYEE", Some("employee"), Some(1), None, None);
-        assert_eq!(run_due_automatic_backups_with_progress(&conn, |_| {}).unwrap(), vec!["يومي"]);
+        // While someone works, the next backup waits for the interval (an hour by default)…
+        assert!(run_due_automatic_backups_with_progress(&conn, true, |_| {}).unwrap().is_empty());
+        // …and on sign-out it is taken at once, replacing today's file instead of adding one.
+        assert_eq!(run_due_automatic_backups_with_progress(&conn, false, |_| {}).unwrap(), vec!["يومي"]);
         let second_path = get_setting(&conn, "auto_backup_last_daily_path").unwrap().unwrap();
-        assert_ne!(first_path, second_path);
-        assert!(Path::new(&first_path).is_file());
-        let encrypted = std::fs::read(&second_path).unwrap();
-        let (_, plaintext) = decrypt_backup(&encrypted, "strong-password").unwrap();
+        assert_eq!(first_path, second_path);
+        assert_eq!(crate::backup_store::automatic_backups(&crate::paths::backup_root()).len(), 1);
         let staging = tempfile::tempdir().unwrap();
-        extract_and_validate_backup(&plaintext, staging.path()).unwrap();
+        stage_backup(Path::new(&second_path), "strong-password", staging.path()).unwrap();
         let restored = Connection::open(staging.path().join("database.db")).unwrap();
         let name: String = restored.query_row("SELECT full_name FROM employees WHERE id=1", [], |r| r.get(0)).unwrap();
         assert_eq!(name, "After change");
-        assert!(run_due_automatic_backups_with_progress(&conn, |_| {}).unwrap().is_empty());
+        assert!(run_due_automatic_backups_with_progress(&conn, false, |_| {}).unwrap().is_empty());
+        // An interval of zero means sign-out only.
+        conn.execute("UPDATE employees SET full_name='Interval off' WHERE id=1", []).unwrap();
+        log_activity(&conn, "testadmin", "UPDATE_EMPLOYEE", Some("employee"), Some(1), None, None);
+        set_setting(&conn, "backup_interval_minutes", "0").unwrap();
+        set_setting(&conn, "auto_backup_last_time", "2000-01-01 00:00").unwrap();
+        assert!(run_due_automatic_backups_with_progress(&conn, true, |_| {}).unwrap().is_empty());
+        set_setting(&conn, "backup_interval_minutes", "30").unwrap();
+        assert_eq!(run_due_automatic_backups_with_progress(&conn, true, |_| {}).unwrap(), vec!["يومي"]);
         conn.execute("UPDATE employees SET full_name='Disabled backup' WHERE id=1", []).unwrap();
         log_activity(&conn, "testadmin", "UPDATE_EMPLOYEE", Some("employee"), Some(1), None, None);
         set_setting(&conn, "auto_backup_daily_enabled", "0").unwrap();
-        assert!(run_due_automatic_backups_with_progress(&conn, |_| {}).unwrap().is_empty());
-        set_setting(&conn, "auto_backup_daily_enabled", "1").unwrap();
+        assert!(run_due_automatic_backups_with_progress(&conn, false, |_| {}).unwrap().is_empty());
+        set_setting(&conn, "auto_backup_enabled", "1").unwrap();
         set_setting(&conn, "auto_backup_password", "").unwrap();
-        assert!(run_due_automatic_backups_with_progress(&conn, |_| {}).unwrap().is_empty());
+        assert!(run_due_automatic_backups_with_progress(&conn, false, |_| {}).unwrap().is_empty());
     }
 
     fn backup_test_archive(hash_override: Option<&str>) -> Vec<u8> {
@@ -3466,13 +4069,10 @@ mod phase3_security_tests {
     #[test]
     fn role_boundaries_match_phase_three() {
         let viewer = role_permissions("viewer");
-        assert!(viewer.contains(&"documents.view") && viewer.contains(&"documents.print"));
-        assert!(!viewer.contains(&"documents.download"));
+        assert!(viewer.contains(&"documents.view") && viewer.contains(&"documents.print") && viewer.contains(&"documents.download"));
         let officer = role_permissions("archive_officer");
         assert!(officer.contains(&"documents.upload") && !officer.contains(&"documents.delete"));
-        let admin = role_permissions("archive_admin");
-        assert!(admin.contains(&"backups.manage") && !admin.contains(&"users.assign_system_admin"));
-        assert!(!admin.contains(&"backups.restore"), "only a System Admin may restore a backup");
+        assert!(role_permissions("archive_admin").is_empty(), "merged into system_admin in v8");
         assert!(role_permissions("system_admin").contains(&"users.assign_system_admin"));
         assert!(role_permissions("system_admin").contains(&"backups.restore"));
     }
@@ -3532,7 +4132,7 @@ fn updating_a_general_doc_preserves_stored_hr_effect() {
     let conn = Connection::open_in_memory().unwrap();
     crate::db::initialize_test(&conn).unwrap();
     conn.execute(
-        "INSERT INTO users(username,password,role) VALUES('docadmin',?1,'archive_admin')",
+        "INSERT INTO users(username,password,role) VALUES('docadmin',?1,'system_admin')",
         params![hash_password("admin-password").unwrap()],
     ).unwrap();
     conn.execute(
@@ -3588,7 +4188,7 @@ fn saving_a_document_requires_issuer_subject_number_and_date() {
     let conn = Connection::open_in_memory().unwrap();
     crate::db::initialize_test(&conn).unwrap();
     conn.execute(
-        "INSERT INTO users(username,password,role) VALUES('docadmin',?1,'archive_admin')",
+        "INSERT INTO users(username,password,role) VALUES('docadmin',?1,'system_admin')",
         params![hash_password("admin-password").unwrap()],
     ).unwrap();
     let empty = GeneralDocData {
@@ -3664,5 +4264,244 @@ mod employee_number_tests {
         assert!(update_employee(&conn, second.id, &data("موظف ثان", Some("1024")), "numadmin").is_err());
         // Saving an employee with their own number is fine.
         update_employee(&conn, first.id, &data("موظف أول", Some("1024")), "numadmin").unwrap();
+    }
+}
+
+#[cfg(test)]
+mod audit_log_tests {
+    use super::*;
+
+    fn conn() -> Connection {
+        let conn = Connection::open_in_memory().unwrap();
+        crate::db::initialize_test(&conn).unwrap();
+        conn.execute("INSERT INTO users(username,password,role) VALUES('logadmin','unused','system_admin')", []).unwrap();
+        conn
+    }
+
+    fn employee(name: &str, number: &str) -> EmployeeData {
+        serde_json::from_value(serde_json::json!({ "full_name": name, "employee_number": number })).unwrap()
+    }
+
+    fn doc(from: &str, number: &str) -> GeneralDocData {
+        serde_json::from_value(serde_json::json!({ "title": from, "issuer": "تعميم", "doc_count": number,
+            "issue_date": "2026-10-08", "is_internal_memo": false, "employee_ids": [] })).unwrap()
+    }
+
+    fn last(conn: &Connection) -> (String, String, Option<String>, Option<String>) {
+        conn.query_row("SELECT username,action,target_name,details FROM activity_log ORDER BY id DESC LIMIT 1", [],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?))).unwrap()
+    }
+
+    fn details(conn: &Connection) -> serde_json::Value {
+        serde_json::from_str(&last(conn).3.expect("details")).unwrap()
+    }
+
+    #[test]
+    fn search_reaches_the_whole_log_and_counts_it() {
+        let conn = conn();
+        for i in 0..1500 {
+            log_activity(&conn, "logadmin", if i == 3 { "DELETE_EMPLOYEE" } else { "LOGIN" }, None, None, Some(&format!("entry {i}")), None);
+        }
+        let page = search_activity_log(&conn, &ActivityLogFilter { limit: 100, ..Default::default() }).unwrap();
+        assert_eq!((page.total, page.rows.len()), (1500, 100));
+        // The fourth entry is far beyond the last 1000 and is still found.
+        let found = search_activity_log(&conn, &ActivityLogFilter { actions: vec!["DELETE_EMPLOYEE".into()], limit: 100, ..Default::default() }).unwrap();
+        assert_eq!((found.total, found.rows[0].target_name.as_deref()), (1, Some("entry 3")));
+        let searched = search_activity_log(&conn, &ActivityLogFilter { search: Some("entry 14".into()), limit: 100, ..Default::default() }).unwrap();
+        assert_eq!(searched.total, 1 + 10 + 100); // 14, 140–149, 1400–1499
+        let last_page = search_activity_log(&conn, &ActivityLogFilter { offset: 1400, limit: 100, ..Default::default() }).unwrap();
+        assert_eq!(last_page.rows.last().unwrap().target_name.as_deref(), Some("entry 0"));
+    }
+
+    #[test]
+    fn routine_entries_hide_only_when_they_succeeded() {
+        let conn = conn();
+        log_activity(&conn, "logadmin", "LOGIN", None, None, None, None);
+        log_audit(&conn, Some("logadmin"), "LOGIN", Some("session"), None, None, "Failure", Some("Invalid password"));
+        log_activity(&conn, "logadmin", "CREATE_BACKUP", None, None, None, None);
+        let page = search_activity_log(&conn, &ActivityLogFilter { exclude_actions: vec!["LOGIN".into()], limit: 10, ..Default::default() }).unwrap();
+        assert_eq!(page.total, 2);
+        let failed = search_activity_log(&conn, &ActivityLogFilter { result: Some("Failure".into()), limit: 10, ..Default::default() }).unwrap();
+        assert_eq!(failed.total, 1);
+    }
+
+    #[test]
+    fn a_name_that_matches_no_account_is_masked() {
+        let conn = conn();
+        assert!(login(&conn, "MySecret123", "whatever").is_err());
+        let (username, action, _, reason) = last(&conn);
+        assert_eq!((username.as_str(), action.as_str(), reason.as_deref()), ("My…", "LOGIN", Some("Unknown username")));
+        assert!(login(&conn, "logadmin", "wrong").is_err());
+        assert_eq!(last(&conn).0, "logadmin");
+        let page = search_activity_log(&conn, &ActivityLogFilter { limit: 10, ..Default::default() }).unwrap();
+        assert_eq!(page.users, vec!["logadmin".to_string()]);
+    }
+
+    #[test]
+    fn employee_entries_name_the_employee_and_edits_say_what_changed() {
+        let conn = conn();
+        let e = create_employee(&conn, &employee("علي حسن كاظم", "1024"), "logadmin").unwrap();
+        log_activity(&conn, "logadmin", "UPLOAD_MINISTRY_BADGE_ATTACHMENT", Some("employee"), Some(e.id), Some("Files/Employees/1/x.jpg"), Some("back"));
+        let d = details(&conn);
+        assert_eq!((d["employee"].as_str(), d["employee_number"].as_str(), d["note"].as_str()), (Some("علي حسن كاظم"), Some("1024"), Some("back")));
+
+        update_employee(&conn, e.id, &employee("علي حسن كاظم", "1042"), "logadmin").unwrap();
+        let d = details(&conn);
+        let changes = d["changes"].as_array().unwrap();
+        assert_eq!(changes.len(), 1, "{changes:?}");
+        assert_eq!(changes[0], serde_json::json!({ "field": "employee_number", "old": "1024", "new": "1042" }));
+
+        delete_employee(&conn, e.id, "logadmin").unwrap();
+        let (_, action, name, _) = last(&conn);
+        assert_eq!((action.as_str(), name.as_deref()), ("DELETE_EMPLOYEE", Some("علي حسن كاظم")));
+        assert_eq!(details(&conn)["employee_number"], "1042");
+    }
+
+    #[test]
+    fn grade_deletion_and_department_change_are_recorded() {
+        let conn = conn();
+        let e = create_employee(&conn, &employee("موظف", "7"), "logadmin").unwrap();
+        let grade: GradeHistoryData = serde_json::from_value(serde_json::json!({ "grade": "الخامسة", "effective_date": "2026-01-01" })).unwrap();
+        let g = add_grade_history(&conn, e.id, &grade, "logadmin").unwrap();
+        delete_grade_history(&conn, g.id, "logadmin").unwrap();
+        let (_, action, name, _) = last(&conn);
+        assert_eq!((action.as_str(), name.as_deref()), ("DELETE_GRADE", Some("الخامسة")));
+
+        update_company_config(&conn, "logadmin", &CompanyConfigData { company_name: "الجهة".into(), department_name: Some("قسم الاتصالات".into()), division_name: None }).unwrap();
+        update_company_config(&conn, "logadmin", &CompanyConfigData { company_name: "الجهة".into(), department_name: Some("قسم الصيانة".into()), division_name: None }).unwrap();
+        assert_eq!(details(&conn)["changes"], serde_json::json!([{ "field": "department_name", "old": "قسم الاتصالات", "new": "قسم الصيانة" }]));
+    }
+
+    #[test]
+    fn archive_deletion_describes_the_document() {
+        let conn = conn();
+        let a = create_general_doc(&conn, &doc("وزارة النقل", "م/4133"), "logadmin").unwrap();
+        update_general_doc(&conn, a.id, &doc("وزارة النقل", "م/4134"), "logadmin").unwrap();
+        assert_eq!(details(&conn)["changes"], serde_json::json!([{ "field": "doc_count", "old": "م/4133", "new": "م/4134" }]));
+        delete_general_doc(&conn, a.id, "logadmin").unwrap();
+        let d = details(&conn);
+        assert_eq!((d["doc"]["from"].as_str(), d["doc"]["number"].as_str(), d["doc"]["subject"].as_str(), d["doc"]["files"].as_i64()),
+            (Some("وزارة النقل"), Some("م/4134"), Some("تعميم"), Some(0)));
+    }
+
+    #[test]
+    fn restored_log_keeps_each_entry_once() {
+        let conn = conn();
+        log_activity(&conn, "logadmin", "LOGIN", None, None, Some("before backup"), None);
+        log_activity(&conn, "logadmin", "CREATE_BACKUP", None, None, Some("b.autohrbak"), None);
+        let backup = read_audit_rows(&conn).unwrap();
+        log_activity(&conn, "logadmin", "DELETE_EMPLOYEE", None, None, Some("after backup"), None);
+        let kept = read_audit_rows(&conn).unwrap();
+        // The restored database holds the log as it was at backup time.
+        let restored = Connection::open_in_memory().unwrap();
+        crate::db::initialize_test(&restored).unwrap();
+        for row in &backup {
+            restored.execute("INSERT INTO activity_log(user_id,username,role,action,target_type,target_id,target_name,result,details,created_at) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10)",
+                params![row.0,row.1,row.2,row.3,row.4,row.5,row.6,row.7,row.8,row.9]).unwrap();
+        }
+        let added = audit_rows_to_restore(&restored, kept).unwrap();
+        assert_eq!(added.len(), 1);
+        assert_eq!(added[0].6.as_deref(), Some("after backup"));
+    }
+
+    #[test]
+    fn archive_clerk_cannot_open_the_log() {
+        assert!(!role_permissions("archive_officer").contains(&"audit.view"));
+        assert!(!role_permissions("viewer").contains(&"audit.view"));
+        assert!(role_permissions("system_admin").contains(&"audit.view"));
+    }
+}
+
+#[cfg(test)]
+mod family_vehicle_row_tests {
+    use super::*;
+
+    fn conn() -> Connection {
+        let conn = Connection::open_in_memory().unwrap();
+        crate::db::initialize_test(&conn).unwrap();
+        conn.execute("INSERT INTO users(username,password,role) VALUES('rowadmin','unused','system_admin')", []).unwrap();
+        conn.execute("INSERT INTO users(username,password,role) VALUES('rowclerk','unused','archive_officer')", []).unwrap();
+        conn
+    }
+
+    fn data(value: serde_json::Value) -> EmployeeData {
+        let mut base = serde_json::json!({ "full_name": "موظف تجريبي", "gender": "ذكر", "marital_status": "متزوج" });
+        base.as_object_mut().unwrap().extend(value.as_object().unwrap().clone());
+        serde_json::from_value(base).unwrap()
+    }
+
+    fn file(conn: &Connection, path: &str) {
+        conn.execute("INSERT INTO document_metadata(stored_path,original_name,mime_type,size_bytes) VALUES(?1,'card.jpg','image/jpeg',10)", [path]).unwrap();
+    }
+
+    fn has_file(conn: &Connection, path: &str) -> bool {
+        conn.query_row("SELECT COUNT(*) FROM document_metadata WHERE stored_path=?1", [path], |r| r.get::<_, i64>(0)).unwrap() == 1
+    }
+
+    #[test]
+    fn a_family_or_spouse_path_the_employee_never_had_is_not_stored() {
+        let conn = conn();
+        let other = "Files/Employees/99/Family/1/NationalCard/x.jpg";
+        let saved = create_employee(&conn, &data(serde_json::json!({
+            "family_members": serde_json::json!([{ "name": "ابن", "national_card_front_path": other }]).to_string(),
+            "spouses": serde_json::json!([{ "name": "زوجة", "national_card_back_path": other }]).to_string(),
+        })), "rowadmin").unwrap();
+        let paths = employee_row_paths(&conn, saved.id).unwrap();
+        assert!(paths.is_empty(), "{paths:?}");
+    }
+
+    #[test]
+    fn removing_a_vehicle_deletes_its_images_and_a_moved_row_keeps_its_own() {
+        let conn = conn();
+        let saved = create_employee(&conn, &data(serde_json::json!({
+            "vehicles": serde_json::json!([{ "plate": "111" }, { "plate": "222" }]).to_string(),
+        })), "rowadmin").unwrap();
+        let (first, second) = ("Files/Employees/1/Vehicles/1/Annual/a.jpg", "Files/Employees/1/Vehicles/2/Annual/b.jpg");
+        file(&conn, first);
+        file(&conn, second);
+        conn.execute("UPDATE employee_vehicles SET annual_front_path=?1 WHERE employee_id=?2 AND sort_order=0", params![first, saved.id]).unwrap();
+        conn.execute("UPDATE employee_vehicles SET annual_front_path=?1 WHERE employee_id=?2 AND sort_order=1", params![second, saved.id]).unwrap();
+
+        // The first vehicle is removed: the second moves up with its image.
+        let keep = data(serde_json::json!({ "vehicles": serde_json::json!([{ "plate": "222", "annual_front_path": second }]).to_string() }));
+        // «موظف» may not delete images, so not a row that has them either.
+        let refused = update_employee(&conn, saved.id, &keep, "rowclerk").unwrap_err().to_string();
+        assert!(refused.contains("مسؤول"), "{refused}");
+        assert!(has_file(&conn, first));
+        update_employee(&conn, saved.id, &keep, "rowadmin").unwrap();
+        assert!(!has_file(&conn, first));
+        assert!(has_file(&conn, second));
+        let moved: Option<String> = conn.query_row("SELECT annual_front_path FROM employee_vehicles WHERE employee_id=?1 AND sort_order=0", [saved.id], |r| r.get(0)).unwrap();
+        assert_eq!(moved.as_deref(), Some(second));
+    }
+
+    #[test]
+    fn a_clerk_may_remove_a_row_without_attachments() {
+        let conn = conn();
+        let saved = create_employee(&conn, &data(serde_json::json!({
+            "family_members": serde_json::json!([{ "name": "علي" }, { "name": "مريم" }]).to_string(),
+        })), "rowadmin").unwrap();
+        update_employee(&conn, saved.id, &data(serde_json::json!({
+            "family_members": serde_json::json!([{ "name": "مريم" }]).to_string(),
+        })), "rowclerk").unwrap();
+        let count: i64 = conn.query_row("SELECT COUNT(*) FROM employee_family_members WHERE employee_id=?1", [saved.id], |r| r.get(0)).unwrap();
+        assert_eq!(count, 1);
+    }
+
+    #[test]
+    fn too_many_spouses_for_the_gender_is_refused_in_arabic() {
+        let conn = conn();
+        let two = serde_json::json!([{ "name": "أ" }, { "name": "ب" }]).to_string();
+        let error = create_employee(&conn, &data(serde_json::json!({ "gender": "أنثى", "marital_status": "مطلق", "spouses": two })), "rowadmin")
+            .unwrap_err().to_string();
+        assert!(error.contains("زوج واحد"), "{error}");
+    }
+
+    #[test]
+    fn the_old_single_vehicle_columns_are_not_written() {
+        let conn = conn();
+        let saved = create_employee(&conn, &data(serde_json::json!({ "vehicle_plate": "111", "vehicle_annual_expiry_date": "2020-01-01" })), "rowadmin").unwrap();
+        let old: Option<String> = conn.query_row("SELECT COALESCE(vehicle_plate,vehicle_annual_expiry_date) FROM employees WHERE id=?1", [saved.id], |r| r.get(0)).unwrap();
+        assert_eq!(old, None);
     }
 }

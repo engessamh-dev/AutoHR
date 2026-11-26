@@ -1076,6 +1076,7 @@ pub fn audit_upload(
     command: &str,
     id: Option<i64>,
     path: &str,
+    details: Option<&str>,
 ) -> AppResult<()> {
     let (action, subject) = match command {
         "cmd_upload_general_doc_file" => ("UPLOAD_DOCUMENT".to_string(), "general_doc"),
@@ -1086,13 +1087,8 @@ pub fn audit_upload(
             "employee",
         ),
     };
-    let (user_id, role): (i64, String) = conn.query_row(
-        "SELECT id,role FROM users WHERE username=?1",
-        [owner],
-        |r| Ok((r.get(0)?, r.get(1)?)),
-    )?;
-    conn.execute("INSERT INTO activity_log(user_id,username,role,action,target_type,target_id,target_name,result) VALUES(?1,?2,?3,?4,?5,?6,?7,'Success')",rusqlite::params![user_id,owner,role,action,subject,id,path])?;
-    Ok(())
+    conn.query_row("SELECT 1 FROM users WHERE username=?1", [owner], |_| Ok(()))?;
+    crate::services::try_log_audit(conn, Some(owner), &action, Some(subject), id, Some(path), "Success", details)
 }
 
 /// Resolve only current attachment associations, never grant access merely from a metadata row.

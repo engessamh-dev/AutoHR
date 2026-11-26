@@ -26,7 +26,8 @@ export function showToast(msg, type = "info") {
 }
 
 let _confirmActive = null;
-export function confirmAction(message = "هل أنت متأكد من تنفيذ هذا الإجراء؟") {
+// options: { title, confirmLabel, danger } — a deletion says what it deletes on a red button.
+export function confirmAction(message = "هل أنت متأكد من تنفيذ هذا الإجراء؟", options = {}) {
   if (_confirmActive) return _confirmActive;
 
   _confirmActive = new Promise(resolve => {
@@ -40,14 +41,12 @@ export function confirmAction(message = "هل أنت متأكد من تنفيذ 
     const dialog = document.createElement("div");
     dialog.setAttribute("role", "alertdialog");
     dialog.setAttribute("aria-modal", "true");
-    dialog.style.cssText = `
-      width:min(420px,100%);background:var(--ui-surface);border:1px solid var(--ui-line);
-      border-radius:8px;box-shadow:0 18px 60px rgba(0,0,0,.45);
-      padding:18px;color:var(--ui-text-strong);
-    `;
+    // Same card as the program's other dialogs, in both themes.
+    dialog.className = "card app-dialog";
+    dialog.style.cssText = "width:min(420px,100%);padding:20px;color:var(--ui-text-strong)";
 
     const title = document.createElement("p");
-    title.textContent = "تأكيد الإجراء";
+    title.textContent = options.title ?? "تأكيد الإجراء";
     title.style.cssText = "font-size:16px;font-weight:700;margin:0 0 10px";
 
     const body = document.createElement("p");
@@ -59,8 +58,8 @@ export function confirmAction(message = "هل أنت متأكد من تنفيذ 
 
     const ok = document.createElement("button");
     ok.type = "button";
-    ok.className = "btn-primary";
-    ok.textContent = "تأكيد";
+    ok.className = options.danger ? "btn-danger-solid" : "btn-primary";
+    ok.textContent = options.confirmLabel ?? "تأكيد";
     ok.style.cssText = "min-width:96px";
 
     const cancel = document.createElement("button");
@@ -113,11 +112,8 @@ export function confirmSaveChanges(message = "توجد تغييرات غير م�
     const dialog = document.createElement("div");
     dialog.setAttribute("role", "alertdialog");
     dialog.setAttribute("aria-modal", "true");
-    dialog.style.cssText = `
-      width:min(460px,100%);background:var(--ui-surface);border:1px solid var(--ui-line);
-      border-radius:8px;box-shadow:0 18px 60px rgba(0,0,0,.45);
-      padding:18px;color:var(--ui-text-strong);
-    `;
+    dialog.className = "card app-dialog";
+    dialog.style.cssText = "width:min(460px,100%);padding:20px;color:var(--ui-text-strong)";
 
     const title = document.createElement("p");
     title.textContent = "تغييرات غير محفوظة";
@@ -176,6 +172,24 @@ export function confirmSaveChanges(message = "توجد تغييرات غير م�
 }
 
 // ── Branding ───────────────────────────────────────────────────────────────
+/** The unit name sits in a drawn pill of fixed size: a long name gets a smaller font until it fits. */
+export function fitLoginUnitName(el) {
+  el.style.removeProperty("--unit-scale");
+  el.classList.remove("is-two-lines");
+  requestAnimationFrame(() => {
+    let scale = 1;
+    while (el.scrollWidth > el.clientWidth + 1 && scale > 0.7) {
+      scale -= 0.05;
+      el.style.setProperty("--unit-scale", scale.toFixed(2));
+    }
+    // Still too long at 70%: two smaller lines read better than one tiny line.
+    if (el.scrollWidth > el.clientWidth + 1) {
+      el.style.removeProperty("--unit-scale");
+      el.classList.add("is-two-lines");
+    }
+  });
+}
+
 export function applyBranding(config) {
   const co   = document.getElementById("sidebar-company");
   const dept = document.getElementById("sidebar-dept");
@@ -199,9 +213,10 @@ export function applyBranding(config) {
   if (loginUnit) {
     // Login screen: show the configured unit name, or a muted hint telling the admin where to set it.
     const unitName = String(config.division_name ?? "").trim();
-    loginUnit.textContent = unitName || "لم يُحدَّد اسم الشعبة/الوحدة";
-    loginUnit.title = unitName ? "" : "يضبطه مدير النظام من الإعدادات ← الجهة والشعار";
+    loginUnit.textContent = unitName || "حدّد اسم الشعبة من الإعدادات";
+    loginUnit.title = unitName ? unitName : "يضبطه المسؤول من الإعدادات ← الجهة والشعار";
     loginUnit.classList.toggle("is-hint", !unitName);
+    fitLoginUnitName(loginUnit);
   }
 
   // The company logo is fixed and bundled with the app; any logo_path stored by an
@@ -326,4 +341,47 @@ export function parseAddress(value) {
     }
   }
   return out;
+}
+
+// ── Long operations (backup, export, restore, folder move, update) ─────────
+// Closing or signing out while one of these runs can cut it off, so main.js asks first.
+const _busyTasks = new Map();
+let _busyNext = 0;
+export function beginBusyTask(label) {
+  const id = ++_busyNext;
+  _busyTasks.set(id, label);
+  return () => _busyTasks.delete(id);
+}
+export function busyTaskLabel() {
+  const labels = [..._busyTasks.values()];
+  return labels.length ? labels[labels.length - 1] : null;
+}
+
+// ── Friendly local times: «اليوم 1:39 م»، «أمس 11:58 ص»، «20 تشرين الثاني 4:05 م» ──
+const AR_MONTHS = ["كانون الثاني", "شباط", "آذار", "نيسان", "أيار", "حزيران", "تموز", "آب", "أيلول", "تشرين الأول", "تشرين الثاني", "كانون الأول"];
+export function clockText(date) {
+  const hours = date.getHours();
+  return `${hours % 12 || 12}:${String(date.getMinutes()).padStart(2, "0")} ${hours < 12 ? "ص" : "م"}`;
+}
+/** `text` is a local «YYYY-MM-DD HH:MM» (or ISO). */
+export function friendlyTime(text) {
+  if (!text) return "";
+  const date = new Date(String(text).replace(" ", "T"));
+  if (Number.isNaN(date.getTime())) return String(text);
+  const day = new Date(date); day.setHours(0, 0, 0, 0);
+  const today = new Date(); today.setHours(0, 0, 0, 0);
+  const days = Math.round((today - day) / 86400000);
+  const prefix = days === 0 ? "اليوم" : days === 1 ? "أمس" : days === -1 ? "غدًا"
+    : `${date.getDate()} ${AR_MONTHS[date.getMonth()]}${date.getFullYear() !== today.getFullYear() ? ` ${date.getFullYear()}` : ""}`;
+  return `${prefix} ${clockText(date)}`;
+}
+/** Calendar days from a local «YYYY-MM-DD HH:MM» to today (the time of day is ignored), or null. */
+export function daysSince(text) {
+  if (!text) return null;
+  const date = new Date(String(text).replace(" ", "T"));
+  if (Number.isNaN(date.getTime())) return null;
+  const day = new Date(date.getFullYear(), date.getMonth(), date.getDate());
+  const now = new Date();
+  const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+  return Math.round((today - day) / 86400000);
 }

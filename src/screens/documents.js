@@ -211,6 +211,7 @@ export async function renderDocuments(container, user, ctx) {
     const previewPaths = paths.length ? paths : [path];
     let currentIndex = Math.max(0, previewPaths.indexOf(path));
     let asset = await loadDocumentAsset(previewPaths[currentIndex]);
+    api.auditArchiveView(previewPaths[currentIndex]).catch(() => {});
     let zoomer = null;
     const overlay = document.createElement("div");
     overlay.setAttribute("dir", "rtl");
@@ -266,6 +267,7 @@ export async function renderDocuments(container, user, ctx) {
       currentIndex = nextIndex;
       try {
         asset = await loadDocumentAsset(previewPaths[currentIndex]);
+        api.auditArchiveView(previewPaths[currentIndex]).catch(() => {});
         URL.revokeObjectURL(oldAssetUrl);
         renderPreviewBody();
       } catch (error) {
@@ -1497,5 +1499,8 @@ export async function renderDocuments(container, user, ctx) {
     const doc = currentDocs().find(item => item.id === initialManageAttachmentDocId);
     if (doc) openAttachmentManager(doc.id);
     else showToast("تعذر العثور على الوثيقة المطلوبة", "warn");
+  } else if (ctx?.addDoc && can(user, "documents.manage")) {
+    // «+ إضافة وثيقة واردة» on the home screen.
+    showDocForm();
   }
 }

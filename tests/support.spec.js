@@ -163,7 +163,7 @@ test("save buttons stay dim until something changes", async ({ page }) => {
   await page.getByRole("button", { name: "النسخ التلقائي" }).click();
   const saveBackup = page.locator("#btn-save-auto-backup");
   await expect(saveBackup).toBeDisabled();
-  await page.locator("#auto-backup-weekly").check();
+  await page.locator("#auto-backup-delete").click();
   await expect(saveBackup).toBeEnabled();
 });
 

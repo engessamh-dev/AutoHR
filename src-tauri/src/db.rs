@@ -176,7 +176,7 @@ pub fn db_path() -> PathBuf {
 /// To change the schema later: bump this constant and add an `if from < N { ... }` step in
 /// `upgrade()`. Every upgrade of an existing database runs only after a verified
 /// pre-upgrade snapshot exists, and the snapshot is restored automatically if a step fails.
-pub const SCHEMA_VERSION: i64 = 7;
+pub const SCHEMA_VERSION: i64 = 11;
 
 #[derive(Debug)]
 pub enum OpenError {
@@ -289,7 +289,23 @@ fn upgrade(conn: &Connection, from: i64) -> SqlResult<()> {
     if from < 7 {
         upgrade_to_v7(conn)?;
     }
-    // Future steps go here, for example: if from < 8 { ... }
+    if from < 8 {
+        upgrade_to_v8(conn)?;
+    }
+    if from < 9 {
+        // «رقم المرحلة» next to «الدرجة الوظيفية», chosen from a list set in the settings.
+        add_column_if_missing(conn, "employees", "job_step", "TEXT")?;
+    }
+    if from < 10 {
+        upgrade_to_v10(conn)?;
+    }
+    if from < 11 {
+        // The organisation's name is fixed and matches the logo; the old default section
+        // «GCANS» is cleared (the section and unit are named by the first-run wizard or Settings).
+        conn.execute("UPDATE company_config SET company_name=?1 WHERE id=1", [crate::services::COMPANY_NAME])?;
+        conn.execute("UPDATE company_config SET department_name='' WHERE id=1 AND department_name='GCANS'", [])?;
+    }
+    // Future steps go here, for example: if from < 12 { ... }
     #[cfg(test)]
     if FAIL_UPGRADE.with(|flag| flag.get()) {
         return Err(rusqlite::Error::InvalidQuery);
@@ -323,6 +339,42 @@ fn upgrade_to_v3(conn: &Connection) -> SqlResult<()> {
     add_column_if_missing(conn, "employees", "airport_badge_zones", "TEXT")?;
     add_column_if_missing(conn, "employee_vehicles", "annual_front_path", "TEXT")?;
     add_column_if_missing(conn, "employee_vehicles", "annual_back_path", "TEXT")?;
+    Ok(())
+}
+
+/// v10: the single-vehicle columns of `employees` (from before the «المركبات» list) are moved
+/// into the list once, for an employee whose list is empty, and then emptied. They are hidden in
+/// the program, so a date left there kept an expiry alert after the vehicle was renewed or removed.
+fn upgrade_to_v10(conn: &Connection) -> SqlResult<()> {
+    conn.execute(
+        "INSERT INTO employee_vehicles(employee_id,sort_order,plate,brand,type,color,annual_no,issue_date,expiry_date,model_year)
+         SELECT id,0,NULLIF(TRIM(vehicle_plate),''),NULLIF(TRIM(vehicle_name),''),NULLIF(TRIM(vehicle_type),''),
+                COALESCE(NULLIF(TRIM(vehicle_color),''),NULLIF(TRIM(vehicle_color_model),'')),
+                NULLIF(TRIM(vehicle_annual_no),''),NULLIF(TRIM(vehicle_annual_issue_date),''),
+                NULLIF(TRIM(vehicle_annual_expiry_date),''),NULLIF(TRIM(vehicle_manufacture_year),'')
+         FROM employees e
+         WHERE NOT EXISTS(SELECT 1 FROM employee_vehicles v WHERE v.employee_id=e.id)
+           AND TRIM(COALESCE(vehicle_plate,'')||COALESCE(vehicle_name,'')||COALESCE(vehicle_type,'')||
+                    COALESCE(vehicle_annual_no,'')||COALESCE(vehicle_annual_expiry_date,''))<>''",
+        [],
+    )?;
+    conn.execute(
+        "UPDATE employees SET vehicle_plate=NULL,vehicle_name=NULL,vehicle_color_model=NULL,vehicle_type=NULL,
+                vehicle_color=NULL,vehicle_manufacture_year=NULL,vehicle_annual_no=NULL,
+                vehicle_annual_issue_date=NULL,vehicle_annual_expiry_date=NULL
+         WHERE COALESCE(vehicle_plate,vehicle_name,vehicle_color_model,vehicle_type,vehicle_color,vehicle_manufacture_year,
+                        vehicle_annual_no,vehicle_annual_issue_date,vehicle_annual_expiry_date) IS NOT NULL",
+        [],
+    )?;
+    Ok(())
+}
+
+/// v8: three roles instead of four. «مسؤول الأرشيف» (archive_admin) becomes «مسؤول» (system_admin),
+/// and an admin can stop an account without deleting it (`disabled`). The rows changed here are
+/// re-sealed by `open_at` after the upgrade, so they are not reported as changed outside the program.
+fn upgrade_to_v8(conn: &Connection) -> SqlResult<()> {
+    add_column_if_missing(conn, "users", "disabled", "INTEGER NOT NULL DEFAULT 0 CHECK(disabled IN (0,1))")?;
+    conn.execute("UPDATE users SET role='system_admin' WHERE role='archive_admin'", [])?;
     Ok(())
 }
 
@@ -364,7 +416,12 @@ pub fn upgrade_restored(conn: &Connection) -> Result<(), OpenError> {
         return Err(OpenError::NewerSchema { found: version, supported: SCHEMA_VERSION });
     }
     if version < SCHEMA_VERSION {
+        // Same as `open_at`: an upgrade that changes sealed rows (v8 changes every user row)
+        // re-seals them, so a backup sealed on this computer is not reported as changed
+        // outside the program after it is restored. Rows already flagged stay flagged.
+        let flagged = crate::integrity::flagged_rows(conn);
         upgrade(conn, version)?;
+        crate::integrity::reseal_after_upgrade(conn, &flagged);
     }
     Ok(())
 }
@@ -445,6 +502,7 @@ fn migrate(conn: &Connection) -> SqlResult<()> {
         ("blood_type",           "TEXT"),
         ("workplace",            "TEXT"),
         ("job_grade",            "TEXT"),
+        ("job_step",             "TEXT"),
         ("hire_date",            "TEXT"),
         ("appointment_date",     "TEXT"),
         ("contract_type",        "TEXT DEFAULT 'ملاك'"),
@@ -1244,5 +1302,59 @@ mod v7_tests {
         assert_eq!(dates(&conn, wizard), (Some("2015-02-01".into()), None));
         assert_eq!(dates(&conn, both), (Some("2015-01-01".into()), Some("2015-03-01".into())));
         assert_eq!(dates(&conn, older), (None, Some("2010-10-03".into())));
+    }
+}
+
+#[cfg(test)]
+mod v8_tests {
+    use super::*;
+
+    /// A v7 database: «مسؤول الأرشيف» accounts become «مسؤول», and accounts can be stopped.
+    #[test]
+    fn v7_archive_admins_become_admins_and_users_gain_disabled_column() {
+        let conn = Connection::open_in_memory().unwrap();
+        migrate_for_tests(&conn);
+        conn.execute_batch("ALTER TABLE users DROP COLUMN disabled;
+            INSERT INTO users(username,password,role) VALUES('old.admin','x','archive_admin'),('clerk','x','archive_officer');
+            PRAGMA user_version = 7;").unwrap();
+        upgrade_restored(&conn).unwrap();
+        let role = |name: &str| conn.query_row("SELECT role FROM users WHERE username=?1", [name], |r| r.get::<_, String>(0)).unwrap();
+        assert_eq!(role("old.admin"), "system_admin");
+        assert_eq!(role("clerk"), "archive_officer");
+        let disabled: i64 = conn.query_row("SELECT disabled FROM users WHERE username='clerk'", [], |r| r.get(0)).unwrap();
+        assert_eq!(disabled, 0);
+    }
+}
+
+#[cfg(test)]
+mod legacy_vehicle_tests {
+    use super::*;
+
+    #[test]
+    fn v10_moves_the_single_vehicle_into_the_list_once_and_empties_the_old_columns() {
+        let conn = Connection::open_in_memory().unwrap();
+        initialize_test(&conn).unwrap();
+        // 1: only the old columns. 2: a list already, and an older date left in the old column.
+        conn.execute("INSERT INTO employees(id,full_name,vehicle_plate,vehicle_name,vehicle_color_model,vehicle_annual_no,vehicle_annual_expiry_date)
+                      VALUES(1,'أ','111 أ بغداد','كيا','أبيض','A1','2026-01-01')", []).unwrap();
+        conn.execute("INSERT INTO employees(id,full_name,vehicle_plate,vehicle_annual_expiry_date) VALUES(2,'ب','222 ب بغداد','2025-11-01')", []).unwrap();
+        conn.execute("INSERT INTO employee_vehicles(employee_id,sort_order,plate,expiry_date) VALUES(2,0,'222 ب بغداد','2027-11-01')", []).unwrap();
+        conn.execute("INSERT INTO employees(id,full_name) VALUES(3,'ج')", []).unwrap();
+
+        upgrade_to_v10(&conn).unwrap();
+        upgrade_to_v10(&conn).unwrap(); // running again changes nothing
+
+        let rows: Vec<(i64, Option<String>, Option<String>, Option<String>, Option<String>)> = conn
+            .prepare("SELECT employee_id,plate,brand,color,expiry_date FROM employee_vehicles ORDER BY employee_id").unwrap()
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?))).unwrap()
+            .collect::<SqlResult<_>>().unwrap();
+        assert_eq!(rows, vec![
+            (1, Some("111 أ بغداد".into()), Some("كيا".into()), Some("أبيض".into()), Some("2026-01-01".into())),
+            (2, Some("222 ب بغداد".into()), None, None, Some("2027-11-01".into())),
+        ]);
+        let left: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM employees WHERE COALESCE(vehicle_plate,vehicle_name,vehicle_color_model,vehicle_annual_no,vehicle_annual_expiry_date) IS NOT NULL",
+            [], |r| r.get(0)).unwrap();
+        assert_eq!(left, 0);
     }
 }

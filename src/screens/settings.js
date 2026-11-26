@@ -2,7 +2,7 @@
  * screens/settings.js — Company identity & logo, storage locations, backups (admins only)
  */
 import { api }       from "../api.js";
-import { showToast, confirmAction, applyBranding, escHtml } from "../utils.js";
+import { showToast, confirmAction, confirmSaveChanges, applyBranding, escHtml, errorText, beginBusyTask, friendlyTime } from "../utils.js";
 import { open }      from "@tauri-apps/plugin-dialog";
 import { can }       from "../permissions.js";
 import { listen }    from "@tauri-apps/api/event";
@@ -66,6 +66,200 @@ function mountSubnav(panel, key) {
   show(sections.some(section => section.dataset.sub === activeSubsection[key]) ? activeSubsection[key] : sections[0].dataset.sub);
 }
 
+const ltr = text => `\u2066${text}\u2069`;
+
+// One choice for automatic backup: off, only on sign-out/close, or also every N minutes of work.
+const AUTO_BACKUP_MODES = [
+  ["off", "متوقف"],
+  ["0", "عند الخروج فقط"],
+  ["30", "كل 30 دقيقة"],
+  ["60", "كل ساعة"],
+  ["120", "كل ساعتين"],
+];
+function autoBackupMode(settings) {
+  if (!settings?.enabled) return "off";
+  const interval = String(settings.interval_minutes ?? 60);
+  return AUTO_BACKUP_MODES.some(([value]) => value === interval) ? interval : "60";
+}
+
+/** «آخر نسخة: اليوم 1:00 م · التالية: 2:00 م · المساحة: 2.4 GB». */
+function autoBackupStatusLine(settings) {
+  const last = settings?.last_backup ? friendlyTime(settings.last_backup) : "لم تُنشأ بعد";
+  let next;
+  const mode = autoBackupMode(settings);
+  if (mode === "off") next = "متوقف";
+  else if (mode === "0") next = "عند الخروج أو الإغلاق";
+  else {
+    const lastTime = settings?.last_backup ? new Date(settings.last_backup.replace(" ", "T")) : null;
+    const due = lastTime && !Number.isNaN(lastTime.getTime()) ? new Date(lastTime.getTime() + Number(mode) * 60000) : null;
+    next = due && due > new Date() ? `${friendlyTime(`${due.getFullYear()}-${String(due.getMonth() + 1).padStart(2, "0")}-${String(due.getDate()).padStart(2, "0")} ${String(due.getHours()).padStart(2, "0")}:${String(due.getMinutes()).padStart(2, "0")}`).replace(/^اليوم /, "")} إذا تغيّرت البيانات`
+      : "عند أول تغيير في البيانات";
+  }
+  return `آخر نسخة: ${escHtml(last)} · التالية: ${escHtml(next)} · المساحة: ${escHtml(formatBytes(settings?.used_bytes ?? 0))}`;
+}
+
+function formatBytes(bytes) {
+  const value = Number(bytes) || 0;
+  // Wrapped in LTR isolates so «1.40 GB» does not turn into «GB 1.40» inside Arabic text.
+  if (value >= 1024 ** 3) return ltr(`${(value / 1024 ** 3).toFixed(2)} GB`);
+  if (value >= 1024 ** 2) return ltr(`${(value / 1024 ** 2).toFixed(1)} MB`);
+  return ltr(`${Math.max(1, Math.round(value / 1024))} KB`);
+}
+
+const BACKUP_KINDS = {
+  daily:      { label: "يومية", badge: "badge-gray" },
+  weekly:     { label: "أسبوعية", badge: "badge-amber" },
+  monthly:    { label: "شهرية", badge: "badge-amber" },
+  manual:     { label: "يدوية", badge: "badge-green" },
+  prerestore: { label: "أمان قبل الاستعادة", badge: "badge-red", note: "حُفظت تلقائيًا قبل استعادة سابقة" },
+  premove:    { label: "أمان قبل النقل", badge: "badge-red", note: "حُفظت تلقائيًا قبل نقل مجلد البيانات" },
+  preupdate:  { label: "أمان قبل التحديث", badge: "badge-red", note: "حُفظت تلقائيًا قبل تحديث البرنامج" },
+  other:      { label: "نسخة", badge: "badge-gray" },
+};
+const BACKUP_FILTERS = [
+  ["all", "الكل", () => true],
+  ["daily", "يومية", item => item.kind === "daily"],
+  ["periodic", "أسبوعية وشهرية", item => item.kind === "weekly" || item.kind === "monthly"],
+  ["manual", "يدوية", item => item.kind === "manual"],
+  ["safety", "نسخ الأمان", item => item.kind.startsWith("pre")],
+];
+
+/** «اليوم» / «أمس» / «هذا الأسبوع» / «أقدم», from a local «YYYY-MM-DD HH:MM». */
+function backupGroup(time) {
+  const day = new Date(`${time.slice(0, 10)}T00:00:00`);
+  const today = new Date(); today.setHours(0, 0, 0, 0);
+  const days = Math.round((today - day) / 86400000);
+  if (days <= 0) return "اليوم";
+  if (days === 1) return "أمس";
+  if (days < 7) return "هذا الأسبوع";
+  return "أقدم";
+}
+
+/**
+ * The restore list: backups in the backup folder, newest first and selected. Resolves with the
+ * chosen file's path, the path picked with «من ملف آخر…», or null.
+ */
+function chooseBackupToRestore(backupRoot) {
+  return new Promise(async resolve => {
+    const overlay = document.createElement("div");
+    overlay.setAttribute("dir", "rtl");
+    overlay.style.cssText = "position:fixed;inset:0;z-index:10000;background:rgba(0,0,0,.6);display:flex;align-items:center;justify-content:center;padding:20px";
+    overlay.innerHTML = `
+      <div class="card app-dialog" role="dialog" aria-modal="true" aria-labelledby="restore-pick-title" style="width:min(640px,100%);padding:18px 20px;color:var(--ui-text-strong)">
+        <div style="display:flex;justify-content:space-between;align-items:start;gap:12px">
+          <div>
+            <p id="restore-pick-title" style="font-size:16px;font-weight:700;margin:0">اختر النسخة التي تريد استعادتها</p>
+            <p style="font-size:12px;color:var(--ui-text-muted);margin:4px 0 10px">النسخ الموجودة في مجلد النسخ الاحتياطية، الأحدث أولًا. لن يتغير شيء قبل أن تؤكد.</p>
+          </div>
+          <button type="button" data-act="cancel" class="btn-secondary" style="padding:2px 10px" aria-label="إغلاق">✕</button>
+        </div>
+        <div data-role="body"><p style="font-size:13px;color:var(--ui-text-muted);padding:30px 0;text-align:center">جاري قراءة مجلد النسخ...</p></div>
+        <div style="display:flex;gap:10px;justify-content:space-between;align-items:center;margin-top:14px;border-top:1px solid var(--ui-line);padding-top:14px">
+          <div style="display:flex;gap:10px">
+            <button type="button" data-act="continue" class="btn-primary" disabled>متابعة…</button>
+            <button type="button" data-act="cancel" class="btn-secondary">إلغاء</button>
+          </div>
+          <button type="button" data-act="other" class="btn-secondary">من ملف آخر…</button>
+        </div>
+      </div>`;
+    const body = overlay.querySelector('[data-role="body"]');
+    const continueButton = overlay.querySelector('[data-act="continue"]');
+    let items = [];
+    let filter = "all";
+    let selected = null;
+    const finish = value => {
+      document.removeEventListener("keydown", onKeyDown);
+      overlay.remove();
+      resolve(value);
+    };
+    const onKeyDown = event => {
+      if (event.key === "Escape") finish(null);
+      if (event.key === "Enter" && selected) finish(selected);
+    };
+    const draw = () => {
+      if (!items.length) {
+        body.innerHTML = `<div style="text-align:center;padding:40px 10px;color:var(--ui-text-muted)">
+          <p style="font-size:15px;font-weight:700;color:var(--ui-text-strong);margin:0 0 6px">لا توجد نسخ في مجلد النسخ الاحتياطية</p>
+          <p style="font-size:13px;margin:0">${backupRoot ? `المجلد: ${escHtml(ltr(backupRoot))}<br>` : ""}إذا كانت النسخة على قرص خارجي أو في مكان آخر، اختر «من ملف آخر…».</p></div>`;
+        continueButton.disabled = true;
+        return;
+      }
+      const chips = BACKUP_FILTERS.map(([id, label, test]) => [id, label, items.filter(test).length])
+        .filter(([id, , count]) => id === "all" || count > 0)
+        .map(([id, label, count]) => `<button type="button" data-filter="${id}" class="${id === filter ? "btn-primary" : "btn-secondary"}"
+          style="padding:4px 12px;font-size:12px" aria-pressed="${id === filter}">${label} (${count})</button>`).join("");
+      const test = BACKUP_FILTERS.find(([id]) => id === filter)[2];
+      let last = "";
+      const rows = items.filter(test).map(item => {
+        const kind = BACKUP_KINDS[item.kind] ?? BACKUP_KINDS.other;
+        const group = backupGroup(item.time);
+        const head = group !== last ? `<p style="font-size:11px;font-weight:700;color:var(--ui-text-faint);margin:12px 4px 6px">${group}</p>` : "";
+        last = group;
+        const on = item.path === selected;
+        const counts = item.employees != null
+          ? `${item.employees} موظفًا${item.documents != null ? ` · ${item.documents} وثيقة` : ""}`
+          : "عدد الموظفين يظهر بعد إدخال كلمة المرور";
+        return `${head}<label data-path="${escHtml(item.path)}" title="${escHtml(item.path)}" style="display:grid;grid-template-columns:20px 1fr auto;gap:12px;align-items:center;padding:10px 12px;margin-bottom:6px;border-radius:8px;cursor:pointer;
+            border:1px solid ${on ? "var(--ui-accent)" : "var(--ui-line)"};background:${on ? "var(--ui-accent-soft)" : "var(--ui-surface)"}">
+          <input type="radio" name="restore-pick" ${on ? "checked" : ""} />
+          <div style="min-width:0">
+            <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+              <span style="font-size:14px;font-weight:700;color:var(--ui-text-strong)">${escHtml(ltr(item.time))}</span>
+              <span class="badge ${kind.badge}">${kind.label}</span>
+              ${item === items[0] ? `<span class="badge badge-green">الأحدث</span>` : ""}
+              ${item.old_format ? `<span class="badge badge-gray">إصدار سابق</span>` : ""}
+            </div>
+            <div style="font-size:12px;color:var(--ui-text-muted);margin-top:3px">${counts}${kind.note ? ` · ${kind.note}` : ""}</div>
+          </div>
+          <span style="font-size:12px;color:var(--ui-text-faint)">${escHtml(formatBytes(item.size_bytes))}</span>
+        </label>`;
+      }).join("");
+      const list = body.querySelector('[data-role="list"]');
+      const scroll = list?.scrollTop ?? 0;
+      body.innerHTML = `<div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:4px">${chips}</div>
+        <div data-role="list" style="max-height:min(400px,55vh);overflow:auto;padding-inline-end:4px">${rows}</div>`;
+      body.querySelector('[data-role="list"]').scrollTop = scroll;
+      continueButton.disabled = !selected;
+    };
+    body.addEventListener("click", event => {
+      const chip = event.target.closest("[data-filter]");
+      if (chip) {
+        filter = chip.dataset.filter;
+        // Never keep a selection that the filter hides: pick the newest one shown.
+        const test = BACKUP_FILTERS.find(([id]) => id === filter)[2];
+        if (!items.some(item => item.path === selected && test(item))) selected = items.find(test)?.path ?? null;
+        draw();
+        return;
+      }
+      const row = event.target.closest("[data-path]");
+      if (row) { selected = row.dataset.path; draw(); }
+    });
+    body.addEventListener("dblclick", event => {
+      const row = event.target.closest("[data-path]");
+      if (row) finish(row.dataset.path);
+    });
+    overlay.querySelectorAll('[data-act="cancel"]').forEach(button => button.addEventListener("click", () => finish(null)));
+    continueButton.addEventListener("click", () => selected && finish(selected));
+    overlay.querySelector('[data-act="other"]').addEventListener("click", async () => {
+      const picked = await open({ multiple: false, filters: [{ name: "نسخة CNSArch مشفرة", extensions: ["cnsarchbak", "autohrbak"] }] });
+      if (picked) finish(picked);
+    });
+    overlay.addEventListener("click", event => { if (event.target === overlay) finish(null); });
+    document.addEventListener("keydown", onKeyDown);
+    document.body.append(overlay);
+    continueButton.focus();
+    try {
+      items = await api.listBackups();
+      selected = items[0]?.path ?? null;
+    } catch (err) {
+      body.innerHTML = `<p style="font-size:13px;color:var(--ui-danger);padding:20px 0;text-align:center">${escHtml(errorText(err))}</p>`;
+      return;
+    }
+    draw();
+    if (selected) continueButton.focus();
+  });
+}
+
 function bindPasswordToggle(root, inputSelector, buttonSelector) {
   const input = root.querySelector(inputSelector);
   const button = root.querySelector(buttonSelector);
@@ -106,7 +300,7 @@ function openBackupProgress({ title = "إنشاء نسخة احتياطية", me
       overlay.remove();
     },
     // Keeps the result on screen (with the full file path) until the user closes it.
-    done(message, path = "") {
+    done(message, path = "", onDone = null) {
       this.update({ percent: 100, message });
       const box = overlay.firstElementChild;
       if (path) {
@@ -121,7 +315,7 @@ function openBackupProgress({ title = "إنشاء نسخة احتياطية", me
       ok.className = "btn-primary";
       ok.style.marginTop = "14px";
       ok.textContent = "تم";
-      ok.addEventListener("click", () => overlay.remove());
+      ok.addEventListener("click", () => { overlay.remove(); onDone?.(); });
       box.append(ok);
       ok.focus();
     },
@@ -225,13 +419,15 @@ export async function installUpdateFlow({ confirmed = false } = {}) {
   if (!password) return;
   const progress = openBackupProgress({ title: "تحديث البرنامج", message: "جاري التحضير..." });
   let unlisten = null;
+  const endBusy = beginBusyTask("تحديث البرنامج");
   try {
     unlisten = await listen("update-progress", event => progress.update(event.payload));
     await api.installUpdate(password);
   } catch (err) {
-    showToast(err?.message ?? String(err), "error");
+    showToast(errorText(err), "error");
     progress.close();
   } finally {
+    endBusy();
     if (unlisten) unlisten();
   }
 }
@@ -283,6 +479,7 @@ export async function renderSettings(container, user, ctx) {
   // «التحديثات» is now a section of «الدعم وحول النظام».
   if (activeSettingsTab === "updates") { activeSettingsTab = "support"; activeSubsection.support = "updates"; }
   if (!tabs.some(tab => tab.id === activeSettingsTab)) activeSettingsTab = tabs[0].id;
+  if (ctx?.sub && !ctx?.keepPosition) activeSubsection[activeSettingsTab] = ctx.sub;
 
   const logoMarkup = () =>
     `<img src="${escHtml(COMPANY_LOGO.medium)}" id="logo-preview" alt="${escHtml(COMPANY_LOGO.alt)}" class="settings-logo company-logo-tile" />`;
@@ -297,26 +494,27 @@ export async function renderSettings(container, user, ctx) {
       ${canSettings ? `<section class="card settings-panel settings-block" data-settings-panel="company">
         <div class="settings-block-head">
           <p class="settings-block-title">الجهة والشعار</p>
-          <p class="settings-block-help">يظهر اسم الجهة والقسم في رأس الشاشات وفي المطبوعات والتقارير.</p>
+          <p class="settings-block-help">يظهر اسم القسم في رأس الشاشات وفي المطبوعات والتقارير، واسم الشعبة في شاشة الدخول.</p>
         </div>
         <div class="settings-company">
           <div class="settings-logo-col">
             <div id="company-logo-box">${logoMarkup()}</div>
-            <p class="text-xs text-gray-500">شعار الشركة ثابت ومضمَّن في النظام</p>
+            <p class="text-xs text-gray-500">الشعار واسم الجهة ثابتان ومضمَّنان في النظام</p>
           </div>
           <div class="settings-company-fields space-y-3">
             <div>
-              <label class="section-title" for="c-company">اسم الشركة / الجهة *</label>
-              <input id="c-company" class="input-field" value="${escHtml(companyConfig?.company_name ?? "")}" />
+              <p class="section-title">اسم الجهة</p>
+              <p class="settings-fixed-name">${escHtml(companyConfig?.company_name ?? "")}</p>
             </div>
             <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
               <div>
                 <label class="section-title" for="c-dept">اسم القسم</label>
-                <input id="c-dept" class="input-field" value="${escHtml(companyConfig?.department_name ?? "")}" />
+                <input id="c-dept" class="input-field" maxlength="40" value="${escHtml(companyConfig?.department_name ?? "")}" />
               </div>
               <div>
                 <label class="section-title" for="c-div">اسم الشعبة / الوحدة</label>
-                <input id="c-div" class="input-field" value="${escHtml(companyConfig?.division_name ?? "")}" />
+                <input id="c-div" class="input-field" maxlength="40" value="${escHtml(companyConfig?.division_name ?? "")}" />
+                <p class="field-help">يظهر في شاشة الدخول. 40 حرفًا على الأكثر.</p>
               </div>
             </div>
           </div>
@@ -364,24 +562,39 @@ export async function renderSettings(container, user, ctx) {
       ${canBackups ? `<div class="card settings-block" data-sub="auto" data-sub-label="النسخ التلقائي">
         <div class="settings-block-head">
           <p class="settings-block-title">النسخ التلقائي</p>
-          <p class="settings-block-help">تشمل كل نسخة قاعدة البيانات وجميع المرفقات والوثائق، وتُشفَّر بكلمة المرور أدناه.</p>
+          <p class="settings-block-help">نسخة واحدة لكل يوم تُحدَّث أثناء العمل كل فترة تختارها (إذا تغيّر شيء)، وعند تسجيل الخروج أو إغلاق البرنامج. المرفقات تُحفظ مرة واحدة في مخزن مشفر تشترك فيه كل النسخ، فتبقى النسخة اليومية صغيرة. النسخ اليدوية لا تُحذف تلقائيًا أبدًا.</p>
         </div>
-        <div class="backup-schedules">
-            <label class="backup-schedule">
-              <input id="auto-backup-daily" type="checkbox" ${autoBackup?.daily_enabled ? "checked" : ""} />
-              <span class="backup-schedule-name">يومي</span>
-              <span class="backup-schedule-last">آخر نسخة: <span dir="ltr">${escHtml(autoBackup?.last_daily || "—")}</span></span>
-            </label>
-            <label class="backup-schedule">
-              <input id="auto-backup-weekly" type="checkbox" ${autoBackup?.weekly_enabled ? "checked" : ""} />
-              <span class="backup-schedule-name">أسبوعي</span>
-              <span class="backup-schedule-last">آخر نسخة: <span dir="ltr">${escHtml(autoBackup?.last_weekly || "—")}</span></span>
-            </label>
-            <label class="backup-schedule">
-              <input id="auto-backup-monthly" type="checkbox" ${autoBackup?.monthly_enabled ? "checked" : ""} />
-              <span class="backup-schedule-name">شهري</span>
-              <span class="backup-schedule-last">آخر نسخة: <span dir="ltr">${escHtml(autoBackup?.last_monthly || "—")}</span></span>
-            </label>
+        ${autoBackup?.has_password && autoBackup?.password_works === false ? `<div class="settings-storage-warning text-xs" role="alert">
+          <span>كلمة مرور النسخ التلقائي المحفوظة لا تعمل على هذا الجهاز أو حساب Windows هذا، لذلك لا تُنشأ نسخ تلقائية. أدخل كلمة المرور من جديد واحفظ.</span>
+        </div>` : ""}
+        ${autoBackup?.same_drive ? `<div class="settings-storage-warning text-xs" role="status">
+          <span>النسخ على نفس القرص لا تحميك إذا تعطّل. اختر قرصًا آخر أو فلاشًا من «مواقع الحفظ ← تغيير المجلد…».</span>
+        </div>` : ""}
+        <p class="settings-status-line">${autoBackupStatusLine(autoBackup)}</p>
+        <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
+          <div>
+            <label class="settings-path-label" for="auto-backup-mode">النسخ التلقائي</label>
+            <select id="auto-backup-mode" class="input-field">
+              ${AUTO_BACKUP_MODES.map(([value, label]) =>
+                `<option value="${value}" ${autoBackupMode(autoBackup) === value ? "selected" : ""}>${label}</option>`).join("")}
+            </select>
+          </div>
+        </div>
+        <div>
+          <p class="settings-path-label">الاحتفاظ بالنسخ التلقائية</p>
+          <div class="grid grid-cols-1 sm:grid-cols-3 gap-3">
+            <label class="text-xs">آخر أيام (يومية)
+              <input id="auto-keep-daily" class="input-field" type="number" min="3" max="365" value="${escHtml(String(autoBackup?.keep_daily ?? 7))}" /></label>
+            <label class="text-xs">ثم أسابيع (نسخة لكل أسبوع)
+              <input id="auto-keep-weekly" class="input-field" type="number" min="0" max="104" value="${escHtml(String(autoBackup?.keep_weekly ?? 4))}" /></label>
+            <label class="text-xs">ثم أشهر (نسخة لكل شهر)
+              <input id="auto-keep-monthly" class="input-field" type="number" min="0" max="120" value="${escHtml(String(autoBackup?.keep_monthly ?? 12))}" /></label>
+          </div>
+          <label class="backup-schedule mt-2">
+            <input id="auto-backup-delete" type="checkbox" ${autoBackup?.auto_delete !== false ? "checked" : ""} />
+            <span class="backup-schedule-name">حذف النسخ التلقائية الأقدم تلقائيًا</span>
+            <span class="backup-schedule-last">يُحذف ما زاد عن العدد أعلاه فقط، وتبقى 3 نسخ يومية على الأقل دائمًا.</span>
+          </label>
         </div>
         <div class="backup-password-row">
           <label class="settings-path-label" for="auto-backup-password">كلمة مرور النسخ التلقائية</label>
@@ -401,18 +614,18 @@ export async function renderSettings(container, user, ctx) {
       <div class="card settings-block" data-sub="manual" data-sub-label="نسخة يدوية">
         <div class="settings-block-head">
           <p class="settings-block-title">نسخة يدوية</p>
-          <p class="settings-block-help">أنشئ نسخة الآن في مجلد النسخ، أو صدّرها إلى قرص خارجي أو مجلد شبكة.</p>
+          <p class="settings-block-help">«إنشاء نسخة الآن» تحفظ نسخة صغيرة في مجلد النسخ تعتمد على مخزن المرفقات فيه. «تصدير نسخة كاملة» تكتب ملفًا واحدًا فيه كل شيء، يصلح لقرص خارجي أو لنقله إلى جهاز آخر.</p>
         </div>
         <div class="flex gap-3 flex-wrap">
-          <button id="btn-create-backup" class="btn-primary">إنشاء نسخة احتياطية الآن</button>
-          <button id="btn-export-backup" class="btn-secondary">تصدير نسخة إلى…</button>
+          <button id="btn-create-backup" class="btn-primary">إنشاء نسخة الآن</button>
+          <button id="btn-export-backup" class="btn-secondary">تصدير نسخة كاملة إلى…</button>
         </div>
       </div>
 
       ${canRestore ? `<div class="card danger-zone settings-block" data-sub="restore" data-sub-label="الاستعادة" data-sub-danger="1">
         <div class="settings-block-head">
           <p class="danger-zone-title"><span aria-hidden="true">⚠</span> استعادة نسخة احتياطية</p>
-          <p class="settings-block-help">تستبدل الاستعادة كل البيانات والمرفقات الحالية بمحتوى النسخة المختارة، وتضيع أي تغييرات بعد تاريخها. يُنصح بإنشاء نسخة الآن قبل الاستعادة.</p>
+          <p class="settings-block-help">تستبدل الاستعادة كل البيانات والمرفقات الحالية بمحتوى النسخة المختارة، وتضيع أي تغييرات بعد تاريخها، وتعود كلمات المرور والمستخدمون إلى ما كانوا عليه في تاريخ النسخة. قبل الاستبدال يُعرض عليك ما في النسخة، وتُحفظ نسخة أمان من بياناتك الحالية.</p>
         </div>
         <div>
           <button id="btn-restore-backup" class="btn-danger-outline">استعادة نسخة احتياطية…</button>
@@ -458,7 +671,7 @@ export async function renderSettings(container, user, ctx) {
       alertsRendered = true;
       const panel = container.querySelector('[data-settings-panel="alerts"]');
       renderAlertSettings(panel).catch(err => {
-        panel.innerHTML = `<div class="card text-sm text-gray-400" dir="auto">${escHtml(err?.message ?? String(err))}</div>`;
+        panel.innerHTML = `<div class="card text-sm text-gray-400" dir="auto">${escHtml(errorText(err))}</div>`;
       });
     }
     activeSettingsTab = id;
@@ -466,7 +679,7 @@ export async function renderSettings(container, user, ctx) {
       usersRendered = true;
       const panel = container.querySelector('[data-settings-panel="users"]');
       renderUsers(panel, user).catch(err => {
-        panel.innerHTML = `<div class="card text-sm text-gray-400" dir="auto">${escHtml(err?.message ?? String(err))}</div>`;
+        panel.innerHTML = `<div class="card text-sm text-gray-400" dir="auto">${escHtml(errorText(err))}</div>`;
       });
     }
     if (id === "support" && !supportRendered) {
@@ -475,7 +688,7 @@ export async function renderSettings(container, user, ctx) {
       Promise.all([["about", renderAbout], ["support", renderSupport]].map(([key, render]) => {
         const host = panel.querySelector(`[data-embedded="${key}"]`);
         return render(host, user, { ...ctx, embedded: true }).catch(err => {
-          host.innerHTML = `<div class="card text-sm text-gray-400" dir="auto">${escHtml(err?.message ?? String(err))}</div>`;
+          host.innerHTML = `<div class="card text-sm text-gray-400" dir="auto">${escHtml(errorText(err))}</div>`;
         });
       })).then(() => mountSubnav(panel, "support"));
     }
@@ -489,24 +702,24 @@ export async function renderSettings(container, user, ctx) {
 
   bindPasswordToggle(container, "#auto-backup-password", "#auto-backup-password-toggle");
 
-  const resetCompanyDirty = trackUnsavedChanges(container, container.querySelector("#btn-save-cfg"), ["#c-company", "#c-dept", "#c-div"]);
+  const resetCompanyDirty = trackUnsavedChanges(container, container.querySelector("#btn-save-cfg"), ["#c-dept", "#c-div"]);
   const resetAutoBackupDirty = trackUnsavedChanges(container, container.querySelector("#btn-save-auto-backup"),
-    ["#auto-backup-daily", "#auto-backup-weekly", "#auto-backup-monthly", "#auto-backup-password"]);
+    ["#auto-backup-mode", "#auto-keep-daily", "#auto-keep-weekly", "#auto-keep-monthly", "#auto-backup-delete", "#auto-backup-password"]);
 
-  container.querySelector("#btn-save-cfg")?.addEventListener("click", async () => {
+  const saveCompany = async () => {
     const data = {
-      company_name: container.querySelector("#c-company").value.trim(),
       department_name: container.querySelector("#c-dept").value.trim(),
       division_name: container.querySelector("#c-div").value.trim(),
     };
-    if (!data.company_name) { showToast("اسم الشركة مطلوب", "error"); return; }
     try {
       companyConfig = await api.updateCompanyConfig(data);
       applyBranding(companyConfig);
       resetCompanyDirty();
       showToast("تم حفظ بيانات الجهة");
-    } catch (err) { showToast(err?.message ?? "خطأ", "error"); }
-  });
+      return true;
+    } catch (err) { showToast(errorText(err), "error"); return false; }
+  };
+  container.querySelector("#btn-save-cfg")?.addEventListener("click", saveCompany);
 
   // The data and backup folders are fixed by the backend for safety, so they
   // are shown read-only with a button that opens them in Windows Explorer.
@@ -535,14 +748,14 @@ export async function renderSettings(container, user, ctx) {
       showToast("تم تغيير مجلد النسخ الاحتياطية");
       renderSettings(container, user, { ...ctx, tab: undefined, keepPosition: true });
     } catch (err) {
-      showToast(err?.message ?? String(err), "error");
+      showToast(errorText(err), "error");
     }
   });
 
   container.querySelector("#btn-move-storage")?.addEventListener("click", async () => {
     const selected = await pickFolder("اختر مجلدًا فارغًا لنقل البيانات إليه");
     if (!selected) return;
-    if (!(await confirmAction(`سيتم نسخ قاعدة البيانات وجميع المرفقات إلى: ${selected} ثم التحقق منها قبل التحويل. يبقى المجلد الحالي كما هو دون حذف، وسيُطلب تسجيل الدخول من جديد. هل تريد المتابعة؟`))) return;
+    if (!(await confirmAction(`سيتم نسخ قاعدة البيانات وجميع المرفقات إلى: ${selected} ثم التحقق منها قبل التحويل. يبقى المجلد الحالي كما هو دون حذف، وهو نسخة غير مشفرة من بياناتك، فاحذفه بنفسك بعد التأكد من أن كل شيء يعمل في الموقع الجديد. سيُطلب تسجيل الدخول من جديد. هل تريد المتابعة؟`))) return;
     const password = await requestBackupPassword({
       title: "نسخة أمان قبل النقل",
       message: "قبل النقل تُنشأ نسخة احتياطية مشفرة للأمان. أدخل كلمة مرور لها (8 أحرف على الأقل) واحتفظ بها.",
@@ -551,16 +764,18 @@ export async function renderSettings(container, user, ctx) {
     if (!password) return;
     const progress = openBackupProgress({ title: "نقل مجلد البيانات", message: "جاري التحضير..." });
     let unlisten = null;
+    const endBusy = beginBusyTask("نقل مجلد البيانات");
     try {
       unlisten = await listen("move-data-progress", event => progress.update(event.payload));
       await api.moveDataFolder(selected, password);
       progress.update({ percent: 100, message: "تم النقل والتحقق. سيتم إعادة تسجيل الدخول." });
-      showToast("تم نقل مجلد البيانات بنجاح. الموقع القديم بقي كما هو.");
+      showToast("تم نقل مجلد البيانات بنجاح. بقيت نسخة غير مشفرة في الموقع القديم: احذفها بعد التأكد من أن كل شيء يعمل.");
       setTimeout(() => window.location.reload(), 1500);
     } catch (err) {
-      showToast(err?.message ?? String(err), "error");
+      showToast(errorText(err), "error");
       progress.close();
     } finally {
+      endBusy();
       if (unlisten) unlisten();
     }
   });
@@ -586,7 +801,7 @@ export async function renderSettings(container, user, ctx) {
         updateStatus.textContent = `الإصدار الحالي ${info.current_version} هو الأحدث.`;
       }
     } catch (err) {
-      updateStatus.textContent = `الإصدار الحالي: ${APP_VERSION} — ${err?.message ?? String(err)}`;
+      updateStatus.textContent = `الإصدار الحالي: ${APP_VERSION} — ${errorText(err)}`;
     } finally {
       button.disabled = false;
     }
@@ -600,7 +815,7 @@ export async function renderSettings(container, user, ctx) {
       showToast(input.checked ? "تم تفعيل التحديث التلقائي" : "تم إيقاف التحديث التلقائي");
     } catch (err) {
       input.checked = !input.checked;
-      showToast(err?.message ?? String(err), "error");
+      showToast(errorText(err), "error");
     } finally {
       input.disabled = false;
     }
@@ -615,16 +830,18 @@ export async function renderSettings(container, user, ctx) {
       minLength: 8,
     });
     if (!password) return;
-    const progress = openBackupProgress({ title: "تصدير نسخة احتياطية" });
+    const progress = openBackupProgress({ title: "تصدير نسخة كاملة" });
     let unlisten = null;
+    const endBusy = beginBusyTask("تصدير نسخة كاملة");
     try {
       unlisten = await listen("backup-progress", event => progress.update(event.payload));
       const path = await api.exportBackupTo(selected, password);
-      progress.done("تم تصدير النسخة والتحقق منها بنجاح. مكان الملف:", path);
+      progress.done("تم تصدير النسخة الكاملة والتحقق منها بنجاح. مكان الملف:", path);
     } catch (err) {
-      showToast(err?.message ?? String(err), "error");
+      showToast(errorText(err), "error");
       progress.close();
     } finally {
+      endBusy();
       if (unlisten) unlisten();
     }
   });
@@ -638,67 +855,132 @@ export async function renderSettings(container, user, ctx) {
     if (!password) return;
     const progress = openBackupProgress();
     let unlisten = null;
+    const endBusy = beginBusyTask("إنشاء نسخة احتياطية");
     try {
       unlisten = await listen("backup-progress", event => progress.update(event.payload));
       const backup = await api.createBackup(password);
       progress.done("اكتمل إنشاء النسخة الاحتياطية والتحقق منها. مكان الملف:", backup);
     } catch (err) {
-      showToast(err?.message ?? "خطأ", "error");
+      showToast(errorText(err), "error");
       progress.close();
     } finally {
+      endBusy();
       if (unlisten) unlisten();
     }
   });
-  container.querySelector("#btn-save-auto-backup")?.addEventListener("click", async () => {
+  const saveAutoBackup = async () => {
+    const number = id => Number(container.querySelector(id)?.value);
     const data = {
-      daily_enabled: Boolean(container.querySelector("#auto-backup-daily")?.checked),
-      weekly_enabled: Boolean(container.querySelector("#auto-backup-weekly")?.checked),
-      monthly_enabled: Boolean(container.querySelector("#auto-backup-monthly")?.checked),
+      enabled: container.querySelector("#auto-backup-mode")?.value !== "off",
       password: container.querySelector("#auto-backup-password")?.value || null,
+      // «متوقف» keeps the last interval, so turning it back on restores the same choice.
+      interval_minutes: container.querySelector("#auto-backup-mode")?.value === "off"
+        ? Number(autoBackup?.interval_minutes ?? 60) : number("#auto-backup-mode"),
+      keep_daily: number("#auto-keep-daily"),
+      keep_weekly: number("#auto-keep-weekly"),
+      keep_monthly: number("#auto-keep-monthly"),
+      auto_delete: Boolean(container.querySelector("#auto-backup-delete")?.checked),
     };
-    if ((data.daily_enabled || data.weekly_enabled || data.monthly_enabled) && !autoBackup?.has_password && !data.password) {
+    if (data.enabled && !autoBackup?.has_password && !data.password) {
       showToast("أدخل كلمة مرور للنسخ التلقائية قبل التفعيل", "error");
-      return;
+      return false;
     }
     if (data.password && data.password.length < 8) {
       showToast("كلمة مرور النسخ التلقائية يجب أن تكون 8 أحرف على الأقل", "error");
-      return;
+      return false;
+    }
+    if (!Number.isInteger(data.keep_daily) || data.keep_daily < 3) {
+      showToast("عدد النسخ اليومية المحتفظ بها يجب أن يكون 3 على الأقل", "error");
+      return false;
     }
     try {
       autoBackup = await api.setAutoBackupSettings(data);
       container.querySelector("#auto-backup-password").value = "";
       resetAutoBackupDirty();
       showToast("تم حفظ إعدادات النسخ التلقائي");
+      return true;
     } catch (err) {
-      showToast(err?.message ?? "خطأ", "error");
+      showToast(errorText(err), "error");
+      return false;
     }
+  };
+  container.querySelector("#btn-save-auto-backup")?.addEventListener("click", async () => {
+    // Redrawn so the password warning and the status line follow the saved settings.
+    if (await saveAutoBackup()) renderSettings(container, user, { ...ctx, tab: undefined, keepPosition: true });
   });
+
+  // Leaving «الإعدادات» (another screen, sign-out, closing) with unsaved changes asks first.
+  const saveCompanyButton = container.querySelector("#btn-save-cfg");
+  const saveAutoButton = container.querySelector("#btn-save-auto-backup");
+  window.autohrCanLeaveCurrentScreen = async () => {
+    const dirty = [saveCompanyButton, saveAutoButton].filter(button => button && !button.disabled);
+    if (!dirty.length) return true;
+    const choice = await confirmSaveChanges("توجد تغييرات غير محفوظة في الإعدادات. هل تريد حفظها قبل المغادرة؟");
+    if (choice === "save") {
+      for (const button of dirty) {
+        const saved = button === saveAutoButton ? await saveAutoBackup() : await saveCompany();
+        if (!saved) return false;
+      }
+      return true;
+    }
+    return choice === "discard";
+  };
+
   container.querySelector("#btn-restore-backup")?.addEventListener("click", async () => {
-    const selected = await open({ multiple: false, filters: [{ name: "Encrypted CNSArch Backup", extensions: ["autohrbak"] }] });
-    if (!selected || !(await confirmAction("ستُستبدل كل البيانات والمرفقات الحالية بمحتوى النسخة المختارة، وتضيع أي تغييرات بعد تاريخها. هل تريد المتابعة؟"))) return;
+    const selected = await chooseBackupToRestore(storageStatus?.backup_root);
+    if (!selected) return;
     const password = await requestBackupPassword({
       title: "استعادة نسخة احتياطية",
-      message: "أدخل كلمة مرور النسخة الاحتياطية المحددة.",
+      message: "أدخل كلمة مرور النسخة الاحتياطية المحددة. سيُفحص الملف أولًا ويُعرض عليك ما فيه قبل أي تغيير.",
     });
     if (!password) return;
-    const progress = openBackupProgress({
-      title: "استعادة نسخة احتياطية",
-      message: "جاري بدء الاستعادة...",
-    });
+    // 1) Check the file and show what it holds. Nothing changes yet.
+    let summary;
+    const checking = openBackupProgress({ title: "فحص النسخة الاحتياطية", message: "جاري فك التشفير وفحص الملفات... لم يتغير شيء بعد." });
+    checking.update({ percent: 30, message: "جاري فك التشفير وفحص الملفات... لم يتغير شيء بعد." });
+    let endBusy = beginBusyTask("فحص نسخة احتياطية");
+    try {
+      summary = await api.inspectBackup(selected, password);
+    } catch (err) {
+      showToast(errorText(err), "error");
+      return;
+    } finally {
+      endBusy();
+      checking.close();
+    }
+    const when = summary.last_change || summary.file_time ? ltr(summary.last_change || summary.file_time) : "غير معروف";
+    const details = [
+      `النوع: ${summary.kind}`,
+      `تاريخ البيانات: ${when}`,
+      `الموظفون: ${summary.employees} · الوثائق في الأرشيف: ${summary.archive_documents}`,
+      `المستخدمون: ${summary.users} · المرفقات: ${summary.attachments} · الحجم: ${formatBytes(summary.size_bytes)}`,
+      "",
+      "ستُستبدل كل البيانات والمرفقات الحالية بمحتوى هذه النسخة، وتضيع أي تغييرات بعد تاريخها.",
+      "تعود كلمات المرور والمستخدمون والصلاحيات إلى ما كانت عليه في تاريخ النسخة، وقد تحتاج كلمة المرور القديمة لتسجيل الدخول.",
+      "قبل الاستبدال تُحفظ نسخة أمان من بياناتك الحالية بنفس كلمة المرور.",
+    ].join("\n");
+    if (!(await confirmAction(details, { title: "استعادة هذه النسخة؟", confirmLabel: "استبدال البيانات بهذه النسخة", danger: true }))) return;
+    // 2) Restore.
+    const progress = openBackupProgress({ title: "استعادة نسخة احتياطية", message: "جاري بدء الاستعادة..." });
     let unlisten = null;
+    endBusy = beginBusyTask("استعادة نسخة احتياطية");
     try {
       unlisten = await listen("restore-progress", event => progress.update(event.payload));
       await new Promise(resolve => requestAnimationFrame(() => setTimeout(resolve, 0)));
-      await api.restoreBackup(selected, password);
-      progress.update({ percent: 100, message: "اكتملت استعادة النسخة الاحتياطية" });
-      showToast("تمت استعادة النسخة الاحتياطية. سيتم إعادة تسجيل الدخول.");
-      setTimeout(() => window.location.reload(), 1200);
+      const safetyCopy = await api.restoreBackup(selected, password);
+      endBusy();
+      window.autohrCanLeaveCurrentScreen = null;
+      progress.done("اكتملت الاستعادة. حُفظت نسخة أمان من بياناتك السابقة هنا (بنفس كلمة المرور). اضغط «تم» لإعادة تسجيل الدخول:", safetyCopy || "", () => window.location.reload());
     }
     catch (err) {
-      showToast(err?.message ?? "خطأ", "error");
+      showToast(errorText(err), "error");
       progress.close();
     } finally {
+      endBusy();
       if (unlisten) unlisten();
     }
   });
+
+  // The home-screen reminder «تصدير نسخة كاملة…» opens the export itself, not only this page.
+  if (ctx?.action === "export" && !ctx?.keepPosition) container.querySelector("#btn-export-backup")?.click();
 }
