@@ -221,7 +221,23 @@ export function formatDate(iso) {
   const d = match
     ? new Date(Number(match[1]), Number(match[2]) - 1, Number(match[3]))
     : new Date(iso);
-  return isNaN(d) ? iso : d.toLocaleDateString();
+  // One format in the whole program, whatever the Windows date setting: year/month/day
+  // in Latin digits (2031/6/2), so the day and the month are never confused.
+  return isNaN(d) ? iso : `${d.getFullYear()}/${d.getMonth() + 1}/${d.getDate()}`;
+}
+
+// Backend errors arrive as plain strings; script errors as Error objects.
+// Returns the text to show the user, in Arabic for the messages the backend sends in English.
+const ENGLISH_ERRORS = {
+  "You are not authorized to perform this action": "ليست لديك صلاحية لهذا الإجراء",
+  "The requested item was not found": "العنصر المطلوب غير موجود، ربما حُذف",
+  "The database operation could not be completed": "تعذر إكمال العملية على قاعدة البيانات",
+  "The operation could not be completed": "تعذر إكمال العملية",
+};
+export function errorText(error, fallback = "تعذر إكمال العملية") {
+  const text = typeof error === "string" ? error : error?.message;
+  if (!text) return fallback;
+  return ENGLISH_ERRORS[text] ?? text;
 }
 
 export function todayISO() {
@@ -267,4 +283,47 @@ export function arCount(count, forms) {
   if (r >= 3 && r <= 10) return `${n} ${f.few}`;
   if (r >= 11) return `${n} ${f.many}`;
   return `${n} ${f.sing}`;
+}
+
+/** Baghdad airport badge access codes offered for one-click adding (any other code can be typed). */
+export const AIRPORT_ZONES = ["S1", "T", "VIP", "C"];
+
+/** Residence address parts as the residence card writes them: محلة (م), زقاق (ز), دار (د). */
+export const ADDRESS_PARTS = [["m", "م"], ["z", "ز"], ["d", "د"]];
+
+/** {m, z, d} → «م 902 ز 20 د 7» (empty parts left out), the one string kept and searched. */
+export function composeAddress(parts) {
+  // Free text kept whole in م (an address written another way) is stored as it was.
+  const [m, z, d] = ADDRESS_PARTS.map(([key]) => String(parts?.[key] ?? "").trim());
+  if (m && !z && !d && /\s/.test(m) && !/^[\d٠-٩]/u.test(m)) return m;
+  return ADDRESS_PARTS.map(([key, mark]) => [mark, String(parts?.[key] ?? "").trim()]).filter(([, v]) => v).map(([mark, v]) => `${mark} ${v}`).join(" ");
+}
+
+/**
+ * «م 902 ز 20 د 7» (also «م902», «م.», «م:») → {m, z, d}. An address written another way is
+ * kept whole in م, with `loose` set so it can be pointed out for splitting.
+ */
+export function parseAddress(value) {
+  const textValue = String(value ?? "").trim();
+  const out = { m: "", z: "", d: "" };
+  if (!textValue) return out;
+  const marks = Object.fromEntries(ADDRESS_PARTS.map(([key, mark]) => [mark, key]));
+  const words = { "محله": "م", "محلة": "م", "زقاق": "ز", "دار": "د" };
+  let current = null;
+  const seen = new Set();
+  for (const raw of textValue.split(/\s+/)) {
+    const word = raw.replace(/[.:]$/, "");
+    const token = words[word] ?? raw;
+    const hit = token.match(/^([مزد])[.:]?(.*)$/u);
+    if (hit && marks[hit[1]] && !seen.has(hit[1]) && (hit[2] === "" || /^[\d٠-٩]/u.test(hit[2]))) {
+      current = marks[hit[1]];
+      seen.add(hit[1]);
+      if (hit[2]) out[current] = hit[2];
+    } else if (current) {
+      out[current] = out[current] ? `${out[current]} ${raw}` : raw;
+    } else {
+      return { m: textValue, z: "", d: "", loose: true };
+    }
+  }
+  return out;
 }

@@ -85,9 +85,11 @@ function readSidebarCollapsed() {
 
 function setSidebarCollapsed(collapsed) {
   document.getElementById("app-shell")?.classList.toggle("sidebar-collapsed", collapsed);
-  const toggle = document.getElementById("btn-toggle-sidebar");
-  if (toggle) {
-    const label = collapsed ? "إظهار القائمة الجانبية" : "طي القائمة الجانبية";
+  // Two buttons share the state: ☰ in the page header and the arrow on the sidebar's edge.
+  const label = collapsed ? "إظهار القائمة الجانبية" : "طي القائمة الجانبية";
+  for (const id of ["btn-toggle-sidebar", "btn-sidebar-edge"]) {
+    const toggle = document.getElementById(id);
+    if (!toggle) continue;
     toggle.setAttribute("aria-expanded", String(!collapsed));
     toggle.setAttribute("aria-label", label);
     toggle.title = `${label} (Ctrl+B)`;
@@ -724,6 +726,7 @@ document.addEventListener("DOMContentLoaded", async () => {
   // Collapsible sidebar: ☰ button and Ctrl+B, state remembered between sessions.
   setSidebarCollapsed(readSidebarCollapsed());
   document.getElementById("btn-toggle-sidebar").addEventListener("click", toggleSidebar);
+  document.getElementById("btn-sidebar-edge").addEventListener("click", toggleSidebar);
   // Light → dark → follow Windows on each click, available to every user from the header.
   mountThemeMenu(document.getElementById("btn-theme"));
   document.addEventListener("keydown", event => {

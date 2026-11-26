@@ -41,7 +41,7 @@ test("national card values are reviewed, then fill the form without saving", asy
   const fatherRow = dialog.locator("tr", { hasText: "اسم الأب" });
   await expect(firstRow.locator(".id-reader-pick")).not.toBeChecked();
   await expect(fatherRow.locator(".id-reader-pick")).not.toBeChecked();
-  await expect(dialog.locator("tr", { hasText: "رقم البطاقة الوطنية" }).locator(".id-reader-pick")).toBeChecked();
+  await expect(dialog.locator("tr", { hasText: "الرقم الوطني" }).locator(".id-reader-pick")).toBeChecked();
   await expect(dialog.locator("tr.is-low")).toHaveCount(1);
   await expect(dialog.locator(".id-reader-badge.is-ok")).toHaveCount(2);
   await firstRow.locator(".id-reader-pick").check();
@@ -53,7 +53,6 @@ test("national card values are reviewed, then fill the form without saving", asy
   await expect(page.locator("#f-civil_id_issue_date")).toHaveValue("2020-01-02");
   expect(await page.evaluate(() => window.calls.some(c => c.command === "cmd_update_employee"))).toBe(false);
   await page.locator("#panel-save").click();
-  await page.getByRole("button", { name: "تأكيد", exact: true }).click();
   await expect.poll(() => page.evaluate(() => window.calls.some(c => c.command === "cmd_update_employee"))).toBe(true);
   const data = await page.evaluate(() => window.calls.find(c => c.command === "cmd_update_employee").args.data);
   expect(data.full_name).toBe("أحمد علي حسين الربيعي");
@@ -130,7 +129,7 @@ test("badge: number and dates fill the badge section", async ({ page }) => {
 
 test("residence card: the printed serial fills the card number", async ({ page }) => {
   await page.evaluate(() => {
-    window.employeePatch = { residence_card_back_path: "Files/Employees/1/Documents/Residence/back.jpg", residence_card_back_full_path: "synthetic" };
+    window.employeePatch = { residence_card_back_path: "Files/Employees/1/Documents/Residence/back.jpg", residence_card_back_full_path: "synthetic", residence_card_issuer: "مكتب 00", residence_form_no: "1111", residence_address: "محلة 100 زقاق 2 دار 3" };
     window.readResult = { document: "other", warnings: [], fields: [{ key: "doc_number", value: "1000001", confidence: 0.6, source: "text" }] };
   });
   await openDocuments(page);
@@ -139,6 +138,30 @@ test("residence card: the printed serial fills the card number", async ({ page }
   await tile.getByRole("menuitem", { name: "قراءة البيانات" }).click();
   await page.getByRole("dialog", { name: /قراءة البيانات/ }).getByRole("button", { name: "اعتماد المحدَّد" }).click();
   await expect(page.locator("#f-residence_card_no")).toHaveValue("1000001");
+  // The handwritten fields are kept in the file too.
+  await expect(page.locator("#f-residence_card_issuer")).toHaveValue("مكتب 00");
+  await expect(page.locator("#f-residence_form_no")).toHaveValue("1111");
+  // An older one-line address is split into م / ز / د, and saved as parts and as one line.
+  const address = page.locator('[data-address="residence_address"]');
+  await expect(address.locator('[data-addr="m"]')).toHaveValue("100");
+  await expect(address.locator('[data-addr="z"]')).toHaveValue("2");
+  await expect(address.locator('[data-addr="d"]')).toHaveValue("3");
+  await address.locator('[data-addr="z"]').fill("22");
+  await address.locator('[data-addr="gov"]').selectOption("البصرة");
+  await page.click("#panel-save");
+  await expect.poll(() => page.evaluate(() => window.calls.find(c => c.command === "cmd_update_employee")?.args.data.residence_address)).toBe("البصرة، م 100 ز 22 د 3");
+  const parts = await page.evaluate(() => JSON.parse(window.calls.find(c => c.command === "cmd_update_employee").args.data.residence_address_parts));
+  expect(parts).toMatchObject({ gov: "البصرة", m: "100", z: "22", d: "3" });
+});
+
+test("residence address written another way is kept whole as «تنسيق عنوان آخر», with a note", async ({ page }) => {
+  await page.evaluate(() => { window.employeePatch = { residence_address: "بغداد - حي تجريبي" }; });
+  await openDocuments(page);
+  const address = page.locator('[data-address="residence_address"]');
+  await expect(address.locator('[data-addr="useOther"]')).toBeChecked();
+  await expect(address.locator('[data-addr="other"]')).toHaveValue("بغداد - حي تجريبي");
+  await expect(address.locator('[data-addr="m"]')).toBeDisabled();
+  await expect(page.locator(".emp-address-note")).toContainText("بصيغة قديمة");
 });
 
 test("ration card: number from the QR code and the head of household", async ({ page }) => {
@@ -216,7 +239,6 @@ test("airport badge: access zones are read into chips, edited, and saved", async
   await expect(chips).toHaveText(["S1×", "VIP×", "C×", "S2×"]);
   await expect(page.locator("#f-airport_badge_zones")).toHaveValue("S1,VIP,C,S2");
   await page.locator("#panel-save").click();
-  await page.getByRole("button", { name: "تأكيد", exact: true }).click();
   await expect.poll(() => page.evaluate(() => window.calls.some(c => c.command === "cmd_update_employee"))).toBe(true);
   const data = await page.evaluate(() => window.calls.find(c => c.command === "cmd_update_employee").args.data);
   expect(data.airport_badge_zones).toBe("S1,VIP,C,S2");
@@ -269,7 +291,6 @@ test("car registration: both sides fill the vehicle row and keep the images on s
   await expect(row.locator(".vehicle-model-year")).toHaveValue("2022");
   await expect(row.locator(".vehicle-expiry-date")).toHaveValue("2030-02-02");
   await page.locator("#panel-save").click();
-  await page.getByRole("button", { name: "تأكيد", exact: true }).click();
   await expect.poll(() => page.evaluate(() => window.calls.some(c => c.command === "cmd_update_employee"))).toBe(true);
   const data = await page.evaluate(() => window.calls.find(c => c.command === "cmd_update_employee").args.data);
   const [vehicle] = JSON.parse(data.vehicles);
@@ -283,7 +304,6 @@ test("save keeps the panel open on the same tab", async ({ page }) => {
   await page.locator("#btn-add-vehicle").click();
   await page.locator(".vehicle-row .vehicle-plate").first().fill("TEST 1");
   await page.locator("#panel-save").click();
-  await page.getByRole("button", { name: "تأكيد", exact: true }).click();
   await expect.poll(() => page.evaluate(() => window.calls.some(c => c.command === "cmd_update_employee"))).toBe(true);
   await expect(page.locator('.tab-btn[data-tab="vehicle"]')).toHaveCSS("font-weight", "700");
   await expect(page.locator("#emp-panel")).toHaveCSS("transform", "matrix(1, 0, 0, 1, 0, 0)");
@@ -305,4 +325,14 @@ test("a new vehicle's registration image: + رفع saves, then uploads to the sa
   await page.getByRole("button", { name: "رفع بالطريقة المعتادة" }).click();
   await expect.poll(() => page.evaluate(() => window.calls.find(c => c.command === "cmd_upload_vehicle_annual_attachment")?.args)).toMatchObject({ employeeId: 1, vehicleIndex: 0, side: "front" });
   await expect(page.locator('.tab-btn[data-tab="vehicle"]')).toHaveCSS("font-weight", "700");
+});
+
+test("badge zones: the usual codes, C included, are added with one click", async ({ page }) => {
+  await page.evaluate(() => { window.employeePatch = { airport_badge_zones: "S1,T" }; });
+  await openDocuments(page);
+  const quick = page.locator(".emp-zone-add");
+  await expect(quick).toHaveText(["+ VIP", "+ C"]);
+  await page.click('.emp-zone-add[data-zone="C"]');
+  await expect(page.locator("#f-airport_badge_zones")).toHaveValue("S1,T,C");
+  await expect(quick).toHaveText(["+ VIP"]);
 });

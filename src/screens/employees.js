@@ -6,13 +6,14 @@ import { bindAttachmentScannerButtons } from "../attachments/integration.js";
 import { zoomToolbarHtml, mountZoomViewer } from "../attachments/zoom-viewer.js";
 import { convertFileSrc } from "@tauri-apps/api/core";
 import { open, save } from "@tauri-apps/plugin-dialog";
-import { showToast, formatDate, escHtml, debounce, confirmAction, confirmSaveChanges } from "../utils.js";
+import { showToast, formatDate, escHtml, debounce, confirmAction, confirmSaveChanges, AIRPORT_ZONES } from "../utils.js";
+import { addressHtml, wireAddress, readAddress, composeResidence, citySuggestions, loadAddressPlaces, addressIsEmpty } from "../address-field.js";
 import { can } from "../permissions.js";
 import { openNameReview } from "./name-review.js";
 import { employeeNameFields, recordNameFields, bindNameFields, readNameFields, readNameGroup, applyNames, joinNameParts } from "./name-fields.js";
 import { readDocumentFields } from "./id-reader.js";
 import { openAddEmployee } from "./add-wizard.js";
-import { alertWindowDays, loadAlertRules } from "./document-alerts.js";
+import { alertWindowDays, loadAlertRules, documentStatus, buildDocumentAlerts } from "./document-alerts.js";
 
 let _employees = [];
 let _filter = "";
@@ -23,7 +24,6 @@ let _visibleRows = TABLE_STEP;
 let _activeTab = "basic";
 let _panelDraft = null;
 let _panelDirty = false;
-let _skipNextSaveConfirmation = false;
 // Save keeps the panel open; these make one save close it, or continue with an upload.
 let _closeAfterSave = false;
 let _afterSave = null;
@@ -101,7 +101,7 @@ export async function renderEmployees(container, user, ctx) {
       <div id="emp-table-wrap" class="card overflow-auto flex-1"></div>
     </div>
     <div id="emp-overlay" style="display:none;position:fixed;inset:0;z-index:40;background:rgba(0,0,0,0.38)"></div>
-    <div id="emp-panel" style="position:fixed;top:0;bottom:0;right:0;width:min(580px,100vw);z-index:50;
+    <div id="emp-panel" style="position:fixed;top:0;bottom:0;right:0;width:min(100vw,max(580px,40vw));container-type:inline-size;z-index:50;
       background:var(--ui-surface);border-left:1px solid var(--ui-line);box-shadow:-8px 0 32px rgba(0,0,0,0.5);
       display:flex;flex-direction:column;transform:translateX(calc(100% + 40px));transition:transform 0.3s ease"></div>`;
 
@@ -157,11 +157,23 @@ function filtered() {
   return byStatus.filter(e =>
     e.full_name?.toLowerCase().includes(_filter) ||
     String(e.employee_number ?? "").toLowerCase().includes(_filter) ||
-    e.department?.toLowerCase().includes(_filter) ||
+    fixedDepartment(e).toLowerCase().includes(_filter) ||
     e.civil_id?.includes(_filter) ||
     e.phone?.includes(_filter) ||
     e.job_title?.toLowerCase().includes(_filter)
   );
+}
+
+/** The list's «المستمسكات» column: what has expired or is close to expiry, by the reminder settings. */
+function documentsCell(employee, alertsById) {
+  if (!employee.is_active) return `<span class="emp-doc-cell is-none">—</span>`;
+  const alerts = alertsById.get(employee.id) ?? [];
+  const expired = alerts.filter(a => a.expired).length;
+  const soon = alerts.length - expired;
+  if (!alerts.length) return `<span class="emp-doc-cell is-ok"><span class="emp-dot ok" aria-hidden="true"></span>سليمة</span>`;
+  const parts = [expired && `${expired} منتهٍ`, soon && `${soon} قارب`].filter(Boolean).join(" · ");
+  const names = alerts.map(a => `${a.documentName}: ${a.expired ? "منتهٍ" : "قارب على النفاذ"} (${formatDate(a.expiryDate)})`).join("\n");
+  return `<span class="emp-doc-cell" title="${escHtml(names)}"><span class="emp-dot ${expired ? "bad" : "warn"}" aria-hidden="true"></span>${parts}</span>`;
 }
 
 function renderTable({ keepVisibleRows = false } = {}) {
@@ -170,6 +182,8 @@ function renderTable({ keepVisibleRows = false } = {}) {
   if (!keepVisibleRows) _visibleRows = TABLE_STEP;
   const matching = filtered();
   const rows = matching.slice(0, _visibleRows);
+  const alertsById = new Map();
+  buildDocumentAlerts(rows).forEach(alert => alertsById.set(alert.employeeId, [...(alertsById.get(alert.employeeId) ?? []), alert]));
   const hiddenCount = matching.length - rows.length;
   const countEl = document.getElementById("emp-count");
   if (countEl) countEl.textContent = `${matching.length} / ${_employees.length}`;
@@ -180,20 +194,22 @@ function renderTable({ keepVisibleRows = false } = {}) {
   wrap.innerHTML = `
     <table class="w-full">
       <thead><tr>
+        <th class="table-header">الرقم الوظيفي</th>
         <th class="table-header">الاسم الرباعي</th>
         <th class="table-header">العنوان الوظيفي</th>
-        <th class="table-header">القسم</th>
+        <th class="table-header">المستمسكات</th>
         <th class="table-header">الهاتف</th>
         <th class="table-header">الحالة</th>
       </tr></thead>
       <tbody>
         ${rows.length === 0
-          ? `<tr><td colspan="5" class="table-cell text-center text-gray-500 py-10">${emptyMessage}</td></tr>`
+          ? `<tr><td colspan="6" class="table-cell text-center text-gray-500 py-10">${emptyMessage}</td></tr>`
           : rows.map(e => `
             <tr class="table-row" data-id="${e.id}" style="cursor:pointer">
-              <td class="table-cell font-medium text-gray-100">${escHtml(e.full_name)}</td>
+              <td class="table-cell" dir="ltr" style="text-align:right">${escHtml(e.employee_number || "—")}</td>
+              <td class="table-cell font-medium text-gray-100">${escHtml(e.full_name)}${missingBadge(missingFields(e), "is-inline")}</td>
               <td class="table-cell">${escHtml(e.job_title ?? "—")}</td>
-              <td class="table-cell">${escHtml(e.department ?? "—")}</td>
+              <td class="table-cell">${documentsCell(e, alertsById)}</td>
               <td class="table-cell" dir="ltr">${escHtml(e.phone ?? "—")}</td>
               <td class="table-cell">
                 <span class="badge ${e.is_active ? "badge-green" : "badge-gray"}">
@@ -223,11 +239,20 @@ function renderTable({ keepVisibleRows = false } = {}) {
 function openPanel(emp, tab = "basic", sectionState = new Map()) {
   _activeTab = TABS.some(t => t.id === tab) ? tab : "basic";
   _panelDraft = emp ? { ...emp } : { is_active: 1, spouses: "[]", family_members: "[]", vehicles: "[]" };
+  const draftNow = _panelDraft;
   // One birth date and place: older records may hold them only in the national card's copy.
   _panelDraft.birthdate ||= _panelDraft.civil_id_birthdate ?? null;
   _panelDraft.birthplace ||= _panelDraft.civil_id_birthplace ?? null;
   _panelDirty = false;
   _sectionState = sectionState;
+  // Places users added: the residence lists show them once they arrive.
+  loadAddressPlaces().then(() => {
+    const box = document.querySelector("#emp-panel [data-address]");
+    if (_panelDraft !== draftNow || !box) return;
+    const fresh = document.createElement("div");
+    fresh.innerHTML = addressHtml(box.dataset.address, panelAddress(), { cities: citySuggestions(_employees) });
+    box.replaceWith(fresh.firstElementChild);
+  });
   document.getElementById("emp-panel").style.transform = "translateX(0)";
   document.getElementById("emp-overlay").style.display = "block";
   markSelectedRow(emp?.id ?? null);
@@ -281,7 +306,6 @@ async function closePanel(force = false) {
     const choice = await confirmSaveChanges();
     if (choice === "cancel") return;
     if (choice === "save") {
-      _skipNextSaveConfirmation = true;
       _closeAfterSave = true;
       document.getElementById("panel-save")?.click();
       return;
@@ -402,12 +426,38 @@ function field(label, id, emp, opts = {}) {
   if (opts.type === "textarea") {
     return `<div style="${opts.span ? 'grid-column:span 2' : ''}">
       <p style="font-size:11px;color:var(--ui-text-faint);text-transform:uppercase;letter-spacing:.05em;margin-bottom:4px">${label}</p>
-      <textarea id="f-${id}" class="input-field" style="height:70px;resize:none">${val}</textarea></div>`;
+      <textarea id="f-${id}" class="input-field${opts.grow ? " emp-grow" : ""}" rows="1" style="${opts.grow ? "" : "height:70px;"}resize:none">${val}</textarea></div>`;
   }
   return `<div style="${opts.span ? 'grid-column:span 2' : ''}">
     <p style="font-size:11px;color:var(--ui-text-faint);text-transform:uppercase;letter-spacing:.05em;margin-bottom:4px">${label}</p>
     <input id="f-${id}" class="input-field" type="${opts.date ? 'date' : 'text'}"
            dir="${opts.ltr ? 'ltr' : 'rtl'}" value="${opts.date ? (emp?.[id] ?? '') : val}" /></div>`;
+}
+
+/** The residence address: المحافظة / القضاء / الناحية / المدينة, then م / ز / د or one free line.
+ *  Kept as parts (`residence_address_parts`) and as the composed line (`residence_address`). */
+const panelAddress = () => readAddress(_panelDraft?.residence_address_parts, _panelDraft?.residence_address);
+function addressField(label, id) {
+  const parts = panelAddress();
+  const legacy = !_panelDraft?.residence_address_parts && parts.useOther && parts.other;
+  const cap = "font-size:11px;color:var(--ui-text-faint);margin-bottom:4px";
+  return `<div style="grid-column:span 2">
+    <p style="${cap};text-transform:uppercase;letter-spacing:.05em">${label}</p>
+    ${addressHtml(id, parts, { cities: citySuggestions(_employees) })}
+    ${legacy ? `<p class="emp-address-note">⚠ العنوان محفوظ بصيغة قديمة، فوُضع في «تنسيق عنوان آخر»: اختر المحافظة والقضاء ووزّعه على م وز ود إن أمكن.</p>` : ""}</div>`;
+}
+
+/** Keeps what the address field holds in the panel's draft. */
+function wirePanelAddress(panel) {
+  wireAddress(panel, {
+    get: () => ({ parts: panelAddress(), cities: citySuggestions(_employees) }),
+    set: (_key, parts) => {
+      if (!_panelDraft) return;
+      _panelDraft.residence_address_parts = addressIsEmpty(parts) ? null : JSON.stringify(parts);
+      _panelDraft.residence_address = composeResidence(parts) || null;
+      markPanelDirty();
+    },
+  });
 }
 
 /** Comma-separated codes ("S1,T,VIP") → unique upper-case codes. */
@@ -428,13 +478,20 @@ function zonesField(label, id, emp) {
       <input type="hidden" id="f-${id}" value="${escHtml(codes.join(","))}" />
       <span class="emp-zone-list">${zoneChipsHtml(codes)}</span>
       <input type="text" class="emp-zone-input" dir="ltr" maxlength="12" placeholder="أضف رمزاً" aria-label="${label}" />
-    </div></div>`;
+    </div><div class="emp-zone-quick">${zoneQuickHtml(codes)}</div></div>`;
+}
+
+/** One-click buttons for the usual codes the badge does not have yet. */
+function zoneQuickHtml(codes) {
+  return AIRPORT_ZONES.filter(z => !codes.includes(z)).map(z => `<button type="button" class="emp-zone-add" data-zone="${z}" dir="ltr" title="إضافة ${z}">+ ${z}</button>`).join("");
 }
 
 function setZones(box, codes) {
   const hidden = box.querySelector("input[type=hidden]");
   hidden.value = codes.join(",");
   box.querySelector(".emp-zone-list").innerHTML = zoneChipsHtml(codes);
+  const quick = box.parentElement.querySelector(".emp-zone-quick");
+  if (quick) quick.innerHTML = zoneQuickHtml(codes);
   markPanelDirty();
 }
 
@@ -446,10 +503,19 @@ function addZonesFromInput(input) {
   setZones(box, zoneCodes([box.querySelector("input[type=hidden]").value, ...added].join(",")));
 }
 
+/** Every employee is in the department set in Settings; an older record's own value only without one. */
+function fixedDepartment(emp) {
+  return (_companyConfig?.department_name ?? "").trim() || emp?.department || "";
+}
+
+/** A value set once for the whole company (Settings): shown faded with a lock, not typed here. */
 function fixedCompanyField(label, id, value) {
   return `<div>
     <p style="font-size:11px;color:var(--ui-text-faint);text-transform:uppercase;letter-spacing:.05em;margin-bottom:4px">${label}</p>
-    <input id="f-${id}" class="input-field" type="text" value="${escHtml(value ?? "")}" readonly />
+    <div class="emp-fixed" title="يُغيَّر من «الإعدادات ← الجهة والشعار»">
+      <input id="f-${id}" class="input-field" type="text" value="${escHtml(value ?? "")}" readonly tabindex="-1" aria-readonly="true" />
+      <svg aria-hidden="true" viewBox="0 0 24 24"><rect x="5" y="11" width="14" height="9" rx="2"/><path d="M8 11V8a4 4 0 0 1 8 0v3"/></svg>
+    </div>
   </div>`;
 }
 
@@ -688,29 +754,11 @@ function daysUntil(dateStr) {
   return Math.round((date - today) / 86400000);
 }
 
-// Arabic number agreement: يومين، 3–10 أيام، 11+ يوماً
-function arabicDays(count) {
-  if (count === 1) return "يوم واحد";
-  if (count === 2) return "يومين";
-  const tens = count % 100;
-  return tens >= 3 && tens <= 10 ? `${count} أيام` : `${count} يوماً`;
-}
-
-function documentStatus({ values, expiry, maxDays, attached, expected }) {
-  const days = daysUntil(expiry);
-  if (days !== null && days < 0) return { tone: "bad", label: "منتهٍ" };
-  if (days !== null && days <= maxDays) return { tone: "warn", label: days === 0 ? "ينتهي اليوم" : days === 1 ? "ينتهي غداً" : `ينتهي خلال ${arabicDays(days)}` };
-  const hasData = values.some(value => String(value ?? "").trim());
-  if (!hasData && attached === 0) return { tone: "none", label: "لا توجد بيانات" };
-  if (attached < expected) return { tone: "none", label: "مرفق ناقص" };
-  return { tone: "ok", label: "مكتمل" };
-}
-
 function documentSections(emp) {
   const hasId = Boolean(emp?.id);
   const sided = (type, prefix) => [
-    sidedCardTile("الوجه الأمامي", "front", emp?.[`${prefix}_front_path`], emp?.[`${prefix}_front_full_path`], hasId, type),
-    sidedCardTile("الوجه الخلفي", "back", emp?.[`${prefix}_back_path`], emp?.[`${prefix}_back_full_path`], hasId, type),
+    sidedCardTile(type === "ministry" ? "الوجه العربي" : "الوجه الأمامي", "front", emp?.[`${prefix}_front_path`], emp?.[`${prefix}_front_full_path`], hasId, type),
+    sidedCardTile(type === "ministry" ? "الوجه الإنكليزي" : "الوجه الخلفي", "back", emp?.[`${prefix}_back_path`], emp?.[`${prefix}_back_full_path`], hasId, type),
   ];
   const sidedCount = prefix => [emp?.[`${prefix}_front_path`], emp?.[`${prefix}_back_path`]].filter(Boolean).length;
   const sections = [
@@ -718,7 +766,7 @@ function documentSections(emp) {
       key: "national", title: "البطاقة الوطنية", expiry: "civil_id_expiry_date", maxDays: alertWindowDays("national"),
       keys: ["civil_id", "civil_id_issuer", "civil_id_issue_date", "civil_id_expiry_date", "civil_id_family_number"],
       fields: [
-        field("رقم البطاقة الوطنية", "civil_id", emp, {ltr:true, span:true}),
+        field("الرقم الوطني", "civil_id", emp, {ltr:true, span:true}),
         field("جهة الإصدار", "civil_id_issuer", emp),
         field("تاريخ الإصدار", "civil_id_issue_date", emp, {date:true}),
         field("تاريخ النفاذ", "civil_id_expiry_date", emp, {date:true}),
@@ -740,12 +788,15 @@ function documentSections(emp) {
     },
     {
       key: "residence", title: "بطاقة السكن",
-      // The old card's other fields are handwritten and cannot be read; the address is kept.
-      keys: ["residence_card_no", "residence_card_issue_date", "residence_address"],
+      // The old card's other fields are handwritten and cannot be read: they are typed.
+      keys: ["residence_card_no", "residence_card_issue_date", "residence_card_issuer", "residence_head_name", "residence_form_no", "residence_address"],
       fields: [
         field("رقم بطاقة السكن", "residence_card_no", emp, {ltr:true}),
         field("تاريخ الإصدار", "residence_card_issue_date", emp, {date:true}),
-        field("عنوان السكن الحالي", "residence_address", emp, {span:true}),
+        field("مكتب المعلومات", "residence_card_issuer", emp),
+        field("اسم رب الأسرة", "residence_head_name", emp),
+        field("رقم الاستمارة", "residence_form_no", emp, {ltr:true}),
+        addressField("عنوان السكن", "residence_address"),
       ],
       tiles: sided("residence", "residence_card"), attached: sidedCount("residence_card"), expected: 2,
     },
@@ -762,7 +813,7 @@ function documentSections(emp) {
       key: "airport", title: "باج دخول مطار بغداد", expiry: "airport_badge_expiry", maxDays: alertWindowDays("airport"),
       keys: ["airport_badge_no", "airport_badge_issue_date", "airport_badge_expiry"],
       fields: [
-        field("رقم الهوية", "airport_badge_no", emp, {ltr:true, span:true}),
+        field("رقم الباج", "airport_badge_no", emp, {ltr:true, span:true}),
         field("تاريخ الإصدار", "airport_badge_issue_date", emp, {date:true}),
         field("تاريخ النفاذ", "airport_badge_expiry", emp, {date:true}),
         zonesField("صلاحيات الباج", "airport_badge_zones", emp),
@@ -795,8 +846,6 @@ function documentSections(emp) {
 function documentsTabHtml(emp) {
   const isNew = !emp?.id;
   const sections = documentSections(emp);
-  const chips = sections.map(section => `<button type="button" class="emp-chip" data-jump="${section.key}" title="${section.status.label}">
-      <span class="emp-dot ${section.status.tone}" aria-hidden="true"></span>${section.title}</button>`).join("");
   const body = sections.map(section => {
     const expiryValue = section.expiry ? emp?.[section.expiry] : "";
     const meta = `${expiryValue ? `<span>النفاذ: ${formatDate(expiryValue)}</span>` : ""}<span>المرفقات ${section.attached}/${section.expected}</span>`;
@@ -807,8 +856,7 @@ function documentsTabHtml(emp) {
       status: section.status, meta, open: isNew || ["bad", "warn"].includes(section.status.tone),
     });
   }).join("");
-  return `<div class="emp-chips">${chips}</div>
-    <div class="emp-sec-tools"><button type="button" class="emp-link" data-sections-all="open">فتح الكل</button><button type="button" class="emp-link" data-sections-all="close">طيّ الكل</button></div>
+  return `    <div class="emp-sec-tools"><button type="button" class="emp-link" data-sections-all="open">فتح الكل</button><button type="button" class="emp-link" data-sections-all="close">طيّ الكل</button></div>
     ${body}`;
 }
 
@@ -863,7 +911,7 @@ const printableDocumentDefinitions = [
     id: "national",
     title: "البطاقة الوطنية",
     fields: [
-      ["رقم البطاقة الوطنية", "civil_id"],
+      ["الرقم الوطني", "civil_id"],
       ["جهة الإصدار", "civil_id_issuer"],
       ["تاريخ الإصدار", "civil_id_issue_date"],
       ["تاريخ النفاذ", "civil_id_expiry_date"],
@@ -904,7 +952,7 @@ const printableDocumentDefinitions = [
     fields: [
       ["رقم بطاقة السكن", "residence_card_no"],
       ["تاريخ الإصدار", "residence_card_issue_date"],
-      ["عنوان السكن الحالي", "residence_address"],
+      ["عنوان السكن", "residence_address"],
     ],
     attachments: [
       ["الوجه الأمامي", "residence_card_front_path", "residence_card_front_full_path"],
@@ -926,7 +974,7 @@ const printableDocumentDefinitions = [
     fields: [
       ["تاريخ الإصدار", "airport_badge_issue_date"],
       ["تاريخ النفاذ", "airport_badge_expiry"],
-      ["رقم الهوية", "airport_badge_no"],
+      ["رقم الباج", "airport_badge_no"],
     ],
     attachments: [
       ["الوجه الأمامي", "airport_badge_front_path", "airport_badge_front_full_path"],
@@ -942,8 +990,8 @@ const printableDocumentDefinitions = [
       ["رقم الهوية", "ministry_badge_no"],
     ],
     attachments: [
-      ["الوجه الأمامي", "ministry_badge_front_path", "ministry_badge_front_full_path"],
-      ["الوجه الخلفي", "ministry_badge_back_path", "ministry_badge_back_full_path"],
+      ["الوجه العربي", "ministry_badge_front_path", "ministry_badge_front_full_path"],
+      ["الوجه الإنكليزي", "ministry_badge_back_path", "ministry_badge_back_full_path"],
     ],
   },
 ];
@@ -979,12 +1027,12 @@ function parseFamilyMembers(emp) {
 }
 
 function spouseSectionConfig(emp) {
-  if (!["متزوج", "أرمل", "ارمل"].includes(emp?.marital_status)) return null;
+  if (!["متزوج", "أرمل", "ارمل", "مطلق"].includes(emp?.marital_status)) return null;
   if (emp?.gender === "ذكر") {
-    return { title: "معلومات الزوجات", itemLabel: "زوجة", addLabel: "إضافة زوجة", emptyLabel: "لا توجد زوجات مسجلات", max: 4, defaultGender: "أنثى" };
+    return { title: "الزوجات", itemLabel: "زوجة", addLabel: "إضافة زوجة", emptyLabel: "لا توجد زوجات مسجلات", max: 4, defaultGender: "أنثى" };
   }
   if (emp?.gender === "أنثى") {
-    return { title: "معلومات الزوج", itemLabel: "زوج", addLabel: "إضافة زوج", emptyLabel: "لا يوجد زوج مسجل", max: 1, defaultGender: "ذكر" };
+    return { title: "الزوج", itemLabel: "زوج", addLabel: "إضافة زوج", emptyLabel: "لا يوجد زوج مسجل", max: 1, defaultGender: "ذكر" };
   }
   return null;
 }
@@ -1136,7 +1184,7 @@ function openDocumentsPrintDialog(emp) {
 
 // ── Tabs ────────────────────────────────────────────────────────────────────
 const TABS = [
-  { id: "basic",       label: "المعلومات الوظيفية" },
+  { id: "basic",       label: "البيانات الأساسية" },
   { id: "documents",   label: "المستمسكات" },
   { id: "family",      label: "أفراد الأسرة" },
   { id: "vehicle",     label: "المركبات" },
@@ -1151,8 +1199,8 @@ function tabContent(tab, emp) {
         ${employeeNameFields("اسم الأم", "mother_name", emp)}
         ${field("الجنس", "gender", emp, {type:"select", options:[["","—"],["ذكر","ذكر"],["أنثى","أنثى"]]})}
         ${field("الحالة الاجتماعية", "marital_status", emp, {type:"select", options:[["","—"],["أعزب","أعزب"],["متزوج","متزوج"],["مطلق","مطلق"],["أرمل","أرمل"]]})}
-        ${field("تاريخ ولادة الموظف", "birthdate", emp, {date:true})}
-        ${field("محل ولادة الموظف", "birthplace", emp)}
+        ${field("تاريخ الولادة", "birthdate", emp, {date:true})}
+        ${field("محل الولادة", "birthplace", emp)}
         ${field("فصيلة الدم", "blood_type", emp, {type:"select", options:[["","—"],["A+","A+"],["A-","A-"],["B+","B+"],["B-","B-"],["AB+","AB+"],["AB-","AB-"],["O+","O+"],["O-","O-"]]})}
         ${field("رقم الهاتف", "phone", emp, {ltr:true})}
         ${field("البريد الإلكتروني", "email", emp, {ltr:true, span:true})}
@@ -1164,16 +1212,17 @@ function tabContent(tab, emp) {
         ${field("محل ولادة الأم", "mother_birthplace", emp)}
       </div>`;
       const employment = `<div class="emp-grid">
+        ${field("الرقم الوظيفي", "employee_number", emp, {ltr:true})}
         ${fixedCompanyField("مكان العمل", "workplace", _companyConfig?.company_name ?? emp?.workplace ?? "")}
         ${field("العنوان الوظيفي", "job_title", emp)}
         ${field("الدرجة الوظيفية", "job_grade", emp)}
         ${field("تاريخ التعيين", "appointment_date", emp, {date:true})}
-        ${fixedCompanyField("القسم", "department", _companyConfig?.department_name ?? emp?.department ?? "")}
+        ${fixedCompanyField("القسم", "department", fixedDepartment(emp))}
         ${fixedCompanyField("الشعبة / الوحدة", "division", _companyConfig?.division_name ?? emp?.division ?? "")}
         ${field("تاريخ المباشرة", "hire_date", emp, {date:true})}
         ${field("نوع التوظيف", "contract_type", emp, {type:"select", options:[["","—"],["ملاك","ملاك"],["عقد","عقد"],["تنسيب","تنسيب"],["تكليف","تكليف"],["اجر يومي","اجر يومي"]]})}
         ${field("نظام العمل", "work_schedule", emp, {type:"select", options:[["","—"],["صباحي","صباحي"],["مناوب مسائي","مناوب مسائي"]]})}
-        ${field("ملاحظات نوع التوظيف", "work_type_notes", emp, {type:"textarea", span:true})}
+        ${field("ملاحظات نوع التوظيف", "work_type_notes", emp, {type:"textarea", span:true, grow:true})}
       </div>`;
       const education = `<div class="emp-grid">
         ${field("التحصيل الدراسي", "education_level", emp, {type:"select", options:[["","—"],["ابتدائية","ابتدائية"],["متوسطة","متوسطة"],["إعدادية","إعدادية"],["دبلوم","دبلوم"],["بكالوريوس","بكالوريوس"],["ماجستير","ماجستير"],["دكتوراه","دكتوراه"]]})}
@@ -1181,7 +1230,7 @@ function tabContent(tab, emp) {
         ${field("سنة التخرج", "graduation_year", emp, {ltr:true})}
       </div>`;
       const extra = `<div class="emp-grid">
-        ${field("ملاحظات", "notes", emp, {type:"textarea", span:true})}
+        ${field("ملاحظات", "notes", emp, {type:"textarea", span:true, grow:true})}
         <div style="grid-column:span 2;display:flex;align-items:center;gap:8px">
           <input id="f-is_active" type="checkbox" style="width:16px;height:16px;accent-color:var(--ui-accent)"
                  ${(!emp || emp.is_active) ? "checked" : ""} />
@@ -1201,7 +1250,7 @@ function tabContent(tab, emp) {
     case "family": return `
       <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
         ${spouseSectionHtml(emp)}
-        ${sectionTitle("أفراد العائلة")}
+        ${sectionTitle("الأبناء وبقية الأسرة")}
         <div style="grid-column:span 2">
           <div id="family-list"></div>
           <button id="btn-add-member" class="btn-secondary text-sm mt-2">+ إضافة فرد</button>
@@ -1221,6 +1270,61 @@ function parseJsonList(value) {
   try { const list = JSON.parse(value ?? "[]"); return Array.isArray(list) ? list : []; } catch { return []; }
 }
 
+// ── Missing data ───────────────────────────────────────────────────────────
+/** The «البيانات الأساسية» fields every employee file should have. The rest (email, parents,
+ *  start date, specialization, notes, …) are optional. Documents have their own status. */
+export const REQUIRED_FIELDS = [
+  ["employee_number", "الرقم الوظيفي"], ["full_name", "اسم الموظف"], ["mother_name", "اسم الأم"],
+  ["gender", "الجنس"], ["marital_status", "الحالة الاجتماعية"], ["birthdate", "تاريخ الولادة"],
+  ["birthplace", "محل الولادة"], ["blood_type", "فصيلة الدم"], ["phone", "رقم الهاتف"],
+  ["job_title", "العنوان الوظيفي"], ["job_grade", "الدرجة الوظيفية"], ["appointment_date", "تاريخ التعيين"],
+  ["contract_type", "نوع التوظيف"], ["education_level", "التحصيل الدراسي"],
+];
+
+/** The labels of the required fields an employee record leaves empty. */
+export function missingFields(emp) {
+  return REQUIRED_FIELDS.filter(([key]) => !String(emp?.[key] ?? "").trim()).map(([, label]) => label);
+}
+
+/** «ناقص N» with the empty fields named on hover, or nothing. */
+function missingBadge(missing, cls = "") {
+  return missing.length ? `<span class="emp-missing-badge ${cls}" title="بيانات ناقصة: ${escHtml(missing.join("، "))}">ناقص ${missing.length}</span>` : "";
+}
+
+/** The panel's values now: what is typed in the visible tab, otherwise the draft. */
+function liveMissing(panel) {
+  const values = { ..._panelDraft };
+  panel.querySelectorAll("#tab-content [id^='f-']").forEach(el => { values[el.id.slice(2)] = el.value; });
+  panel.querySelectorAll("#tab-content .name-fields[data-name-key]").forEach(group => {
+    if (REQUIRED_FIELDS.some(([key]) => key === group.dataset.nameKey)) {
+      values[group.dataset.nameKey] = [...group.querySelectorAll(".name-part")].map(input => input.value.trim()).join(" ").trim();
+    }
+  });
+  return missingFields(values);
+}
+
+/** Header badge, tab badge and the empty required fields outlined, kept in step with typing. */
+function refreshMissing() {
+  const panel = document.getElementById("emp-panel");
+  if (!panel || !_panelDraft) return;
+  const missing = liveMissing(panel);
+  const slot = panel.querySelector("#emp-panel-missing");
+  if (slot) slot.innerHTML = missingBadge(missing);
+  const badge = panel.querySelector('.emp-tab-count[data-count-for="basic"]');
+  if (badge) {
+    badge.hidden = !missing.length;
+    badge.textContent = missing.length ? `ناقص ${missing.length}` : "";
+    badge.title = missing.length ? `بيانات ناقصة: ${missing.join("، ")}` : "";
+    badge.classList.add("is-warn");
+  }
+  REQUIRED_FIELDS.forEach(([key]) => {
+    const target = panel.querySelector(`#tab-content #f-${key}`) ?? panel.querySelector(`#tab-content .name-fields[data-name-key="${key}"]`);
+    if (!target) return;
+    const value = target.matches(".name-fields") ? [...target.querySelectorAll(".name-part")].some(input => input.value.trim()) : String(target.value ?? "").trim();
+    (target.matches(".name-fields") ? target : target.closest("div")).classList.toggle("emp-is-missing", !value);
+  });
+}
+
 function updateTabCounts() {
   const panel = document.getElementById("emp-panel");
   const draft = _panelDraft;
@@ -1238,11 +1342,13 @@ function updateTabCounts() {
     })(),
   };
   panel.querySelectorAll(".emp-tab-count").forEach(badge => {
+    if (badge.dataset.countFor === "basic") return;
     const count = counts[badge.dataset.countFor];
     badge.hidden = !count;
     badge.textContent = count?.text ?? "";
     badge.classList.toggle("is-warn", Boolean(count?.warn));
   });
+  refreshMissing();
 }
 
 function closeEmployeeMenus(except = null) {
@@ -1273,7 +1379,6 @@ async function saveThenUpload(button) {
   }
   if (!selector) return;
   if (!(await confirmAction("يُحفظ الموظف أولاً ثم يُرفع الملف. متابعة؟"))) return;
-  _skipNextSaveConfirmation = true;
   _afterSave = () => {
     const next = document.querySelector(`#emp-panel ${selector}`);
     next?.closest(".emp-row")?.classList.remove("collapsed");
@@ -1306,6 +1411,12 @@ function handlePanelUiClick(event) {
     const buttons = [...scope.querySelectorAll(".emp-view-attachment")];
     openAttachmentViewer(buttons.map(viewerItemFromButton), Math.max(0, buttons.indexOf(viewer)));
   }
+  const zoneAdd = target.closest(".emp-zone-add");
+  if (zoneAdd) {
+    const box = zoneAdd.parentElement.previousElementSibling;
+    setZones(box, zoneCodes([box.querySelector("input[type=hidden]").value, zoneAdd.dataset.zone].join(",")));
+    return;
+  }
   const zoneRemove = target.closest(".emp-zone-remove");
   if (zoneRemove) {
     const box = zoneRemove.closest(".emp-zones");
@@ -1321,20 +1432,6 @@ function handlePanelUiClick(event) {
 
   const head = target.closest(".emp-sec-head");
   if (head) { const section = head.closest(".emp-sec"); setSectionOpen(section, !section.classList.contains("open")); return; }
-
-  const jump = target.closest("[data-jump]");
-  if (jump) {
-    const section = document.getElementById(`emp-sec-${jump.dataset.jump}`);
-    if (!section) return;
-    setSectionOpen(section, true);
-    const content = document.getElementById("tab-content");
-    const chipsHeight = content.querySelector(".emp-chips")?.offsetHeight ?? 0;
-    const offset = section.getBoundingClientRect().top - content.getBoundingClientRect().top;
-    content.scrollTo({ top: content.scrollTop + offset - chipsHeight - 8, behavior: "smooth" });
-    section.classList.add("is-flash");
-    setTimeout(() => section.classList.remove("is-flash"), 900);
-    return;
-  }
 
   const all = target.closest("[data-sections-all]");
   if (all) {
@@ -1367,9 +1464,10 @@ function renderPanel(emp) {
         <div id="emp-panel-photo">${headerPhotoHtml(draft)}</div>
         <div style="min-width:0">
           <h3 style="font-weight:700;font-size:15px">${isNew ? "إضافة موظف جديد" : escHtml(emp.full_name)}</h3>
-          ${!isNew ? `<p style="font-size:11px;color:var(--ui-text-faint)">${escHtml(emp.job_title??"")} ${emp.department ? "· "+escHtml(emp.department) : ""}</p>` : ""}
+          ${!isNew ? `<p style="font-size:11px;color:var(--ui-text-faint)">${[emp.employee_number ? `<span dir="ltr">${escHtml(emp.employee_number)}</span>` : "", escHtml(emp.job_title ?? ""), escHtml(fixedDepartment(emp))].filter(Boolean).join(" · ")}</p>` : ""}
         </div>
         ${!isNew ? `<span class="emp-pill ${emp.is_active ? "ok" : "none"}">${emp.is_active ? "نشط" : "غير نشط"}</span>` : ""}
+        ${!isNew ? `<span id="emp-panel-missing"></span>` : ""}
       </div>
       <button id="panel-close" style="color:var(--ui-text-muted);font-size:20px;background:none;border:none;cursor:pointer">✕</button>
     </div>
@@ -1449,8 +1547,11 @@ function renderPanel(emp) {
   attachTabEvents(emp);
   updateTabCounts();
   panel.addEventListener("input", markPanelDirty);
+  panel.addEventListener("input", refreshMissing);
+  panel.addEventListener("change", refreshMissing);
   panel.addEventListener("change", markPanelDirty);
   bindNameFields(panel);
+  wirePanelAddress(panel);
 
   panel.querySelector("#panel-close").addEventListener("click",  () => closePanel());
   panel.querySelector("#panel-cancel").addEventListener("click", () => closePanel());
@@ -1485,7 +1586,7 @@ function renderPanel(emp) {
       contract_type:         g("contract_type"),
       work_schedule:         g("work_schedule"),
       work_type_notes:       g("work_type_notes"),
-      department:            _companyConfig?.department_name ?? g("department"),
+      department:            fixedDepartment(_panelDraft),
       division:              _companyConfig?.division_name ?? g("division"),
       phone:                 g("phone"),
       email:                 g("email"),
@@ -1505,6 +1606,7 @@ function renderPanel(emp) {
       residence_head_name:   g("residence_head_name"),
       residence_form_no:     g("residence_form_no"),
       residence_address:     g("residence_address"),
+      residence_address_parts: g("residence_address_parts"),
       ration_card_no:        g("ration_card_no"),
       ration_center_name:    g("ration_center_name"),
       // Preserve legacy ration-card values that are no longer editable in the form.
@@ -1544,14 +1646,11 @@ function renderPanel(emp) {
       is_active:             g("is_active") === 0 ? 0 : 1,
     };
 
-    const skipConfirmation = _skipNextSaveConfirmation;
-    _skipNextSaveConfirmation = false;
     const closeAfter = _closeAfterSave;
     const afterSave = _afterSave;
     _closeAfterSave = false;
     _afterSave = null;
     if (!data.full_name) { showToast("الاسم الكامل مطلوب", "error"); return; }
-    if (!skipConfirmation && !(await confirmAction(isNew ? "تأكيد إضافة الموظف؟" : "تأكيد حفظ تعديلات الموظف؟"))) return;
     try {
       let saved;
       if (isNew) {
@@ -1950,7 +2049,7 @@ function spouseRowHtml(spouse = {}, index = Date.now(), config = { itemLabel: "�
       removeClass: "btn-remove-spouse",
     })}
     <div style="grid-column:span 2">
-      <p style="font-size:10px;color:var(--ui-text-faint);margin-bottom:3px">رقم البطاقة الموحدة</p>
+      <p style="font-size:10px;color:var(--ui-text-faint);margin-bottom:3px">الرقم الوطني</p>
       <input class="input-field sp-civil" dir="ltr" value="${escHtml(spouse.civil_id??"")}"/>
     </div>
     ${recordNameFields("الاسم", "name", spouse)}
@@ -2119,7 +2218,7 @@ function familyRowHtml(m = {}, i = Date.now()) {
       </select>
     </div>
     <div>
-      <p style="font-size:10px;color:var(--ui-text-faint);margin-bottom:3px">رقم البطاقة الموحدة</p>
+      <p style="font-size:10px;color:var(--ui-text-faint);margin-bottom:3px">الرقم الوطني</p>
       <input class="input-field fm-civil" dir="ltr" value="${escHtml(m.civil_id??"")}"/>
     </div>
     ${recordNameFields("الاسم", "name", m)}
@@ -2418,12 +2517,12 @@ function ocrRows(result, target) {
     ? passport
       ? [["passport_no", "رقم جواز السفر", "passport_no", { ltr: true }], ["passport_type", "نوع جواز السفر", "passport_type", { ltr: true }],
          ["passport_issue_date", "تاريخ إصدار الجواز", "issue_date", { date: true }], ["passport_expiry_date", "تاريخ نفاذ الجواز", "expiry_date", { date: true }],
-         ["civil_id", "رقم البطاقة الوطنية", "national_no", { ltr: true }], ["birthdate", "تاريخ الولادة", "birthdate", { date: true }]]
-      : [["civil_id", "رقم البطاقة الوطنية", "national_no", { ltr: true }], ["civil_id_issuer", "جهة الإصدار", "issuer"],
+         ["civil_id", "الرقم الوطني", "national_no", { ltr: true }], ["birthdate", "تاريخ الولادة", "birthdate", { date: true }]]
+      : [["civil_id", "الرقم الوطني", "national_no", { ltr: true }], ["civil_id_issuer", "جهة الإصدار", "issuer"],
          ["civil_id_issue_date", "تاريخ الإصدار", "issue_date", { date: true }], ["civil_id_expiry_date", "تاريخ النفاذ", "expiry_date", { date: true }],
          ["civil_id_family_number", "الرقم العائلي", "family_no", { ltr: true }],
          ["birthplace", "محل الولادة", "birthplace"], ["birthdate", "تاريخ الولادة", "birthdate", { date: true }]]
-    : [["civil_id", "رقم البطاقة الوطنية", "national_no", { ltr: true }], ["issuer", "جهة الإصدار", "issuer"],
+    : [["civil_id", "الرقم الوطني", "national_no", { ltr: true }], ["issuer", "جهة الإصدار", "issuer"],
        ["issue_date", "تاريخ الإصدار", "issue_date", { date: true }], ["expiry_date", "تاريخ النفاذ", "expiry_date", { date: true }],
        ["birthplace", "محل الولادة", "birthplace"], ["birthdate", "تاريخ الولادة", "birthdate", { date: true }]];
   fields.forEach(([id, label, key, opts]) => add(`field:${id}`, label, key, record?.[id], opts));

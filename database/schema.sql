@@ -91,6 +91,7 @@ CREATE TABLE IF NOT EXISTS employees (
   airport_badge_issue_date  TEXT,
   airport_badge_expiry      TEXT,
   airport_badge_zones       TEXT,
+  residence_address_parts   TEXT,
   airport_badge_front_path  TEXT,
   airport_badge_back_path   TEXT,
   ministry_badge_no         TEXT,
@@ -491,3 +492,14 @@ CREATE INDEX IF NOT EXISTS idx_hr_salary_active ON hr_salary_scales(active, grad
 CREATE INDEX IF NOT EXISTS idx_hr_appreciations_employee ON hr_appreciation_letters(employee_id, letter_date);
 CREATE INDEX IF NOT EXISTS idx_hr_penalties_employee ON hr_penalties(employee_id, penalty_date);
 CREATE INDEX IF NOT EXISTS idx_hr_interruptions_employee ON hr_service_interruptions(employee_id, start_date);
+
+-- Districts / sub-districts users add when the bundled list of Iraqi places lacks one.
+CREATE TABLE IF NOT EXISTS address_places (
+  id          INTEGER PRIMARY KEY AUTOINCREMENT,
+  governorate TEXT NOT NULL,
+  district    TEXT NOT NULL,
+  subdistrict TEXT NOT NULL DEFAULT '',
+  created_by  TEXT,
+  created_at  TEXT NOT NULL DEFAULT (datetime('now')),
+  UNIQUE(governorate, district, subdistrict)
+);

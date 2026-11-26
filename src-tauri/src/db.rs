@@ -170,11 +170,13 @@ pub fn db_path() -> PathBuf {
 /// * 2 — person names split into parts (`name_parts`, `name_split_originals`; see `names.rs`).
 /// * 3 — airport badge access zones; car registration (السنوية) images per vehicle.
 /// * 4 — vehicle governorate, plate category, chassis number and model year.
+/// * 5 — family member relation.
+/// * 6 — residence address parts; places (districts, sub-districts) added by users.
 ///
 /// To change the schema later: bump this constant and add an `if from < N { ... }` step in
 /// `upgrade()`. Every upgrade of an existing database runs only after a verified
 /// pre-upgrade snapshot exists, and the snapshot is restored automatically if a step fails.
-pub const SCHEMA_VERSION: i64 = 5;
+pub const SCHEMA_VERSION: i64 = 7;
 
 #[derive(Debug)]
 pub enum OpenError {
@@ -281,7 +283,13 @@ fn upgrade(conn: &Connection, from: i64) -> SqlResult<()> {
         // How each family member is related to the employee (ابن، ابنة، ...).
         add_column_if_missing(conn, "employee_family_members", "relation", "TEXT")?;
     }
-    // Future steps go here, for example: if from < 6 { ... }
+    if from < 6 {
+        upgrade_to_v6(conn)?;
+    }
+    if from < 7 {
+        upgrade_to_v7(conn)?;
+    }
+    // Future steps go here, for example: if from < 8 { ... }
     #[cfg(test)]
     if FAIL_UPGRADE.with(|flag| flag.get()) {
         return Err(rusqlite::Error::InvalidQuery);
@@ -316,6 +324,36 @@ fn upgrade_to_v3(conn: &Connection) -> SqlResult<()> {
     add_column_if_missing(conn, "employee_vehicles", "annual_front_path", "TEXT")?;
     add_column_if_missing(conn, "employee_vehicles", "annual_back_path", "TEXT")?;
     Ok(())
+}
+
+/// v7: the add-employee wizard first kept its «تاريخ التعيين» in `hire_date` (the file's «تاريخ المباشرة»).
+/// For employees added since the wizard existed with only that date, move it to `appointment_date`.
+fn upgrade_to_v7(conn: &Connection) -> SqlResult<()> {
+    conn.execute(
+        "UPDATE employees SET appointment_date=hire_date, hire_date=NULL
+         WHERE TRIM(COALESCE(hire_date,''))<>'' AND TRIM(COALESCE(appointment_date,''))=''
+           AND id IN (SELECT target_id FROM activity_log
+                      WHERE action='CREATE_EMPLOYEE' AND target_type='employee' AND created_at>='2026-11-24')",
+        [],
+    )?;
+    Ok(())
+}
+
+/// v6: the residence address entered in parts, and districts / sub-districts users add when
+/// the bundled list lacks one (kept under their governorate and district).
+fn upgrade_to_v6(conn: &Connection) -> SqlResult<()> {
+    add_column_if_missing(conn, "employees", "residence_address_parts", "TEXT")?;
+    conn.execute_batch(
+        "CREATE TABLE IF NOT EXISTS address_places (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            governorate TEXT NOT NULL,
+            district TEXT NOT NULL,
+            subdistrict TEXT NOT NULL DEFAULT '',
+            created_by TEXT,
+            created_at TEXT NOT NULL DEFAULT (datetime('now')),
+            UNIQUE(governorate, district, subdistrict)
+        );",
+    )
 }
 
 /// Upgrades a database that was just restored from a backup, if it is older. The restore
@@ -1154,5 +1192,57 @@ mod upgrade_tests {
         let env = env();
         assert!(matches!(open_at(&env.db, false), Err(OpenError::Missing(_))));
         assert!(!env.db.exists());
+    }
+}
+
+#[cfg(test)]
+mod v6_tests {
+    use super::*;
+
+    /// A v5 database gains the address parts column and the places table; a second run is harmless.
+    #[test]
+    fn v5_database_gains_address_parts_and_places() {
+        let conn = Connection::open_in_memory().unwrap();
+        migrate_for_tests(&conn);
+        conn.execute_batch("ALTER TABLE employees DROP COLUMN residence_address_parts;
+            DROP TABLE address_places;
+            PRAGMA user_version = 5;").unwrap();
+        upgrade_restored(&conn).unwrap();
+        assert_eq!(schema_version(&conn).unwrap(), SCHEMA_VERSION);
+        conn.prepare("SELECT residence_address_parts FROM employees").unwrap();
+        conn.prepare("SELECT governorate, district, subdistrict FROM address_places").unwrap();
+        upgrade_to_v6(&conn).unwrap();
+    }
+}
+
+#[cfg(test)]
+mod v7_tests {
+    use super::*;
+
+    fn employee(conn: &Connection, name: &str, hire: Option<&str>, appointment: Option<&str>, created: &str) -> i64 {
+        conn.execute("INSERT INTO employees(full_name,hire_date,appointment_date) VALUES(?1,?2,?3)", rusqlite::params![name, hire, appointment]).unwrap();
+        let id = conn.last_insert_rowid();
+        conn.execute("INSERT INTO activity_log(username,action,target_type,target_id,created_at) VALUES('admin','CREATE_EMPLOYEE','employee',?1,?2)", rusqlite::params![id, created]).unwrap();
+        id
+    }
+
+    fn dates(conn: &Connection, id: i64) -> (Option<String>, Option<String>) {
+        conn.query_row("SELECT appointment_date, hire_date FROM employees WHERE id=?1", [id], |r| Ok((r.get(0)?, r.get(1)?))).unwrap()
+    }
+
+    /// Only employees added since the wizard, with the wizard's date and no appointment date, move.
+    #[test]
+    fn wizard_date_moves_to_the_appointment_date() {
+        let conn = Connection::open_in_memory().unwrap();
+        migrate_for_tests(&conn);
+        let wizard = employee(&conn, "من المعالج", Some("2015-02-01"), None, "2026-11-24 10:00:00");
+        let both = employee(&conn, "التاريخان", Some("2015-03-01"), Some("2015-01-01"), "2026-11-25 10:00:00");
+        let older = employee(&conn, "قديم", Some("2010-10-03"), None, "2026-01-05 09:00:00");
+        conn.execute_batch("PRAGMA user_version = 6;").unwrap();
+        upgrade_restored(&conn).unwrap();
+        assert_eq!(schema_version(&conn).unwrap(), SCHEMA_VERSION);
+        assert_eq!(dates(&conn, wizard), (Some("2015-02-01".into()), None));
+        assert_eq!(dates(&conn, both), (Some("2015-01-01".into()), Some("2015-03-01".into())));
+        assert_eq!(dates(&conn, older), (None, Some("2010-10-03".into())));
     }
 }

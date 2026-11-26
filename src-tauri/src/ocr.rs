@@ -337,7 +337,7 @@ pub fn logical_order(visual: &str) -> String {
     out.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
-fn rotate(image: &RgbImage, quarter_turns: u8) -> RgbImage {
+pub(crate) fn rotate(image: &RgbImage, quarter_turns: u8) -> RgbImage {
     match quarter_turns % 4 {
         1 => image::imageops::rotate90(image),
         2 => image::imageops::rotate180(image),
@@ -451,11 +451,12 @@ fn extend_into_missed_words(image: &RgbImage, b: &[[f32; 2]; 4], boxes: &[[[f32;
 
 /// Reads all text lines of a document photo or scan, turning it upright first.
 pub fn read_lines(image: &DynamicImage) -> Option<Vec<Line>> {
-    read_lines_upright(image).map(|(lines, _)| lines)
+    read_lines_upright(image).map(|(lines, _, _)| lines)
 }
 
-/// Like `read_lines`, also returning the upright image the line boxes refer to.
-pub fn read_lines_upright(image: &DynamicImage) -> Option<(Vec<Line>, RgbImage)> {
+/// Like `read_lines`, also returning the upright image the line boxes refer to and the quarter
+/// turns that made it upright.
+pub fn read_lines_upright(image: &DynamicImage) -> Option<(Vec<Line>, RgbImage, u8)> {
     if !available() {
         return None;
     }
@@ -517,7 +518,7 @@ pub fn read_lines_upright(image: &DynamicImage) -> Option<(Vec<Line>, RgbImage)>
         })
         .collect();
     lines.sort_by(|a, b| a.center_y().total_cmp(&b.center_y()));
-    Some((lines, rgb))
+    Some((lines, rgb, turns))
 }
 
 /// Many filler-like characters in one line: '<' itself, or the Arabic-Indic digits the

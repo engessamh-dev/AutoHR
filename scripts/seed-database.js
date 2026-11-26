@@ -110,6 +110,7 @@ for (const [column, definition] of [
   ["ration_card_attachment_paths", "TEXT DEFAULT '[]'"],
   ["airport_badge_issue_date", "TEXT"],
   ["airport_badge_zones", "TEXT"],
+  ["residence_address_parts", "TEXT"],
   ["airport_badge_front_path", "TEXT"],
   ["airport_badge_back_path", "TEXT"],
   ["ministry_badge_issue_date", "TEXT"],

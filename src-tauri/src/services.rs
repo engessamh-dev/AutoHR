@@ -158,6 +158,9 @@ pub struct Employee {
     pub notes: Option<String>,
     /// Name parts per field (see names.rs).
     pub name_parts: Option<serde_json::Value>,
+    /// The residence address as entered: JSON {gov, district, sub, city, m, z, d, other, useOther}.
+    /// `residence_address` keeps the same address composed into one line.
+    pub residence_address_parts: Option<String>,
     pub is_active: i64,
     pub created_at: Option<String>,
     pub updated_at: Option<String>,
@@ -243,6 +246,9 @@ pub struct EmployeeData {
     /// JSON object of name parts sent by the form; the combined names are rebuilt from it.
     #[serde(default)]
     pub name_parts: Option<serde_json::Value>,
+    /// The residence address parts as JSON (see `Employee::residence_address_parts`).
+    #[serde(default)]
+    pub residence_address_parts: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -408,7 +414,15 @@ pub fn assert_permission(conn: &Connection, username: &str, permission: &str) ->
 pub fn app_data_path() -> std::path::PathBuf {
     #[cfg(test)]
     if let Some(root) = TEST_APP_DATA_ROOT.with(|value| value.borrow().clone()) { return root; }
-    dirs::data_dir().unwrap_or_else(|| std::path::PathBuf::from(".")).join(if cfg!(debug_assertions) { "CNSArch-Development" } else { "CNSArch" })
+    dirs::data_dir().unwrap_or_else(|| std::path::PathBuf::from(".")).join(app_folder_name())
+}
+
+/// `CNSArch` in release. Development builds use `CNSArch-Development`, or the separate
+/// `CNSArch-TestData` folder with invented data when started by `npm run test-data` (devseed.rs).
+fn app_folder_name() -> &'static str {
+    #[cfg(debug_assertions)]
+    if crate::devseed::enabled() { return crate::devseed::APP_FOLDER; }
+    if cfg!(debug_assertions) { "CNSArch-Development" } else { "CNSArch" }
 }
 
 #[cfg(test)]
@@ -813,7 +827,7 @@ const EMP_COLS: &str = "id,employee_number,photo_path,full_name,mother_name,fath
   airport_badge_issue_date,airport_badge_front_path,airport_badge_back_path,
   ministry_badge_issue_date,ministry_badge_front_path,ministry_badge_back_path,
   vehicle_color,vehicle_manufacture_year,vehicle_type,vehicle_annual_issue_date,vehicle_annual_expiry_date,vehicles,spouses,
-  appointment_date,father_birthdate,mother_birthdate,name_parts,airport_badge_zones";
+  appointment_date,father_birthdate,mother_birthdate,name_parts,airport_badge_zones,residence_address_parts";
 
 fn map_emp(r: &rusqlite::Row) -> rusqlite::Result<Employee> {
     Ok(Employee {
@@ -868,6 +882,7 @@ fn map_emp(r: &rusqlite::Row) -> rusqlite::Result<Employee> {
         mother_birthdate:r.get(87)?,
         name_parts:r.get::<_, Option<String>>(88)?.and_then(|value| serde_json::from_str(&value).ok()),
         airport_badge_zones:r.get(89)?,
+        residence_address_parts:r.get(90)?,
         residence_card_front_full_path:None,
         residence_card_back_full_path:None,
         airport_badge_front_full_path:None,
@@ -1237,6 +1252,15 @@ pub fn get_employee(conn: &Connection, id: i64) -> AppResult<Employee> {
 
 /// Rebuilds the employee's combined names from their parts (see names.rs) and returns the
 /// data to save plus the `name_parts` JSON to store beside it.
+/// Every employee is in the department set in Settings: when one is set there, it is the
+/// employee's department, whatever the screen sent (a department read from an ID is only a check).
+fn fix_department(conn: &Connection, d: &mut EmployeeData) {
+    let fixed: Option<String> = conn.query_row("SELECT department_name FROM company_config WHERE id=1", [], |r| r.get(0)).ok().flatten();
+    if let Some(name) = fixed.map(|n| n.trim().to_string()).filter(|n| !n.is_empty()) {
+        d.department = Some(name);
+    }
+}
+
 fn resolve_employee_names(conn: &Connection, id: Option<i64>, d: &EmployeeData) -> AppResult<(EmployeeData, String)> {
     let stored = match id {
         Some(id) => conn.query_row("SELECT name_parts FROM employees WHERE id=?1", params![id], |r| r.get::<_, Option<String>>(0))
@@ -1260,9 +1284,29 @@ fn resolve_employee_names(conn: &Connection, id: Option<i64>, d: &EmployeeData) 
     Ok((data, serde_json::Value::Object(parts).to_string()))
 }
 
+/// The employee number is typed by hand and must belong to one employee only.
+fn check_employee_number(conn: &Connection, id: Option<i64>, d: &mut EmployeeData) -> AppResult<()> {
+    let number = d.employee_number.as_deref().map(str::trim).filter(|n| !n.is_empty()).map(str::to_string);
+    if let Some(number) = &number {
+        if number.chars().count() > 50 {
+            return Err(AppError::Validation("الرقم الوظيفي طويل جداً".into()));
+        }
+        let taken: Option<String> = conn.query_row(
+            "SELECT full_name FROM employees WHERE employee_number=?1 AND id<>?2",
+            params![number, id.unwrap_or(-1)], |r| r.get(0)).optional()?;
+        if let Some(name) = taken {
+            return Err(AppError::Validation(format!("الرقم الوظيفي {number} مسجّل للموظف {name}")));
+        }
+    }
+    d.employee_number = number;
+    Ok(())
+}
+
 pub fn create_employee(conn: &Connection, d: &EmployeeData, username: &str) -> AppResult<Employee> {
     assert_permission(conn, username, "employees.create")?;
-    let (d, name_parts) = resolve_employee_names(conn, None, d)?;
+    let (mut d, name_parts) = resolve_employee_names(conn, None, d)?;
+    fix_department(conn, &mut d);
+    check_employee_number(conn, None, &mut d)?;
     let d = &d;
     validate_employee_data(d)?;
     conn.execute("INSERT INTO employees(employee_number,full_name,mother_name,father_birthplace,mother_birthplace,
@@ -1304,15 +1348,23 @@ pub fn create_employee(conn: &Connection, d: &EmployeeData, username: &str) -> A
       d.vehicle_annual_issue_date,d.vehicle_annual_expiry_date,d.vehicles.as_deref().unwrap_or("[]"),
       d.spouses.as_deref().unwrap_or("[]"),d.appointment_date,d.father_birthdate,d.mother_birthdate,d.airport_badge_zones])?;
     let id = conn.last_insert_rowid();
-    conn.execute("UPDATE employees SET name_parts=?1 WHERE id=?2", params![name_parts, id])?;
+    conn.execute("UPDATE employees SET name_parts=?1, residence_address_parts=?2 WHERE id=?3", params![name_parts, address_parts(d), id])?;
     replace_employee_repeating_data(conn, id, d)?;
     log_activity(conn, username, "CREATE_EMPLOYEE", Some("employee"), Some(id), Some(d.full_name.trim()), None);
     get_employee(conn, id)
 }
 
+/// The address parts as stored: a JSON object only, so a malformed value is not kept.
+fn address_parts(d: &EmployeeData) -> Option<String> {
+    let value: serde_json::Value = serde_json::from_str(d.residence_address_parts.as_deref()?).ok()?;
+    value.is_object().then(|| value.to_string())
+}
+
 pub fn update_employee(conn: &Connection, id: i64, d: &EmployeeData, username: &str) -> AppResult<Employee> {
     assert_permission(conn, username, "employees.edit")?;
-    let (d, name_parts) = resolve_employee_names(conn, Some(id), d)?;
+    let (mut d, name_parts) = resolve_employee_names(conn, Some(id), d)?;
+    fix_department(conn, &mut d);
+    check_employee_number(conn, Some(id), &mut d)?;
     let d = &d;
     validate_employee_data(d)?;
     conn.execute("UPDATE employees SET employee_number=?1,full_name=?2,mother_name=?3,father_birthplace=?4,
@@ -1351,7 +1403,7 @@ pub fn update_employee(conn: &Connection, id: i64, d: &EmployeeData, username: &
       d.airport_badge_issue_date,d.ministry_badge_issue_date,d.vehicle_color,d.vehicle_manufacture_year,d.vehicle_type,
       d.vehicle_annual_issue_date,d.vehicle_annual_expiry_date,d.vehicles.as_deref().unwrap_or("[]"),
       d.spouses.as_deref().unwrap_or("[]"),d.appointment_date,d.father_birthdate,d.mother_birthdate,d.airport_badge_zones,id])?;
-    conn.execute("UPDATE employees SET name_parts=?1 WHERE id=?2", params![name_parts, id])?;
+    conn.execute("UPDATE employees SET name_parts=?1, residence_address_parts=?2 WHERE id=?3", params![name_parts, address_parts(d), id])?;
     replace_employee_repeating_data(conn, id, d)?;
     log_activity(conn, username, "UPDATE_EMPLOYEE", Some("employee"), Some(id), Some(d.full_name.trim()), None);
     get_employee(conn, id)
@@ -1402,6 +1454,43 @@ pub fn upload_employee_photo(conn: &Connection, employee_id: i64, source_path: &
         }
     }
     Ok(rel)
+}
+
+// ── Address places added by users ───────────────────────────────────────────
+/// A district (subdistrict empty) or a sub-district a user added because the bundled list of
+/// Iraqi governorates, districts and sub-districts lacked it.
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
+pub struct AddressPlace {
+    pub governorate: String,
+    pub district: String,
+    #[serde(default)]
+    pub subdistrict: String,
+}
+
+pub fn list_address_places(conn: &Connection) -> AppResult<Vec<AddressPlace>> {
+    let mut stmt = conn.prepare("SELECT governorate, district, subdistrict FROM address_places ORDER BY governorate, district, subdistrict")?;
+    let places = stmt
+        .query_map([], |r| Ok(AddressPlace { governorate: r.get(0)?, district: r.get(1)?, subdistrict: r.get(2)? }))?
+        .collect::<rusqlite::Result<_>>()?;
+    Ok(places)
+}
+
+pub fn add_address_place(conn: &Connection, place: &AddressPlace, username: &str) -> AppResult<AddressPlace> {
+    let clean = |v: &str| v.split_whitespace().collect::<Vec<_>>().join(" ");
+    let place = AddressPlace { governorate: clean(&place.governorate), district: clean(&place.district), subdistrict: clean(&place.subdistrict) };
+    if place.governorate.is_empty() || place.district.is_empty() {
+        return Err(AppError::Validation("اختر المحافظة واكتب اسم القضاء".into()));
+    }
+    if [&place.governorate, &place.district, &place.subdistrict].iter().any(|v| v.chars().count() > 60) {
+        return Err(AppError::Validation("الاسم طويل جدًا".into()));
+    }
+    conn.execute(
+        "INSERT OR IGNORE INTO address_places(governorate, district, subdistrict, created_by) VALUES(?1, ?2, ?3, ?4)",
+        params![place.governorate, place.district, place.subdistrict, username],
+    )?;
+    let detail = [place.governorate.as_str(), place.district.as_str(), place.subdistrict.as_str()].iter().filter(|v| !v.is_empty()).copied().collect::<Vec<_>>().join(" / ");
+    log_activity(conn, username, "ADD_ADDRESS_PLACE", Some("address_place"), None, Some(&detail), None);
+    Ok(place)
 }
 
 // ── Grade history ──────────────────────────────────────────────────────────
@@ -1466,7 +1555,9 @@ fn replace_general_doc_employees(conn: &Connection, doc_id: i64, employee_ids: &
     Ok(())
 }
 
-fn validate_document_data(data: &GeneralDocData) -> AppResult<()> {
+/// `outgoing`: in «الصادر» the sender is this unit (the screen fills it in), so the field that
+/// must be filled is the receiver («إلى», stored in `doc_number`) instead of the sender.
+fn validate_document_data(data: &GeneralDocData, outgoing: bool) -> AppResult<()> {
     if data.title.chars().count() > 300 {
         return Err(AppError::Validation("Enter a valid document title".into()));
     }
@@ -1474,7 +1565,8 @@ fn validate_document_data(data: &GeneralDocData) -> AppResult<()> {
     // them it is an empty row in the archive.
     let blank = |value: Option<&str>| value.map_or(true, |v| v.trim().is_empty());
     let missing: Vec<&str> = [
-        ("الجهة المصدرة للوثيقة", blank(Some(data.title.as_str()))),
+        ("الجهة المصدرة للوثيقة", !outgoing && blank(Some(data.title.as_str()))),
+        ("إلى", outgoing && blank(data.doc_number.as_deref())),
         ("الموضوع", blank(data.issuer.as_deref())),
         ("العدد", blank(data.doc_count.as_deref())),
         ("تاريخ الإصدار", blank(data.issue_date.as_deref())),
@@ -1548,7 +1640,7 @@ fn get_general_doc(conn: &Connection, id: i64) -> AppResult<GeneralDoc> {
 
 pub fn create_general_doc(conn: &Connection, data: &GeneralDocData, username: &str) -> AppResult<GeneralDoc> {
     assert_permission(conn, username, "documents.manage")?;
-    validate_document_data(data)?;
+    validate_document_data(data, false)?;
     let tx = conn.unchecked_transaction()?;
     tx.execute("INSERT INTO general_docs(title,doc_type,doc_number,issue_date,issuer,doc_count,margin,is_internal_memo,hr_effect_type,hr_affects_promotion,hr_affects_allowance,hr_effect_months,hr_effect_days,notes) VALUES(?1,NULL,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13)",
         params![data.title.trim(),data.doc_number,data.issue_date,data.issuer,data.doc_count,data.margin,data.is_internal_memo,
@@ -1562,7 +1654,7 @@ pub fn create_general_doc(conn: &Connection, data: &GeneralDocData, username: &s
 
 pub fn update_general_doc(conn: &Connection, id: i64, data: &GeneralDocData, username: &str) -> AppResult<GeneralDoc> {
     assert_permission(conn, username, "documents.manage")?;
-    validate_document_data(data)?;
+    validate_document_data(data, false)?;
     let tx = conn.unchecked_transaction()?;
     // The HR effect fields are no longer edited from the UI. They are intentionally left out of
     // this UPDATE so that values already stored on existing documents are preserved.
@@ -1749,7 +1841,7 @@ fn get_outgoing_doc(conn: &Connection, id: i64) -> AppResult<GeneralDoc> {
 
 pub fn create_outgoing_doc(conn: &Connection, data: &GeneralDocData, username: &str) -> AppResult<GeneralDoc> {
     assert_permission(conn, username, "documents.manage")?;
-    validate_document_data(data)?;
+    validate_document_data(data, true)?;
     let tx = conn.unchecked_transaction()?;
     tx.execute(
         "INSERT INTO outgoing_docs(title,doc_type,doc_number,issue_date,issuer,doc_count,margin,is_internal_memo,notes) VALUES(?1,NULL,?2,?3,?4,?5,?6,?7,?8)",
@@ -1764,7 +1856,7 @@ pub fn create_outgoing_doc(conn: &Connection, data: &GeneralDocData, username: &
 
 pub fn update_outgoing_doc(conn: &Connection, id: i64, data: &GeneralDocData, username: &str) -> AppResult<GeneralDoc> {
     assert_permission(conn, username, "documents.manage")?;
-    validate_document_data(data)?;
+    validate_document_data(data, true)?;
     let tx = conn.unchecked_transaction()?;
     tx.execute(
         "UPDATE outgoing_docs SET title=?1,doc_type=NULL,doc_number=?2,issue_date=?3,issuer=?4,doc_count=?5,margin=?6,is_internal_memo=?7,notes=?8,updated_at=datetime('now') WHERE id=?9",
@@ -2401,14 +2493,14 @@ fn encrypt_backup(plaintext: &[u8], password: &str, magic: &[u8; 9]) -> AppResul
 fn decrypt_backup(encrypted: &[u8], password: &str) -> AppResult<(bool, Vec<u8>)> {
     let header = BACKUP_MAGIC_V2.len() + 16 + 12;
     if encrypted.len() <= header {
-        return Err(AppError::Validation("This is not a valid encrypted AutoHR backup".into()));
+        return Err(AppError::Validation("This is not a valid encrypted CNSArch backup".into()));
     }
     let magic = if &encrypted[..9] == BACKUP_MAGIC_V2 {
         BACKUP_MAGIC_V2
     } else if &encrypted[..9] == BACKUP_MAGIC_V1 {
         BACKUP_MAGIC_V1
     } else {
-        return Err(AppError::Validation("This is not a valid encrypted AutoHR backup".into()));
+        return Err(AppError::Validation("This is not a valid encrypted CNSArch backup".into()));
     };
     let key = backup_key(password, &encrypted[magic.len()..magic.len() + 16])?;
     let plaintext = Aes256Gcm::new_from_slice(&key).map_err(|e| AppError::Other(e.to_string()))?
@@ -2793,14 +2885,14 @@ fn validate_database_connection(source_conn: &Connection) -> AppResult<()> {
     let required_tables: i64 = source_conn.query_row(
         "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name IN ('users','employees','company_config','app_settings','activity_log')",
         [], |r| r.get(0),
-    ).map_err(|_| AppError::Validation("Backup is from an unsupported AutoHR version".into()))?;
-    if required_tables != 5 { return Err(AppError::Validation("Backup is missing required AutoHR data".into())); }
+    ).map_err(|_| AppError::Validation("Backup is from an unsupported CNSArch version".into()))?;
+    if required_tables != 5 { return Err(AppError::Validation("Backup is missing required CNSArch data".into())); }
     let foreign_key_errors: i64 = source_conn.query_row("SELECT COUNT(*) FROM pragma_foreign_key_check", [], |r| r.get(0))
         .map_err(|_| AppError::Validation("Backup relationships could not be validated".into()))?;
     if foreign_key_errors > 0 { return Err(AppError::Validation("Backup contains inconsistent relationships".into())); }
     let invalid_roles: i64 = source_conn.query_row(
         "SELECT COUNT(*) FROM users WHERE role NOT IN ('system_admin','archive_admin','archive_officer','viewer')", [], |r| r.get(0)
-    ).map_err(|_| AppError::Validation("Backup is from an unsupported AutoHR version".into()))?;
+    ).map_err(|_| AppError::Validation("Backup is from an unsupported CNSArch version".into()))?;
     if invalid_roles > 0 { return Err(AppError::Validation("Backup contains unsupported roles".into())); }
     Ok(())
 }
@@ -2984,7 +3076,7 @@ where
     progress(backup_progress(18, "جاري فك تشفير النسخة الاحتياطية..."));
     let (is_legacy, plaintext) = decrypt_backup(&encrypted, password)?;
     if is_legacy {
-        return Err(AppError::Validation("This legacy database-only backup cannot safely restore attachments. Use an AutoHR v2 full backup.".into()));
+        return Err(AppError::Validation("This legacy database-only backup cannot safely restore attachments. Use a CNSArch v2 full backup.".into()));
     }
     progress(backup_progress(28, "جاري فحص SHA-256 وفك الضغط وتجربة الاستعادة المؤقتة..."));
     let staging = tempfile::tempdir_in(crate::paths::data_root()).map_err(|e| AppError::Other(e.to_string()))?;
@@ -3474,6 +3566,23 @@ fn development_data_path_is_isolated() {
 }
 
 #[cfg(test)]
+mod address_place_tests {
+    use super::*;
+
+    #[test]
+    fn places_are_added_once_under_their_parent_and_validated() {
+        let conn = Connection::open_in_memory().unwrap();
+        crate::db::migrate_for_tests(&conn);
+        let place = |g: &str, d: &str, s: &str| AddressPlace { governorate: g.into(), district: d.into(), subdistrict: s.into() };
+        add_address_place(&conn, &place("محافظة تجريبية", " قضاء  تجريبي ", ""), "tester").unwrap();
+        add_address_place(&conn, &place("محافظة تجريبية", "قضاء تجريبي", "ناحية تجريبية"), "tester").unwrap();
+        add_address_place(&conn, &place("محافظة تجريبية", "قضاء تجريبي", "ناحية تجريبية"), "tester").unwrap();
+        assert_eq!(list_address_places(&conn).unwrap(), vec![place("محافظة تجريبية", "قضاء تجريبي", ""), place("محافظة تجريبية", "قضاء تجريبي", "ناحية تجريبية")]);
+        assert!(add_address_place(&conn, &place("محافظة تجريبية", "", "ناحية"), "tester").is_err());
+    }
+}
+
+#[cfg(test)]
 #[test]
 fn saving_a_document_requires_issuer_subject_number_and_date() {
     let conn = Connection::open_in_memory().unwrap();
@@ -3488,14 +3597,20 @@ fn saving_a_document_requires_issuer_subject_number_and_date() {
         hr_effect_type: None, hr_affects_promotion: false, hr_affects_allowance: false,
         hr_effect_months: 0, hr_effect_days: 0, notes: None, employee_ids: vec![],
     };
-    for result in [create_general_doc(&conn, &empty, "docadmin"), create_outgoing_doc(&conn, &empty, "docadmin")] {
-        match result {
-            Err(AppError::Validation(message)) => {
-                assert!(message.contains("الجهة المصدرة للوثيقة") && message.contains("الموضوع") && message.contains("العدد"));
-                assert!(!message.contains("تاريخ الإصدار"));
-            }
-            other => panic!("expected a validation error, got {other:?}"),
+    match create_general_doc(&conn, &empty, "docadmin") {
+        Err(AppError::Validation(message)) => {
+            assert!(message.contains("الجهة المصدرة للوثيقة") && message.contains("الموضوع") && message.contains("العدد"));
+            assert!(!message.contains("تاريخ الإصدار") && !message.contains("إلى"));
         }
+        other => panic!("expected a validation error, got {other:?}"),
+    }
+    // «الصادر»: the sender is this unit; the receiver («إلى») is the field that must be filled.
+    match create_outgoing_doc(&conn, &empty, "docadmin") {
+        Err(AppError::Validation(message)) => {
+            assert!(message.contains("إلى") && message.contains("الموضوع") && message.contains("العدد"));
+            assert!(!message.contains("الجهة المصدرة للوثيقة") && !message.contains("تاريخ الإصدار"));
+        }
+        other => panic!("expected a validation error, got {other:?}"),
     }
     let count: i64 = conn.query_row("SELECT (SELECT COUNT(*) FROM general_docs)+(SELECT COUNT(*) FROM outgoing_docs)", [], |r| r.get(0)).unwrap();
     assert_eq!(count, 0);
@@ -3503,4 +3618,51 @@ fn saving_a_document_requires_issuer_subject_number_and_date() {
         title: "مركز الوزارة".into(), issuer: Some("أمر إداري".into()), doc_count: Some("230/547".into()), ..empty
     };
     assert!(create_general_doc(&conn, &filled, "docadmin").is_ok());
+    let outgoing = GeneralDocData {
+        title: "".into(), doc_type: None, doc_number: Some("وزارة النقل".into()), issue_date: Some("2026-11-25".into()),
+        issuer: Some("أمر إداري".into()), doc_count: Some("ص/12".into()), margin: None, is_internal_memo: false,
+        hr_effect_type: None, hr_affects_promotion: false, hr_affects_allowance: false,
+        hr_effect_months: 0, hr_effect_days: 0, notes: None, employee_ids: vec![],
+    };
+    assert!(create_outgoing_doc(&conn, &outgoing, "docadmin").is_ok());
+}
+
+#[cfg(test)]
+mod employee_number_tests {
+    use super::*;
+
+    fn conn_with_admin() -> Connection {
+        let conn = Connection::open_in_memory().unwrap();
+        crate::db::initialize_test(&conn).unwrap();
+        conn.execute("INSERT INTO users(username,password,role) VALUES('numadmin','unused','system_admin')", []).unwrap();
+        conn
+    }
+
+    fn data(name: &str, number: Option<&str>) -> EmployeeData {
+        serde_json::from_value(serde_json::json!({ "full_name": name, "employee_number": number })).unwrap()
+    }
+
+    #[test]
+    fn typed_number_is_trimmed_and_blank_is_stored_as_none() {
+        let conn = conn_with_admin();
+        let first = create_employee(&conn, &data("موظف أول", Some("  1024 ")), "numadmin").unwrap();
+        assert_eq!(first.employee_number.as_deref(), Some("1024"));
+        // Two employees without a number do not clash on the unique column.
+        let a = create_employee(&conn, &data("موظف ثان", Some("  ")), "numadmin").unwrap();
+        let b = create_employee(&conn, &data("موظف ثالث", None), "numadmin").unwrap();
+        assert_eq!(a.employee_number, None);
+        assert_eq!(b.employee_number, None);
+    }
+
+    #[test]
+    fn a_number_already_used_is_refused_with_the_holder_name() {
+        let conn = conn_with_admin();
+        let first = create_employee(&conn, &data("موظف أول", Some("1024")), "numadmin").unwrap();
+        let error = create_employee(&conn, &data("موظف ثان", Some("1024")), "numadmin").unwrap_err().to_string();
+        assert!(error.contains("1024") && error.contains("موظف أول"), "{error}");
+        let second = create_employee(&conn, &data("موظف ثان", Some("2048")), "numadmin").unwrap();
+        assert!(update_employee(&conn, second.id, &data("موظف ثان", Some("1024")), "numadmin").is_err());
+        // Saving an employee with their own number is fine.
+        update_employee(&conn, first.id, &data("موظف أول", Some("1024")), "numadmin").unwrap();
+    }
 }
