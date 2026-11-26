@@ -2922,14 +2922,14 @@ pub(crate) fn encrypt_backup(plaintext: &[u8], password: &str, magic: &[u8; 9]) 
 fn decrypt_backup(encrypted: &[u8], password: &str) -> AppResult<(bool, Vec<u8>)> {
     let header = BACKUP_MAGIC_V2.len() + 16 + 12;
     if encrypted.len() <= header {
-        return Err(AppError::Validation("This is not a valid encrypted AutoHR backup".into()));
+        return Err(AppError::Validation("This is not a valid encrypted CNSArch backup".into()));
     }
     let magic = if &encrypted[..9] == BACKUP_MAGIC_V2 {
         BACKUP_MAGIC_V2
     } else if &encrypted[..9] == BACKUP_MAGIC_V1 {
         BACKUP_MAGIC_V1
     } else {
-        return Err(AppError::Validation("This is not a valid encrypted AutoHR backup".into()));
+        return Err(AppError::Validation("This is not a valid encrypted CNSArch backup".into()));
     };
     let key = backup_key(password, &encrypted[magic.len()..magic.len() + 16])?;
     let plaintext = Aes256Gcm::new_from_slice(&key).map_err(|e| AppError::Other(e.to_string()))?
@@ -3146,14 +3146,14 @@ fn validate_database_connection(source_conn: &Connection) -> AppResult<()> {
     let required_tables: i64 = source_conn.query_row(
         "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name IN ('users','employees','company_config','app_settings','activity_log')",
         [], |r| r.get(0),
-    ).map_err(|_| AppError::Validation("Backup is from an unsupported AutoHR version".into()))?;
-    if required_tables != 5 { return Err(AppError::Validation("Backup is missing required AutoHR data".into())); }
+    ).map_err(|_| AppError::Validation("Backup is from an unsupported CNSArch version".into()))?;
+    if required_tables != 5 { return Err(AppError::Validation("Backup is missing required CNSArch data".into())); }
     let foreign_key_errors: i64 = source_conn.query_row("SELECT COUNT(*) FROM pragma_foreign_key_check", [], |r| r.get(0))
         .map_err(|_| AppError::Validation("Backup relationships could not be validated".into()))?;
     if foreign_key_errors > 0 { return Err(AppError::Validation("Backup contains inconsistent relationships".into())); }
     let invalid_roles: i64 = source_conn.query_row(
         "SELECT COUNT(*) FROM users WHERE role NOT IN ('system_admin','archive_admin','archive_officer','viewer')", [], |r| r.get(0)
-    ).map_err(|_| AppError::Validation("Backup is from an unsupported AutoHR version".into()))?;
+    ).map_err(|_| AppError::Validation("Backup is from an unsupported CNSArch version".into()))?;
     if invalid_roles > 0 { return Err(AppError::Validation("Backup contains unsupported roles".into())); }
     Ok(())
 }

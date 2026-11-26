@@ -65,13 +65,13 @@ pub fn check_setup(data_root: &Path, backup_root: &Path, require_existing: bool)
     let existing_database = data_root.join(DATABASE_FILE).is_file();
     if require_existing && !existing_database {
         return Err(AppError::Validation(format!(
-            "لم يتم العثور على قاعدة بيانات AutoHR في {}. اختر المجلد الذي يحتوي على الملف {DATABASE_FILE}.",
+            "لم يتم العثور على قاعدة بيانات CNSArch في {}. اختر المجلد الذي يحتوي على الملف {DATABASE_FILE}.",
             data_root.display()
         )));
     }
     if !existing_database && data_root.join("Data").exists() {
         return Err(AppError::Validation(
-            "المجلد المختار يحتوي على مجلد Data بدون قاعدة بيانات. اختر مجلدًا فارغًا أو مجلد بيانات AutoHR كاملًا.".into(),
+            "المجلد المختار يحتوي على مجلد Data بدون قاعدة بيانات. اختر مجلدًا فارغًا أو مجلد بيانات CNSArch كاملًا.".into(),
         ));
     }
     if existing_database {
