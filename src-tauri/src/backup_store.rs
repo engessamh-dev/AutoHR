@@ -128,11 +128,23 @@ fn decrypt_blob(key: &StoreKey, sha256: &str, sealed: &[u8]) -> AppResult<Vec<u8
     Ok(plain)
 }
 
-/// Stores one attachment unless the store already holds it. A new file is read back and checked
-/// before it gets its final name. Returns true when it was written.
+/// True when the store holds this attachment intact: the file decrypts with the store key, its
+/// content has this SHA-256, and its size is the listed one. A file damaged on disk with its size
+/// unchanged is not intact (the size alone does not show that).
+fn blob_intact(key: &StoreKey, store: &Path, sha256: &str, size: u64) -> bool {
+    let path = blob_path(store, sha256);
+    if !std::fs::metadata(&path).is_ok_and(|meta| meta.is_file() && meta.len() == size + BLOB_OVERHEAD) {
+        return false;
+    }
+    std::fs::read(&path).ok().and_then(|sealed| decrypt_blob(key, sha256, &sealed).ok()).is_some_and(|plain| plain.len() as u64 == size)
+}
+
+/// Stores one attachment unless the store already holds it intact. A new file is read back and
+/// checked before it gets its final name; a damaged stored copy is replaced. Returns true when it
+/// was written.
 fn put_blob(key: &StoreKey, store: &Path, sha256: &str, plain: &[u8]) -> AppResult<bool> {
     let path = blob_path(store, sha256);
-    if std::fs::metadata(&path).is_ok_and(|meta| meta.is_file() && meta.len() == plain.len() as u64 + BLOB_OVERHEAD) {
+    if blob_intact(key, store, sha256, plain.len() as u64) {
         return Ok(false);
     }
     let dir = path.parent().expect("blob folder");
@@ -286,9 +298,11 @@ fn missing_store_error() -> AppError {
 }
 
 /// Checks a backup file without restoring it: the database (integrity, references, a trial
-/// restore), and that every attachment it lists is in the store with the right size.
+/// restore), and that every attachment it lists is in the store intact (decrypted and checked
+/// against its SHA-256, not only its size).
 pub(crate) fn verify_snapshot_file(path: &Path, password: &str) -> AppResult<()> {
     let (snapshot, database) = read_snapshot(path, password)?;
+    let key = StoreKey::from_hex(&snapshot.store_key).ok_or_else(|| AppError::Validation("ملف النسخة الاحتياطية تالف".into()))?;
     let check = tempfile::tempdir().map_err(other)?;
     let database_path = check.path().join("database.db");
     std::fs::write(&database_path, &database).map_err(other)?;
@@ -300,9 +314,11 @@ pub(crate) fn verify_snapshot_file(path: &Path, password: &str) -> AppResult<()>
     services::trial_restore_database(&database_path)?;
     let store = find_store(path, &snapshot.store_id).ok_or_else(missing_store_error)?;
     for file in &snapshot.files {
-        let blob = blob_path(&store, &file.sha256);
-        if std::fs::metadata(&blob).map(|meta| meta.len()).ok() != Some(file.size + BLOB_OVERHEAD) {
+        if !blob_path(&store, &file.sha256).is_file() {
             return Err(AppError::Validation(format!("مخزن المرفقات ينقصه ملف: {}", file.path)));
+        }
+        if !blob_intact(&key, &store, &file.sha256, file.size) {
+            return Err(AppError::Validation(format!("ملف تالف في مخزن المرفقات: {}", file.path)));
         }
     }
     Ok(())
