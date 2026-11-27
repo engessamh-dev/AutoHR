@@ -619,6 +619,43 @@ mod tests {
         assert_eq!(safety, 1);
     }
 
+    /// An attachment damaged in the store without its size changing: the check notices it, and the
+    /// next backup writes a good copy instead of reusing the damaged one.
+    #[test]
+    fn damaged_attachment_of_the_same_size_is_noticed_and_replaced() {
+        let env = env();
+        let data = env.root.join("data");
+        let backups = env.root.join("backups");
+        let conn = complete_setup(&data, &backups, false).unwrap();
+        let user = admin(&conn);
+        add_employee(&conn, &data, 1, "موظف");
+        let first = PathBuf::from(create_backup_with_progress(&conn, &user, "Backup-2026!", |_| {}).unwrap());
+        crate::services::verify_written_backup(&first, "Backup-2026!").unwrap();
+
+        let mut pending = vec![backups.join("Store")];
+        let mut blobs = Vec::new();
+        while let Some(dir) = pending.pop() {
+            for entry in std::fs::read_dir(&dir).unwrap().flatten() {
+                if entry.path().is_dir() { pending.push(entry.path()) } else if entry.path().extension().is_some_and(|e| e == "blob") { blobs.push(entry.path()) }
+            }
+        }
+        assert_eq!(blobs.len(), 1);
+        let mut bytes = std::fs::read(&blobs[0]).unwrap();
+        let size = bytes.len();
+        let middle = size / 2;
+        bytes[middle] ^= 0x55;
+        std::fs::write(&blobs[0], &bytes).unwrap();
+        assert_eq!(std::fs::metadata(&blobs[0]).unwrap().len() as usize, size);
+
+        let error = crate::services::verify_written_backup(&first, "Backup-2026!").unwrap_err();
+        assert!(serde_json::to_string(&error).unwrap().contains("تالف"), "{error:?}");
+
+        std::thread::sleep(std::time::Duration::from_millis(1100));
+        create_backup_with_progress(&conn, &user, "Backup-2026!", |_| {}).unwrap();
+        assert_ne!(std::fs::read(&blobs[0]).unwrap(), bytes, "the damaged copy was replaced");
+        crate::services::verify_written_backup(&first, "Backup-2026!").unwrap();
+    }
+
     #[test]
     fn copied_backup_folder_restores_elsewhere_and_missing_store_is_explained() {
         let env = env();

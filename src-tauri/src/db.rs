@@ -343,21 +343,62 @@ fn upgrade_to_v3(conn: &Connection) -> SqlResult<()> {
 }
 
 /// v10: the single-vehicle columns of `employees` (from before the «المركبات» list) are moved
-/// into the list once, for an employee whose list is empty, and then emptied. They are hidden in
-/// the program, so a date left there kept an expiry alert after the vehicle was renewed or removed.
+/// into the list, and then emptied. They are hidden in the program, so a date left there kept an
+/// expiry alert after the vehicle was renewed or removed.
+///
+/// Nothing is dropped: an old vehicle with any value (even only a colour) is kept. When the list
+/// already holds the same vehicle (same plate, or same annual number, ignoring spaces), the old
+/// values only fill that vehicle's empty fields, dates excepted, so a renewed date stays and an
+/// old date does not bring back an alert. Otherwise the old vehicle is added after the list.
 fn upgrade_to_v10(conn: &Connection) -> SqlResult<()> {
-    conn.execute(
-        "INSERT INTO employee_vehicles(employee_id,sort_order,plate,brand,type,color,annual_no,issue_date,expiry_date,model_year)
-         SELECT id,0,NULLIF(TRIM(vehicle_plate),''),NULLIF(TRIM(vehicle_name),''),NULLIF(TRIM(vehicle_type),''),
-                COALESCE(NULLIF(TRIM(vehicle_color),''),NULLIF(TRIM(vehicle_color_model),'')),
-                NULLIF(TRIM(vehicle_annual_no),''),NULLIF(TRIM(vehicle_annual_issue_date),''),
-                NULLIF(TRIM(vehicle_annual_expiry_date),''),NULLIF(TRIM(vehicle_manufacture_year),'')
-         FROM employees e
-         WHERE NOT EXISTS(SELECT 1 FROM employee_vehicles v WHERE v.employee_id=e.id)
-           AND TRIM(COALESCE(vehicle_plate,'')||COALESCE(vehicle_name,'')||COALESCE(vehicle_type,'')||
-                    COALESCE(vehicle_annual_no,'')||COALESCE(vehicle_annual_expiry_date,''))<>''",
-        [],
-    )?;
+    type Old = (i64, [Option<String>; 8]);
+    let clean = |value: Option<String>| value.map(|v| v.trim().to_string()).filter(|v| !v.is_empty());
+    let olds: Vec<Old> = conn
+        .prepare(
+            "SELECT id,vehicle_plate,vehicle_name,vehicle_type,COALESCE(NULLIF(TRIM(vehicle_color),''),vehicle_color_model),
+                    vehicle_annual_no,vehicle_annual_issue_date,vehicle_annual_expiry_date,vehicle_manufacture_year
+             FROM employees",
+        )?
+        .query_map([], |r| {
+            Ok((r.get(0)?, [r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?, r.get(6)?, r.get(7)?, r.get(8)?]))
+        })?
+        .collect::<SqlResult<_>>()?;
+    // Plates and annual numbers are compared without spaces; an empty value matches nothing.
+    let key = |value: &Option<String>| {
+        value.as_deref().map(|v| v.split_whitespace().collect::<String>()).filter(|v| !v.is_empty())
+    };
+    for (employee_id, values) in olds {
+        let [plate, brand, kind, color, annual_no, issue, expiry, year] = values.map(clean);
+        if [&plate, &brand, &kind, &color, &annual_no, &issue, &expiry, &year].iter().all(|v| v.is_none()) {
+            continue;
+        }
+        let list: Vec<(i64, Option<String>, Option<String>)> = conn
+            .prepare("SELECT id,plate,annual_no FROM employee_vehicles WHERE employee_id=?1 ORDER BY sort_order,id")?
+            .query_map([employee_id], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?
+            .collect::<SqlResult<_>>()?;
+        let same = list.iter().find(|(_, p, a)| {
+            (key(&plate).is_some() && key(p) == key(&plate)) || (key(&annual_no).is_some() && key(a) == key(&annual_no))
+        });
+        match same {
+            Some((vehicle_id, _, _)) => {
+                conn.execute(
+                    "UPDATE employee_vehicles SET
+                        plate=COALESCE(NULLIF(TRIM(plate),''),?2), brand=COALESCE(NULLIF(TRIM(brand),''),?3),
+                        type=COALESCE(NULLIF(TRIM(type),''),?4), color=COALESCE(NULLIF(TRIM(color),''),?5),
+                        annual_no=COALESCE(NULLIF(TRIM(annual_no),''),?6), model_year=COALESCE(NULLIF(TRIM(model_year),''),?7)
+                     WHERE id=?1",
+                    rusqlite::params![vehicle_id, plate, brand, kind, color, annual_no, year],
+                )?;
+            }
+            None => {
+                conn.execute(
+                    "INSERT INTO employee_vehicles(employee_id,sort_order,plate,brand,type,color,annual_no,issue_date,expiry_date,model_year)
+                     VALUES(?1,(SELECT COALESCE(MAX(sort_order)+1,0) FROM employee_vehicles WHERE employee_id=?1),?2,?3,?4,?5,?6,?7,?8,?9)",
+                    rusqlite::params![employee_id, plate, brand, kind, color, annual_no, issue, expiry, year],
+                )?;
+            }
+        }
+    }
     conn.execute(
         "UPDATE employees SET vehicle_plate=NULL,vehicle_name=NULL,vehicle_color_model=NULL,vehicle_type=NULL,
                 vehicle_color=NULL,vehicle_manufacture_year=NULL,vehicle_annual_no=NULL,
@@ -378,16 +419,14 @@ fn upgrade_to_v8(conn: &Connection) -> SqlResult<()> {
     Ok(())
 }
 
-/// v7: the add-employee wizard first kept its «تاريخ التعيين» in `hire_date` (the file's «تاريخ المباشرة»).
-/// For employees added since the wizard existed with only that date, move it to `appointment_date`.
-fn upgrade_to_v7(conn: &Connection) -> SqlResult<()> {
-    conn.execute(
-        "UPDATE employees SET appointment_date=hire_date, hire_date=NULL
-         WHERE TRIM(COALESCE(hire_date,''))<>'' AND TRIM(COALESCE(appointment_date,''))=''
-           AND id IN (SELECT target_id FROM activity_log
-                      WHERE action='CREATE_EMPLOYEE' AND target_type='employee' AND created_at>='2026-11-24')",
-        [],
-    )?;
+/// v7: intentionally changes nothing. It used to move «تاريخ المباشرة» (`hire_date`) to
+/// `appointment_date` for employees added since 2026-11-24 with only that date, because the
+/// add-employee wizard briefly saved «تاريخ التعيين» there. That wizard was never in a published
+/// build (1.0.5 was published before it, and the first 1.1.0 build already had the fix), while the
+/// employee file always kept the two dates apart. So the move only hit real «تاريخ المباشرة»
+/// dates: an employee added in 1.0.5 with only that date lost it. The version step stays so the
+/// numbering is unchanged.
+fn upgrade_to_v7(_conn: &Connection) -> SqlResult<()> {
     Ok(())
 }
 
@@ -1288,18 +1327,18 @@ mod v7_tests {
         conn.query_row("SELECT appointment_date, hire_date FROM employees WHERE id=?1", [id], |r| Ok((r.get(0)?, r.get(1)?))).unwrap()
     }
 
-    /// Only employees added since the wizard, with the wizard's date and no appointment date, move.
+    /// No date moves: an employee added recently with only «تاريخ المباشرة» keeps it there.
     #[test]
-    fn wizard_date_moves_to_the_appointment_date() {
+    fn v7_keeps_the_start_of_work_date_where_it_is() {
         let conn = Connection::open_in_memory().unwrap();
         migrate_for_tests(&conn);
-        let wizard = employee(&conn, "من المعالج", Some("2015-02-01"), None, "2026-11-24 10:00:00");
+        let start_only = employee(&conn, "مباشرة فقط", Some("2015-02-01"), None, "2026-11-24 10:00:00");
         let both = employee(&conn, "التاريخان", Some("2015-03-01"), Some("2015-01-01"), "2026-11-25 10:00:00");
         let older = employee(&conn, "قديم", Some("2010-10-03"), None, "2026-01-05 09:00:00");
         conn.execute_batch("PRAGMA user_version = 6;").unwrap();
         upgrade_restored(&conn).unwrap();
         assert_eq!(schema_version(&conn).unwrap(), SCHEMA_VERSION);
-        assert_eq!(dates(&conn, wizard), (Some("2015-02-01".into()), None));
+        assert_eq!(dates(&conn, start_only), (None, Some("2015-02-01".into())));
         assert_eq!(dates(&conn, both), (Some("2015-01-01".into()), Some("2015-03-01".into())));
         assert_eq!(dates(&conn, older), (None, Some("2010-10-03".into())));
     }
@@ -1356,5 +1395,36 @@ mod legacy_vehicle_tests {
             "SELECT COUNT(*) FROM employees WHERE COALESCE(vehicle_plate,vehicle_name,vehicle_color_model,vehicle_annual_no,vehicle_annual_expiry_date) IS NOT NULL",
             [], |r| r.get(0)).unwrap();
         assert_eq!(left, 0);
+    }
+
+    fn vehicles(conn: &Connection, employee: i64) -> Vec<(i64, Option<String>, Option<String>, Option<String>, Option<String>)> {
+        conn.prepare("SELECT sort_order,plate,brand,color,expiry_date FROM employee_vehicles WHERE employee_id=?1 ORDER BY sort_order,id").unwrap()
+            .query_map([employee], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?))).unwrap()
+            .collect::<SqlResult<_>>().unwrap()
+    }
+
+    /// Nothing of the old vehicle is lost: a colour alone, a different plate next to a list, and
+    /// the empty fields of the same vehicle in the list.
+    #[test]
+    fn v10_keeps_every_old_vehicle_value() {
+        let conn = Connection::open_in_memory().unwrap();
+        initialize_test(&conn).unwrap();
+        // 1: only a colour. 2: an older, different plate while the list has another vehicle.
+        // 3: the same plate (spaced differently) in the list, without brand and colour.
+        conn.execute("INSERT INTO employees(id,full_name,vehicle_color) VALUES(1,'أ','أحمر')", []).unwrap();
+        conn.execute("INSERT INTO employees(id,full_name,vehicle_plate,vehicle_name,vehicle_annual_expiry_date) VALUES(2,'ب','999 ج بغداد','تويوتا','2024-05-01')", []).unwrap();
+        conn.execute("INSERT INTO employee_vehicles(employee_id,sort_order,plate,expiry_date) VALUES(2,0,'123 د بصرة','2027-01-01')", []).unwrap();
+        conn.execute("INSERT INTO employees(id,full_name,vehicle_plate,vehicle_name,vehicle_color,vehicle_annual_expiry_date) VALUES(3,'ج','555  هـ  أربيل','هيونداي','فضي','2024-01-01')", []).unwrap();
+        conn.execute("INSERT INTO employee_vehicles(employee_id,sort_order,plate,expiry_date) VALUES(3,0,'555 هـ أربيل','2028-01-01')", []).unwrap();
+
+        upgrade_to_v10(&conn).unwrap();
+        upgrade_to_v10(&conn).unwrap();
+
+        assert_eq!(vehicles(&conn, 1), vec![(0, None, None, Some("أحمر".into()), None)]);
+        assert_eq!(vehicles(&conn, 2), vec![
+            (0, Some("123 د بصرة".into()), None, None, Some("2027-01-01".into())),
+            (1, Some("999 ج بغداد".into()), Some("تويوتا".into()), None, Some("2024-05-01".into())),
+        ]);
+        assert_eq!(vehicles(&conn, 3), vec![(0, Some("555 هـ أربيل".into()), Some("هيونداي".into()), Some("فضي".into()), Some("2028-01-01".into()))]);
     }
 }
