@@ -11,6 +11,7 @@ on:
 
 permissions:
   contents: read
+  actions: read
 
 env:
   FIX_REF: fix/recovery-alerts-close-backup
@@ -18,6 +19,9 @@ env:
 jobs:
   code:
     name: Code tests and test installer build
+    # A commit message with [reuse-installer] takes the test installer of the run in
+    # e2e/installer-run.txt instead of building again (same fix-branch commit).
+    if: ${{ !contains(github.event.head_commit.message, '[reuse-installer]') }}
     runs-on: windows-latest
     timeout-minutes: 90
     steps:
@@ -57,6 +61,7 @@ jobs:
   installer:
     name: Installer test over 1.0.5
     needs: code
+    if: ${{ always() && (needs.code.result == 'success' || needs.code.result == 'skipped') }}
     runs-on: windows-latest
     timeout-minutes: 60
     env:
@@ -68,7 +73,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          sparse-checkout: e2e/upgrade-1.1.1
+          sparse-checkout: e2e
 
       - uses: actions/setup-node@v4
         with:
@@ -92,10 +97,17 @@ jobs:
           [IO.File]::WriteAllText("C:\CNSTest\src\letter.pdf", $pdf)
           Get-ChildItem C:\CNSTest\src
 
+      - name: Which run built the installer
+        id: src
+        shell: bash
+        run: |
+          if [ "${{ needs.code.result }}" = "skipped" ]; then echo "run=$(tr -d '[:space:]' < e2e/installer-run.txt)" >> "$GITHUB_OUTPUT"; else echo "run=${{ github.run_id }}" >> "$GITHUB_OUTPUT"; fi
       - uses: actions/download-artifact@v4
         with:
           name: test-installer
           path: C:\CNSTest\branch
+          run-id: ${{ steps.src.outputs.run }}
+          github-token: ${{ github.token }}
 
       - name: Download the published 1.0.5 (and take the test build)
         run: |

@@ -548,8 +548,17 @@ async function missingAdmin() {
 
 // ── New cases of the fix branch (installed build) ──────────────────────────
 const NOTIFY_KEY = "HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\Notifications\\Settings\\com.autohr.app";
+// «الإعدادات ← النظام ← الإشعارات ← CNSArch» off/on, as Windows itself stores it; the
+// notification service is restarted so it reads the change at once. Returns what Windows then
+// reports for the program (ToastNotifier.Setting).
 function setToasts(enabled) {
-  ps(`New-Item -Path '${NOTIFY_KEY}' -Force | Out-Null; New-ItemProperty -Path '${NOTIFY_KEY}' -Name Enabled -Value ${enabled ? 1 : 0} -PropertyType DWord -Force | Out-Null`);
+  ps(`New-Item -Path '${NOTIFY_KEY}' -Force | Out-Null; New-ItemProperty -Path '${NOTIFY_KEY}' -Name Enabled -Value ${enabled ? 1 : 0} -PropertyType DWord -Force | Out-Null; Get-Service WpnUserService* -ErrorAction SilentlyContinue | Restart-Service -Force -ErrorAction SilentlyContinue; Start-Sleep 3`);
+  return windowsToastSetting();
+}
+function windowsToastSetting() {
+  try {
+    return ps("[void][Windows.UI.Notifications.ToastNotificationManager, Windows.UI.Notifications, ContentType = WindowsRuntime]; [Windows.UI.Notifications.ToastNotificationManager]::CreateToastNotifier('com.autohr.app').Setting").trim();
+  } catch (e) { return "error: " + String(e.message).split("\n")[0]; }
 }
 async function countNotifications() {
   await page.evaluate(() => {
@@ -590,17 +599,26 @@ async function newCases() {
     const e = await must("cmd_get_employee", { id: state.e1 });
     await must("cmd_update_employee", { id: state.e1, data: { ...e, civil_id_expiry_date: inDays(5) } });
     await page.evaluate(() => Object.keys(localStorage).filter(k => k.startsWith("cnsarch.documentAlertStages")).forEach(k => localStorage.removeItem(k)));
-    setToasts(false);
+    const consoleLines = [];
+    page.on("console", m => consoleLines.push(`${m.type()}: ${m.text()}`));
+    const rules = await invoke("cmd_get_document_alert_rules");
+    const emps = (await must("cmd_list_employees")).map(x => ({ id: x.id, active: x.is_active, national: x.civil_id_expiry_date, vehicles: x.vehicles }));
+    log("alerts", "data for the alerts", null, { rules, emps, shortcut: ps("Get-ChildItem \"$env:APPDATA\\Microsoft\\Windows\\Start Menu\\Programs\" -Recurse -Filter *CNSArch* | Select-Object -ExpandProperty FullName").trim() });
+    log("alerts", "Windows notification setting before", null, windowsToastSetting());
+    const off = setToasts(false);
+    log("alerts", "Windows notification setting after turning it off", null, off);
     const direct = await invoke("cmd_show_notification", { title: "اختبار", body: "إشعارات البرنامج مطفأة في Windows" });
     log("alerts", "Windows notifications off for the program: the request is refused", !direct.ok, direct);
     await loginCounted("sysadmin", adminPw);
     const s1 = await stages("sysadmin");
     const c1 = await notifyCalls();
-    log("alerts", "refused at sign-in: the reminder is not recorded as sent (stays pending)", c1.length >= 1 && c1.every(c => !c.ok) && Object.keys(s1).length === 0, { calls: c1, recorded: s1 });
+    log("alerts", "refused at sign-in: the reminder is not recorded as sent (stays pending)", c1.length >= 1 && c1.every(c => !c.ok) && Object.keys(s1).length === 0, { calls: c1, recorded: s1,
+      storage: await page.evaluate(() => Object.fromEntries(Object.keys(localStorage).filter(k => k.includes("Alert")).map(k => [k, localStorage.getItem(k)]))),
+      hook: await page.evaluate(() => typeof window.autohrCheckDocumentAlerts) });
     await page.evaluate(() => window.autohrCheckDocumentAlerts()); await sleep(1500);
     const c2 = await notifyCalls();
     log("alerts", "next check tries again while still refused", c2.length === c1.length + 1 && Object.keys(await stages("sysadmin")).length === 0, { calls: c2.length });
-    setToasts(true);
+    log("alerts", "Windows notification setting after turning it on", null, setToasts(true));
     await page.evaluate(() => window.autohrCheckDocumentAlerts()); await sleep(2000);
     const c3 = await notifyCalls(); const s3 = await stages("sysadmin");
     await shot("alerts-allowed");
@@ -612,6 +630,7 @@ async function newCases() {
     // Signing in again (same user) does not repeat it either.
     await loginCounted("sysadmin", adminPw);
     const c5 = await notifyCalls();
+    log("alerts", "console", null, consoleLines.slice(-15));
     log("alerts", "after signing in again: still not repeated", c5.filter(c => c.title === "تنبيهات المستمسكات").length === 0, { calls: c5 });
   });
 
@@ -630,7 +649,7 @@ async function newCases() {
     await touch("تغيير لم يُنسخ بعد");
     // Hold today's file open so Windows refuses to replace it: the new copy cannot take its place.
     const lockScript = path.join(ROOT, "lock.ps1");
-    fs.writeFileSync(lockScript, `$f=[IO.File]::Open('${daily}','Open','Read','None'); Start-Sleep 900`);
+    fs.writeFileSync(lockScript, `$f=[IO.File]::Open('${daily}','Open','Read','Read'); Start-Sleep 900`);
     const lockStart = () => execSync(`powershell -NoProfile -Command "Start-Process powershell -WindowStyle Hidden -ArgumentList '-NoProfile','-File','${lockScript}' -PassThru | Select-Object -ExpandProperty Id"`, { encoding: "utf8" }).trim();
     const lockStop = pid => { try { execSync(`taskkill /PID ${pid} /F`); } catch {} };
     let pid = lockStart(); await sleep(2500);
