@@ -6,7 +6,7 @@ import { applyBranding, showToast, confirmAction, escHtml, errorText, busyTaskLa
 import { renderDashboard }  from "./screens/dashboard.js";
 import { alertStageKey, buildDocumentAlerts, loadAlertRules, renderDocumentAlerts } from "./screens/document-alerts.js";
 import { renderEmployees }  from "./screens/employees.js";
-import { clearAddEmployeeDraft } from "./screens/add-wizard.js";
+import { clearAddEmployeeDraft, unsavedAddEmployeeWork } from "./screens/add-wizard.js";
 import { renderReports }    from "./screens/reports.js";
 import { renderDocuments }  from "./screens/documents.js";
 import { renderUsers }     from "./screens/users.js";
@@ -194,6 +194,16 @@ function stopInSessionBackups() {
 }
 
 /** Asks before closing or signing out while a backup, restore, export, move or update runs. */
+/** Entries in «إضافة موظف» live in memory only: say they will be lost before `action`. */
+async function confirmLoseAddEmployeeWork(action) {
+  const what = unsavedAddEmployeeWork();
+  if (!what) return true;
+  return confirmAction(
+    `${what} ${action} الآن يحذفها نهائيًا، لأن المسودة لا تُحفظ على الحاسبة. احفظ الموظف أولًا إذا تريد بياناته.`,
+    { title: "بيانات موظف غير محفوظة", confirmLabel: `${action} وحذفها`, danger: true },
+  );
+}
+
 async function confirmLeaveWhileBusy(action) {
   const label = busyTaskLabel();
   if (!label) return true;
@@ -637,7 +647,9 @@ async function doLogout() {
     return;
   }
   if (!(await confirmLeaveWhileBusy("تسجيل الخروج"))) return;
-  if (!(await confirmAction("تأكيد تسجيل الخروج؟"))) return;
+  if (unsavedAddEmployeeWork()) {
+    if (!(await confirmLoseAddEmployeeWork("تسجيل الخروج"))) return;
+  } else if (!(await confirmAction("تأكيد تسجيل الخروج؟"))) return;
   stopInSessionBackups();
 
   await runShutdownAutomaticBackups();
@@ -669,6 +681,7 @@ document.addEventListener("DOMContentLoaded", async () => {
       return;
     }
     if (!(await confirmLeaveWhileBusy("إغلاق البرنامج"))) return;
+    if (!(await confirmLoseAddEmployeeWork("إغلاق البرنامج"))) return;
     isClosingWindow = true;
     stopInSessionBackups();
     try {

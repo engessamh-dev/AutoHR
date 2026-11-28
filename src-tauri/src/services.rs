@@ -423,7 +423,7 @@ pub fn role_permissions(role: &str) -> &'static [&'static str] {
             "users.manage", "users.assign_system_admin", "audit.view", "settings.manage", "backups.manage", "backups.restore",
         ],
         // Three roles since v8: «مسؤول» (system_admin), «موظف» (archive_officer), «مشاهد» (viewer).
-        // The former «مسؤول الأرشيف» (archive_admin) became «مسؤول»; see db::upgrade_to_v8.
+        // The former «مسؤول الأرشيف» (archive_admin) became «موظف»; see db::upgrade_to_v8.
         "archive_officer" => &[
             "dashboard.view", "employees.view", "employees.create", "employees.edit",
             "documents.view", "documents.upload", "documents.download", "documents.print",
@@ -3694,6 +3694,7 @@ fn restore_inner(conn: &mut Connection, user: &str, source: &Path, password: &st
     // Kept after the safety copy, so that its own entry is not lost.
     let audit: Vec<AuditSnapshotRow> = read_audit_rows(conn)?;
     let kept_settings = backup_settings_to_keep(conn)?;
+    let kept_recovery = crate::account::recovery_to_keep(conn)?;
     progress(backup_progress(65, "جاري تجهيز ملفات الاستعادة..."));
     let current_data = storage_path(conn);
     let data_root = crate::paths::data_root();
@@ -3741,6 +3742,7 @@ fn restore_inner(conn: &mut Connection, user: &str, source: &Path, password: &st
         crate::integrity::approve(conn, user, "restore")?;
     }
     put_back_backup_settings(conn, &kept_settings)?;
+    crate::account::put_back_recovery(conn, &kept_recovery)?;
     progress(backup_progress(94, "جاري إعادة ربط سجل التدقيق..."));
     for row in audit_rows_to_restore(conn, audit)? {
         conn.execute(
@@ -4201,7 +4203,7 @@ mod phase3_security_tests {
         assert!(viewer.contains(&"documents.view") && viewer.contains(&"documents.print") && viewer.contains(&"documents.download"));
         let officer = role_permissions("archive_officer");
         assert!(officer.contains(&"documents.upload") && !officer.contains(&"documents.delete"));
-        assert!(role_permissions("archive_admin").is_empty(), "merged into system_admin in v8");
+        assert!(role_permissions("archive_admin").is_empty(), "removed in v8");
         assert!(role_permissions("system_admin").contains(&"users.assign_system_admin"));
         assert!(role_permissions("system_admin").contains(&"backups.restore"));
     }

@@ -23,4 +23,4 @@ Account rules (enforced in Rust):
 - An account changed outside the program (integrity check) has no permissions until it is recreated or the data is approved.
 - At most 10 users; usernames are unique ignoring letter case.
 
-History: v8 merged `archive_admin` («مسؤول الأرشيف») into `system_admin`, removed the Audit Log from `archive_officer`, and gave `viewer` downloads. Earlier, legacy `master` users migrated to `system_admin`, `operator` to `archive_officer`, and `hr_admin` / `hr_officer` to their Archive equivalents.
+History: v8 removed `archive_admin` («مسؤول الأرشيف»); its accounts became `archive_officer` (logged in the system log) so that no account gains the power to name admins or restore backups, removed the Audit Log from `archive_officer`, and gave `viewer` downloads. Earlier, legacy `master` users migrated to `system_admin`, `operator` to `archive_officer`, and `hr_admin` / `hr_officer` to their Archive equivalents.

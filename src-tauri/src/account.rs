@@ -252,6 +252,34 @@ fn store_new_recovery_code(conn: &Connection) -> AppResult<String> {
     Ok(code)
 }
 
+/// The recovery code of this computer, kept across a restore: the code printed last must keep
+/// working even when the backup is older than it, or older than recovery codes.
+pub(crate) struct KeptRecovery {
+    hash: Option<String>,
+    created: Option<String>,
+    admin: Option<String>,
+}
+
+pub(crate) fn recovery_to_keep(conn: &Connection) -> AppResult<KeptRecovery> {
+    let read = |key| get_setting(conn, key).map(|v| v.filter(|v: &String| !v.is_empty()));
+    Ok(KeptRecovery { hash: read(RECOVERY_HASH_KEY)?, created: read(RECOVERY_DATE_KEY)?, admin: read(BASE_ADMIN_KEY)? })
+}
+
+/// After a restore: put back this computer's recovery code, and its base administrator when that
+/// account is in the restored data (otherwise the restored base administrator stays).
+pub(crate) fn put_back_recovery(conn: &Connection, kept: &KeptRecovery) -> AppResult<()> {
+    let Some(hash) = &kept.hash else { return Ok(()) };
+    set_setting(conn, RECOVERY_HASH_KEY, hash)?;
+    set_setting(conn, RECOVERY_DATE_KEY, kept.created.as_deref().unwrap_or(""))?;
+    if let Some(admin) = &kept.admin {
+        let exists: bool = conn.query_row("SELECT EXISTS(SELECT 1 FROM users WHERE username=?1)", [admin], |r| r.get(0))?;
+        if exists {
+            set_setting(conn, BASE_ADMIN_KEY, admin)?;
+        }
+    }
+    Ok(())
+}
+
 /// What «نسيت كلمة المرور؟» can offer on this installation.
 #[derive(Debug, Clone, Serialize)]
 pub struct RecoveryOptions {
@@ -303,6 +331,11 @@ pub fn recover_admin_password(conn: &Connection, code: &str, new_password: &str)
         return Err(AppError::Validation(message));
     }
     let admin = base_admin(conn);
+    let admin_exists: bool = conn.query_row("SELECT EXISTS(SELECT 1 FROM users WHERE username=?1)", [&admin], |r| r.get(0))?;
+    if !admin_exists {
+        // Nothing would change, and the code must not be used up for nothing.
+        return Err(AppError::Validation(format!("حساب المسؤول الأساسي «{admin}» غير موجود في البيانات الحالية. تواصل مع الدعم الفني.")));
+    }
     validate_account_password(conn, &admin, new_password)?;
     if !verify_password(&normalize_code(code), &stored)? {
         crate::services::record_login_failure(conn, RECOVERY_LOCK_KEY);

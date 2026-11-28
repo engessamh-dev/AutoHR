@@ -9,7 +9,7 @@ const logout = source.slice(source.indexOf("async function doLogout()"), source.
 const closeStart = source.indexOf("  getCurrentWindow().onCloseRequested(");
 const close = source.slice(closeStart, source.indexOf("\n  // First run", closeStart));
 
-function harness({ fail = false } = {}) {
+function harness({ fail = false, unsaved = "", keepUnsaved = true } = {}) {
   const calls = [];
   let finish;
   const pending = new Promise(resolve => { finish = resolve; });
@@ -36,6 +36,12 @@ function harness({ fail = false } = {}) {
     clearLoginMessage: () => {},
     applyUiScale: () => {},
     clearAddEmployeeDraft: () => {},
+    unsavedAddEmployeeWork: () => unsaved,
+    confirmLoseAddEmployeeWork: async () => {
+      if (!unsaved) return true;
+      calls.push("asked-unsaved-employee");
+      return !keepUnsaved;
+    },
     confirmLeaveWhileBusy: async () => true,
     stopInSessionBackups: () => {},
     listen: async () => () => {},
@@ -74,5 +80,16 @@ for (const action of ["logout", "close"]) {
     assert.ok(h.calls.some(call => call.startsWith("notification:")));
     assert.ok(!h.calls.includes("backup-verified"));
     assert.ok(h.calls.includes(action === "logout" ? "logout" : "exit"));
+  });
+}
+
+for (const action of ["logout", "close"]) {
+  test(`${action} with an unsaved new employee asks first and stops when the user stays`, async () => {
+    const h = harness({ unsaved: "لديك مسودة موظف لم يُحفظ.", keepUnsaved: true });
+    await (action === "logout"
+      ? h.context.doLogout()
+      : h.context.closeHandler({ preventDefault() { h.calls.push("prevent-close"); } }));
+    assert.ok(h.calls.includes("asked-unsaved-employee"));
+    assert.ok(!h.calls.includes("logout") && !h.calls.includes("exit") && !h.calls.includes("backup-start"));
   });
 }

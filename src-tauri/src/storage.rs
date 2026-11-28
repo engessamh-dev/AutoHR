@@ -619,6 +619,45 @@ mod tests {
         assert_eq!(safety, 1);
     }
 
+    /// The recovery code printed last keeps working after restoring an older backup, or one
+    /// from before recovery codes; and a missing base administrator does not use the code up.
+    #[test]
+    fn recovery_code_of_this_computer_survives_a_restore() {
+        use crate::account::*;
+        let env = env();
+        let data = env.root.join("data");
+        let backups = env.root.join("backups");
+        let mut conn = complete_setup(&data, &backups, false).unwrap();
+        let setup = FirstRunSetup { username: "it.admin".into(), password: "Tigris7Bridge".into(), department_name: String::new(), division_name: String::new() };
+        let first_code = complete_first_run(&conn, &setup).unwrap().recovery_code;
+        let user = "it.admin".to_string();
+        let older = create_backup_with_progress(&conn, &user, "Backup-2026!", |_| {}).unwrap();
+        // A backup from before recovery codes: no code and no base administrator saved in it.
+        let saved: Vec<(String, String)> = conn.prepare("SELECT key,value FROM app_settings WHERE key IN ('admin_recovery_hash','admin_recovery_created','base_admin_username')").unwrap()
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?))).unwrap().map(Result::unwrap).collect();
+        conn.execute("DELETE FROM app_settings WHERE key IN ('admin_recovery_hash','admin_recovery_created','base_admin_username')", []).unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(1100));
+        let before_codes = create_backup_with_progress(&conn, &user, "Backup-2026!", |_| {}).unwrap();
+        for (key, value) in &saved { crate::services::set_setting(&conn, key, value).unwrap(); }
+        let newest_code = regenerate_recovery_code(&conn, &user).unwrap();
+
+        restore_backup_with_progress(&mut conn, &user, &older, "Backup-2026!", |_| {}).unwrap();
+        assert!(recover_admin_password(&conn, &first_code, "Nakheel2026").is_err(), "the replaced code stays replaced");
+        let after = recover_admin_password(&conn, &newest_code, "Nakheel2026").unwrap();
+        assert_eq!(after.username, "it.admin");
+
+        std::thread::sleep(std::time::Duration::from_millis(1100));
+        restore_backup_with_progress(&mut conn, &user, &before_codes, "Backup-2026!", |_| {}).unwrap();
+        assert!(recovery_status(&conn).exists);
+        assert_eq!(base_admin(&conn), "it.admin");
+
+        // The base administrator missing from the data: refused, and the code still works later.
+        crate::services::set_setting(&conn, "base_admin_username", "ghost").unwrap();
+        assert!(recover_admin_password(&conn, &after.recovery_code, "Furat2026x").is_err());
+        crate::services::set_setting(&conn, "base_admin_username", "it.admin").unwrap();
+        assert!(recover_admin_password(&conn, &after.recovery_code, "Furat2026x").is_ok());
+    }
+
     /// An attachment damaged in the store without its size changing: the check notices it, and the
     /// next backup writes a good copy instead of reusing the damaged one.
     #[test]
