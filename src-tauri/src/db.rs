@@ -410,12 +410,25 @@ fn upgrade_to_v10(conn: &Connection) -> SqlResult<()> {
     Ok(())
 }
 
-/// v8: three roles instead of four. «مسؤول الأرشيف» (archive_admin) becomes «مسؤول» (system_admin),
-/// and an admin can stop an account without deleting it (`disabled`). The rows changed here are
-/// re-sealed by `open_at` after the upgrade, so they are not reported as changed outside the program.
+/// v8: three roles instead of four, and an admin can stop an account without deleting it
+/// (`disabled`). «مسؤول الأرشيف» (archive_admin) becomes «موظف» (archive_officer), not «مسؤول»:
+/// «مسؤول» may name other admins and restore backups, which «مسؤول الأرشيف» never could. A System
+/// Admin raises the account again if wanted; each change is written in the system log. The rows
+/// changed here are re-sealed by `open_at` after the upgrade, so they are not reported as changed
+/// outside the program.
 fn upgrade_to_v8(conn: &Connection) -> SqlResult<()> {
     add_column_if_missing(conn, "users", "disabled", "INTEGER NOT NULL DEFAULT 0 CHECK(disabled IN (0,1))")?;
-    conn.execute("UPDATE users SET role='system_admin' WHERE role='archive_admin'", [])?;
+    let former: Vec<(i64, String)> = conn
+        .prepare("SELECT id,username FROM users WHERE role='archive_admin' ORDER BY id")?
+        .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?
+        .collect::<SqlResult<_>>()?;
+    conn.execute("UPDATE users SET role='archive_officer' WHERE role='archive_admin'", [])?;
+    for (id, username) in former {
+        crate::services::log_audit(
+            conn, None, "CHANGE_USER_ROLE", Some("user"), Some(id), Some(&username), "Success",
+            Some("ترقية البرنامج: دور «مسؤول الأرشيف» أُلغي فصار الحساب «موظف». يرفعه مسؤول النظام إلى «مسؤول» إذا لزم."),
+        );
+    }
     Ok(())
 }
 
@@ -1350,7 +1363,7 @@ mod v8_tests {
 
     /// A v7 database: «مسؤول الأرشيف» accounts become «مسؤول», and accounts can be stopped.
     #[test]
-    fn v7_archive_admins_become_admins_and_users_gain_disabled_column() {
+    fn v7_archive_admins_become_officers_and_users_gain_disabled_column() {
         let conn = Connection::open_in_memory().unwrap();
         migrate_for_tests(&conn);
         conn.execute_batch("ALTER TABLE users DROP COLUMN disabled;
@@ -1358,8 +1371,11 @@ mod v8_tests {
             PRAGMA user_version = 7;").unwrap();
         upgrade_restored(&conn).unwrap();
         let role = |name: &str| conn.query_row("SELECT role FROM users WHERE username=?1", [name], |r| r.get::<_, String>(0)).unwrap();
-        assert_eq!(role("old.admin"), "system_admin");
+        assert_eq!(role("old.admin"), "archive_officer", "no admin powers it did not have before");
         assert_eq!(role("clerk"), "archive_officer");
+        let logged: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM activity_log WHERE action='CHANGE_USER_ROLE' AND target_name='old.admin'", [], |r| r.get(0)).unwrap();
+        assert_eq!(logged, 1, "the change is in the system log");
         let disabled: i64 = conn.query_row("SELECT disabled FROM users WHERE username='clerk'", [], |r| r.get(0)).unwrap();
         assert_eq!(disabled, 0);
     }

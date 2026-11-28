@@ -222,6 +222,26 @@ function revokeImages(state) {
 /** Called on logout: a draft belongs to the session that made it. */
 export function clearAddEmployeeDraft() { dropDraft(); }
 
+/** While the wizard is open: whether it holds entries not saved as an employee. */
+let openWizardUnsaved = null;
+
+/**
+ * What would be lost by logging out or closing the program now, as one Arabic sentence, or ""
+ * when nothing would be. Asked before both, since the draft is never written to disk.
+ */
+export function unsavedAddEmployeeWork() {
+  if (openWizardUnsaved?.()) return "نافذة «إضافة موظف» مفتوحة وفيها بيانات لم تُحفظ.";
+  if (draft && hasDraftWork(draft.state)) {
+    const name = joinNameParts(draft.state.values.full_name?.value);
+    return `لديك مسودة موظف لم يُحفظ${name ? ` (${name})` : ""}.`;
+  }
+  return "";
+}
+
+function hasDraftWork(state) {
+  return Object.values(state.docs).some(d => Object.keys(d.images).length) || Object.keys(state.values).length > 0 || !!state.photo;
+}
+
 export function openAddEmployee({ user, employees = [], onManual, onCreated }) {
   const canWizard = can => user?.permissions?.includes(can);
   if (!canWizard("documents.upload")) { onManual(); return; }
@@ -315,13 +335,14 @@ function openWizard({ user, employees, onCreated, resume = null }) {
   // `keep`: what was entered stays as a draft (in memory) to continue later.
   const close = (keep = false) => {
     if (state.employee) { keep = false; onCreated(state.employee); }
+    openWizardUnsaved = null;
     overlay.remove();
     document.removeEventListener("keydown", onKey, true);
     unlistenDrop?.();
     if (keep && hasWork()) {
       dropDraft();
       draft = { owner: user?.username, savedAt: new Date(), state };
-      showToast("حُفظت المسودة: تجدها عند «إضافة موظف» حتى تسجيل الخروج");
+      showToast("حُفظت المسودة: تجدها عند «إضافة موظف» حتى تسجيل الخروج أو إغلاق البرنامج");
     } else {
       revokeImages(state);
     }
@@ -450,7 +471,7 @@ function openWizard({ user, employees, onCreated, resume = null }) {
     });
     ask.querySelector(canSaveNow() ? '[data-ask="save"]' : '[data-ask="stay"]').focus();
   }
-  const hasWork = () => Object.values(state.docs).some(d => Object.keys(d.images).length) || Object.keys(state.values).length > 0 || !!state.photo;
+  const hasWork = () => hasDraftWork(state);
   const onKey = event => {
     if (event.key !== "Escape") return;
     const viewer = overlay.querySelector(".aw-viewer");
@@ -1297,6 +1318,7 @@ function openWizard({ user, employees, onCreated, resume = null }) {
     const { data, spouses, family } = payload();
     return JSON.stringify(data) !== state.savedData || pendingUploads(0, spouses, family).length > 0;
   }
+  openWizardUnsaved = unsaved;
 
   /**
    * Saves and stays open: the first save creates the employee, later saves update it and upload
