@@ -58,3 +58,6 @@ rqrr = { version = "0.11.0", default-features = false }
 [target.'cfg(windows)'.dependencies]
 # DPAPI protection for the stored automatic-backup password (secure.rs).
 windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Security_Cryptography"] }
+# Windows notifications that report whether Windows accepted them (notify.rs).
+windows = { version = "0.62", features = ["UI_Notifications"] }
+tauri-winrt-notification = "0.8"

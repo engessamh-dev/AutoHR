@@ -98,6 +98,54 @@ export function confirmAction(message = "هل أنت متأكد من تنفيذ 
 }
 
 // ── Unsaved changes ────────────────────────────────────────────────────────
+
+// A choice among several actions, for example after a failed backup: «إعادة المحاولة»,
+// «البقاء في البرنامج», «المتابعة بدون نسخة جديدة». Resolves with the chosen value; Escape or a
+// click outside gives `cancelValue`. options: { title, choices: [{ value, label, className }], cancelValue }
+export function chooseAction(message, options = {}) {
+  const choices = options.choices ?? [];
+  return new Promise(resolve => {
+    const overlay = document.createElement("div");
+    overlay.setAttribute("dir", "rtl");
+    overlay.style.cssText = "position:fixed;inset:0;z-index:10000;background:rgba(0,0,0,.58);display:flex;align-items:center;justify-content:center;padding:20px;";
+    const dialog = document.createElement("div");
+    dialog.setAttribute("role", "alertdialog");
+    dialog.setAttribute("aria-modal", "true");
+    dialog.className = "card app-dialog app-choice-dialog";
+    dialog.style.cssText = "width:min(480px,100%);padding:20px;color:var(--ui-text-strong)";
+    const title = document.createElement("p");
+    title.textContent = options.title ?? "اختر الإجراء";
+    title.style.cssText = "font-size:16px;font-weight:700;margin:0 0 10px";
+    const body = document.createElement("p");
+    body.textContent = message;
+    body.style.cssText = "font-size:14px;line-height:1.8;color:var(--ui-text);margin:0 0 18px;white-space:pre-line";
+    const actions = document.createElement("div");
+    actions.style.cssText = "display:flex;gap:10px;justify-content:flex-start;flex-wrap:wrap";
+    const finish = value => {
+      document.removeEventListener("keydown", onKeyDown);
+      overlay.remove();
+      resolve(value);
+    };
+    const onKeyDown = event => { if (event.key === "Escape") finish(options.cancelValue ?? null); };
+    choices.forEach((choice, index) => {
+      const button = document.createElement("button");
+      button.type = "button";
+      button.className = choice.className ?? (index === 0 ? "btn-primary" : "btn-secondary");
+      button.dataset.choice = choice.value;
+      button.textContent = choice.label;
+      button.style.cssText = "min-width:96px";
+      button.addEventListener("click", () => finish(choice.value));
+      actions.append(button);
+    });
+    overlay.addEventListener("click", event => { if (event.target === overlay) finish(options.cancelValue ?? null); });
+    document.addEventListener("keydown", onKeyDown);
+    dialog.append(title, body, actions);
+    overlay.append(dialog);
+    document.body.append(overlay);
+    actions.querySelector("button")?.focus();
+  });
+}
+
 export function confirmSaveChanges(message = "توجد تغييرات غير محفوظة. هل تريد حفظها قبل الإغلاق؟") {
   if (_confirmActive) return _confirmActive;
 

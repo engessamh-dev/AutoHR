@@ -3727,9 +3727,10 @@ fn restore_inner(conn: &mut Connection, user: &str, source: &Path, password: &st
     progress(backup_progress(86, "جاري استعادة قاعدة البيانات..."));
     // The seal triggers belong to the database being replaced; they are put back afterwards.
     crate::integrity::detach(conn);
+    let mut restored_version = crate::db::SCHEMA_VERSION;
     if let Err(error) = conn.restore(rusqlite::MAIN_DB, staging.path().join("database.db"), None::<fn(rusqlite::backup::Progress)>).map_err(AppError::from)
         .and_then(|_| crate::db::upgrade_restored(conn).map_err(AppError::from))
-        .and_then(|_| crate::scanner::ensure_metadata_columns(conn).map_err(AppError::from)) {
+        .and_then(|version| { restored_version = version; crate::scanner::ensure_metadata_columns(conn).map_err(AppError::from) }) {
         std::fs::remove_dir_all(&current_data).ok();
         if rollback_data.exists() { std::fs::rename(&rollback_data, &current_data).ok(); }
         conn.restore(rusqlite::MAIN_DB, &rollback_database, None::<fn(rusqlite::backup::Progress)>).ok();
@@ -3738,11 +3739,14 @@ fn restore_inner(conn: &mut Connection, user: &str, source: &Path, password: &st
     }
     // A backup made on another computer, or before seals existed, is accepted by the System Admin
     // who restores it; a backup sealed on this computer keeps its own seals and is checked as is.
-    if crate::integrity::attach(conn, false) == crate::integrity::State::Unapproved {
+    let seal_state = crate::integrity::attach(conn, false);
+    let sealed_here = seal_state == crate::integrity::State::Verified;
+    if seal_state == crate::integrity::State::Unapproved {
         crate::integrity::approve(conn, user, "restore")?;
     }
     put_back_backup_settings(conn, &kept_settings)?;
-    crate::account::put_back_recovery(conn, &kept_recovery)?;
+    // Backups older than account identities (v12) recognise the administrator by its row.
+    crate::account::put_back_recovery(conn, &kept_recovery, restored_version < 12, sealed_here)?;
     progress(backup_progress(94, "جاري إعادة ربط سجل التدقيق..."));
     for row in audit_rows_to_restore(conn, audit)? {
         conn.execute(
@@ -4000,6 +4004,49 @@ mod phase3_security_tests {
             let employees = list_employees(&conn).unwrap();
             println!("list_employees: {} employees in {:?}", employees.len(), started.elapsed());
         }
+    }
+
+    /// A daily backup whose check fails leaves today's last good file exactly as it was, and is
+    /// still due: the next attempt (for example «إعادة المحاولة» on sign-out) makes it.
+    #[test]
+    fn failed_daily_backup_keeps_the_last_good_one_unchanged() {
+        let dir = tempfile::tempdir().unwrap();
+        struct Reset;
+        impl Drop for Reset {
+            fn drop(&mut self) {
+                TEST_APP_DATA_ROOT.with(|root| *root.borrow_mut() = None);
+                crate::backup_store::FAIL_SNAPSHOT_VERIFY.with(|fail| fail.set(false));
+            }
+        }
+        TEST_APP_DATA_ROOT.with(|root| *root.borrow_mut() = Some(dir.path().to_path_buf()));
+        let _reset = Reset;
+        let conn = Connection::open(dir.path().join("database.db")).unwrap();
+        conn.execute_batch(include_str!("../../database/schema.sql")).unwrap();
+        conn.execute("INSERT INTO users(username,password,role) VALUES('testadmin','unused','system_admin')", []).unwrap();
+        crate::integrity::test_use_new_key(true);
+        assert_eq!(crate::integrity::attach(&conn, false), crate::integrity::State::Verified);
+        set_setting(&conn, "auto_backup_daily_enabled", "1").unwrap();
+        set_setting(&conn, "auto_backup_password", "strong-password").unwrap();
+        conn.execute("INSERT INTO employees(id,full_name) VALUES(1,'Good copy')", []).unwrap();
+        log_activity(&conn, "testadmin", "CREATE_EMPLOYEE", Some("employee"), Some(1), None, None);
+        assert_eq!(run_due_automatic_backups_with_progress(&conn, false, |_| {}).unwrap(), vec!["يومي"]);
+        let path = get_setting(&conn, "auto_backup_last_daily_path").unwrap().unwrap();
+        let good = std::fs::read(&path).unwrap();
+        let marker = get_setting(&conn, "auto_backup_last_change_id").unwrap();
+
+        conn.execute("UPDATE employees SET full_name='Not backed up' WHERE id=1", []).unwrap();
+        log_activity(&conn, "testadmin", "UPDATE_EMPLOYEE", Some("employee"), Some(1), None, None);
+        crate::backup_store::FAIL_SNAPSHOT_VERIFY.with(|fail| fail.set(true));
+        assert!(run_due_automatic_backups_with_progress(&conn, false, |_| {}).is_err());
+        assert_eq!(std::fs::read(&path).unwrap(), good, "the last good backup is unchanged");
+        assert_eq!(get_setting(&conn, "auto_backup_last_change_id").unwrap(), marker, "still due");
+        let leftovers: Vec<String> = std::fs::read_dir(Path::new(&path).parent().unwrap()).unwrap().map(|e| e.unwrap().file_name().to_string_lossy().into_owned()).collect();
+        assert!(leftovers.iter().all(|name| name.starts_with("cnsarch_daily_")), "no half-written file is left next to it: {leftovers:?}");
+
+        crate::backup_store::FAIL_SNAPSHOT_VERIFY.with(|fail| fail.set(false));
+        verify_written_backup(Path::new(&path), "strong-password").unwrap();
+        assert_eq!(run_due_automatic_backups_with_progress(&conn, false, |_| {}).unwrap(), vec!["يومي"]);
+        assert_ne!(std::fs::read(&path).unwrap(), good);
     }
 
     #[test]

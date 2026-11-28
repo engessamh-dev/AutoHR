@@ -2,7 +2,7 @@
  * main.js — Auth, navigation, RBAC, i18n
  */
 import { api }           from "./api.js";
-import { applyBranding, showToast, confirmAction, escHtml, errorText, busyTaskLabel } from "./utils.js";
+import { applyBranding, showToast, confirmAction, chooseAction, escHtml, errorText, busyTaskLabel } from "./utils.js";
 import { renderDashboard }  from "./screens/dashboard.js";
 import { alertStageKey, buildDocumentAlerts, loadAlertRules, renderDocumentAlerts } from "./screens/document-alerts.js";
 import { renderEmployees }  from "./screens/employees.js";
@@ -18,7 +18,6 @@ import { showWhatsNewIfUpdated } from "./whats-new.js";
 import { renderAudit }     from "./screens/audit.js";
 import { can, roleLabels } from "./permissions.js";
 import { formatAppVersion } from "./version.js";
-import { isPermissionGranted, requestPermission, sendNotification } from "@tauri-apps/plugin-notification";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { initTheme, mountThemeMenu } from "./theme.js";
@@ -123,16 +122,15 @@ async function applyLoginBranding() {
   } catch (_) { /* non-fatal */ }
 }
 
+/** Windows notification. Returns true only when Windows accepted it (not refused, not failed). */
 async function notifyWindows(title, body) {
   try {
-    let granted = await isPermissionGranted();
-    if (!granted) {
-      granted = (await requestPermission()) === "granted";
-    }
-    if (granted) {
-      sendNotification({ title, body });
-    }
-  } catch (_) { /* notification support is non-fatal */ }
+    await api.showNotification(title, body);
+    return true;
+  } catch (_) {
+    // Refused (notifications off for the program in Windows) or failed: recorded in the error log.
+    return false;
+  }
 }
 
 function openAutomaticBackupProgress() {
@@ -236,6 +234,7 @@ async function runShutdownAutomaticBackups({ showProgress = true } = {}) {
         progress?.update({ percent: 100, message });
         await notifyWindows("نسخ احتياطي تلقائي", message);
       }
+      return { ok: true };
     } catch (err) {
       progress?.update({
         percent: 100,
@@ -244,10 +243,10 @@ async function runShutdownAutomaticBackups({ showProgress = true } = {}) {
       // Errors from Rust arrive as plain strings. Show an Arabic reason when there is one;
       // technical (English) details are in the error log («فحص البرنامج»).
       const detail = typeof err === "string" ? err : err?.message;
-      await notifyWindows(
-        "فشل النسخ التلقائي",
-        /[\u0600-\u06FF]/.test(detail ?? "") ? detail : "تعذر إنشاء النسخة الاحتياطية التلقائية. التفاصيل في «فحص البرنامج».",
-      );
+      return {
+        ok: false,
+        message: /[\u0600-\u06FF]/.test(detail ?? "") ? detail : "تعذر إنشاء النسخة الاحتياطية التلقائية. التفاصيل في «فحص البرنامج».",
+      };
     } finally {
       if (unlisten) unlisten();
       if (progress) {
@@ -258,6 +257,37 @@ async function runShutdownAutomaticBackups({ showProgress = true } = {}) {
     }
   })();
   return automaticBackupPromise;
+}
+
+/**
+ * The automatic backup before signing out or closing. When it fails (writing or checking the new
+ * copy), nothing goes on by itself: the user chooses to try again, to stay in the program, or to go
+ * on without a new copy. A failed attempt never replaces the last good backup (the new copy is
+ * written aside, checked, and only then takes its place). Returns true to go on.
+ */
+async function backupBeforeLeaving(action) {
+  for (;;) {
+    const result = await runShutdownAutomaticBackups();
+    if (!result || result.ok) return true;
+    const choice = await chooseAction(
+      `${result.message}\n\nلم تُنشأ نسخة احتياطية جديدة، وآخر نسخة سليمة باقية كما هي دون تغيير.`,
+      {
+        title: "فشل النسخ الاحتياطي التلقائي",
+        choices: [
+          { value: "retry", label: "إعادة المحاولة", className: "btn-primary" },
+          { value: "stay", label: "البقاء في البرنامج", className: "btn-secondary" },
+          { value: "continue", label: `${action === "close" ? "الإغلاق" : "تسجيل الخروج"} بدون نسخة جديدة`, className: "btn-secondary" },
+        ],
+        cancelValue: "stay",
+      },
+    );
+    if (choice === "retry") continue;
+    if (choice === "continue") {
+      await notifyWindows("فشل النسخ التلقائي", `${action === "close" ? "أُغلق البرنامج" : "سُجّل الخروج"} بدون نسخة احتياطية جديدة. ${result.message}`);
+      return true;
+    }
+    return false;
+  }
 }
 
 /**
@@ -283,17 +313,46 @@ async function notifyDocumentAlerts() {
       current[id] = stage;
       if (announced[id] !== stage) fresh.push(alert);
     });
-    localStorage.setItem(storageKey, JSON.stringify(current));
-    if (!fresh.length) return;
+    if (!fresh.length) {
+      localStorage.setItem(storageKey, JSON.stringify(current));
+      return;
+    }
 
     const expired = fresh.filter(alert => alert.expired).length;
     const expiring = fresh.length - expired;
-    await notifyWindows(
+    const shown = await notifyWindows(
       "تنبيهات المستمسكات",
       `وصل ${fresh.length} مستمسك إلى موعد تنبيه: ${expired} منتهية و ${expiring} قريبة النفاذ. مجموع التنبيهات الحالية ${alerts.length}.`,
     );
+    // A reminder counts as announced only once Windows accepted the notification. Refused or
+    // failed: the new reminders stay pending and are tried again at the next check.
+    const kept = {};
+    Object.entries(current).forEach(([id, stage]) => {
+      if (shown || announced[id] === stage) kept[id] = stage;
+    });
+    localStorage.setItem(storageKey, JSON.stringify(kept));
   } catch (_) { /* document alert notifications are non-fatal */ }
 }
+
+// While someone is signed in, pending reminders (Windows refused or failed) are tried again.
+const DOCUMENT_ALERT_CHECK_MS = 15 * 60 * 1000;
+let documentAlertTimer = null;
+let documentAlertCheck = null;
+function checkDocumentAlerts() {
+  if (!currentUser || documentAlertCheck) return documentAlertCheck;
+  documentAlertCheck = notifyDocumentAlerts().finally(() => { documentAlertCheck = null; });
+  return documentAlertCheck;
+}
+function startDocumentAlertChecks() {
+  stopDocumentAlertChecks();
+  documentAlertTimer = setInterval(checkDocumentAlerts, window.autohrDocumentAlertCheckMs ?? DOCUMENT_ALERT_CHECK_MS);
+}
+function stopDocumentAlertChecks() {
+  if (documentAlertTimer) clearInterval(documentAlertTimer);
+  documentAlertTimer = null;
+}
+// For the UI tests: run the check now.
+window.autohrCheckDocumentAlerts = checkDocumentAlerts;
 
 const screenRenderers = {
   dashboard: renderDashboard,
@@ -421,7 +480,8 @@ async function enterApp(user) {
   await navigateTo("dashboard");
   // «ما الجديد»: once, on the first sign-in after an update.
   await showWhatsNewIfUpdated();
-  notifyDocumentAlerts();
+  checkDocumentAlerts();
+  startDocumentAlertChecks();
   await checkDataIntegrity(user);
   offerAvailableUpdate(user);
 }
@@ -651,8 +711,14 @@ async function doLogout() {
     if (!(await confirmLoseAddEmployeeWork("تسجيل الخروج"))) return;
   } else if (!(await confirmAction("تأكيد تسجيل الخروج؟"))) return;
   stopInSessionBackups();
+  stopDocumentAlertChecks();
 
-  await runShutdownAutomaticBackups();
+  if (!(await backupBeforeLeaving("logout"))) {
+    // «البقاء في البرنامج»: still signed in, with the regular checks running again.
+    startInSessionBackups();
+    startDocumentAlertChecks();
+    return;
+  }
 
   if (currentUser) {
     try { await api.logout(); } catch (_) { /* non-fatal */ }
@@ -684,11 +750,18 @@ document.addEventListener("DOMContentLoaded", async () => {
     if (!(await confirmLoseAddEmployeeWork("إغلاق البرنامج"))) return;
     isClosingWindow = true;
     stopInSessionBackups();
+    stopDocumentAlertChecks();
+    let leave = true;
     try {
-      await runShutdownAutomaticBackups();
-    } finally {
-      await api.exitApp();
+      leave = await backupBeforeLeaving("close");
+    } catch (_) { /* an unexpected error never keeps the program from closing */ }
+    if (!leave) {
+      // «البقاء في البرنامج»: the window stays open, with the regular checks running again.
+      isClosingWindow = false;
+      if (currentUser) { startInSessionBackups(); startDocumentAlertChecks(); }
+      return;
     }
+    await api.exitApp();
   });
 
   // First run or unavailable data folder: choose folders before the login screen.

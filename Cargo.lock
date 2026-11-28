@@ -302,9 +302,11 @@ dependencies = [
  "tauri-plugin-dialog",
  "tauri-plugin-notification",
  "tauri-plugin-updater",
+ "tauri-winrt-notification",
  "tempfile",
  "thiserror 1.0.69",
  "tract-onnx",
+ "windows",
  "windows-sys 0.61.2",
  "zip",
 ]
