@@ -1,0 +1,47 @@
+# Runs the checks on Windows, the platform the program ships on, for every pull request and
+# every push to main. Nothing is built for release or published here.
+name: Windows tests
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: windows-tests-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    runs-on: windows-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: ". -> target"
+
+      - name: Install npm packages
+        run: npm ci
+
+      - name: Build the frontend (vite)
+        run: npm run build
+
+      - name: Rust tests
+        run: cargo test -p autohr --lib
+
+      - name: Node tests
+        shell: bash
+        run: node --test tests/*.test.js
