@@ -552,7 +552,10 @@ const NOTIFY_KEY = "HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\Notific
 // notification service is restarted so it reads the change at once. Returns what Windows then
 // reports for the program (ToastNotifier.Setting).
 function setToasts(enabled) {
-  ps(`New-Item -Path '${NOTIFY_KEY}' -Force | Out-Null; New-ItemProperty -Path '${NOTIFY_KEY}' -Name Enabled -Value ${enabled ? 1 : 0} -PropertyType DWord -Force | Out-Null; Get-Service WpnUserService* -ErrorAction SilentlyContinue | Restart-Service -Force -ErrorAction SilentlyContinue; Start-Sleep 3`);
+  const change = enabled
+    ? `Remove-ItemProperty -Path '${NOTIFY_KEY}' -Name Enabled -ErrorAction SilentlyContinue`
+    : `New-Item -Path '${NOTIFY_KEY}' -Force | Out-Null; New-ItemProperty -Path '${NOTIFY_KEY}' -Name Enabled -Value 0 -PropertyType DWord -Force | Out-Null`;
+  ps(`${change}; Get-Service WpnUserService* -ErrorAction SilentlyContinue | Restart-Service -Force -ErrorAction SilentlyContinue; Start-Sleep 3`);
   return windowsToastSetting();
 }
 function windowsToastSetting() {
@@ -560,19 +563,20 @@ function windowsToastSetting() {
     return ps("[void][Windows.UI.Notifications.ToastNotificationManager, Windows.UI.Notifications, ContentType = WindowsRuntime]; [Windows.UI.Notifications.ToastNotificationManager]::CreateToastNotifier('com.autohr.app').Setting").trim();
   } catch (e) { return "error: " + String(e.message).split("\n")[0]; }
 }
+// Counts the program's notification requests as they reach the backend (Tauri IPC requests seen
+// over DevTools), with whether the backend accepted them. The program itself is not changed.
+const ipcNotifications = [];
+let ipcWatching = false;
 async function countNotifications() {
-  await page.evaluate(() => {
-    if (window.__countedInvoke) return;
-    const original = window.__TAURI_INTERNALS__.invoke;
-    window.__notifyCalls = [];
-    window.__TAURI_INTERNALS__.invoke = async (cmd, args, opts) => {
-      if (cmd !== "cmd_show_notification") return original(cmd, args, opts);
-      try { const v = await original(cmd, args, opts); window.__notifyCalls.push({ ok: true, title: args?.title }); return v; }
-      catch (e) { window.__notifyCalls.push({ ok: false, title: args?.title, error: String(e) }); throw e; }
-    };
-    window.__countedInvoke = true;
+  if (ipcWatching) return;
+  ipcWatching = true;
+  page.on("response", async response => {
+    if (!response.url().includes("cmd_show_notification")) return;
+    const headers = response.headers();
+    ipcNotifications.push({ ok: response.status() === 200 && headers["tauri-response"] !== "error", status: response.status(), at: Date.now() });
   });
 }
+
 // Signs in through the login form with the notification counter already in place, so the check
 // made at sign-in is counted too.
 async function loginCounted(username, password) {
@@ -586,7 +590,7 @@ async function loginCounted(username, password) {
   await sleep(4000);
   await dismissOverlays();
 }
-const notifyCalls = () => page.evaluate(() => window.__notifyCalls || []);
+const notifyCalls = async () => { await sleep(500); return ipcNotifications.map(c => ({ ...c })); };
 const stages = user => page.evaluate(u => JSON.parse(localStorage.getItem(`cnsarch.documentAlertStages.${u}`) || "{}"), user);
 const inDays = days => { const d = new Date(); d.setDate(d.getDate() + days); return d.toISOString().slice(0, 10); };
 
@@ -631,7 +635,7 @@ async function newCases() {
     await loginCounted("sysadmin", adminPw);
     const c5 = await notifyCalls();
     log("alerts", "console", null, consoleLines.slice(-15));
-    log("alerts", "after signing in again: still not repeated", c5.filter(c => c.title === "تنبيهات المستمسكات").length === 0, { calls: c5 });
+    log("alerts", "after signing in again: still not repeated", c5.length === c4.length, { before: c4.length, after: c5.length });
   });
 
   // ── Backup on sign-out / close ──
