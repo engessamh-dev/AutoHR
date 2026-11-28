@@ -21,7 +21,7 @@ const PW = {
   officer: "Officer#2026a",
   viewer: "Viewer#2026a",
   backup: "Backup#2026a",
-  other: "Otheradmin#2026a",
+  other: "Kx7#Pq92Lmz",
 };
 
 const state = fs.existsSync(STATE) ? JSON.parse(fs.readFileSync(STATE, "utf8")) : {};
@@ -138,9 +138,15 @@ async function seed105() {
   await must("cmd_change_password", { currentPassword: "password", newPassword: PW.admin105 });
 
   for (const [username, role, password] of [["archadmin", "archive_admin", PW.archadmin], ["officer1", "archive_officer", PW.officer], ["viewer1", "viewer", PW.viewer]]) {
-    const u = await must("cmd_create_user", { data: { username, password, role } });
+    const u = await must("cmd_create_user", { data: { username, password: password + "0", role } });
     state[username] = u.id;
   }
+  // New accounts must set their own password at first sign-in (as a real user would have done in 1.0.5).
+  for (const [username, password] of [["archadmin", PW.archadmin], ["officer1", PW.officer], ["viewer1", PW.viewer]]) {
+    await must("cmd_login", { username, password: password + "0" });
+    await must("cmd_change_password", { currentPassword: password + "0", newPassword: password });
+  }
+  await must("cmd_login", { username: "sysadmin", password: PW.admin105 });
   log("setup", "1.0.5 users created", null, (await must("cmd_list_users")).map(u => `${u.username}:${u.role}`));
 
   // Point 1: only «تاريخ المباشرة» (hire_date), no «تاريخ التعيين».
@@ -203,6 +209,17 @@ async function update105() {
   log("updater", "console during install", null, msgs.slice(-10));
 }
 
+async function section(point, fn) {
+  try { await fn(); }
+  catch (e) {
+    let text = "";
+    try { text = await page.evaluate(() => [...document.querySelectorAll("body *")].filter(el => el.offsetParent && el.children.length === 0 && el.innerText?.trim()).map(el => el.innerText.trim()).slice(0, 80).join(" | ")); } catch {}
+    log(point, "section stopped", false, { error: e.message.split("\n")[0], screenText: text.slice(0, 1500) });
+    await shot(`error-${point}`);
+    await page.keyboard.press("Escape").catch(() => {});
+  }
+}
+
 async function verify() {
   await connect();
   const version = await appVersion();
@@ -210,6 +227,7 @@ async function verify() {
   await shot("01-login-after-upgrade");
   await must("cmd_login", { username: "sysadmin", password: PW.admin105 });
 
+  await section("1-2", async () => {
   // ── Point 1 ──
   const e1 = await must("cmd_get_employee", { id: state.e1 });
   const e1b = await must("cmd_get_employee", { id: state.e1b });
@@ -232,6 +250,8 @@ async function verify() {
   log("2", "old single-vehicle columns emptied", [e2, e3, e4].every(e => !e.vehicle_plate && !e.vehicle_color && !e.vehicle_annual_expiry_date),
     [e2, e3, e4].map(e => ({ plate: e.vehicle_plate ?? null, color: e.vehicle_color ?? null, expiry: e.vehicle_annual_expiry_date ?? null })));
 
+  });
+  await section("ui-1-2", async () => {
   // UI view of the vehicles of e4 and the dates of e1 (screenshots).
   await uiLogin("sysadmin", PW.admin105);
   await shot("02-dashboard-sysadmin");
@@ -247,6 +267,8 @@ async function verify() {
     }
   }
 
+  });
+  await section("4", async () => {
   // ── Point 4 ──
   const users = await must("cmd_list_users");
   const arch = users.find(u => u.username === "archadmin");
@@ -281,6 +303,8 @@ async function verify() {
   } else log("4", "archadmin has no Settings screen (UI)", true, "settings nav hidden");
   await must("cmd_login", { username: "sysadmin", password: PW.admin105 });
 
+  });
+  await section("6", async () => {
   // ── Point 6 (UI) ──
   await uiLogin("sysadmin", PW.admin105);
   await page.click('.nav-item[data-screen="employees"]'); await sleep(2000);
@@ -338,6 +362,8 @@ async function verify() {
   log("6", "«إلغاء» after close warning keeps the app open and the draft", Number(alive) > 0 && /مسودة/.test(banner2), { processes: alive, banner: banner2 });
   await page.keyboard.press("Escape"); await sleep(600);
 
+  });
+  await section("3", async () => {
   // ── Point 3 ──
   await must("cmd_login", { username: "sysadmin", password: PW.admin105 });
   const emp1 = await must("cmd_get_employee", { id: state.e1 });
@@ -395,6 +421,8 @@ async function verify() {
     log("3", "next backup replaces the damaged copy; old backup checks clean again", b5.ok && healed && insp3.ok, { newBackup: b5, blobRewritten: healed, inspectOld: insp3.ok ? "ok" : insp3 });
   }
 
+  });
+  await section("5", async () => {
   // ── Point 5 ──
   await must("cmd_login", { username: "sysadmin", password: PW.admin105 });
   const codeX = await must("cmd_regenerate_recovery_code");
@@ -426,6 +454,7 @@ async function verify() {
   await page.reload(); await sleep(3000);
   const forgot = page.locator("button, a").filter({ hasText: /نسيت/ });
   if (await forgot.count()) { await forgot.first().click().catch(() => {}); await sleep(1500); await shot("17-forgot-password-ui"); await page.keyboard.press("Escape"); }
+  });
   saveState();
 }
 
@@ -459,7 +488,7 @@ async function otherInstall() {
 
 async function missingAdmin() {
   await connect();
-  await must("cmd_login", { username: "sysadmin", password: state.adminPw });
+  await must("cmd_login", { username: "sysadmin", password: state.adminPw || PW.admin105 });
   const before = await must("cmd_get_recovery_status");
   const r = await invoke("cmd_restore_backup", { sourcePath: state.backupOther, password: PW.backup });
   log("5", "restored a backup whose data has no «sysadmin»", r.ok, r);
