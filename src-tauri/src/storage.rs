@@ -651,11 +651,70 @@ mod tests {
         assert!(recovery_status(&conn).exists);
         assert_eq!(base_admin(&conn), "it.admin");
 
-        // The base administrator missing from the data: refused, and the code still works later.
-        crate::services::set_setting(&conn, "base_admin_username", "ghost").unwrap();
-        assert!(recover_admin_password(&conn, &after.recovery_code, "Furat2026x").is_err());
-        crate::services::set_setting(&conn, "base_admin_username", "it.admin").unwrap();
+        // The account missing from the data: refused, and the code still works later.
+        let uid: String = conn.query_row("SELECT account_uid FROM users WHERE username='it.admin'", [], |r| r.get(0)).unwrap();
+        conn.execute("UPDATE users SET account_uid='someone-else' WHERE username='it.admin'", []).unwrap();
+        let refused = recover_admin_password(&conn, &after.recovery_code, "Furat2026x").unwrap_err().to_string();
+        assert!(refused.contains("غير موجود") && refused.contains("لم يُستخدم"), "{refused}");
+        conn.execute("UPDATE users SET account_uid=?1 WHERE username='it.admin'", [&uid]).unwrap();
         assert!(recover_admin_password(&conn, &after.recovery_code, "Furat2026x").is_ok());
+    }
+
+    /// A backup whose administrator has the same name but is another account (for example from
+    /// another installation): the code of this computer is refused, is not used up, and is not
+    /// moved to that backup's administrator.
+    #[test]
+    fn recovery_code_refuses_another_account_with_the_same_name() {
+        use crate::account::*;
+        let env = env();
+        let data = env.root.join("data");
+        let backups = env.root.join("backups");
+        let mut conn = complete_setup(&data, &backups, false).unwrap();
+        let setup = FirstRunSetup { username: "it.admin".into(), password: "Tigris7Bridge".into(), department_name: String::new(), division_name: String::new() };
+        complete_first_run(&conn, &setup).unwrap();
+        let user = "it.admin".to_string();
+        let own = create_backup_with_progress(&conn, &user, "Backup-2026!", |_| {}).unwrap();
+        // The other installation: «it.admin» there is another account, and «other.admin» is its base admin.
+        let uid: String = conn.query_row("SELECT account_uid FROM users WHERE username='it.admin'", [], |r| r.get(0)).unwrap();
+        conn.execute("UPDATE users SET account_uid='other-install-account' WHERE username='it.admin'", []).unwrap();
+        crate::services::create_user(&conn, &user, &crate::services::UserData { username: "other.admin".into(), password: "Dijla7River".into(), role: "system_admin".into() }).unwrap();
+        crate::services::set_setting(&conn, "base_admin_username", "other.admin").unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(1100));
+        let foreign = create_backup_with_progress(&conn, &user, "Backup-2026!", |_| {}).unwrap();
+        conn.execute("UPDATE users SET account_uid=?1 WHERE username='it.admin'", [&uid]).unwrap();
+        crate::services::set_setting(&conn, "base_admin_username", "it.admin").unwrap();
+        let code = regenerate_recovery_code(&conn, &user).unwrap();
+
+        std::thread::sleep(std::time::Duration::from_millis(1100));
+        restore_backup_with_progress(&mut conn, &user, &foreign, "Backup-2026!", |_| {}).unwrap();
+        let before: Vec<String> = conn.prepare("SELECT password FROM users ORDER BY id").unwrap().query_map([], |r| r.get(0)).unwrap().map(Result::unwrap).collect();
+        let refused = recover_admin_password(&conn, &code, "Furat2026x").unwrap_err().to_string();
+        assert!(refused.contains("غير موجود") && refused.contains("لا يُستخدم الرمز لحساب آخر"), "{refused}");
+        let after: Vec<String> = conn.prepare("SELECT password FROM users ORDER BY id").unwrap().query_map([], |r| r.get(0)).unwrap().map(Result::unwrap).collect();
+        assert_eq!(before, after, "no password changed");
+        assert!(recovery_status(&conn).exists, "the code is still stored");
+
+        // Back to this installation's data: the same code still works for its own account.
+        std::thread::sleep(std::time::Duration::from_millis(1100));
+        restore_backup_with_progress(&mut conn, &user, &own, "Backup-2026!", |_| {}).unwrap();
+        assert_eq!(recover_admin_password(&conn, &code, "Furat2026x").unwrap().username, "it.admin");
+    }
+
+    /// The bound account present but no longer an active System Admin: refused, code kept.
+    #[test]
+    fn recovery_code_needs_the_account_to_be_an_active_system_admin() {
+        use crate::account::*;
+        let env = env();
+        let conn = complete_setup(&env.root.join("data"), &env.root.join("backups"), false).unwrap();
+        let setup = FirstRunSetup { username: "it.admin".into(), password: "Tigris7Bridge".into(), department_name: String::new(), division_name: String::new() };
+        let code = complete_first_run(&conn, &setup).unwrap().recovery_code;
+        conn.execute("UPDATE users SET disabled=1 WHERE username='it.admin'", []).unwrap();
+        let refused = recover_admin_password(&conn, &code, "Furat2026x").unwrap_err().to_string();
+        assert!(refused.contains("ليس حساب مسؤول نظام فعّالًا"), "{refused}");
+        conn.execute("UPDATE users SET disabled=0, role='archive_officer' WHERE username='it.admin'", []).unwrap();
+        assert!(recover_admin_password(&conn, &code, "Furat2026x").is_err());
+        conn.execute("UPDATE users SET role='system_admin' WHERE username='it.admin'", []).unwrap();
+        assert!(recover_admin_password(&conn, &code, "Furat2026x").is_ok(), "not used up by the refusals");
     }
 
     /// An attachment damaged in the store without its size changing: the check notices it, and the

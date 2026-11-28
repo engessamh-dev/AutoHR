@@ -3727,9 +3727,10 @@ fn restore_inner(conn: &mut Connection, user: &str, source: &Path, password: &st
     progress(backup_progress(86, "جاري استعادة قاعدة البيانات..."));
     // The seal triggers belong to the database being replaced; they are put back afterwards.
     crate::integrity::detach(conn);
+    let mut restored_version = crate::db::SCHEMA_VERSION;
     if let Err(error) = conn.restore(rusqlite::MAIN_DB, staging.path().join("database.db"), None::<fn(rusqlite::backup::Progress)>).map_err(AppError::from)
         .and_then(|_| crate::db::upgrade_restored(conn).map_err(AppError::from))
-        .and_then(|_| crate::scanner::ensure_metadata_columns(conn).map_err(AppError::from)) {
+        .and_then(|version| { restored_version = version; crate::scanner::ensure_metadata_columns(conn).map_err(AppError::from) }) {
         std::fs::remove_dir_all(&current_data).ok();
         if rollback_data.exists() { std::fs::rename(&rollback_data, &current_data).ok(); }
         conn.restore(rusqlite::MAIN_DB, &rollback_database, None::<fn(rusqlite::backup::Progress)>).ok();
@@ -3738,11 +3739,14 @@ fn restore_inner(conn: &mut Connection, user: &str, source: &Path, password: &st
     }
     // A backup made on another computer, or before seals existed, is accepted by the System Admin
     // who restores it; a backup sealed on this computer keeps its own seals and is checked as is.
-    if crate::integrity::attach(conn, false) == crate::integrity::State::Unapproved {
+    let seal_state = crate::integrity::attach(conn, false);
+    let sealed_here = seal_state == crate::integrity::State::Verified;
+    if seal_state == crate::integrity::State::Unapproved {
         crate::integrity::approve(conn, user, "restore")?;
     }
     put_back_backup_settings(conn, &kept_settings)?;
-    crate::account::put_back_recovery(conn, &kept_recovery)?;
+    // Backups older than account identities (v12) recognise the administrator by its row.
+    crate::account::put_back_recovery(conn, &kept_recovery, restored_version < 12, sealed_here)?;
     progress(backup_progress(94, "جاري إعادة ربط سجل التدقيق..."));
     for row in audit_rows_to_restore(conn, audit)? {
         conn.execute(

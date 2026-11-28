@@ -1,5 +1,5 @@
 // src-tauri/src/db.rs
-use rusqlite::{params, Connection, Result as SqlResult};
+use rusqlite::{params, Connection, OptionalExtension, Result as SqlResult};
 use serde_json::Value;
 use std::path::{Path, PathBuf};
 use std::fs;
@@ -176,7 +176,7 @@ pub fn db_path() -> PathBuf {
 /// To change the schema later: bump this constant and add an `if from < N { ... }` step in
 /// `upgrade()`. Every upgrade of an existing database runs only after a verified
 /// pre-upgrade snapshot exists, and the snapshot is restored automatically if a step fails.
-pub const SCHEMA_VERSION: i64 = 11;
+pub const SCHEMA_VERSION: i64 = 12;
 
 #[derive(Debug)]
 pub enum OpenError {
@@ -305,7 +305,10 @@ fn upgrade(conn: &Connection, from: i64) -> SqlResult<()> {
         conn.execute("UPDATE company_config SET company_name=?1 WHERE id=1", [crate::services::COMPANY_NAME])?;
         conn.execute("UPDATE company_config SET department_name='' WHERE id=1 AND department_name='GCANS'", [])?;
     }
-    // Future steps go here, for example: if from < 12 { ... }
+    if from < 12 {
+        upgrade_to_v12(conn)?;
+    }
+    // Future steps go here, for example: if from < 13 { ... }
     #[cfg(test)]
     if FAIL_UPGRADE.with(|flag| flag.get()) {
         return Err(rusqlite::Error::InvalidQuery);
@@ -339,6 +342,30 @@ fn upgrade_to_v3(conn: &Connection) -> SqlResult<()> {
     add_column_if_missing(conn, "employees", "airport_badge_zones", "TEXT")?;
     add_column_if_missing(conn, "employee_vehicles", "annual_front_path", "TEXT")?;
     add_column_if_missing(conn, "employee_vehicles", "annual_back_path", "TEXT")?;
+    Ok(())
+}
+
+/// v12: every account gets a lasting identity (`account_uid`), and the administrator's recovery
+/// code is bound to that identity instead of to a user name (see `account::put_back_recovery`).
+/// An existing code stays bound to the account it was made for: the current base administrator.
+fn upgrade_to_v12(conn: &Connection) -> SqlResult<()> {
+    add_column_if_missing(conn, "users", "account_uid", "TEXT")?;
+    let ids: Vec<i64> = conn.prepare("SELECT id FROM users WHERE account_uid IS NULL OR account_uid=''")?
+        .query_map([], |r| r.get(0))?.collect::<SqlResult<_>>()?;
+    for id in ids {
+        conn.execute("UPDATE users SET account_uid=?1 WHERE id=?2", rusqlite::params![crate::account::new_account_uid(), id])?;
+    }
+    let setting = |key: &str| -> SqlResult<Option<String>> {
+        conn.query_row("SELECT value FROM app_settings WHERE key=?1", [key], |r| r.get::<_, Option<String>>(0))
+            .optional().map(|v| v.flatten().filter(|v| !v.is_empty()))
+    };
+    if setting("admin_recovery_hash")?.is_some() && setting(crate::account::RECOVERY_ACCOUNT_KEY)?.is_none() {
+        let admin = setting("base_admin_username")?.unwrap_or_else(|| "sysadmin".into());
+        let uid: Option<String> = conn.query_row("SELECT account_uid FROM users WHERE username=?1 COLLATE NOCASE", [&admin], |r| r.get(0)).optional()?;
+        if let Some(uid) = uid {
+            conn.execute("INSERT OR REPLACE INTO app_settings(key,value) VALUES(?1,?2)", rusqlite::params![crate::account::RECOVERY_ACCOUNT_KEY, uid])?;
+        }
+    }
     Ok(())
 }
 
@@ -462,7 +489,8 @@ fn upgrade_to_v6(conn: &Connection) -> SqlResult<()> {
 
 /// Upgrades a database that was just restored from a backup, if it is older. The restore
 /// itself keeps a rollback copy, so no extra snapshot is taken here.
-pub fn upgrade_restored(conn: &Connection) -> Result<(), OpenError> {
+/// Returns the version the restored data had before the upgrade.
+pub fn upgrade_restored(conn: &Connection) -> Result<i64, OpenError> {
     let version = schema_version(conn)?;
     if version > SCHEMA_VERSION {
         return Err(OpenError::NewerSchema { found: version, supported: SCHEMA_VERSION });
@@ -475,7 +503,7 @@ pub fn upgrade_restored(conn: &Connection) -> Result<(), OpenError> {
         upgrade(conn, version)?;
         crate::integrity::reseal_after_upgrade(conn, &flagged);
     }
-    Ok(())
+    Ok(version)
 }
 
 /// Builds the current schema on an empty connection (tests only).
@@ -1442,5 +1470,33 @@ mod legacy_vehicle_tests {
             (1, Some("999 ج بغداد".into()), Some("تويوتا".into()), None, Some("2024-05-01".into())),
         ]);
         assert_eq!(vehicles(&conn, 3), vec![(0, Some("555 هـ أربيل".into()), Some("هيونداي".into()), Some("فضي".into()), Some("2028-01-01".into()))]);
+    }
+}
+
+#[cfg(test)]
+mod v12_tests {
+    use super::*;
+
+    /// v12: every account gets its own identity, and an existing recovery code stays bound to the
+    /// account it was made for (the base administrator), not to whoever later has that name.
+    #[test]
+    fn accounts_get_identities_and_the_recovery_code_its_account() {
+        let conn = Connection::open_in_memory().unwrap();
+        migrate_for_tests(&conn);
+        conn.execute_batch("UPDATE users SET account_uid=NULL;
+            INSERT INTO users(username,password,role) VALUES('sysadmin','x','system_admin'),('clerk','x','archive_officer');
+            INSERT INTO app_settings(key,value) VALUES('admin_recovery_hash','h');
+            DELETE FROM app_settings WHERE key='admin_recovery_account';").unwrap();
+        upgrade_to_v12(&conn).unwrap();
+        let uids: Vec<(String, String)> = conn.prepare("SELECT username,account_uid FROM users ORDER BY id").unwrap()
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?))).unwrap().map(Result::unwrap).collect();
+        assert!(uids.iter().all(|(_, uid)| uid.len() == 32));
+        assert_ne!(uids[0].1, uids[1].1);
+        let bound: String = conn.query_row("SELECT value FROM app_settings WHERE key='admin_recovery_account'", [], |r| r.get(0)).unwrap();
+        assert_eq!(&bound, &uids.iter().find(|(name, _)| name == "sysadmin").unwrap().1);
+        // Running again changes nothing.
+        upgrade_to_v12(&conn).unwrap();
+        let again: String = conn.query_row("SELECT value FROM app_settings WHERE key='admin_recovery_account'", [], |r| r.get(0)).unwrap();
+        assert_eq!(bound, again);
     }
 }

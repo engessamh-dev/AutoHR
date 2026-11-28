@@ -1,7 +1,7 @@
 //! Accounts: the password policy («سياسة كلمة المرور»), the first administrator created by the
 //! first-run wizard, and the administrator's recovery code («رمز الاستعادة»).
 use rand::{rngs::OsRng, RngCore};
-use rusqlite::{params, Connection};
+use rusqlite::{params, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
 
 use crate::services::{
@@ -214,8 +214,9 @@ pub fn complete_first_run(conn: &Connection, data: &FirstRunSetup) -> AppResult<
     let division = data.division_name.trim();
     check_unit_names(department, division)?;
     let tx = conn.unchecked_transaction()?;
-    tx.execute("UPDATE users SET username=?1, password=?2, must_change_password=0 WHERE username='sysadmin'",
-        params![username, hash_password(&data.password)?])?;
+    // A new identity too: the account is now this administrator's own.
+    tx.execute("UPDATE users SET username=?1, password=?2, must_change_password=0, account_uid=?3 WHERE username='sysadmin'",
+        params![username, hash_password(&data.password)?, new_account_uid()])?;
     set_setting(&tx, BASE_ADMIN_KEY, username)?;
     tx.execute("UPDATE company_config SET department_name=?1, division_name=?2 WHERE id=1", params![department, division])?;
     let code = store_new_recovery_code(&tx)?;
@@ -229,6 +230,9 @@ pub fn complete_first_run(conn: &Connection, data: &FirstRunSetup) -> AppResult<
 
 const RECOVERY_HASH_KEY: &str = "admin_recovery_hash";
 const RECOVERY_DATE_KEY: &str = "admin_recovery_created";
+/// The account the recovery code was made for, by its `account_uid` (not its name): a restored
+/// backup whose administrator is another account with the same name is not opened by this code.
+pub(crate) const RECOVERY_ACCOUNT_KEY: &str = "admin_recovery_account";
 /// Failed recovery attempts share the sign-in lockout, under this key.
 const RECOVERY_LOCK_KEY: &str = "#recovery";
 /// No I, O, 0, 1: nothing that is misread when typed from paper.
@@ -245,37 +249,98 @@ fn normalize_code(code: &str) -> String {
     code.chars().filter(|c| c.is_ascii_alphanumeric()).map(|c| c.to_ascii_uppercase()).collect()
 }
 
+/// A random identity for an account, kept for its whole life (also in backups).
+pub(crate) fn new_account_uid() -> String {
+    let mut bytes = [0u8; 16];
+    OsRng.fill_bytes(&mut bytes);
+    hex::encode(bytes)
+}
+
+/// The `account_uid` of the user `username`, given one first if it has none.
+fn account_uid_of(conn: &Connection, username: &str) -> AppResult<String> {
+    let (id, uid): (i64, Option<String>) = conn.query_row(
+        "SELECT id,account_uid FROM users WHERE username=?1 COLLATE NOCASE", [username], |r| Ok((r.get(0)?, r.get(1)?)),
+    ).map_err(|_| AppError::Validation(format!("حساب المسؤول الأساسي «{username}» غير موجود")))?;
+    if let Some(uid) = uid.filter(|v| !v.is_empty()) { return Ok(uid); }
+    let uid = new_account_uid();
+    conn.execute("UPDATE users SET account_uid=?1 WHERE id=?2", params![uid, id])?;
+    Ok(uid)
+}
+
+/// A new code for the base administrator, bound to that account's identity.
 fn store_new_recovery_code(conn: &Connection) -> AppResult<String> {
+    let uid = account_uid_of(conn, &base_admin(conn))?;
     let code = new_code();
     set_setting(conn, RECOVERY_HASH_KEY, &hash_password(&normalize_code(&code))?)?;
     set_setting(conn, RECOVERY_DATE_KEY, &chrono::Local::now().format("%Y-%m-%d %H:%M").to_string())?;
+    set_setting(conn, RECOVERY_ACCOUNT_KEY, &uid)?;
     Ok(code)
 }
 
+/// The account a recovery code is bound to, as it stands in the current data.
+struct RecoveryAccount { id: i64, username: String, role: String, disabled: bool }
+
+fn recovery_account(conn: &Connection, uid: &str) -> AppResult<Option<RecoveryAccount>> {
+    let mut stmt = conn.prepare("SELECT id,username,role,COALESCE(disabled,0) FROM users WHERE account_uid=?1")?;
+    let mut rows = stmt.query_map([uid], |r| Ok(RecoveryAccount { id: r.get(0)?, username: r.get(1)?, role: r.get(2)?, disabled: r.get::<_, i64>(3)? != 0 }))?;
+    Ok(rows.next().transpose()?)
+}
+
 /// The recovery code of this computer, kept across a restore: the code printed last must keep
-/// working even when the backup is older than it, or older than recovery codes.
+/// working when the restored data holds the same administrator account, even when the backup is
+/// older than it, or older than recovery codes.
 pub(crate) struct KeptRecovery {
     hash: Option<String>,
     created: Option<String>,
-    admin: Option<String>,
+    /// The bound account's identity: kept even while that account is not in the current data.
+    uid: Option<String>,
+    /// The row it has in the current data (number, name, creation time), to recognise it in a
+    /// backup made before identities existed.
+    row: Option<(i64, String, Option<String>)>,
 }
 
 pub(crate) fn recovery_to_keep(conn: &Connection) -> AppResult<KeptRecovery> {
     let read = |key| get_setting(conn, key).map(|v| v.filter(|v: &String| !v.is_empty()));
-    Ok(KeptRecovery { hash: read(RECOVERY_HASH_KEY)?, created: read(RECOVERY_DATE_KEY)?, admin: read(BASE_ADMIN_KEY)? })
+    let uid = read(RECOVERY_ACCOUNT_KEY)?;
+    let row = match &uid {
+        Some(uid) => conn.query_row("SELECT id,username,created_at FROM users WHERE account_uid=?1", [uid], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
+            .optional()?,
+        None => None,
+    };
+    Ok(KeptRecovery { hash: read(RECOVERY_HASH_KEY)?, created: read(RECOVERY_DATE_KEY)?, uid, row })
 }
 
-/// After a restore: put back this computer's recovery code, and its base administrator when that
-/// account is in the restored data (otherwise the restored base administrator stays).
-pub(crate) fn put_back_recovery(conn: &Connection, kept: &KeptRecovery) -> AppResult<()> {
+/// After a restore: put back this computer's recovery code, still bound to the same account.
+///
+/// * A backup with account identities: the code works only if that very account is in it.
+/// * A backup older than identities (`legacy`): its accounts were given new identities while it
+///   was upgraded, so the account is recognised by its row (same number, name and creation time),
+///   and only when the data was sealed on this computer (`sealed_here`), so a backup from another
+///   office whose administrator is also «sysadmin» is not taken for this one.
+///
+/// The code is never moved to another administrator. When the account is missing, the code stays
+/// stored but is refused, with a clear message, until a System Admin makes a new one.
+pub(crate) fn put_back_recovery(conn: &Connection, kept: &KeptRecovery, legacy: bool, sealed_here: bool) -> AppResult<()> {
     let Some(hash) = &kept.hash else { return Ok(()) };
     set_setting(conn, RECOVERY_HASH_KEY, hash)?;
     set_setting(conn, RECOVERY_DATE_KEY, kept.created.as_deref().unwrap_or(""))?;
-    if let Some(admin) = &kept.admin {
-        let exists: bool = conn.query_row("SELECT EXISTS(SELECT 1 FROM users WHERE username=?1)", [admin], |r| r.get(0))?;
-        if exists {
-            set_setting(conn, BASE_ADMIN_KEY, admin)?;
+    let Some(uid) = &kept.uid else {
+        // No bound account on this computer: the code opens nothing.
+        set_setting(conn, RECOVERY_ACCOUNT_KEY, "")?;
+        return Ok(());
+    };
+    set_setting(conn, RECOVERY_ACCOUNT_KEY, uid)?;
+    if let (None, true, true, Some((id, name, created))) = (recovery_account(conn, uid)?, legacy, sealed_here, &kept.row) {
+        let same_row: Option<i64> = conn.query_row(
+            "SELECT id FROM users WHERE id=?1 AND username=?2 COLLATE NOCASE AND created_at IS ?3",
+            params![id, name, created], |r| r.get(0),
+        ).optional()?;
+        if let Some(row) = same_row {
+            conn.execute("UPDATE users SET account_uid=?1 WHERE id=?2", params![uid, row])?;
         }
+    }
+    if let Some(account) = recovery_account(conn, uid)? {
+        set_setting(conn, BASE_ADMIN_KEY, &account.username)?;
     }
     Ok(())
 }
@@ -322,7 +387,11 @@ pub struct RecoveryResult {
     pub recovery_code: String,
 }
 
-/// «نسيت كلمة المرور؟» for the base administrator: the recovery code sets a new password.
+const CODE_NOT_USED: &str = "لم يُستخدم رمز الاستعادة، ويبقى صالحًا لحسابه. تواصل مع الدعم الفني.";
+
+/// «نسيت كلمة المرور؟» for the base administrator: the recovery code sets a new password for
+/// the account it was made for, and only while that account is in the data, a System Admin and
+/// not stopped. A refused attempt never uses the code up and never moves it to another account.
 pub fn recover_admin_password(conn: &Connection, code: &str, new_password: &str) -> AppResult<RecoveryResult> {
     let Some(stored) = get_setting(conn, RECOVERY_HASH_KEY)?.filter(|v| !v.is_empty()) else {
         return Err(AppError::Validation("لم يُنشأ رمز استعادة في هذا البرنامج. تواصل مع الدعم الفني.".into()));
@@ -330,12 +399,23 @@ pub fn recover_admin_password(conn: &Connection, code: &str, new_password: &str)
     if let Some(message) = crate::services::lockout_message(conn, RECOVERY_LOCK_KEY) {
         return Err(AppError::Validation(message));
     }
-    let admin = base_admin(conn);
-    let admin_exists: bool = conn.query_row("SELECT EXISTS(SELECT 1 FROM users WHERE username=?1)", [&admin], |r| r.get(0))?;
-    if !admin_exists {
-        // Nothing would change, and the code must not be used up for nothing.
-        return Err(AppError::Validation(format!("حساب المسؤول الأساسي «{admin}» غير موجود في البيانات الحالية. تواصل مع الدعم الفني.")));
+    let Some(uid) = get_setting(conn, RECOVERY_ACCOUNT_KEY)?.filter(|v| !v.is_empty()) else {
+        return Err(AppError::Validation(format!("رمز الاستعادة غير مرتبط بأي حساب مسؤول في البيانات الحالية. {CODE_NOT_USED}")));
+    };
+    let Some(account) = recovery_account(conn, &uid)? else {
+        crate::services::log_audit(conn, None, "RECOVER_ADMIN_PASSWORD", Some("user"), None, None, "Failure", Some("Recovery account not in the data"));
+        return Err(AppError::Validation(format!(
+            "حساب المسؤول الذي أُنشئ له رمز الاستعادة غير موجود في البيانات الحالية (قد تكون البيانات مستعادة من نسخة لا تحتوي هذا الحساب). لا يُستخدم الرمز لحساب آخر. {CODE_NOT_USED}"
+        )));
+    };
+    if account.role != "system_admin" || account.disabled || !crate::integrity::user_trusted(conn, account.id) {
+        crate::services::log_audit(conn, Some(&account.username), "RECOVER_ADMIN_PASSWORD", Some("user"), Some(account.id), Some(&account.username), "Failure", Some("Recovery account is not an active System Admin"));
+        return Err(AppError::Validation(format!(
+            "حساب «{}» الذي أُنشئ له رمز الاستعادة ليس حساب مسؤول نظام فعّالًا في البيانات الحالية، لذلك لا يمكن استخدام الرمز. {CODE_NOT_USED}",
+            account.username
+        )));
     }
+    let admin = account.username.clone();
     validate_account_password(conn, &admin, new_password)?;
     if !verify_password(&normalize_code(code), &stored)? {
         crate::services::record_login_failure(conn, RECOVERY_LOCK_KEY);
@@ -346,7 +426,8 @@ pub fn recover_admin_password(conn: &Connection, code: &str, new_password: &str)
         return Err(AppError::Validation("رمز الاستعادة غير صحيح".into()));
     }
     let tx = conn.unchecked_transaction()?;
-    tx.execute("UPDATE users SET password=?1, must_change_password=0 WHERE username=?2", params![hash_password(new_password)?, admin])?;
+    tx.execute("UPDATE users SET password=?1, must_change_password=0 WHERE id=?2", params![hash_password(new_password)?, account.id])?;
+    set_setting(&tx, BASE_ADMIN_KEY, &admin)?;
     let code = store_new_recovery_code(&tx)?;
     log_activity(&tx, &admin, "RECOVER_ADMIN_PASSWORD", Some("user"), None, Some(&admin), None);
     tx.commit()?;
@@ -535,6 +616,49 @@ mod tests {
         let hash: String = conn.query_row("SELECT password FROM users", [], |r| r.get(0)).unwrap();
         assert!(verify_password("Nakheel2026", &hash).unwrap());
         TEST_UNLOCK_KEY.with(|k| *k.borrow_mut() = None);
+    }
+
+    fn recovery_db() -> Connection {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch("CREATE TABLE app_settings(key TEXT PRIMARY KEY, value TEXT NOT NULL DEFAULT '');
+            CREATE TABLE users(id INTEGER PRIMARY KEY, username TEXT, password TEXT, role TEXT, must_change_password INTEGER DEFAULT 0,
+              disabled INTEGER DEFAULT 0, created_at TEXT, account_uid TEXT);
+            CREATE TABLE activity_log(id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER, username TEXT, role TEXT, action TEXT, target_type TEXT, target_id INTEGER, target_name TEXT, result TEXT, details TEXT, created_at TEXT DEFAULT (datetime('now')));
+            INSERT INTO users(id,username,password,role,created_at,account_uid) VALUES(1,'sysadmin','x','system_admin','2026-01-01 10:00:00','this-account');").unwrap();
+        conn
+    }
+
+    /// A backup from before account identities: the account is recognised by its row, and only
+    /// when the data was sealed on this computer; otherwise the code is not bound to anyone in it.
+    #[test]
+    fn legacy_backup_keeps_the_code_only_for_the_same_row_sealed_here() {
+        let conn = recovery_db();
+        let code = store_new_recovery_code(&conn).unwrap();
+        let kept = recovery_to_keep(&conn).unwrap();
+        // The restored (older) data: the same row got a new identity while it was upgraded.
+        let restored = |created: &str| {
+            conn.execute("DELETE FROM users", []).unwrap();
+            conn.execute("INSERT INTO users(id,username,password,role,created_at,account_uid) VALUES(1,'sysadmin',?1,'system_admin',?2,'new-random')",
+                params![hash_password("Old7Password").unwrap(), created]).unwrap();
+        };
+        let uid_now = || conn.query_row("SELECT account_uid FROM users WHERE id=1", [], |r| r.get::<_, String>(0)).unwrap();
+
+        restored("2026-01-01 10:00:00");
+        put_back_recovery(&conn, &kept, true, false).unwrap();
+        assert_eq!(uid_now(), "new-random", "not sealed on this computer: not taken for this account");
+        assert!(recover_admin_password(&conn, &code, "Furat2026x").unwrap_err().to_string().contains("غير موجود"));
+
+        restored("2025-06-30 08:00:00");
+        put_back_recovery(&conn, &kept, true, true).unwrap();
+        assert_eq!(uid_now(), "new-random", "another creation time: another account");
+
+        restored("2026-01-01 10:00:00");
+        put_back_recovery(&conn, &kept, false, true).unwrap();
+        assert_eq!(uid_now(), "new-random", "a backup with identities is never matched by its row");
+
+        put_back_recovery(&conn, &kept, true, true).unwrap();
+        assert_eq!(uid_now(), "this-account");
+        assert_eq!(recover_admin_password(&conn, &code, "Furat2026x").unwrap().username, "sysadmin");
     }
 
     #[test]
