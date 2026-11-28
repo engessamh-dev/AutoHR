@@ -1,0 +1,143 @@
+# End-to-end check of the PUBLISHED CNSArch 1.1.1 installer on a throwaway Windows VM.
+# Installs the published 1.0.5, adds fake data, upgrades to the published 1.1.1 (installer over
+# 1.0.5, or the in-app updater of 1.0.5), then drives the installed app. Nothing is built or published.
+name: Upgrade test (published 1.1.1)
+
+on:
+  push:
+    branches: [test/upgrade-e2e-1.1.1]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  upgrade:
+    strategy:
+      fail-fast: false
+      matrix:
+        path: [installer, updater]
+    runs-on: windows-latest
+    timeout-minutes: 60
+    env:
+      OUT_DIR: C:\CNSTest\out
+    defaults:
+      run:
+        shell: powershell
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          sparse-checkout: e2e/upgrade-1.1.1
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Tools and fake files
+        run: |
+          New-Item -ItemType Directory -Force C:\CNSTest\tools, C:\CNSTest\src, C:\CNSTest\out, C:\CNSTest\dl | Out-Null
+          Copy-Item e2e\upgrade-1.1.1\* C:\CNSTest\tools\
+          Push-Location C:\CNSTest\tools; npm init -y | Out-Null; npm install --no-audit --no-fund playwright-core@1.56.1; Pop-Location
+          Add-Type -AssemblyName System.Drawing
+          $bmp = New-Object System.Drawing.Bitmap 900, 560
+          $g = [System.Drawing.Graphics]::FromImage($bmp)
+          $g.Clear([System.Drawing.Color]::FromArgb(220, 232, 245))
+          $font = New-Object System.Drawing.Font "Arial", 28
+          $g.DrawString("FAKE TEST CARD - NOT REAL", $font, [System.Drawing.Brushes]::DarkBlue, 60, 60)
+          $g.DrawString("Samer Khalid (test) 199000000101", $font, [System.Drawing.Brushes]::Black, 60, 200)
+          $g.DrawRectangle([System.Drawing.Pens]::DarkBlue, 20, 20, 860, 520)
+          $bmp.Save("C:\CNSTest\src\card-front.jpg", [System.Drawing.Imaging.ImageFormat]::Jpeg)
+          $pdf = "%PDF-1.4`n1 0 obj<</Type/Catalog/Pages 2 0 R>>endobj`n2 0 obj<</Type/Pages/Kids[3 0 R]/Count 1>>endobj`n3 0 obj<</Type/Page/Parent 2 0 R/MediaBox[0 0 300 200]/Contents 4 0 R/Resources<</Font<</F1 5 0 R>>>>>>endobj`n4 0 obj<</Length 44>>stream`nBT /F1 18 Tf 30 100 Td (FAKE TEST LETTER) Tj ET`nendstream endobj`n5 0 obj<</Type/Font/Subtype/Type1/BaseFont/Helvetica>>endobj`ntrailer<</Root 1 0 R>>`n%%EOF"
+          [IO.File]::WriteAllText("C:\CNSTest\src\letter.pdf", $pdf)
+          Get-ChildItem C:\CNSTest\src
+
+      - name: Download the published installers
+        run: |
+          $base = "https://github.com/engessamh-dev/CNSArch-releases/releases/download"
+          Invoke-WebRequest "$base/v1.0.5/CNSArch_1.0.5_x64-setup.exe" -OutFile C:\CNSTest\dl\CNSArch_1.0.5_x64-setup.exe
+          Invoke-WebRequest "$base/v1.1.1/CNSArch_1.1.1_x64-setup.exe" -OutFile C:\CNSTest\dl\CNSArch_1.1.1_x64-setup.exe
+          Invoke-WebRequest "$base/v1.1.1/latest.json" -OutFile C:\CNSTest\out\latest-1.1.1.json
+          Get-ChildItem C:\CNSTest\dl | ForEach-Object { "{0}  {1}  {2}" -f $_.Name, $_.Length, (Get-FileHash $_.FullName).Hash } | Tee-Object C:\CNSTest\out\installers.txt
+          Get-AuthenticodeSignature C:\CNSTest\dl\*.exe | Format-List Path, Status, StatusMessage | Out-String | Tee-Object -Append C:\CNSTest\out\installers.txt
+
+      - name: Install published 1.0.5
+        run: |
+          . C:\CNSTest\tools\app.ps1
+          Start-Process C:\CNSTest\dl\CNSArch_1.0.5_x64-setup.exe -ArgumentList "/S" -Wait
+          Start-Sleep 5
+          Get-Process CNSArch -ErrorAction SilentlyContinue | Stop-Process -Force
+          Get-InstalledApp | Format-List | Out-String | Tee-Object C:\CNSTest\out\installed-1.0.5.txt
+
+      - name: Fake data in 1.0.5
+        run: |
+          . C:\CNSTest\tools\app.ps1
+          Start-App
+          node C:\CNSTest\tools\drive.mjs seed105
+          if ($LASTEXITCODE -ne 0) { throw "seed failed" }
+          Stop-App
+
+      - name: Upgrade with the 1.1.1 installer over 1.0.5
+        if: matrix.path == 'installer'
+        run: |
+          . C:\CNSTest\tools\app.ps1
+          Start-Process C:\CNSTest\dl\CNSArch_1.1.1_x64-setup.exe -ArgumentList "/S" -Wait
+          Start-Sleep 5
+          Get-Process CNSArch -ErrorAction SilentlyContinue | Stop-Process -Force
+          Get-InstalledApp | Format-List | Out-String | Tee-Object C:\CNSTest\out\installed-after.txt
+          Start-App
+
+      - name: Upgrade with the in-app updater of 1.0.5
+        if: matrix.path == 'updater'
+        run: |
+          . C:\CNSTest\tools\app.ps1
+          Start-App
+          node C:\CNSTest\tools\drive.mjs update105
+          for ($i = 0; $i -lt 90; $i++) {
+            $app = Get-InstalledApp
+            $installer = Get-Process | Where-Object { $_.ProcessName -like "*setup*" -or $_.ProcessName -like "CNSArch_*" }
+            if ($app.Version -eq "1.1.1" -and -not $installer) { break }
+            Start-Sleep 4
+          }
+          Get-InstalledApp | Format-List | Out-String | Tee-Object C:\CNSTest\out\installed-after.txt
+          Get-Process | Where-Object { $_.ProcessName -like "CNSArch*" } | Format-Table Id, ProcessName, StartTime | Out-String | Tee-Object -Append C:\CNSTest\out\installed-after.txt
+          # The updater restarts the program itself; use that instance when it is up.
+          $up = $false
+          for ($i = 0; $i -lt 30; $i++) { if (Test-DevTools) { $up = $true; break }; Start-Sleep 2 }
+          if ($up) { "relaunched by the updater" | Tee-Object -Append C:\CNSTest\out\installed-after.txt }
+          else { Get-Process CNSArch -ErrorAction SilentlyContinue | Stop-Process -Force; Start-Sleep 3; Start-App }
+
+      - name: Check the six points on the upgraded app
+        continue-on-error: true
+        run: |
+          node C:\CNSTest\tools\drive.mjs verify
+          if ($LASTEXITCODE -ne 0) { throw "verify stopped" }
+
+      - name: Second installation whose admin is not sysadmin
+        continue-on-error: true
+        run: |
+          . C:\CNSTest\tools\app.ps1
+          Stop-App
+          Rename-Item "$env:APPDATA\CNSArch" "CNSArch.main"
+          Start-App
+          node C:\CNSTest\tools\drive.mjs other-install
+          Stop-App
+          Rename-Item "$env:APPDATA\CNSArch" "CNSArch.other"
+          Rename-Item "$env:APPDATA\CNSArch.main" "CNSArch"
+          Start-App
+          node C:\CNSTest\tools\drive.mjs missing-admin
+          Stop-App
+
+      - name: Collect logs
+        if: always()
+        run: |
+          Get-ChildItem $env:APPDATA -Directory -Filter "CNSArch*" | ForEach-Object {
+            Get-ChildItem $_.FullName -Recurse -Include *.log, *.txt, config.json -ErrorAction SilentlyContinue | ForEach-Object {
+              Copy-Item $_.FullName ("C:\CNSTest\out\log-" + $_.Directory.Name + "-" + $_.Name) -ErrorAction SilentlyContinue }
+          }
+          Get-ChildItem C:\CNSTest -Recurse -File | Select-Object FullName, Length | Format-Table -AutoSize | Out-String -Width 300 | Set-Content C:\CNSTest\out\files.txt
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: upgrade-${{ matrix.path }}
+          path: C:\CNSTest\out
