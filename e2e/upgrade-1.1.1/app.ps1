@@ -21,6 +21,12 @@ function Start-App {
   $app = Get-InstalledApp
   if (-not $app) { throw "CNSArch is not installed" }
   $env:WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS = "--remote-debugging-port=9222"
+  # WebView2 policy (per exe name): the app passes its own browser arguments, so the variable alone is not used.
+  foreach ($hive in "HKCU:", "HKLM:") {
+    $key = "$hive\Software\Policies\Microsoft\Edge\WebView2\AdditionalBrowserArguments"
+    New-Item -Path $key -Force -ErrorAction SilentlyContinue | Out-Null
+    New-ItemProperty -Path $key -Name "CNSArch.exe" -Value "--remote-debugging-port=9222" -PropertyType String -Force -ErrorAction SilentlyContinue | Out-Null
+  }
   Write-Host "Starting $($app.Exe) (registry version $($app.Version), file $($app.FileVersion))"
   Start-Process -FilePath $app.Exe | Out-Null
   for ($i = 0; $i -lt 60; $i++) { if (Test-DevTools) { Write-Host "DevTools ready"; return }; Start-Sleep 2 }
