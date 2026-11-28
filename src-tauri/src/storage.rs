@@ -760,21 +760,24 @@ mod tests {
         let user = admin(&conn);
         add_employee(&conn, &data, 1, "قديم");
         let backup = create_backup_with_progress(&conn, &user, "Backup-2026!", |_| {}).unwrap();
-        // Something in the way of renaming the data folder. On Windows: an attachment open in
-        // another program that does not share it (the real case). Elsewhere: a file where the
-        // rollback folder goes (Windows would simply remove or replace that file).
+        // Something in the way of renaming the data folder. On Windows: the folder held open by
+        // another program (an Explorer window) that lets others read inside it but not move it.
+        // Elsewhere: a file where the rollback folder goes (Windows would simply remove it).
         #[cfg(windows)]
         let blocker = {
             use std::os::windows::fs::OpenOptionsExt;
-            std::fs::OpenOptions::new().read(true).share_mode(0)
-                .open(data.join("Data/Files/Employees/1/Attachments/card.pdf")).unwrap()
+            const FILE_SHARE_READ_WRITE: u32 = 0x1 | 0x2;
+            const FILE_FLAG_BACKUP_SEMANTICS: u32 = 0x0200_0000; // needed to open a folder
+            std::fs::OpenOptions::new().read(true).share_mode(FILE_SHARE_READ_WRITE)
+                .custom_flags(FILE_FLAG_BACKUP_SEMANTICS).open(data.join("Data")).unwrap()
         };
         #[cfg(not(windows))]
         std::fs::write(data.join("Data.restore.rollback"), b"blocker").unwrap();
         let error = restore_backup_with_progress(&mut conn, &user, &backup, "Backup-2026!", |_| {}).unwrap_err();
         #[cfg(windows)]
         drop(blocker);
-        assert!(serde_json::to_string(&error).unwrap().contains("لم يتغير شيء"));
+        let message = serde_json::to_string(&error).unwrap();
+        assert!(message.contains("لم يتغير شيء"), "{message}");
         assert!(!data.join("restore.in_progress").exists());
         add_employee(&conn, &data, 2, "أضيف بعد الفشل");
         drop(conn);
