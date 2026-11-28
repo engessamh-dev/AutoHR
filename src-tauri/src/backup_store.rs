@@ -297,10 +297,17 @@ fn missing_store_error() -> AppError {
     )
 }
 
+#[cfg(test)]
+thread_local! { pub(crate) static FAIL_SNAPSHOT_VERIFY: std::cell::Cell<bool> = const { std::cell::Cell::new(false) }; }
+
 /// Checks a backup file without restoring it: the database (integrity, references, a trial
 /// restore), and that every attachment it lists is in the store intact (decrypted and checked
 /// against its SHA-256, not only its size).
 pub(crate) fn verify_snapshot_file(path: &Path, password: &str) -> AppResult<()> {
+    #[cfg(test)]
+    if FAIL_SNAPSHOT_VERIFY.with(|fail| fail.get()) {
+        return Err(AppError::Validation("تعذر التحقق من النسخة الاحتياطية الجديدة".into()));
+    }
     let (snapshot, database) = read_snapshot(path, password)?;
     let key = StoreKey::from_hex(&snapshot.store_key).ok_or_else(|| AppError::Validation("ملف النسخة الاحتياطية تالف".into()))?;
     let check = tempfile::tempdir().map_err(other)?;

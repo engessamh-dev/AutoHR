@@ -150,6 +150,8 @@ export const api = {
   approveIntegrity: () => invoke("cmd_approve_integrity"),
   // Writes a technical error (failed command or script exception) to the local error log.
   logClientError: (operation, screen, message, stack) => invoke("cmd_log_client_error", { operation, screen, message, stack }),
+  // Windows notification; resolves only once Windows accepted it (rejects when refused or failed).
+  showNotification: (title, body) => invoke("cmd_show_notification", { title, body }),
   getSupportContact: () => invoke("cmd_get_support_contact"),
   openSupportLink: (channel, topic) => invoke("cmd_open_support_link", { channel, topic }),
   // Expiry alert timing per document type (read: employees.view; save: settings.manage)

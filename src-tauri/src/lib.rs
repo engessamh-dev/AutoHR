@@ -1,5 +1,5 @@
 // lib.rs — GCANS v2.0
-mod account; mod backup_store; mod db; mod names; mod services; mod files; mod scanner; mod paths; mod storage; mod ai_detect; mod secure; mod ocr; mod ocr_parse; mod health; mod errlog; mod integrity;
+mod account; mod backup_store; mod db; mod names; mod services; mod files; mod scanner; mod paths; mod storage; mod ai_detect; mod secure; mod ocr; mod ocr_parse; mod health; mod errlog; mod integrity; mod notify;
 mod scanner_commands;
 #[cfg(debug_assertions)]
 mod devseed;
@@ -1527,6 +1527,16 @@ pub fn scanner_self_test() -> Result<(), String> {
 fn cmd_log_client_error(operation: String, screen: String, message: String, stack: Option<String>) {
     errlog::record_client(&operation, &screen, &message, stack.as_deref().unwrap_or(""));
 }
+/// A Windows notification, resolved only once Windows accepted it: a refusal (notifications
+/// turned off for the program) or a failure is an error, so the caller can try again later.
+#[tauri::command]
+fn cmd_show_notification(app: AppHandle, title: String, body: String) -> Result<(), AppError> {
+    let clip = |text: &str, max: usize| text.chars().take(max).collect::<String>();
+    notify::show(&app.config().identifier, &clip(&title, 120), &clip(&body, 500)).map_err(|reason| {
+        errlog::record_client("show_notification", "", &reason, "");
+        AppError::Other(format!("Notification not shown: {reason}"))
+    })
+}
 
 pub fn run() {
     errlog::init(app_data_path().join("Logs"), env!("CARGO_PKG_VERSION"));
@@ -1604,7 +1614,7 @@ pub fn run() {
             cmd_get_startup_status, cmd_check_setup_folders, cmd_complete_setup, cmd_retry_data_folder,
             cmd_get_storage_status, cmd_change_backup_folder, cmd_export_backup_to, cmd_move_data_folder,
             cmd_check_for_update, cmd_install_update, cmd_get_release_notes,
-            cmd_run_health_check, cmd_save_health_report, cmd_get_integrity_status, cmd_approve_integrity, cmd_get_support_contact, cmd_open_support_link, cmd_log_client_error, cmd_get_auto_update, cmd_set_auto_update,
+            cmd_run_health_check, cmd_save_health_report, cmd_get_integrity_status, cmd_approve_integrity, cmd_get_support_contact, cmd_open_support_link, cmd_log_client_error, cmd_show_notification, cmd_get_auto_update, cmd_set_auto_update,
             cmd_get_auto_backup_settings, cmd_set_auto_backup_settings,
             cmd_get_document_alert_rules, cmd_set_document_alert_rules,
             cmd_run_due_auto_backups, cmd_exit_app,

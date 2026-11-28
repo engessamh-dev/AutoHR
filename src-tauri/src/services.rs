@@ -4006,6 +4006,49 @@ mod phase3_security_tests {
         }
     }
 
+    /// A daily backup whose check fails leaves today's last good file exactly as it was, and is
+    /// still due: the next attempt (for example «إعادة المحاولة» on sign-out) makes it.
+    #[test]
+    fn failed_daily_backup_keeps_the_last_good_one_unchanged() {
+        let dir = tempfile::tempdir().unwrap();
+        struct Reset;
+        impl Drop for Reset {
+            fn drop(&mut self) {
+                TEST_APP_DATA_ROOT.with(|root| *root.borrow_mut() = None);
+                crate::backup_store::FAIL_SNAPSHOT_VERIFY.with(|fail| fail.set(false));
+            }
+        }
+        TEST_APP_DATA_ROOT.with(|root| *root.borrow_mut() = Some(dir.path().to_path_buf()));
+        let _reset = Reset;
+        let conn = Connection::open(dir.path().join("database.db")).unwrap();
+        conn.execute_batch(include_str!("../../database/schema.sql")).unwrap();
+        conn.execute("INSERT INTO users(username,password,role) VALUES('testadmin','unused','system_admin')", []).unwrap();
+        crate::integrity::test_use_new_key(true);
+        assert_eq!(crate::integrity::attach(&conn, false), crate::integrity::State::Verified);
+        set_setting(&conn, "auto_backup_daily_enabled", "1").unwrap();
+        set_setting(&conn, "auto_backup_password", "strong-password").unwrap();
+        conn.execute("INSERT INTO employees(id,full_name) VALUES(1,'Good copy')", []).unwrap();
+        log_activity(&conn, "testadmin", "CREATE_EMPLOYEE", Some("employee"), Some(1), None, None);
+        assert_eq!(run_due_automatic_backups_with_progress(&conn, false, |_| {}).unwrap(), vec!["يومي"]);
+        let path = get_setting(&conn, "auto_backup_last_daily_path").unwrap().unwrap();
+        let good = std::fs::read(&path).unwrap();
+        let marker = get_setting(&conn, "auto_backup_last_change_id").unwrap();
+
+        conn.execute("UPDATE employees SET full_name='Not backed up' WHERE id=1", []).unwrap();
+        log_activity(&conn, "testadmin", "UPDATE_EMPLOYEE", Some("employee"), Some(1), None, None);
+        crate::backup_store::FAIL_SNAPSHOT_VERIFY.with(|fail| fail.set(true));
+        assert!(run_due_automatic_backups_with_progress(&conn, false, |_| {}).is_err());
+        assert_eq!(std::fs::read(&path).unwrap(), good, "the last good backup is unchanged");
+        assert_eq!(get_setting(&conn, "auto_backup_last_change_id").unwrap(), marker, "still due");
+        let leftovers: Vec<String> = std::fs::read_dir(Path::new(&path).parent().unwrap()).unwrap().map(|e| e.unwrap().file_name().to_string_lossy().into_owned()).collect();
+        assert!(leftovers.iter().all(|name| name.starts_with("cnsarch_daily_")), "no half-written file is left next to it: {leftovers:?}");
+
+        crate::backup_store::FAIL_SNAPSHOT_VERIFY.with(|fail| fail.set(false));
+        verify_written_backup(Path::new(&path), "strong-password").unwrap();
+        assert_eq!(run_due_automatic_backups_with_progress(&conn, false, |_| {}).unwrap(), vec!["يومي"]);
+        assert_ne!(std::fs::read(&path).unwrap(), good);
+    }
+
     #[test]
     fn daily_backup_after_employee_change_is_verified_and_not_repeated() {
         let dir = tempfile::tempdir().unwrap();
