@@ -1,0 +1,175 @@
+# Code tests and an installer test of the fix branch (NOT published) on throwaway Windows VMs.
+# Builds an unsigned test installer from fix/recovery-alerts-close-backup (no updater files, no
+# release), installs the published 1.0.5 with fake data, installs the test build over it, then
+# re-runs the six earlier checks and the new cases on the installed program.
+name: Fix branch tests (code + installer)
+
+on:
+  push:
+    branches: [test/upgrade-e2e-1.1.1]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  FIX_REF: fix/recovery-alerts-close-backup
+
+jobs:
+  code:
+    name: Code tests and test installer build
+    runs-on: windows-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.FIX_REF }}
+      - name: Commit under test
+        shell: bash
+        run: git log -1 --format='%H %s'
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: ". -> target"
+      - run: npm ci
+      - name: Code tests - Rust
+        run: cargo test -p autohr --lib
+      - name: Code tests - Node
+        shell: bash
+        run: node --test tests/*.test.js
+      - name: Code tests - Playwright (Edge)
+        continue-on-error: true
+        run: npx playwright test
+      - name: Build the test installer (not published)
+        run: npx tauri build --bundles nsis
+      - name: Installer file
+        shell: bash
+        run: ls -la target/release/bundle/nsis/ && sha256sum target/release/bundle/nsis/*.exe
+      - uses: actions/upload-artifact@v4
+        with:
+          name: test-installer
+          path: target/release/bundle/nsis/*.exe
+
+  installer:
+    name: Installer test over 1.0.5
+    needs: code
+    runs-on: windows-latest
+    timeout-minutes: 60
+    env:
+      OUT_DIR: C:\CNSTest\out
+      EXPECT_FIX: "1"
+    defaults:
+      run:
+        shell: powershell
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          sparse-checkout: e2e/upgrade-1.1.1
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Tools and fake files
+        run: |
+          New-Item -ItemType Directory -Force C:\CNSTest\tools, C:\CNSTest\src, C:\CNSTest\out, C:\CNSTest\dl | Out-Null
+          Copy-Item e2e\upgrade-1.1.1\* C:\CNSTest\tools\
+          Push-Location C:\CNSTest\tools; npm init -y | Out-Null; npm install --no-audit --no-fund playwright-core@1.56.1; Pop-Location
+          Add-Type -AssemblyName System.Drawing
+          $bmp = New-Object System.Drawing.Bitmap 900, 560
+          $g = [System.Drawing.Graphics]::FromImage($bmp)
+          $g.Clear([System.Drawing.Color]::FromArgb(220, 232, 245))
+          $font = New-Object System.Drawing.Font "Arial", 28
+          $g.DrawString("FAKE TEST CARD - NOT REAL", $font, [System.Drawing.Brushes]::DarkBlue, 60, 60)
+          $g.DrawString("Samer Khalid (test) 199000000101", $font, [System.Drawing.Brushes]::Black, 60, 200)
+          $g.DrawRectangle([System.Drawing.Pens]::DarkBlue, 20, 20, 860, 520)
+          $bmp.Save("C:\CNSTest\src\card-front.jpg", [System.Drawing.Imaging.ImageFormat]::Jpeg)
+          $pdf = "%PDF-1.4`n1 0 obj<</Type/Catalog/Pages 2 0 R>>endobj`n2 0 obj<</Type/Pages/Kids[3 0 R]/Count 1>>endobj`n3 0 obj<</Type/Page/Parent 2 0 R/MediaBox[0 0 300 200]/Contents 4 0 R/Resources<</Font<</F1 5 0 R>>>>>>endobj`n4 0 obj<</Length 44>>stream`nBT /F1 18 Tf 30 100 Td (FAKE TEST LETTER) Tj ET`nendstream endobj`n5 0 obj<</Type/Font/Subtype/Type1/BaseFont/Helvetica>>endobj`ntrailer<</Root 1 0 R>>`n%%EOF"
+          [IO.File]::WriteAllText("C:\CNSTest\src\letter.pdf", $pdf)
+          Get-ChildItem C:\CNSTest\src
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: test-installer
+          path: C:\CNSTest\branch
+
+      - name: Download the published 1.0.5 (and take the test build)
+        run: |
+          $base = "https://github.com/engessamh-dev/CNSArch-releases/releases/download"
+          Invoke-WebRequest "$base/v1.0.5/CNSArch_1.0.5_x64-setup.exe" -OutFile C:\CNSTest\dl\CNSArch_1.0.5_x64-setup.exe
+          Copy-Item C:\CNSTest\branch\*.exe C:\CNSTest\dl\CNSArch_test-build_x64-setup.exe
+          Get-ChildItem C:\CNSTest\dl | ForEach-Object { "{0}  {1}  {2}" -f $_.Name, $_.Length, (Get-FileHash $_.FullName).Hash } | Tee-Object C:\CNSTest\out\installers.txt
+          Get-AuthenticodeSignature C:\CNSTest\dl\*.exe | Format-List Path, Status, StatusMessage | Out-String | Tee-Object -Append C:\CNSTest\out\installers.txt
+
+      - name: Install published 1.0.5
+        run: |
+          . C:\CNSTest\tools\app.ps1
+          Start-Process C:\CNSTest\dl\CNSArch_1.0.5_x64-setup.exe -ArgumentList "/S" -Wait
+          Start-Sleep 5
+          Get-Process CNSArch -ErrorAction SilentlyContinue | Stop-Process -Force
+          Get-InstalledApp | Format-List | Out-String | Tee-Object C:\CNSTest\out\installed-1.0.5.txt
+
+      - name: Fake data in 1.0.5
+        run: |
+          . C:\CNSTest\tools\app.ps1
+          Start-App
+          node C:\CNSTest\tools\drive.mjs seed105
+          if ($LASTEXITCODE -ne 0) { throw "seed failed" }
+          Stop-App
+
+      - name: Install the test build over 1.0.5
+        run: |
+          . C:\CNSTest\tools\app.ps1
+          Start-Process C:\CNSTest\dl\CNSArch_test-build_x64-setup.exe -ArgumentList "/S" -Wait
+          Start-Sleep 5
+          Get-Process CNSArch -ErrorAction SilentlyContinue | Stop-Process -Force
+          Get-InstalledApp | Format-List | Out-String | Tee-Object C:\CNSTest\out\installed-after.txt
+          Start-App
+
+      - name: Check the six points on the upgraded app
+        continue-on-error: true
+        run: |
+          node C:\CNSTest\tools\drive.mjs verify
+          if ($LASTEXITCODE -ne 0) { throw "verify stopped" }
+
+      - name: Second installation whose admin is not sysadmin
+        continue-on-error: true
+        run: |
+          . C:\CNSTest\tools\app.ps1
+          Stop-App
+          Rename-Item "$env:APPDATA\CNSArch" "CNSArch.main"
+          Start-App
+          node C:\CNSTest\tools\drive.mjs other-install
+          Stop-App
+          Rename-Item "$env:APPDATA\CNSArch" "CNSArch.other"
+          Rename-Item "$env:APPDATA\CNSArch.main" "CNSArch"
+          Start-App
+          node C:\CNSTest\tools\drive.mjs missing-admin
+          Stop-App
+
+      - name: New cases (alerts, backup on sign-out and close)
+        continue-on-error: true
+        run: |
+          . C:\CNSTest\tools\app.ps1
+          Start-App
+          node C:\CNSTest\tools\drive.mjs new-cases
+          Stop-App
+
+      - name: Collect logs
+        if: always()
+        run: |
+          Get-ChildItem $env:APPDATA -Directory -Filter "CNSArch*" | ForEach-Object {
+            Get-ChildItem $_.FullName -Recurse -Include *.log, *.txt, config.json -ErrorAction SilentlyContinue | ForEach-Object {
+              Copy-Item $_.FullName ("C:\CNSTest\out\log-" + $_.Directory.Name + "-" + $_.Name) -ErrorAction SilentlyContinue }
+          }
+          Get-ChildItem C:\CNSTest -Recurse -File | Select-Object FullName, Length | Format-Table -AutoSize | Out-String -Width 300 | Set-Content C:\CNSTest\out\files.txt
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: installer-test
+          path: C:\CNSTest\out

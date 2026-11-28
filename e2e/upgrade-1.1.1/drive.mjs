@@ -521,20 +521,179 @@ async function missingAdmin() {
   const status = await invoke("cmd_get_recovery_options");
   const rs = await invoke("cmd_get_recovery_status");
   log("5", "recovery status after that restore", null, { before, options: status, status: rs });
-  const tryW = await invoke("cmd_recover_admin_password", { code: state.codeW || state.codeZ || state.codeY, newPassword: PW.adminRecovered3 });
-  log("5", "this computer's latest code, admin account missing from restored data", null, tryW.ok ? { ok: true, username: tryW.value.username } : tryW);
+  const FIX = process.env.EXPECT_FIX === "1";
+  const latest = state.codeW || state.codeZ || state.codeY;
+  const tryW = await invoke("cmd_recover_admin_password", { code: latest, newPassword: PW.adminRecovered3 });
+  log("5", "this computer's latest code, its admin account missing from the restored data", FIX ? (!tryW.ok && /غير موجود/.test(tryW.error)) : null, tryW.ok ? { ok: true, username: tryW.value.username } : tryW);
   const tryOther = await invoke("cmd_recover_admin_password", { code: state.otherCode, newPassword: PW.adminRecovered3 });
-  log("5", "the other install's code on this computer", null, tryOther.ok ? { ok: true, username: tryOther.value.username } : tryOther);
+  log("5", "the other install's code on this computer", FIX ? !tryOther.ok : null, tryOther.ok ? { ok: true, username: tryOther.value.username } : tryOther);
   const sysLogin = await invoke("cmd_login", { username: "sysadmin", password: state.adminPw });
   const otherLogin = await invoke("cmd_login", { username: "otheradmin", password: PW.other });
   const otherNew = await invoke("cmd_login", { username: "otheradmin", password: PW.adminRecovered3 });
-  log("5", "who can sign in afterwards", null, { sysadmin: sysLogin.ok || sysLogin.error, otheradmin_old: otherLogin.ok || otherLogin.error, otheradmin_new: otherNew.ok || otherNew.error });
+  log("5", "who can sign in afterwards", FIX ? (otherLogin.ok === true && !otherNew.ok) : null, { sysadmin: sysLogin.ok || sysLogin.error, otheradmin_old: otherLogin.ok || otherLogin.error, otheradmin_new: otherNew.ok || otherNew.error });
+  if (FIX && r.ok) {
+    // Back to this computer's own data (the safety copy made by that restore): the same code works.
+    await must("cmd_login", { username: "otheradmin", password: PW.other });
+    const back = await invoke("cmd_restore_backup", { sourcePath: r.value, password: PW.backup });
+    await page.reload(); await sleep(3000);
+    const again = await invoke("cmd_recover_admin_password", { code: latest, newPassword: PW.adminRecovered3 });
+    log("5", "after restoring this computer's own data again, the same (not used up) code works", back.ok && again.ok && again.value.username === "sysadmin", { restore: back.ok || back.error, recover: again.ok ? again.value.username : again.error });
+    if (again.ok) { state.adminPw = PW.adminRecovered3; state.codeLatest = again.value.recovery_code; }
+  }
   await page.reload(); await sleep(2500);
   const forgot = page.locator("button, a").filter({ hasText: /نسيت/ });
   if (await forgot.count()) { await forgot.first().click().catch(() => {}); await sleep(1500); await shot("forgot-ui"); }
 }
 
-const steps = { seed105, update105, verify, "other-install": otherInstall, "missing-admin": missingAdmin };
+
+// ── New cases of the fix branch (installed build) ──────────────────────────
+const NOTIFY_KEY = "HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\Notifications\\Settings\\com.autohr.app";
+function setToasts(enabled) {
+  ps(`New-Item -Path '${NOTIFY_KEY}' -Force | Out-Null; New-ItemProperty -Path '${NOTIFY_KEY}' -Name Enabled -Value ${enabled ? 1 : 0} -PropertyType DWord -Force | Out-Null`);
+}
+async function countNotifications() {
+  await page.evaluate(() => {
+    if (window.__countedInvoke) return;
+    const original = window.__TAURI_INTERNALS__.invoke;
+    window.__notifyCalls = [];
+    window.__TAURI_INTERNALS__.invoke = async (cmd, args, opts) => {
+      if (cmd !== "cmd_show_notification") return original(cmd, args, opts);
+      try { const v = await original(cmd, args, opts); window.__notifyCalls.push({ ok: true, title: args?.title }); return v; }
+      catch (e) { window.__notifyCalls.push({ ok: false, title: args?.title, error: String(e) }); throw e; }
+    };
+    window.__countedInvoke = true;
+  });
+}
+// Signs in through the login form with the notification counter already in place, so the check
+// made at sign-in is counted too.
+async function loginCounted(username, password) {
+  await page.reload(); await sleep(3000);
+  await countNotifications();
+  await page.waitForSelector("#login-username", { state: "visible", timeout: 30000 });
+  await page.fill("#login-username", username);
+  await page.fill("#login-password", password);
+  await page.press("#login-password", "Enter");
+  await page.waitForSelector("#app-shell:not(.hidden)", { timeout: 30000 });
+  await sleep(4000);
+  await dismissOverlays();
+}
+const notifyCalls = () => page.evaluate(() => window.__notifyCalls || []);
+const stages = user => page.evaluate(u => JSON.parse(localStorage.getItem(`cnsarch.documentAlertStages.${u}`) || "{}"), user);
+const inDays = days => { const d = new Date(); d.setDate(d.getDate() + days); return d.toISOString().slice(0, 10); };
+
+async function newCases() {
+  await connect();
+  const adminPw = state.adminPw || PW.admin105;
+  await must("cmd_login", { username: "sysadmin", password: adminPw });
+  // ── Alerts ──
+  await section("alerts", async () => {
+    const e = await must("cmd_get_employee", { id: state.e1 });
+    await must("cmd_update_employee", { id: state.e1, data: { ...e, civil_id_expiry_date: inDays(5) } });
+    await page.evaluate(() => Object.keys(localStorage).filter(k => k.startsWith("cnsarch.documentAlertStages")).forEach(k => localStorage.removeItem(k)));
+    setToasts(false);
+    const direct = await invoke("cmd_show_notification", { title: "اختبار", body: "إشعارات البرنامج مطفأة في Windows" });
+    log("alerts", "Windows notifications off for the program: the request is refused", !direct.ok, direct);
+    await loginCounted("sysadmin", adminPw);
+    const s1 = await stages("sysadmin");
+    const c1 = await notifyCalls();
+    log("alerts", "refused at sign-in: the reminder is not recorded as sent (stays pending)", c1.length >= 1 && c1.every(c => !c.ok) && Object.keys(s1).length === 0, { calls: c1, recorded: s1 });
+    await page.evaluate(() => window.autohrCheckDocumentAlerts()); await sleep(1500);
+    const c2 = await notifyCalls();
+    log("alerts", "next check tries again while still refused", c2.length === c1.length + 1 && Object.keys(await stages("sysadmin")).length === 0, { calls: c2.length });
+    setToasts(true);
+    await page.evaluate(() => window.autohrCheckDocumentAlerts()); await sleep(2000);
+    const c3 = await notifyCalls(); const s3 = await stages("sysadmin");
+    await shot("alerts-allowed");
+    log("alerts", "notifications allowed again: the next check sends it and records it", c3.length === c2.length + 1 && c3.at(-1).ok && Object.values(s3).includes("r7"), { last: c3.at(-1), recorded: s3 });
+    await page.evaluate(() => window.autohrCheckDocumentAlerts()); await sleep(1200);
+    await page.evaluate(() => window.autohrCheckDocumentAlerts()); await sleep(1200);
+    const c4 = await notifyCalls();
+    log("alerts", "same user and stage: not sent again", c4.length === c3.length, { calls: c4.length });
+    // Signing in again (same user) does not repeat it either.
+    await loginCounted("sysadmin", adminPw);
+    const c5 = await notifyCalls();
+    log("alerts", "after signing in again: still not repeated", c5.filter(c => c.title === "تنبيهات المستمسكات").length === 0, { calls: c5 });
+  });
+
+  // ── Backup on sign-out / close ──
+  await section("close-backup", async () => {
+    await must("cmd_login", { username: "sysadmin", password: adminPw });
+    const set = await invoke("cmd_set_auto_backup_settings", { data: { enabled: true, password: PW.backup, interval_minutes: 0 } });
+    log("close-backup", "automatic daily backup turned on", set.ok, set.ok ? "ok" : set);
+    const touch = async note => { const e = await must("cmd_get_employee", { id: state.e1b }); await must("cmd_update_employee", { id: state.e1b, data: { ...e, notes: note } }); };
+    await touch("قبل النسخة اليومية");
+    const first = await invoke("cmd_run_due_auto_backups", { inSession: false });
+    const st = await must("cmd_get_auto_backup_settings");
+    const daily = st.last_backup_path;
+    log("close-backup", "a good daily backup exists", first.ok && !!daily && fs.existsSync(daily), { first, daily });
+    const goodSha = sha(fs.readFileSync(daily));
+    await touch("تغيير لم يُنسخ بعد");
+    // Hold today's file open so Windows refuses to replace it: the new copy cannot take its place.
+    const lockScript = path.join(ROOT, "lock.ps1");
+    fs.writeFileSync(lockScript, `$f=[IO.File]::Open('${daily}','Open','Read','None'); Start-Sleep 900`);
+    const lockStart = () => execSync(`powershell -NoProfile -Command "Start-Process powershell -WindowStyle Hidden -ArgumentList '-NoProfile','-File','${lockScript}' -PassThru | Select-Object -ExpandProperty Id"`, { encoding: "utf8" }).trim();
+    const lockStop = pid => { try { execSync(`taskkill /PID ${pid} /F`); } catch {} };
+    let pid = lockStart(); await sleep(2500);
+
+    await uiLogin("sysadmin", adminPw);
+    await page.click("#btn-logout-side"); await sleep(800);
+    await page.locator(".app-dialog button").filter({ hasText: /^تأكيد$/ }).first().click().catch(() => {});
+    const dlg = page.locator(".app-choice-dialog");
+    await dlg.waitFor({ state: "visible", timeout: 120000 }).catch(() => {});
+    await shot("logout-backup-failed");
+    const text = (await dlg.count()) ? await dlg.innerText() : "";
+    const buttons = (await dlg.count()) ? await dlg.locator("button").allTextContents() : [];
+    log("close-backup", "sign-out: failed backup does not sign out; offers the three choices", buttons.join("|") === "إعادة المحاولة|البقاء في البرنامج|تسجيل الخروج بدون نسخة جديدة", { text, buttons });
+    await dlg.locator("button", { hasText: "إعادة المحاولة" }).click().catch(() => {});
+    await sleep(1000);
+    await dlg.waitFor({ state: "visible", timeout: 120000 }).catch(() => {});
+    log("close-backup", "«إعادة المحاولة» tries again (still failing: asked again)", (await dlg.count()) === 1, {});
+    await dlg.locator("button", { hasText: "البقاء في البرنامج" }).click().catch(() => {});
+    await sleep(1500);
+    log("close-backup", "«البقاء في البرنامج» keeps the session", (await page.locator("#app-shell:not(.hidden)").count()) === 1 && (await page.locator(".app-choice-dialog").count()) === 0, {});
+    log("close-backup", "the last good backup is unchanged", sha(fs.readFileSync(daily)) === goodSha, { daily });
+
+    // Close (WM_CLOSE, like the X button) with the backup still failing → choices → stay.
+    ps("Get-Process CNSArch | Where-Object { $_.MainWindowHandle -ne 0 } | ForEach-Object { [void]$_.CloseMainWindow() }");
+    await dlg.waitFor({ state: "visible", timeout: 120000 }).catch(() => {});
+    await shot("close-backup-failed");
+    const closeButtons = (await dlg.count()) ? await dlg.locator("button").allTextContents() : [];
+    log("close-backup", "close: failed backup does not close; offers the three choices", closeButtons.join("|") === "إعادة المحاولة|البقاء في البرنامج|الإغلاق بدون نسخة جديدة", { closeButtons });
+    await dlg.locator("button", { hasText: "البقاء في البرنامج" }).click().catch(() => {});
+    await sleep(1500);
+    const alive = ps("(Get-Process CNSArch -ErrorAction SilentlyContinue | Measure-Object).Count").trim();
+    log("close-backup", "«البقاء في البرنامج» keeps the program open", Number(alive) > 0, { processes: alive });
+    log("close-backup", "the last good backup is still unchanged", sha(fs.readFileSync(daily)) === goodSha, {});
+
+    // The cause goes away: «إعادة المحاولة» makes the backup and signs out.
+    await page.click("#btn-logout-side"); await sleep(800);
+    await page.locator(".app-dialog button").filter({ hasText: /^تأكيد$/ }).first().click().catch(() => {});
+    await dlg.waitFor({ state: "visible", timeout: 120000 }).catch(() => {});
+    lockStop(pid); await sleep(1500);
+    await dlg.locator("button", { hasText: "إعادة المحاولة" }).click().catch(() => {});
+    await page.waitForSelector("#login-screen:not(.hidden)", { timeout: 120000 }).catch(() => {});
+    const signedOut = (await page.locator("#login-screen:not(.hidden)").count()) === 1;
+    const newSha = sha(fs.readFileSync(daily));
+    log("close-backup", "after the cause is fixed, «إعادة المحاولة» backs up and signs out", signedOut && newSha !== goodSha, { signedOut, replaced: newSha !== goodSha });
+    const goodSha2 = newSha;
+
+    // «الإغلاق بدون نسخة جديدة»: the program closes, the last good backup stays.
+    await uiLogin("sysadmin", adminPw);
+    await must("cmd_login", { username: "sysadmin", password: adminPw });
+    await touch("تغيير آخر لم يُنسخ");
+    pid = lockStart(); await sleep(2500);
+    ps("Get-Process CNSArch | Where-Object { $_.MainWindowHandle -ne 0 } | ForEach-Object { [void]$_.CloseMainWindow() }");
+    await dlg.waitFor({ state: "visible", timeout: 120000 }).catch(() => {});
+    await dlg.locator("button", { hasText: "الإغلاق بدون نسخة جديدة" }).click().catch(() => {});
+    await sleep(6000);
+    const left = ps("(Get-Process CNSArch -ErrorAction SilentlyContinue | Measure-Object).Count").trim();
+    lockStop(pid); await sleep(1000);
+    log("close-backup", "«الإغلاق بدون نسخة جديدة» closes the program; the last good backup stays", Number(left) === 0 && sha(fs.readFileSync(daily)) === goodSha2, { processes: left });
+  });
+  saveState();
+}
+
+const steps = { seed105, update105, verify, "other-install": otherInstall, "missing-admin": missingAdmin, "new-cases": newCases };
 try {
   await steps[step]();
 } catch (e) {

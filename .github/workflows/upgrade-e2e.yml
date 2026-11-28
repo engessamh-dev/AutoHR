@@ -4,8 +4,6 @@
 name: Upgrade test (published 1.1.1)
 
 on:
-  push:
-    branches: [test/upgrade-e2e-1.1.1]
   workflow_dispatch:
 
 permissions:
