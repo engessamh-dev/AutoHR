@@ -552,11 +552,20 @@ const NOTIFY_KEY = "HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\Notific
 // notification service is restarted so it reads the change at once. Returns what Windows then
 // reports for the program (ToastNotifier.Setting).
 function setToasts(enabled) {
-  const change = enabled
-    ? `Remove-ItemProperty -Path '${NOTIFY_KEY}' -Name Enabled -ErrorAction SilentlyContinue`
-    : `New-Item -Path '${NOTIFY_KEY}' -Force | Out-Null; New-ItemProperty -Path '${NOTIFY_KEY}' -Name Enabled -Value 0 -PropertyType DWord -Force | Out-Null`;
-  ps(`${change}; Get-Service WpnUserService* -ErrorAction SilentlyContinue | Restart-Service -Force -ErrorAction SilentlyContinue; Start-Sleep 3`);
-  return windowsToastSetting();
+  const restart = "Get-Service WpnUserService*, WpnService -ErrorAction SilentlyContinue | Restart-Service -Force -ErrorAction SilentlyContinue; Start-Sleep 3";
+  if (!enabled) {
+    ps(`New-Item -Path '${NOTIFY_KEY}' -Force | Out-Null; New-ItemProperty -Path '${NOTIFY_KEY}' -Name Enabled -Value 0 -PropertyType DWord -Force | Out-Null; ${restart}`);
+    return windowsToastSetting();
+  }
+  // Back on: the switch set to 1, then (if Windows still says off) the program's entry removed.
+  const tried = [];
+  ps(`New-ItemProperty -Path '${NOTIFY_KEY}' -Name Enabled -Value 1 -PropertyType DWord -Force | Out-Null; ${restart}`);
+  tried.push(`Enabled=1: ${windowsToastSetting()}`);
+  if (!tried.at(-1).endsWith("Enabled")) {
+    ps(`Remove-Item -Path '${NOTIFY_KEY}' -Recurse -Force -ErrorAction SilentlyContinue; ${restart}`);
+    tried.push(`entry removed: ${windowsToastSetting()}`);
+  }
+  return tried.join(" | ");
 }
 function windowsToastSetting() {
   try {
