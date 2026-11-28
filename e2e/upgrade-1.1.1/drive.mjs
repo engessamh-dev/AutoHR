@@ -14,9 +14,9 @@ fs.mkdirSync(OUT, { recursive: true });
 
 const PW = {
   admin105: "Sysadmin#2026a",
-  adminRecovered: "Sysadmin#2026b",
-  adminRecovered2: "Sysadmin#2026c",
-  adminRecovered3: "Sysadmin#2026d",
+  adminRecovered: "Rq8#Vt3Lmwa",
+  adminRecovered2: "Rq8#Vt3Lmwb",
+  adminRecovered3: "Rq8#Vt3Lmwc",
   archadmin: "Archadmin#2026a",
   officer: "Officer#2026a",
   viewer: "Viewer#2026a",
@@ -81,6 +81,19 @@ async function readDoc(rel) {
     } catch (e) { return { ok: false, error: typeof e === "string" ? e : (e?.message ?? String(e)) }; }
   }, rel);
 }
+// Opens an employee attachment the way the employee screen does: through the asset protocol.
+async function readAsset(full) {
+  return page.evaluate(async f => {
+    try {
+      const url = window.__TAURI_INTERNALS__.convertFileSrc(f, "asset");
+      const res = await fetch(url);
+      if (!res.ok) return { ok: false, error: `HTTP ${res.status}` };
+      const bytes = new Uint8Array(await res.arrayBuffer());
+      const digest = await crypto.subtle.digest("SHA-256", bytes);
+      return { ok: true, size: bytes.length, sha: [...new Uint8Array(digest)].map(b => b.toString(16).padStart(2, "0")).join("") };
+    } catch (e) { return { ok: false, error: String(e?.message ?? e) }; }
+  }, full);
+}
 async function appVersion() {
   const r = await invoke("plugin:app|version");
   return r.ok ? r.value : `unknown (${r.error})`;
@@ -88,11 +101,20 @@ async function appVersion() {
 function attachmentPaths(emp) {
   const out = [];
   const walk = (v, k) => {
-    if (typeof v === "string" && /\.(jpe?g|png|pdf)$/i.test(v) && !/^[a-z]:\\/i.test(v) && !v.startsWith("http")) out.push({ key: k, rel: v });
+    if (typeof v === "string" && /^\[/.test(v.trim())) { try { return walk(JSON.parse(v), k); } catch {} }
+    if (typeof v === "string" && /\.(jpe?g|png|pdf)$/i.test(v) && /^(\\\\\?\\)?[A-Za-z]:\\/.test(v)) out.push({ key: k, rel: v });
     else if (v && typeof v === "object") for (const [kk, vv] of Object.entries(v)) walk(vv, kk);
   };
   walk(emp, "");
-  return [...new Map(out.map(o => [o.rel, o])).values()];
+  // General attachments carry only their relative path: same data folder as the card.
+  const card = emp?.civil_id_front_full_path, cardRel = emp?.civil_id_front_path;
+  let rels = emp?.attachment_paths;
+  if (typeof rels === "string") { try { rels = JSON.parse(rels); } catch { rels = []; } }
+  if (card && cardRel && Array.isArray(rels)) {
+    const base = card.slice(0, card.length - cardRel.length);
+    for (const r of rels) out.push({ key: "attachment_paths", rel: base + String(r).replace(/\//g, "\\") });
+  }
+  return [...new Map(out.map(o => [o.rel.replace(/^\\\\\?\\/, "").toLowerCase(), o])).values()];
 }
 function vehiclesOf(emp) {
   let v = emp?.vehicles;
@@ -369,7 +391,7 @@ async function verify() {
   const emp1 = await must("cmd_get_employee", { id: state.e1 });
   const atts = attachmentPaths(emp1);
   const readsBefore = [];
-  for (const a of atts) readsBefore.push({ ...a, ...(await readDoc(a.rel)) });
+  for (const a of atts) readsBefore.push({ ...a, ...(await readAsset(a.rel)) });
   log("3", "attachments after upgrade open", readsBefore.length >= 2 && readsBefore.every(r => r.ok) && readsBefore.some(r => r.sha === state.srcSha.card) && readsBefore.some(r => r.sha === state.srcSha.pdf), readsBefore);
   const b4 = await must("cmd_create_backup", { password: PW.backup });
   state.backup111 = b4;
@@ -382,7 +404,7 @@ async function verify() {
   await page.reload(); await sleep(3000);
   await must("cmd_login", { username: "sysadmin", password: PW.admin105 });
   const afterRestore = [];
-  for (const a of atts) afterRestore.push({ ...a, ...(await readDoc(a.rel)) });
+  for (const a of atts) afterRestore.push({ ...a, ...(await readAsset(a.rel)) });
   log("3", "attachments open after restore, same content", afterRestore.every(r => r.ok) && afterRestore.every(r => readsBefore.find(b => b.rel === r.rel)?.sha === r.sha), afterRestore);
   const notes = (await must("cmd_get_employee", { id: state.e1b })).notes;
   log("3", "restored data is the backup's (edit after backup gone)", !String(notes || "").includes("تغيير بعد النسخة"), { notes });
@@ -413,7 +435,7 @@ async function verify() {
     log("3", "restore refuses the backup with the damaged attachment", !rest2.ok, rest2);
     if (rest2.ok) { await page.reload(); await sleep(3000); await must("cmd_login", { username: "sysadmin", password: PW.admin105 }); }
     const still = [];
-    for (const a of atts) still.push({ ...a, ...(await readDoc(a.rel)) });
+    for (const a of atts) still.push({ ...a, ...(await readAsset(a.rel)) });
     log("3", "current attachments untouched by the refused restore", still.every(r => r.ok && readsBefore.find(b => b.rel === r.rel)?.sha === r.sha), still);
     const b5 = await invoke("cmd_create_backup", { password: PW.backup });
     const healed = !fs.readFileSync(blob).equals(buf);
@@ -434,6 +456,8 @@ async function verify() {
   log("5", "restored the older backup (made with code X)", r6.ok, r6);
   await page.reload(); await sleep(3000);
   await invoke("cmd_logout");
+  const status5 = await invoke("cmd_get_recovery_options");
+  log("5", "«نسيت كلمة المرور؟» options after the restore", null, status5);
   const tryX = await invoke("cmd_recover_admin_password", { code: codeX, newPassword: PW.adminRecovered });
   log("5", "older code X no longer works", !tryX.ok, tryX);
   const tryY = await invoke("cmd_recover_admin_password", { code: codeY, newPassword: PW.adminRecovered });
@@ -446,7 +470,7 @@ async function verify() {
   log("5", "restored the 1.0.5 backup (older than recovery codes)", r105.ok, r105);
   await page.reload(); await sleep(3000);
   await invoke("cmd_logout");
-  const tryZ = await invoke("cmd_recover_admin_password", { code: state.codeZ || "", newPassword: PW.adminRecovered2 });
+  const tryZ = await invoke("cmd_recover_admin_password", { code: state.codeZ || state.codeY, newPassword: PW.adminRecovered2 });
   log("5", "latest code still works after restoring the 1.0.5 backup", tryZ.ok, tryZ.ok ? { username: tryZ.value.username } : tryZ);
   if (tryZ.ok) state.codeW = tryZ.value.recovery_code;
   state.adminPw = tryZ.ok ? PW.adminRecovered2 : (lg.ok ? PW.adminRecovered : PW.admin105);
@@ -497,7 +521,7 @@ async function missingAdmin() {
   const status = await invoke("cmd_get_recovery_options");
   const rs = await invoke("cmd_get_recovery_status");
   log("5", "recovery status after that restore", null, { before, options: status, status: rs });
-  const tryW = await invoke("cmd_recover_admin_password", { code: state.codeW || state.codeZ || "", newPassword: PW.adminRecovered3 });
+  const tryW = await invoke("cmd_recover_admin_password", { code: state.codeW || state.codeZ || state.codeY, newPassword: PW.adminRecovered3 });
   log("5", "this computer's latest code, admin account missing from restored data", null, tryW.ok ? { ok: true, username: tryW.value.username } : tryW);
   const tryOther = await invoke("cmd_recover_admin_password", { code: state.otherCode, newPassword: PW.adminRecovered3 });
   log("5", "the other install's code on this computer", null, tryOther.ok ? { ok: true, username: tryOther.value.username } : tryOther);
