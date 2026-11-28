@@ -760,9 +760,20 @@ mod tests {
         let user = admin(&conn);
         add_employee(&conn, &data, 1, "قديم");
         let backup = create_backup_with_progress(&conn, &user, "Backup-2026!", |_| {}).unwrap();
-        // Something in the way of renaming the data folder (on Windows: a file open elsewhere).
+        // Something in the way of renaming the data folder. On Windows: an attachment open in
+        // another program that does not share it (the real case). Elsewhere: a file where the
+        // rollback folder goes (Windows would simply remove or replace that file).
+        #[cfg(windows)]
+        let blocker = {
+            use std::os::windows::fs::OpenOptionsExt;
+            std::fs::OpenOptions::new().read(true).share_mode(0)
+                .open(data.join("Data/Files/Employees/1/Attachments/card.pdf")).unwrap()
+        };
+        #[cfg(not(windows))]
         std::fs::write(data.join("Data.restore.rollback"), b"blocker").unwrap();
         let error = restore_backup_with_progress(&mut conn, &user, &backup, "Backup-2026!", |_| {}).unwrap_err();
+        #[cfg(windows)]
+        drop(blocker);
         assert!(serde_json::to_string(&error).unwrap().contains("لم يتغير شيء"));
         assert!(!data.join("restore.in_progress").exists());
         add_employee(&conn, &data, 2, "أضيف بعد الفشل");
